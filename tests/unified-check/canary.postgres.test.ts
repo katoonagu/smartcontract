@@ -83,6 +83,9 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           "utf8"
         )
       );
+      await pool.query(
+        await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
+      );
       const selection = buildUnifiedAdaptiveBenchmarkSelection({
         scenarios: ["one", "two", "three"].map((scenarioId) => ({
           scenarioId,
@@ -91,13 +94,8 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
         })),
         cutoffAt: "2026-07-23T12:00:00.000Z",
         candidateCommit: "a".repeat(40),
-        activeGeneration: {
-          generationId: "generation-adaptive",
-          activatedAt: "2026-07-23T10:00:00.000Z",
-          runtimeCommit: "a".repeat(40)
-        },
         databaseSchema: {
-          version: 35,
+          version: 36,
           checksumSha256: "b".repeat(64),
           schema032ChecksumSha256: "c".repeat(64)
         }
@@ -123,7 +121,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "a".repeat(40),
-          schemaVersion: 35
+          schemaVersion: 36
         },
         providerConfiguration: PROVIDER_CONFIGURATION,
         repository: {
@@ -175,6 +173,9 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           "migrations/035_unified_check_run_rollout_policy.sql",
           "utf8"
         )
+      );
+      await pool.query(
+        await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
       );
       await pool.query(
         `create table telegram_users (
@@ -239,11 +240,6 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
         }),
         cutoffAt: "2026-07-23T12:00:00.000Z",
         candidateCommit: "a".repeat(40),
-        activeGeneration: {
-          generationId: "generation-test",
-          activatedAt: "2026-07-23T10:00:00.000Z",
-          runtimeCommit: "a".repeat(40)
-        },
         databaseSchema: {
           version: 33,
           checksumSha256: "b".repeat(64),

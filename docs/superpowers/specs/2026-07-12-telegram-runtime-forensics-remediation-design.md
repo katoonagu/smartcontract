@@ -475,8 +475,8 @@ table не создаётся. Forensic completion CAS происходит до
 | 4 | `remediation-unified-telegram-ux` | REQ-06…14, 15 UX, 18 UX, 20 UX, 22 UX, 27 UX, 28 UX, 31…34, 38 UX; AC-07…09, 12…13, 20…21, 27; AC-39 unified-renderer regression only | Plans 1–3 | One renderer, links, headings, manual Telegram candidate build |
 | 5 | `remediation-end-to-end-acceptance-and-release` | AC-41 и повторная проверка AC-01…40 | Plans 1–4 green | Full regression, migration/runtime/version/manual acceptance, release or rollback |
 
-Plan 4 не меняет scoring. Plan 5 не исправляет bugs: найденная ошибка возвращает
-работу владельцу Plan 1–4 и повторяет release gate с начала.
+Plan 4 не меняет scoring. Финальная проверка не исправляет bugs: найденная ошибка возвращает
+работу владельцу Plan 1–4 и повторяет соответствующий gate с начала.
 
 Первый commit каждого плана содержит только RED tests и минимальные fixtures:
 
@@ -837,7 +837,7 @@ environment.
 
 ## 13. Automated release gates
 
-Plan 5 допускает release только при одновременном выполнении:
+Финальная приёмка допускает rollout только при одновременном выполнении:
 
 1. Все 41 новые `[AC-XX]` tests сначала имели зафиксированный RED и теперь GREEN.
 2. REQ traceability checker подтверждает покрытие REQ-01…REQ-38.

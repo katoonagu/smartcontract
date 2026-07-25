@@ -6,12 +6,9 @@ import {
   SCHEMA_033_VERSION,
   SCHEMA_034_VERSION,
   SCHEMA_035_VERSION,
+  SCHEMA_036_VERSION,
   applyVerifiedTrackedMigration
 } from "../src/storage/schemaMigrations";
-import {
-  buildSchema032MigrationSessionIdentitySha256,
-  observeSchema032MigrationSessionIdentity
-} from "../src/release/schema032MigrationIdentity";
 
 const databaseUrl = process.env.DATABASE_URL;
 const migrationsDir = new URL("../migrations/", import.meta.url);
@@ -19,7 +16,7 @@ const maximumVersionText = process.env.SCHEMA_MIGRATION_MAX_VERSION;
 const maximumVersion = maximumVersionText === undefined
   ? Number.POSITIVE_INFINITY
   : Number.parseInt(maximumVersionText, 10);
-const verifyLatestSchemaLineage = maximumVersion >= SCHEMA_035_VERSION;
+const verifyLatestSchemaLineage = maximumVersion >= SCHEMA_036_VERSION;
 let migrationFiles: string[];
 
 if (
@@ -52,30 +49,13 @@ if (!databaseUrl) {
 
 const client = new Client({ connectionString: databaseUrl });
 
-const expectedSessionIdentitySha256 = process.env.SCHEMA_032_RELEASE_EXPECTED_SESSION_IDENTITY_SHA256;
-const expectedSessionEndpoint = process.env.SCHEMA_032_RELEASE_EXPECTED_ENDPOINT;
-if ((expectedSessionIdentitySha256 === undefined) !== (expectedSessionEndpoint === undefined)) {
-  throw new Error("schema_032_sequence_migration_child_identity_invalid");
-}
-
-async function assertReleaseSessionIdentity(): Promise<void> {
-  if (expectedSessionIdentitySha256 === undefined || expectedSessionEndpoint === undefined) return;
-  if (!/^[0-9a-f]{64}$/u.test(expectedSessionIdentitySha256)) {
-    throw new Error("schema_032_sequence_migration_child_identity_invalid");
-  }
-  const observed = await observeSchema032MigrationSessionIdentity(client, expectedSessionEndpoint);
-  if (buildSchema032MigrationSessionIdentitySha256(observed.identity) !== expectedSessionIdentitySha256) {
-    throw new Error("schema_032_sequence_migration_child_identity_mismatch");
-  }
-}
-
 await client.connect();
 
 try {
-  await assertReleaseSessionIdentity();
   let requiredSchema032Checksum: string | undefined;
   let requiredSchema033Checksum: string | undefined;
   let requiredSchema034Checksum: string | undefined;
+  let requiredSchema035Checksum: string | undefined;
   for (const migrationFile of migrationFiles) {
     const migrationPath = new URL(`../migrations/${migrationFile}`, import.meta.url);
     const versionText = /^(\d+)_/.exec(migrationFile)?.[1];
@@ -95,18 +75,20 @@ try {
       requiredSchema032Checksum,
       requiredSchema033Checksum,
       requiredSchema034Checksum,
+      requiredSchema035Checksum,
       allowNewerReceipt: verifyLatestSchemaLineage,
-      allowSchema035Additions: verifyLatestSchemaLineage
+      allowSchema035Additions: verifyLatestSchemaLineage,
+      allowSchema036Projection: verifyLatestSchemaLineage
     });
     if (version === SCHEMA_032_VERSION) requiredSchema032Checksum = verification.checksumSha256;
     if (version === SCHEMA_033_VERSION) requiredSchema033Checksum = verification.checksumSha256;
     if (version === SCHEMA_034_VERSION) requiredSchema034Checksum = verification.checksumSha256;
+    if (version === SCHEMA_035_VERSION) requiredSchema035Checksum = verification.checksumSha256;
     const action = verification.status === "applied" ? "applied and verified" : "already verified";
     console.log(
       `Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`
     );
   }
-  await assertReleaseSessionIdentity();
 } finally {
   await client.end();
 }

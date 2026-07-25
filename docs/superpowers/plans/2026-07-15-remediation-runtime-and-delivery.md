@@ -80,10 +80,10 @@ Plan 3 не меняет:
 Plan 3 также **не** снимает и не увеличивает configured
 `hard_safety_limit_exceeded`, provider/local page caps и другие bounded limits.
 Тяжёлый адрес всё ещё может честно завершиться без final score. Plan 4 объясняет
-это ограничение пользователю, а Plan 5 проверяет доставку no-final сообщения;
+это ограничение пользователю, а отдельная operational acceptance проверяет доставку no-final сообщения;
 Plan 3 не обещает обработать неограниченное число страниц.
 
-Production остаётся на предыдущем verified runtime до Plan 5. Все PostgreSQL
+Production остаётся на предыдущем verified runtime до explicit rollout. Все PostgreSQL
 проверки используют только disposable `tron_watch_plan3`. Plan 3 не запускает
 production `db:migrate`, bot restart или Telegram polling.
 
@@ -1117,7 +1117,7 @@ conditional. No production or test behavior is added here.
   - bounded background allowance refresh and its 15-minute eligibility floor;
   - cache-only normal navigation, first-load/explicit background refresh;
   - nonblocking check handlers;
-  - Plan 3 remains unreleased until Plan 5;
+  - Plan 3 remains undeployed until explicit rollout;
   - `hard_safety_limit_exceeded` and page caps remain in force: a heavy address
     may have an honest no-final result, whose copy/delivery acceptance belongs to
     Plans 4/5;
@@ -1375,13 +1375,13 @@ git -C 'C:\Users\User\OneDrive\Desktop\smartcontract' branch -D `
   codex/remediation-runtime-delivery
 ```
 
-After a future local merge but before Plan 5, revert Plan 3 commits in reverse
+After a future local merge but before production rollout, revert Plan 3 commits in reverse
 order. Do not reset user files, drop schema 032 or rewrite migration receipts.
 Candidate `tron_watch_plan3` may be dropped only after exact database-name
 verification. Since production is not updated in Plan 3, no production rollback
 operation belongs here.
 
-After Plan 5 release, rollback is owned by Plan 5. It must preserve schema 032,
+After production rollout, rollback is owned by operations. It must preserve schema 032,
 never turn `sent` delivery back to pending and keep immutable forensic results.
 
 ## 12. Self-review checklist
@@ -1428,8 +1428,8 @@ never turn `sent` delivery back to pending and keep immutable forensic results.
 - [x] Exact files, RED/GREEN commands, PostgreSQL checks, rollback, knowledge and
   scope audits are present.
 - [x] Every task has one bounded commit plus separate spec/code-quality reviews.
-- [x] Production DB/runtime/Telegram and `/version` stay unchanged until Plan 5.
-- [x] Plans 4–5 are not created.
+- [x] Production DB/runtime/Telegram and `/version` stay unchanged until explicit rollout.
+- [x] Later plans are not created.
 - [x] Address Poisoning is forbidden scope and only its existing regressions run
   read-only.
 

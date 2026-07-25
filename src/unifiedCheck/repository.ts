@@ -826,7 +826,6 @@ export async function createUnifiedCanaryBatch(
         snapshotSha256: string;
       }[];
       candidateCommit: string;
-      activeGenerationId: string;
       labelDatasetSha256: string;
       scoringPolicyVersion: string;
       attributionPolicyVersion: string;
@@ -883,7 +882,6 @@ export async function createUnifiedCanaryBatch(
           bucket: number;
           admissionPolicy: "barrier" | "rolling";
           providerCapacityCeiling: number;
-          receiptSha256: string | null;
         };
       };
       reuseAllowed: false;
@@ -977,10 +975,10 @@ export async function createUnifiedCanaryBatch(
             id, analysis_key_sha256, subject_address, status, run_purpose,
             side_effect_policy, analysis_manifest_sha256, fairness_owner_id,
             rollout_stage, rollout_bucket, admission_policy,
-            provider_capacity_ceiling, rollout_receipt_sha256
+            provider_capacity_ceiling
           ) values (
             $1,$2,$3,'RUNNING','release_canary','isolated',$4,$5,
-            $6,$7,$8,$9,$10
+            $6,$7,$8,$9
           )
           returning *`,
           [
@@ -992,8 +990,7 @@ export async function createUnifiedCanaryBatch(
             item.candidateRun.rolloutPolicy.stage,
             item.candidateRun.rolloutPolicy.bucket,
             item.candidateRun.rolloutPolicy.admissionPolicy,
-            item.candidateRun.rolloutPolicy.providerCapacityCeiling,
-            item.candidateRun.rolloutPolicy.receiptSha256
+            item.candidateRun.rolloutPolicy.providerCapacityCeiling
           ]
         ),
         "unified_canary_run_create_failed"

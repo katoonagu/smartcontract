@@ -87,10 +87,10 @@ describe("loadConfig", () => {
     expect(config.unifiedRepairMaxSlots).toBe(4);
     expect(config.unifiedRepairMaxWaitChunks).toBe(8);
     expect(config.unifiedReconciliationIntervalMs).toBe(30_000);
-    expect(config.unifiedAdmissionPolicy).toBe("barrier");
     expect(config.unifiedRollingRolloutStage).toBe("global_barrier");
     expect(config.unifiedRollingUserCheckBasisPoints).toBe(0);
-    expect(config.unifiedVerifiedProviderCapacityCeiling).toBe(1);
+    expect(config.unifiedProviderCapacityCeiling).toBe(1);
+    expect(config.unifiedIsolatedWorkerOnly).toBe(false);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
     expect(config.forensicWhereJobsPerPoll).toBe(3);
@@ -646,10 +646,10 @@ describe("loadConfig", () => {
       UNIFIED_REPAIR_MAX_SLOTS: "5",
       UNIFIED_REPAIR_MAX_WAIT_CHUNKS: "6",
       UNIFIED_RECONCILIATION_INTERVAL_MS: "45000",
-      UNIFIED_ADMISSION_POLICY: "rolling",
       UNIFIED_ROLLING_ROLLOUT_STAGE: "bounded_user_check",
       UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS: "2500",
-      UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING: "4"
+      UNIFIED_PROVIDER_CAPACITY_CEILING: "4",
+      UNIFIED_ISOLATED_WORKER_ONLY: "true"
     });
 
     expect(loadConfig()).toMatchObject({
@@ -673,10 +673,10 @@ describe("loadConfig", () => {
       unifiedRepairMaxSlots: 5,
       unifiedRepairMaxWaitChunks: 6,
       unifiedReconciliationIntervalMs: 45_000,
-      unifiedAdmissionPolicy: "rolling",
       unifiedRollingRolloutStage: "bounded_user_check",
       unifiedRollingUserCheckBasisPoints: 2_500,
-      unifiedVerifiedProviderCapacityCeiling: 4
+      unifiedProviderCapacityCeiling: 4,
+      unifiedIsolatedWorkerOnly: true
     });
   });
 
@@ -686,10 +686,9 @@ describe("loadConfig", () => {
     ["UNIFIED_REPAIR_SHARE", ""],
     ["UNIFIED_REPAIR_SHARE", "-0.1"],
     ["UNIFIED_REPAIR_SHARE", "1.1"],
-    ["UNIFIED_ADMISSION_POLICY", "wave"],
     ["UNIFIED_ROLLING_ROLLOUT_STAGE", "all"],
     ["UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS", "10001"],
-    ["UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING", "101"]
+    ["UNIFIED_PROVIDER_CAPACITY_CEILING", "101"]
   ])("rejects invalid adaptive Unified setting %s=%s", (name, value) => {
     setRequiredEnv({ [name]: value });
 

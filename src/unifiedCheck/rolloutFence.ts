@@ -104,8 +104,7 @@ export function selectUnifiedStartupSchedule<T>(
     : [];
 }
 
-export function createUnifiedGenerationRuntimeGate(input: {
-  readonly generation: ActiveCheckGeneration;
+export function createUnifiedRuntimeGate(input: {
   startController(): void;
   wakeController(): void;
   activateBarrierFallback(): void;
@@ -117,19 +116,15 @@ export function createUnifiedGenerationRuntimeGate(input: {
   requestBarrierFallback(): boolean;
   stop(): void;
 } {
-  const ownsUnifiedRuntime = ownsWalletDelivery(
-    input.generation,
-    "unified"
-  );
   let started = false;
   const requestBarrierFallback = () => {
-    if (!ownsUnifiedRuntime || !started) return false;
+    if (!started) return false;
     input.activateBarrierFallback();
     return true;
   };
   return {
     start() {
-      if (!ownsUnifiedRuntime || started) return false;
+      if (started) return false;
       input.startController();
       input.registerBarrierFallback(requestBarrierFallback);
       started = true;
@@ -137,7 +132,7 @@ export function createUnifiedGenerationRuntimeGate(input: {
       return true;
     },
     wakeController() {
-      if (!ownsUnifiedRuntime || !started) return false;
+      if (!started) return false;
       input.wakeController();
       return true;
     },

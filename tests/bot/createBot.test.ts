@@ -41,7 +41,7 @@ const adminId = "9001";
 const userId = "42";
 const poisoningCallbackToken = "poisoningToken_1234";
 const runtimeGitSha = "c".repeat(40);
-const runtimeInstanceLabel = `plan5-${runtimeGitSha.slice(0, 8)}`;
+const runtimeInstanceLabel = `unified-${runtimeGitSha.slice(0, 8)}`;
 
 type RuntimeVersionFixture = {
   version: "runtime-version-v1";
@@ -442,11 +442,10 @@ function createConfig(): AppConfig {
     unifiedRepairMaxSlots: 4,
     unifiedRepairMaxWaitChunks: 8,
     unifiedReconciliationIntervalMs: 30_000,
-    unifiedAdmissionPolicy: "barrier",
     unifiedRollingRolloutStage: "global_barrier",
     unifiedRollingUserCheckBasisPoints: 0,
-    unifiedVerifiedProviderCapacityCeiling: 1,
-    unifiedAdaptiveReleaseReceiptPath: null,
+    unifiedProviderCapacityCeiling: 1,
+    unifiedIsolatedWorkerOnly: false,
     tronscanDashboardCacheTtlMs: 300_000,
     tronscanDashboardMaxPages: 5,
     tronscanDashboardForceRefreshCooldownMs: 60_000,

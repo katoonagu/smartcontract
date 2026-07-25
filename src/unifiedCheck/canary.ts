@@ -122,8 +122,6 @@ export type UnifiedCanarySelectionManifestV1 = {
     readonly databaseSchemaChecksumSha256: string;
     readonly schema032ChecksumSha256: string;
     readonly candidateCommit: string;
-    readonly activeGenerationId: string;
-    readonly activeGenerationActivatedAt: string;
     readonly queryVersion: string;
     readonly querySha256: string;
   };
@@ -146,11 +144,6 @@ export function buildUnifiedAdaptiveBenchmarkSelection(input: {
   }[];
   readonly cutoffAt: string;
   readonly candidateCommit: string;
-  readonly activeGeneration: {
-    readonly generationId: string;
-    readonly activatedAt: string;
-    readonly runtimeCommit: string;
-  };
   readonly databaseSchema: {
     readonly version: number;
     readonly checksumSha256: string;
@@ -205,11 +198,6 @@ export function buildUnifiedAdaptiveBenchmarkSelection(input: {
 
 function buildUnifiedCanarySelectionProvenance(input: {
   readonly candidateCommit: string;
-  readonly activeGeneration: {
-    readonly generationId: string;
-    readonly activatedAt: string;
-    readonly runtimeCommit: string;
-  };
   readonly databaseSchema: {
     readonly version: number;
     readonly checksumSha256: string;
@@ -227,24 +215,12 @@ function buildUnifiedCanarySelectionProvenance(input: {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.candidateCommit)) {
     throw new TypeError("unified_canary_candidate_invalid");
   }
-  if (
-    !input.activeGeneration.generationId.trim() ||
-    timestamp(
-      input.activeGeneration.activatedAt,
-      "unified_canary_generation_activated_at_invalid"
-    ) !== input.activeGeneration.activatedAt ||
-    input.activeGeneration.runtimeCommit !== input.candidateCommit
-  ) {
-    throw new TypeError("unified_canary_active_generation_invalid");
-  }
   return {
     databaseSchemaVersion: input.databaseSchema.version,
     databaseSchemaChecksumSha256: input.databaseSchema.checksumSha256,
     schema032ChecksumSha256:
       input.databaseSchema.schema032ChecksumSha256,
-    candidateCommit: input.candidateCommit,
-    activeGenerationId: input.activeGeneration.generationId,
-    activeGenerationActivatedAt: input.activeGeneration.activatedAt
+    candidateCommit: input.candidateCommit
   };
 }
 
@@ -275,11 +251,6 @@ export function buildUnifiedCanarySelection(input: {
   readonly rows: readonly UnifiedCanarySelectionRowV1[];
   readonly cutoffAt: string;
   readonly candidateCommit: string;
-  readonly activeGeneration: {
-    readonly generationId: string;
-    readonly activatedAt: string;
-    readonly runtimeCommit: string;
-  };
   readonly databaseSchema: {
     readonly version: number;
     readonly checksumSha256: string;
@@ -372,7 +343,6 @@ export type UnifiedCanaryBatchIdentityV1 = {
     readonly snapshotSha256: string;
   }[];
   readonly candidateCommit: string;
-  readonly activeGenerationId: string;
   readonly labelDatasetSha256: string;
   readonly scoringPolicyVersion: string;
   readonly attributionPolicyVersion: string;
@@ -606,11 +576,10 @@ export async function prepareUnifiedCanaryBatch(input: {
   readonly selectionManifest: UnifiedCanarySelectionManifestV1;
   readonly snapshotSource: SnapshotSource;
   readonly versions: UnifiedAnalysisVersions;
-  readonly rolloutAuthority?: {
+  readonly rolloutPolicy?: {
     readonly stage: UnifiedRollingRolloutStage;
     readonly boundedUserCheckBasisPoints: number;
     readonly providerCapacityCeiling: number;
-    readonly receiptSha256: string | null;
   };
   readonly repository: UnifiedCanaryBatchRepository;
   readonly createId: () => string;
@@ -756,7 +725,7 @@ export async function prepareUnifiedCanaryBatch(input: {
       candidateRunId: runId,
       initialTasks,
       versions: input.versions,
-      rolloutAuthority: input.rolloutAuthority,
+      rolloutPolicy: input.rolloutPolicy,
       now: () => new Date(acceptedAt)
     });
     if (result.kind !== "attached" || result.reused) {
@@ -791,8 +760,6 @@ export async function prepareUnifiedCanaryBatch(input: {
       left.subjectAddress.localeCompare(right.subjectAddress)
     ),
     candidateCommit: input.selectionManifest.source.candidateCommit,
-    activeGenerationId:
-      input.selectionManifest.source.activeGenerationId,
     labelDatasetSha256: input.versions.labelDatasetSha256,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
@@ -934,10 +901,6 @@ export type UnifiedCanaryBatchReportV1 = {
   readonly selectionManifestSha256: string;
   readonly batchIdentitySha256: string;
   readonly candidateCommit: string;
-  readonly activeGeneration: {
-    readonly generationId: string;
-    readonly activatedAt: string;
-  };
   readonly generatedAt: string;
   readonly deliveryIntentCount: number;
   readonly authoritativeDerivedWriteCount: number;
@@ -988,10 +951,6 @@ export async function runUnifiedCanaryHarness(input: {
   readonly selectionManifestSha256: string;
   readonly batchIdentitySha256: string;
   readonly candidateCommit: string;
-  readonly activeGeneration: {
-    readonly generationId: string;
-    readonly activatedAt: string;
-  };
   readonly now: () => Date;
   readonly inspect: () => Promise<readonly UnifiedWatchdogRunV1[]>;
   readonly advance: () => Promise<void>;
@@ -1189,7 +1148,6 @@ export async function runUnifiedCanaryHarness(input: {
     selectionManifestSha256: input.selectionManifestSha256,
     batchIdentitySha256: input.batchIdentitySha256,
     candidateCommit: input.candidateCommit,
-    activeGeneration: input.activeGeneration,
     generatedAt,
     deliveryIntentCount,
     authoritativeDerivedWriteCount:

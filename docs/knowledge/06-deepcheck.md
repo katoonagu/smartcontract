@@ -21,7 +21,7 @@ ownership. It must distinguish direct from indirect exposure, transaction-time
 restriction state from later restriction, and victim from drainer/recipient
 role.
 
-## Implemented Release Candidate
+## Unified DeepCheck
 
 Deep is a separate evidence producer inside one Unified parent, not a second
 user-facing check. It emits canonical relationship, boundary, approval,
@@ -37,5 +37,5 @@ prevent the same event from contributing again through Fast or Where.
 The parent may complete only after Deep is terminal and shared traversal/hash
 contracts hold. A technical Deep failure produces no partial user report.
 
-The candidate contract is implemented and tested. Production remains on legacy
-DeepCheck until the protected generation cutover.
+The Unified contract is implemented and tested. Delivery ownership does not
+gate isolated Deep execution.

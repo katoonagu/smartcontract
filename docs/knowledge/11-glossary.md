@@ -111,8 +111,8 @@ a duplicate user message.
 ## generation fence
 
 Database-backed ownership boundary selecting either legacy wallet delivery or
-Unified delivery for new requests. Both authorities cannot own the same
-logical request.
+Unified delivery for new requests. Both owners cannot own the same logical
+request. It does not authorize provider work, traversal, or isolated canaries.
 
 ## canary purpose
 

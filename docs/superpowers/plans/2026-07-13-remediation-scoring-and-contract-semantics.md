@@ -93,7 +93,7 @@ Secondary integration, без смены primary ownership:
 - `REQ-35…37` runtime/delivery ownership Plan 3;
 - AC-20/21/24/27 — Plan 4. Canonical section 4.6 pulls only AC-39's
   exact LLM-output deletion into Task 8; the rest of Telegram UX stays Plan 4;
-- AC-41 — Plan 5;
+- AC-41 — final operational acceptance;
 - любые Admin, callback, delivery, migration, deployment или Address Poisoning
   изменения; Telegram copy/layout кроме точного удаления двух legacy LLM
   секций в Task 8.
@@ -399,7 +399,7 @@ Record in the execution log:
 ```text
 Plan 2 candidate only.
 Production DB, deployed runtime, /version and Telegram remain unchanged.
-Only Plan 5 may migrate/restart/release production.
+Only explicit operations may migrate/restart/roll out production.
 ```
 
 Task 0 creates no commit and must end with a clean implementation worktree.
@@ -408,7 +408,7 @@ Required review after Task 0:
 
 1. independent spec-review confirms the fixed code base, exact two-document
    preimplementation ancestry, clean feature worktree, disposable PostgreSQL URL
-   and Plan 5 production fence;
+   and the production operations fence;
 2. independent code-quality/safety review confirms the implementation worktree
    is clean, all dirty main-worktree files remain unstaged and no production
    endpoint was contacted.
@@ -1996,7 +1996,7 @@ npm run typecheck
 npm test
 ```
 
-Expected: GREEN. This is Plan 2 regression evidence, not AC-41 release proof; Plan 5 reruns and owns AC-41.
+Expected: GREEN. This is Plan 2 regression evidence, not AC-41 production proof; final operations owns AC-41.
 
 - [ ] **Step 4: explicitly rerun Address Poisoning regressions read-only**
 
@@ -2021,7 +2021,7 @@ After code is GREEN:
   every other unified Telegram UX change remains Plan 4;
 - `09` — automatic contract/money-origin LLM disabled, fresh `llm=null`, unknown
   contract `35 REVIEW`, strict assessment binding, legacy LLM/cache audit-only,
-  production still unreleased until Plan 5;
+  production still unchanged until explicit rollout;
 - `10` — remove only gaps actually fixed; add any discovered unfixed recurring problem;
 - `13` — update only if implementation reveals a new repeated mistake, not as routine changelog.
 
@@ -2208,7 +2208,7 @@ git branch -D codex/remediation-scoring-contract-semantics
 
 Use only after explicit discard confirmation. The main worktree and production remain unchanged.
 
-After a future local merge but before Plan 5 release:
+After a future local merge but before production rollout:
 
 ```powershell
 $PLAN2_BASE_SHA = (git config --get branch.codex/remediation-scoring-contract-semantics.plan2BaseSha).Trim()
@@ -2223,7 +2223,7 @@ foreach ($commit in $plan2Commits) {
 
 Do not rewrite migration 032, drop production tables or reset user files. Disposable `tron_watch_plan2` may be dropped only after verifying its resolved target name is exactly `tron_watch_plan2`.
 
-After Plan 5 release, rollback authority belongs to Plan 5 and must preserve schema 032 receipts while reverting policy/runtime as a coordinated release.
+After production rollout, operations owns rollback and must preserve schema 032 receipts while reverting policy/runtime as a coordinated change.
 
 ## 16. Self-review checklist
 
@@ -2284,4 +2284,4 @@ records the dynamic plan-head SHA and creates the clean implementation worktree;
 Task 0 itself creates no commit.
 Production code begins only after Task 1 has discovered, recorded and committed
 the expected RED tests. Production DB, deployed runtime, `/version` and live
-Telegram remain unchanged until Plan 5.
+Telegram remain unchanged until explicit rollout.

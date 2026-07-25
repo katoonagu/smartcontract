@@ -75,10 +75,11 @@ import {
   SCHEMA_033_FILENAME,
   SCHEMA_034_FILENAME,
   SCHEMA_035_FILENAME,
-  SCHEMA_035_VERSION,
+  SCHEMA_036_FILENAME,
+  SCHEMA_036_VERSION,
   checksumMigrationBytes,
-  verifyRequiredSchema035,
-  type Schema035Verification
+  verifyRequiredSchema036,
+  type Schema036Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -207,11 +208,10 @@ import {
   UnifiedProviderWaitError
 } from "./unifiedCheck/requestService";
 import {
-  createUnifiedGenerationRuntimeGate,
+  createUnifiedRuntimeGate,
   getActiveCheckGeneration,
   handoffWalletDeliveryAndAcceptRequest,
-  ownsWalletDelivery,
-  selectUnifiedStartupSchedule
+  ownsWalletDelivery
 } from "./unifiedCheck/rolloutFence";
 import { createTronConfirmedSnapshotSource } from "./unifiedCheck/snapshot";
 import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionPolicy.generated";
@@ -238,9 +238,6 @@ import type {
   ProviderRunDemand
 } from "./unifiedCheck/fairProviderAllocator";
 import { refillOrderedAdmissions } from "./unifiedCheck/plannerRepository";
-import {
-  loadUnifiedVerifiedRolloutAuthority
-} from "./unifiedCheck/rolloutAuthority";
 import { createUnifiedReconciliation } from "./unifiedCheck/reconciliation";
 import {
   createUnifiedAdminRunDecisionStore
@@ -298,7 +295,7 @@ const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
-  let schemaVerification: Schema035Verification | null = null;
+  let schemaVerification: Schema036Verification | null = null;
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
   );
@@ -307,8 +304,11 @@ try {
     new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)
   );
   const schema033Checksum = await checksumMigrationBytes(schema033MigrationBytes);
-  const requiredMigrationBytes = await readFile(
+  const schema035MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)
+  );
+  const requiredMigrationBytes = await readFile(
+    new URL(`../migrations/${SCHEMA_036_FILENAME}`, import.meta.url)
   );
   const schema034MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
@@ -316,16 +316,20 @@ try {
   const schema034Checksum = await checksumMigrationBytes(
     schema034MigrationBytes
   );
+  const schema035Checksum = await checksumMigrationBytes(
+    schema035MigrationBytes
+  );
   const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
     verifyStartupSchema: () => runStartupSchemaGate({
       verify: () =>
-        verifyRequiredSchema035(
+        verifyRequiredSchema036(
           db,
           requiredChecksum,
           schema032Checksum,
           schema033Checksum,
-          schema034Checksum
+          schema034Checksum,
+          schema035Checksum
         ),
       onVerified: (verification) => {
         schemaVerification = verification;
@@ -353,15 +357,10 @@ try {
   throw error;
 }
 const activeCheckGeneration = await getActiveCheckGeneration(db);
-const unifiedVerifiedRolloutAuthority =
-  await loadUnifiedVerifiedRolloutAuthority({
-    receiptPath: config.unifiedAdaptiveReleaseReceiptPath,
-    candidateSha: runtimeVersion.gitCommitSha,
-    expectedReleaseGenerationId: activeCheckGeneration.generationId,
-    configuredStage: config.unifiedRollingRolloutStage,
-    configuredProviderCapacityCeiling:
-      config.unifiedVerifiedProviderCapacityCeiling
-  });
+const unifiedRolloutPolicy = {
+  stage: config.unifiedRollingRolloutStage,
+  providerCapacityCeiling: config.unifiedProviderCapacityCeiling
+} as const;
 logger.info("unified_generation_fence_loaded", {
   deliveryGeneration: activeCheckGeneration.deliveryGeneration,
   generationId: activeCheckGeneration.generationId
@@ -589,6 +588,7 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
   runtimeCommit: runtimeVersion.gitCommitSha,
   providerConfigurationSha256: unifiedProviderConfiguration.sha256,
+  runPurpose: config.unifiedIsolatedWorkerOnly ? "release_canary" : undefined,
   providerChunkBudget: {
     maxWorkUnits: config.unifiedChunkMaxPages,
     maxWallMs: config.unifiedChunkMaxWallMs,
@@ -964,7 +964,7 @@ const unifiedAdmissionRuntimeControl =
   createPostgresUnifiedAdmissionRuntimeControl({
     db: unifiedTransactionHost,
     initialPolicy:
-      unifiedVerifiedRolloutAuthority.stage === "global_barrier"
+      unifiedRolloutPolicy.stage === "global_barrier"
         ? "barrier"
         : "rolling",
     readyBufferMaxEntries: config.unifiedReadyBufferMaxEntries,
@@ -1139,7 +1139,7 @@ const runUnifiedControllerCycle = async (
       configuredProviderConcurrencyLimit:
         Math.min(
           config.unifiedProviderConcurrencyLimit,
-          unifiedVerifiedRolloutAuthority.providerCapacityCeiling
+          unifiedRolloutPolicy.providerCapacityCeiling
         ),
       providerWorkerLimit: Math.min(
         config.unifiedProviderWorkerLimit,
@@ -1804,8 +1804,7 @@ const requestUnifiedBarrierFallback = () => {
     });
   });
 };
-const unifiedGenerationRuntime = createUnifiedGenerationRuntimeGate({
-  generation: activeCheckGeneration,
+const unifiedRuntimeGate = createUnifiedRuntimeGate({
   startController: () => unifiedReconciliation.start(),
   wakeController: () => {
     unifiedRepairServiceTracker.recordWake();
@@ -1820,7 +1819,7 @@ const unifiedGenerationRuntime = createUnifiedGenerationRuntimeGate({
   }
 });
 wakeUnifiedController = () => {
-  unifiedGenerationRuntime.wakeController();
+  unifiedRuntimeGate.wakeController();
 };
 const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
@@ -2300,16 +2299,14 @@ const bot = createBot(config, db, tronClient, {
         scoringPolicyVersion: SCORING_POLICY_V4.version,
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
         runtimeCommit: runtimeVersion.gitCommitSha,
-        schemaVersion: SCHEMA_035_VERSION
+        schemaVersion: SCHEMA_036_VERSION
       },
-      rolloutAuthority: {
-        stage: unifiedVerifiedRolloutAuthority.stage,
+      rolloutPolicy: {
+        stage: unifiedRolloutPolicy.stage,
         boundedUserCheckBasisPoints:
           config.unifiedRollingUserCheckBasisPoints,
         providerCapacityCeiling:
-          unifiedVerifiedRolloutAuthority.providerCapacityCeiling,
-        receiptSha256:
-          unifiedVerifiedRolloutAuthority.receiptSha256
+          unifiedRolloutPolicy.providerCapacityCeiling
       },
       freezeLabelDataset: async ({
         snapshotHash,
@@ -3359,33 +3356,37 @@ let startupWorkSchedule: StartupWorkScheduleController | null = null;
 let unifiedWorkSchedule: StartupWorkScheduleController | null = null;
 const startupWorkScheduleItems = buildStartupWorkSchedule(config);
 
-function startBackgroundWorkSchedule(): void {
-  if (startupWorkSchedule) return;
-  startupWorkSchedule = startStartupWorkSchedule({
-    schedule: startupWorkScheduleItems,
-    startupWork,
-    intervalByLabel,
-    initialErrorEventByLabel: {
-      poll: "initial_polling_cycle_failed",
-      where_forensic: "initial_where_forensic_cycle_failed",
-      incoming_deposit: "initial_incoming_deposit_cycle_failed",
-      deep_forensic: "initial_deep_forensic_cycle_failed",
-      address_index: "initial_address_index_cycle_failed",
-      address_poisoning: "initial_address_poisoning_cycle_failed"
-    },
-    intervalErrorEventByLabel: {
-      poll: "polling_cycle_failed",
-      where_forensic: "where_forensic_cycle_failed",
-      incoming_deposit: "incoming_deposit_worker_failed",
-      deep_forensic: "deep_forensic_cycle_failed",
-      address_index: "address_index_cycle_failed",
-      address_poisoning: "address_poisoning_cycle_failed"
-    },
-    onError: (eventName, error) => {
-      logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-  unifiedGenerationRuntime.start();
+function startBackgroundWorkSchedule(
+  options: { readonly unifiedOnly?: boolean } = {}
+): void {
+  if (startupWorkSchedule || unifiedWorkSchedule) return;
+  if (options.unifiedOnly !== true) {
+    startupWorkSchedule = startStartupWorkSchedule({
+      schedule: startupWorkScheduleItems,
+      startupWork,
+      intervalByLabel,
+      initialErrorEventByLabel: {
+        poll: "initial_polling_cycle_failed",
+        where_forensic: "initial_where_forensic_cycle_failed",
+        incoming_deposit: "initial_incoming_deposit_cycle_failed",
+        deep_forensic: "initial_deep_forensic_cycle_failed",
+        address_index: "initial_address_index_cycle_failed",
+        address_poisoning: "initial_address_poisoning_cycle_failed"
+      },
+      intervalErrorEventByLabel: {
+        poll: "polling_cycle_failed",
+        where_forensic: "where_forensic_cycle_failed",
+        incoming_deposit: "incoming_deposit_worker_failed",
+        deep_forensic: "deep_forensic_cycle_failed",
+        address_index: "address_index_cycle_failed",
+        address_poisoning: "address_poisoning_cycle_failed"
+      },
+      onError: (eventName, error) => {
+        logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  }
+  unifiedRuntimeGate.start();
   const unifiedProviderWork = async () => undefined;
   // Provider, analysis/coordinator, and finalization are advanced by the
   // coalesced controller cycle. Periodic labels remain inert compatibility
@@ -3423,9 +3424,12 @@ function startBackgroundWorkSchedule(): void {
     unified_watchdog: unifiedWatchdogWork
   };
   unifiedWorkSchedule = startUnifiedResourceWorkSchedule({
-    schedule: selectUnifiedStartupSchedule(
-      activeCheckGeneration,
-      buildUnifiedResourceWorkSchedule()
+    schedule: buildUnifiedResourceWorkSchedule().filter((item) =>
+      item.label !== "unified_delivery" ||
+      (
+        !config.unifiedIsolatedWorkerOnly &&
+        ownsWalletDelivery(activeCheckGeneration, "unified")
+      )
     ),
     startupWork: unifiedWork,
     intervalByLabel: Object.fromEntries(
@@ -3440,13 +3444,16 @@ function startBackgroundWorkSchedule(): void {
       });
     }
   });
-  logger.info("startup_work_schedule_started", { schedule: startupWorkScheduleItems });
+  logger.info("startup_work_schedule_started", {
+    isolatedWorkerOnly: options.unifiedOnly === true,
+    schedule: options.unifiedOnly === true ? [] : startupWorkScheduleItems
+  });
 }
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  unifiedGenerationRuntime.stop();
+  unifiedRuntimeGate.stop();
   logger.info("shutdown_started", { signal });
   startupWorkSchedule?.stop();
   startupWorkSchedule = null;
@@ -3582,16 +3589,24 @@ process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-startBackgroundWorkSchedule();
-
-bot.start({
-  onStart: () => {
-    logger.info("bot_started");
-    startBackgroundWorkSchedule();
-  }
-}).catch((error) => {
-  logger.error("telegram_bot_failed", { error: error instanceof Error ? error.message : String(error) });
-  void shutdown("SIGTERM").then(() => {
-    process.exitCode = 1;
+if (config.unifiedIsolatedWorkerOnly) {
+  logger.warn("unified_isolated_worker_only_started", {
+    telegramPolling: false,
+    telegramDelivery: false,
+    legacySchedules: false
   });
-});
+  startBackgroundWorkSchedule({ unifiedOnly: true });
+} else {
+  startBackgroundWorkSchedule();
+  bot.start({
+    onStart: () => {
+      logger.info("bot_started");
+      startBackgroundWorkSchedule();
+    }
+  }).catch((error) => {
+    logger.error("telegram_bot_failed", { error: error instanceof Error ? error.message : String(error) });
+    void shutdown("SIGTERM").then(() => {
+      process.exitCode = 1;
+    });
+  });
+}

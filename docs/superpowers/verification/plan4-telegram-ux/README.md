@@ -78,4 +78,4 @@ token, chat ID, Telegram request URL или response. Ошибка сети во
 только как санитизированный `telegram_test_send_failed`.
 
 Runtime/version, migration verification, delivery retries и `/version`
-проверяются только в Plan 5. Этот synthetic harness их не подтверждает.
+проверяются отдельными runtime/schema тестами. Этот synthetic harness их не подтверждает.

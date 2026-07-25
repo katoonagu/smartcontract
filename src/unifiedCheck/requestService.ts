@@ -155,9 +155,6 @@ function requiredRunRolloutPolicy(
   const admissionPolicy = row.admission_policy;
   const bucket = Number(row.rollout_bucket);
   const providerCapacityCeiling = Number(row.provider_capacity_ceiling);
-  const receiptSha256 = row.rollout_receipt_sha256 === null
-    ? null
-    : String(row.rollout_receipt_sha256);
   if (
     ![
       "global_barrier",
@@ -171,11 +168,7 @@ function requiredRunRolloutPolicy(
     bucket > 9_999 ||
     !Number.isSafeInteger(providerCapacityCeiling) ||
     providerCapacityCeiling < 1 ||
-    providerCapacityCeiling > 100 ||
-    (
-      receiptSha256 !== null &&
-      !/^[0-9a-f]{64}$/u.test(receiptSha256)
-    )
+    providerCapacityCeiling > 100
   ) {
     throw new Error("unified_run_rollout_policy_invalid");
   }
@@ -183,8 +176,7 @@ function requiredRunRolloutPolicy(
     stage: stage as UnifiedRollingRolloutStage,
     bucket,
     admissionPolicy: admissionPolicy as "barrier" | "rolling",
-    providerCapacityCeiling,
-    receiptSha256
+    providerCapacityCeiling
   };
 }
 
@@ -329,8 +321,8 @@ export function createPostgresUnifiedRequestStore(
               id, analysis_key_sha256, subject_address, status, run_purpose,
               side_effect_policy, analysis_manifest_sha256, fairness_owner_id,
               rollout_stage, rollout_bucket, admission_policy,
-              provider_capacity_ceiling, rollout_receipt_sha256
-            ) values ($1,$2,$3,'RUNNING',$4,$5,$6,$7,$8,$9,$10,$11,$12)
+              provider_capacity_ceiling
+            ) values ($1,$2,$3,'RUNNING',$4,$5,$6,$7,$8,$9,$10,$11)
             on conflict do nothing returning *`,
             [
               input.candidateRun.id,
@@ -343,8 +335,7 @@ export function createPostgresUnifiedRequestStore(
               input.candidateRun.rolloutPolicy.stage,
               input.candidateRun.rolloutPolicy.bucket,
               input.candidateRun.rolloutPolicy.admissionPolicy,
-              input.candidateRun.rolloutPolicy.providerCapacityCeiling,
-              input.candidateRun.rolloutPolicy.receiptSha256
+              input.candidateRun.rolloutPolicy.providerCapacityCeiling
             ]
           );
           runRow = inserted.rows[0];
@@ -464,11 +455,10 @@ type IntakeInput = {
   candidateRunId: string;
   initialTasks?: readonly UnifiedInitialTask[];
   versions: UnifiedAnalysisVersions;
-  rolloutAuthority?: {
+  rolloutPolicy?: {
     readonly stage: UnifiedRollingRolloutStage;
     readonly boundedUserCheckBasisPoints: number;
     readonly providerCapacityCeiling: number;
-    readonly receiptSha256: string | null;
   };
   freezeLabelDataset?(input: {
     readonly snapshot: ConfirmedWalletSnapshotV1;
@@ -691,13 +681,11 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
         analysisManifest: manifest,
         rolloutPolicy: selectUnifiedRunRolloutPolicy({
           stage:
-            input.rolloutAuthority?.stage ?? "global_barrier",
+            input.rolloutPolicy?.stage ?? "global_barrier",
           boundedUserCheckBasisPoints:
-            input.rolloutAuthority?.boundedUserCheckBasisPoints ?? 0,
+            input.rolloutPolicy?.boundedUserCheckBasisPoints ?? 0,
           providerCapacityCeiling:
-            input.rolloutAuthority?.providerCapacityCeiling ?? 1,
-          receiptSha256:
-            input.rolloutAuthority?.receiptSha256 ?? null,
+            input.rolloutPolicy?.providerCapacityCeiling ?? 1,
           runId: input.candidateRunId,
           runPurpose: accepted.runPurpose,
           sideEffectPolicy: accepted.sideEffectPolicy

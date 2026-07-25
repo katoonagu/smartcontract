@@ -20,7 +20,7 @@ code_refs:
   - src/unifiedCheck/productionFinalizer.ts
   - src/unifiedCheck/delivery.ts
   - src/unifiedCheck/watchdog.ts
-  - src/release/unifiedReleaseGateReceipt.ts
+  - migrations/036_remove_rollout_authority.sql
 ---
 
 # Job Lifecycle
@@ -33,10 +33,10 @@ in a technical stop. Existing schema-031 results and legacy scores are not
 reinterpreted as Unified results.
 
 A technical/provider stop must remain distinguishable from a risk decision.
-Legacy retries keep their current ownership rules until cutover; the release
-must not grant both legacy and Unified workers delivery authority.
+Legacy retries keep their current ownership rules; operators must not grant
+both legacy and Unified workers delivery ownership.
 
-## Implemented Release Candidate
+## Unified Lifecycle
 
 Schema 033 introduces one durable `CheckRequest`, one `UnifiedCheckRun`,
 mutable lifecycle rows for child tasks, immutable completed attempt records,
@@ -86,13 +86,12 @@ Delivery is a separate state machine. `DELIVERY_UNKNOWN` records an ambiguous
 external effect and forbids automatic resend. Manual resend creates a new
 warned presentation and audit record.
 
-These contracts are implemented in the release candidate but inactive in
-production until the protected schema-035 cutover and generation-fence switch.
+These contracts are implemented independently of delivery ownership.
 
-The active candidate startup contract now requires exact schema 035 with
-verified schema-032, schema-033, and schema-034 predecessor receipts. Migration
-035 additively stores immutable rollout stage, stable bucket, admission policy,
-verified provider ceiling, and signed-receipt SHA on `unified_check_runs`.
+Startup requires exact schema 036 with verified schema-032 through schema-035
+predecessor receipts. Migration 035 historically added immutable rollout
+policy. Migration 036 removes its receipt field while retaining rollout stage,
+stable bucket, admission policy, and provider ceiling on `unified_check_runs`.
 New run creation persists those fields and the opaque stable fairness owner in
 the same transaction; restart and configuration changes load the stored
 decision instead of inferring it from planner rows or recalculating it. The
@@ -155,20 +154,11 @@ without interrupting an in-flight provider request.
 
 ## Remaining Operational Work
 
-The schema-035 startup verifier, additive rollout-policy migration, planner, adaptive-capacity,
-reconciliation, staged policy, memory-evidence validator, and signed adaptive
-promotion-receipt implementations are closed. Production configuration still
-defaults to the `global_barrier` stage. The deterministic frozen replay and
-logical capacities through 100 are automated evidence; actual live capacity
-1/4, three-wallet, target-Linux memory, and signed promotion artifacts have
-not been produced. P1 boundary activation still waits
-for blind review/adjudication, and the performance matrix waits for frozen
-TPCP/TFWG/TXc provider bundles. Protected backup/migration/startup, generation
-activation, and post-deploy canary also remain external rollout work. The
-protected release receipt retains schema 033 as immutable predecessor evidence
-and requires the exact schema-034 planner predecessor plus schema-035 rollout
-policy checksum/structural identity and a canonical Ed25519-signed adaptive
-promotion receipt. The finalizer derives that receipt from canonical replay,
-PostgreSQL oracle, live, lifecycle, fallback, and target-Linux memory artifacts;
-caller-selected authority keys are not accepted. This contract authorizes no
-production mutation by itself.
+The schema-036 startup verifier, planner, adaptive capacity, reconciliation,
+staged policy, barrier fallback, and memory diagnostics are implemented.
+Configuration defaults to `global_barrier`; isolated or broader rolling is an
+ordinary validated configuration choice. Deterministic replay covers logical
+capacities through 100, while actual live capacity and the next DB/CPU/memory
+bottleneck must be measured with real independent groups. P1 boundary
+activation still waits for blind review/adjudication, and exact performance
+comparison waits for frozen TPCP/TFWG/TXc provider bundles.

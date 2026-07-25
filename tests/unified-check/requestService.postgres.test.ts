@@ -27,6 +27,7 @@ postgresDescribe("Unified Check durable intake", () => {
       await client.query(await readFile("migrations/033_unified_wallet_check.sql", "utf8"));
       await client.query(await readFile("migrations/034_unified_check_adaptive_planner.sql", "utf8"));
       await client.query(await readFile("migrations/035_unified_check_run_rollout_policy.sql", "utf8"));
+      await client.query(await readFile("migrations/036_remove_rollout_authority.sql", "utf8"));
       const clientQueryable: UnifiedQueryable = {
         query: (sql: string, values?: readonly unknown[]) =>
           client.query(sql, values as unknown[])
@@ -72,7 +73,7 @@ postgresDescribe("Unified Check durable intake", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "candidate",
-          schemaVersion: 35
+          schemaVersion: 36
         },
         freezeLabelDataset: async ({
           snapshotHash,

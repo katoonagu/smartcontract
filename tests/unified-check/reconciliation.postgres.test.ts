@@ -80,6 +80,9 @@ postgresDescribe("Unified reconciliation PostgreSQL recovery", () => {
         )
       );
       await db.query(
+        await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
+      );
+      await db.query(
         `insert into unified_check_runs (
            id, analysis_key_sha256, subject_address, status, run_purpose,
            side_effect_policy, analysis_manifest_sha256, fairness_owner_id
@@ -187,6 +190,9 @@ postgresDescribe("Unified reconciliation PostgreSQL recovery", () => {
           "migrations/035_unified_check_run_rollout_policy.sql",
           "utf8"
         )
+      );
+      await db.query(
+        await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
       );
       await db.query(
         `insert into unified_check_runs (

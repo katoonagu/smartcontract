@@ -26,7 +26,7 @@ The deployed runtime still runs legacy Where/Incoming jobs and their existing
 score-validity/coverage behavior. A technical coverage stop is not a clean
 verdict. Unknown labels are not evidence of safety or risk by themselves.
 
-## Implemented Release Candidate
+## Unified Where And Incoming
 
 Where and balance-origin analysis are evidence-only Unified children. They may
 fetch and resume work but cannot send Telegram or choose the final score. Their
@@ -46,5 +46,5 @@ Coverage remains a factual denominator, not a risk floor or publication gate.
 `COMPLETED` requires traversal closure and produces one parent score.
 Provider/execution failure remains `FAILED_TECHNICAL` without a partial report.
 
-This contract is implemented and tested but not deployed. Production keeps the
-legacy Where/Incoming path until schema 034 and the generation fence activate.
+This contract is implemented and tested. Delivery ownership is separate from
+the analysis path and does not gate isolated execution.

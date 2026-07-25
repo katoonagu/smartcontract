@@ -38,9 +38,6 @@ import {
 import {
   buildUnifiedPerformanceBenchmarkManifest
 } from "../../src/unifiedCheck/performanceMetrics";
-import {
-  loadAdaptiveBenchmarkIndexForFinalizer
-} from "../../scripts/finalizeUnifiedReleaseGates";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1109,27 +1106,6 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       `${canonicalizeArtifactJson(index)}\n`,
       "utf8"
     );
-    await expect(loadAdaptiveBenchmarkIndexForFinalizer(
-      root,
-      basename(output),
-      {
-        mode: "live",
-        candidateSha: candidateCommit
-      }
-    )).resolves.toMatchObject({
-      index: {
-        mode: "live",
-        candidateCommit,
-        executionIdentitySha256
-      },
-      evidence: artifacts.map((artifact) => ({
-        scenarioId: artifact.scenarioId,
-        performanceManifest: {
-          executionIdentitySha256:
-            artifact.executionIdentitySha256
-        }
-      }))
-    });
     const conflatedIdentityWithoutHash = {
       ...withoutHash,
       executionIdentitySha256:
@@ -1144,16 +1120,6 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
         )
       })}\n`,
       "utf8"
-    );
-    await expect(loadAdaptiveBenchmarkIndexForFinalizer(
-      root,
-      basename(output),
-      {
-        mode: "live",
-        candidateSha: candidateCommit
-      }
-    )).rejects.toThrow(
-      "unified_adaptive_index_artifact_invalid"
     );
     await writeFile(
       output,

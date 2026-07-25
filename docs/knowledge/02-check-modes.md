@@ -25,13 +25,13 @@ movement; Incoming follows the provenance of a selected deposit.
 
 This separation remains important: a missing Deep/Where result cannot be
 silently replaced by Fast, and contract analysis does not replace transfer
-analysis. Legacy score validity and partial-result behavior remain in force
-until the protected Unified cutover.
+analysis. Legacy score validity and partial-result behavior remain separate
+from the Unified lifecycle.
 
 Address-poisoning protection is a separate wallet-safety monitor. It never
 becomes AML evidence or a substitute for any of the four checks.
 
-## Implemented Release Candidate
+## Unified Wallet Check
 
 Unified Wallet Check keeps the same three analytical questions—Fast, Where,
 and Deep—but runs them as evidence-only children of one parent request. The
@@ -45,8 +45,8 @@ a risk decision and creates no report or delivery.
 One request owns at most one automatic send. A confirmed send becomes
 `DELIVERED`; an ambiguous external result becomes `DELIVERY_UNKNOWN` and is
 never retried automatically. The generation fence makes legacy and Unified
-delivery authority mutually exclusive.
+delivery ownership mutually exclusive; it does not control analysis runtime.
 
-The candidate code and production request boundary are implemented and tested.
-They are not deployed: production remains on the legacy path until schema 034
-and the Unified generation are activated by the protected release flow.
+The Unified request boundary, planner, and report contract are implemented.
+Deployment and delivery ownership are operational choices separate from
+adaptive analysis and isolated canaries.

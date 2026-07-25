@@ -85,8 +85,7 @@ const run: AnalysisRunRecord = {
     stage: "global_barrier",
     bucket: 0,
     admissionPolicy: "barrier",
-    providerCapacityCeiling: 1,
-    receiptSha256: null
+    providerCapacityCeiling: 1
   }
 };
 

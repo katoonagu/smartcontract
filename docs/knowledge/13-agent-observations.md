@@ -288,14 +288,14 @@ Correct rule:
 - A completed parent run owns the single score and delivery. Fast, Where, and
   Deep remain separate evidence producers and must not publish competing final
   results.
-- New target behavior is documented as planned until code and release gates
+- New target behavior is documented as planned until code and runnable checks
   prove it; do not rewrite current behavior as if the design were already
   deployed.
 
-## 2026-07-23: New Schema Must Update Existing Release Guards
+## 2026-07-23: New Schema Must Update Existing Runtime Guards
 
-Repeated mistake: a new migration was hidden from an older release test instead
-of being added to the fail-closed producer/evidence contract.
+Repeated mistake: a new migration was hidden from an older schema test instead
+of being added to the fail-closed migration/startup contract.
 
 Correct rule: bind the exact new migration/checksum and real trust-boundary
 fixture while continuing to reject future or unknown files.
@@ -309,7 +309,7 @@ known in advance.
 Correct rule: measure frozen cases first. Admin may show exact discovered
 outstanding work and say that the total is still expanding, but never invents
 ETA or percent complete. Internal SLO proposals do not stop analysis, publish
-partial scores, add risk, or become release gates without a separate decision.
+partial scores, add risk, or become correctness gates without a separate decision.
 
 ## 2026-07-24: Simulated Capacity Is Not Live Capacity Proof
 
@@ -356,14 +356,13 @@ Correct rule:
   discriminator and current path; keep exact historical validators and use an
   explicit versioned reader only where old evidence must remain readable.
 
-## 2026-07-25: Promotion Claims Need Bound Evidence, Not Configuration
+## 2026-07-25: Capacity Claims Need Measured Evidence
 
 Repeated corrections:
 
 - Four key strings were treated as proof of four independent provider groups.
 - A local WSL percentage was treated as production memory evidence.
-- A completed benchmark command was treated as permission to enable rolling
-  without a staged, canonical approval artifact.
+- A configured ceiling was treated as proof of measured live throughput.
 
 Correct rule:
 
@@ -371,30 +370,27 @@ Correct rule:
 - Missing WSL is a local diagnostic skip; WSL trends never substitute for a
   target Linux cgroup/host gate with process, DB, checkpoint, and post-run
   evidence.
-- Keep historical receipt versions exact. Adaptive promotion uses its own
-  canonical signed receipt, advances one rollout stage at a time, and states an
-  honest capacity ceiling. On Windows invoke the benchmark with direct Node or
-  `npm.cmd`; never loosen its CLI because `npm.ps1` swallowed flags.
+- Adaptive rolling is ordinary validated configuration, but live capacity
+  claims still require measured closure, errors, group use, throughput, and
+  memory. On Windows invoke the benchmark with direct Node or `npm.cmd`; never
+  loosen its CLI because `npm.ps1` swallowed flags.
 
-## 2026-07-25: Rollout Policy And Signature Authority Must Be Durable
+## 2026-07-25: Persist Run Policy, Not Deployment Ceremony
 
 Repeated corrections:
 
 - Rollout was inferred from planner-row existence and recomputed from current
   configuration after restart.
-- The promotion CLI accepted an operator-selected public key.
-- Promotion trusted success booleans and SHA-shaped strings without loading
-  the referenced evidence.
+- Planner execution was coupled to a separate deployment-approval subsystem.
 
 Correct rule:
 
-- Migration 035 freezes stage, bucket, admission policy, provider ceiling, and
-  receipt identity on each new run in its creation transaction.
-- Pin the authority key ID/public key/hash, reject symlinked key material, and
-  let configuration only narrow a verified receipt.
-- Canonical-load the replay/live indexes and their artifacts, PostgreSQL
-  oracle, lifecycle/fallback evidence, and target-Linux memory source before
-  materializing the official receipt.
+- Migration 036 retains stage, bucket, admission policy, and provider ceiling
+  on each new run while removing rollout-receipt authority.
+- Configuration chooses the policy for new work; restart loads the persisted
+  choice, and fallback uses the same planner/commit path.
+- The generation fence remains only for delivery idempotency. It must not gate
+  provider work, analysis, reconciliation, or isolated canaries.
 
 ## 2026-07-25: Schema Catalog Mocks Do Not Prove PostgreSQL Driver Types
 

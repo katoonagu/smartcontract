@@ -29,11 +29,6 @@ const TBL7 = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const TQR = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const CUTOFF = "2026-07-23T12:00:00.000Z";
 const CANDIDATE = "a".repeat(40);
-const ACTIVE_GENERATION = {
-  generationId: "generation-1",
-  activatedAt: "2026-07-23T10:00:00.000Z",
-  runtimeCommit: CANDIDATE
-} as const;
 const DATABASE_SCHEMA = {
   version: 33,
   checksumSha256: "b".repeat(64),
@@ -146,7 +141,6 @@ function selectionManifest(
     rows,
     cutoffAt: CUTOFF,
     candidateCommit: CANDIDATE,
-    activeGeneration: ACTIVE_GENERATION,
     databaseSchema: DATABASE_SCHEMA
   });
 }
@@ -217,7 +211,6 @@ describe("Unified eight-wallet release canary", () => {
       databaseSchemaChecksumSha256: DATABASE_SCHEMA.checksumSha256,
       schema032ChecksumSha256: DATABASE_SCHEMA.schema032ChecksumSha256,
       candidateCommit: CANDIDATE,
-      activeGenerationId: ACTIVE_GENERATION.generationId,
       queryVersion: "unified-canary-selection-query-v1"
     });
     expect(manifest.source.querySha256).toMatch(/^[0-9a-f]{64}$/u);
@@ -371,10 +364,6 @@ describe("Unified eight-wallet release canary", () => {
       candidateCommit: CANDIDATE,
       selectionManifestSha256: "c".repeat(64),
       batchIdentitySha256: "d".repeat(64),
-      activeGeneration: {
-        generationId: ACTIVE_GENERATION.generationId,
-        activatedAt: ACTIVE_GENERATION.activatedAt
-      },
       now: () => now,
       inspect: async () => state,
       advance: async () => {
@@ -435,10 +424,6 @@ describe("Unified eight-wallet release canary", () => {
       candidateCommit: CANDIDATE,
       selectionManifestSha256: "c".repeat(64),
       batchIdentitySha256: "d".repeat(64),
-      activeGeneration: {
-        generationId: ACTIVE_GENERATION.generationId,
-        activatedAt: ACTIVE_GENERATION.activatedAt
-      },
       now: () => new Date("2026-07-23T12:35:00.000Z"),
       inspect: async () => state,
       advance: async () => undefined,
@@ -479,10 +464,6 @@ describe("Unified eight-wallet release canary", () => {
       candidateCommit: CANDIDATE,
       selectionManifestSha256: "d".repeat(64),
       batchIdentitySha256: "e".repeat(64),
-      activeGeneration: {
-        generationId: ACTIVE_GENERATION.generationId,
-        activatedAt: ACTIVE_GENERATION.activatedAt
-      },
       now: () => new Date("2026-07-23T12:04:00.000Z"),
       inspect: async () => runs,
       advance: async () => undefined,

@@ -19,9 +19,9 @@ code_refs:
 
 The deployed bot still sends legacy mode-specific results and uses the current
 Admin views/workers. Technical stops must not be presented as risk decisions.
-The production bot has not activated Unified delivery.
+Delivery ownership remains explicit and independent of analysis execution.
 
-## Implemented Release Candidate
+## Unified Admin And Bot UX
 
 Unified sends nothing while Fast, Where, or Deep is running. After the parent
 reaches `COMPLETED`, the bot sends one immutable locale presentation derived
@@ -64,11 +64,11 @@ percent complete or ETA. `FAILED_TECHNICAL` is operational.
 `DELIVERY_UNKNOWN` is visible and never auto-retried; manual resend is explicit
 and warned.
 
-The rollout fence and `/check` wiring are implemented in the candidate.
-Production continues legacy delivery until schema 035 and the Unified
-generation are activated through the protected release flow.
+The `/check` wiring and delivery fence are implemented. The fence selects one
+delivery owner only; it does not gate planner/controller work or isolated
+canaries. Startup schema verification requires schema 036.
 
 ## Remaining Product Work
 
 Recipient precheck before signing and other future wallet-safety features are
-separate follow-ups; they do not block this release.
+separate follow-ups; they do not block Unified analysis.

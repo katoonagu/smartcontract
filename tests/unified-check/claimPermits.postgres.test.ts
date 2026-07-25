@@ -67,6 +67,15 @@ postgresDescribe("Unified provider claim permits", () => {
           "utf8"
         )
       );
+      await admin.query(
+        await readFile(
+          "migrations/035_unified_check_run_rollout_policy.sql",
+          "utf8"
+        )
+      );
+      await admin.query(
+        await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
+      );
       for (const [runId, ownerId] of [
         ["run-interactive", "owner-a"]
       ]) {
@@ -75,9 +84,12 @@ postgresDescribe("Unified provider claim permits", () => {
         await admin.query(
           `insert into unified_check_runs (
              id, analysis_key_sha256, subject_address, status, run_purpose,
-             side_effect_policy, analysis_manifest_sha256, fairness_owner_id
+             side_effect_policy, analysis_manifest_sha256, fairness_owner_id,
+             rollout_stage, rollout_bucket, admission_policy,
+             provider_capacity_ceiling
            ) values (
-             $1,$2,$3,'RUNNING','synthetic_test','isolated',$4,$5
+             $1,$2,$3,'RUNNING','synthetic_test','isolated',$4,$5,
+             'rolling_default',0,'rolling',2
            )`,
           [
             runId,

@@ -26,7 +26,7 @@ The deployed legacy runtime keeps its existing matrix/anchor versions and saved
 results. Historical scores are not recalculated and no newer anchor is
 synthesized for them.
 
-## Implemented Release Candidate
+## Unified Scoring
 
 Fresh Unified runs use `scoring-signal-matrix-v4` and one `ScoreAnchorV3`.
 The anchor binds canonical fact hashes, the locked Golden manifest,
@@ -50,5 +50,5 @@ scores, relations, duplicate/reorder/coverage invariance, deterministic replay,
 and RU/EN presentation expectations are fixed only by adjudicated artifacts
 and the production comparator.
 
-Matrix v4 is implemented and tested on the release candidate. It does not
-change deployed legacy results before cutover.
+Matrix v4 is implemented and tested for Unified runs. Historical legacy
+results are not recalculated.

@@ -15,7 +15,6 @@ export type UnifiedRunRolloutPolicy = {
   readonly bucket: number;
   readonly admissionPolicy: "barrier" | "rolling";
   readonly providerCapacityCeiling: number;
-  readonly receiptSha256: string | null;
 };
 
 export function unifiedRunRolloutBucket(runId: string): number {
@@ -36,7 +35,6 @@ export function selectUnifiedRunRolloutPolicy(input: {
   readonly runPurpose: UnifiedRunPurpose;
   readonly sideEffectPolicy: UnifiedSideEffectPolicy;
   readonly providerCapacityCeiling: number;
-  readonly receiptSha256: string | null;
 }): UnifiedRunRolloutPolicy {
   if (
     !Number.isSafeInteger(input.boundedUserCheckBasisPoints) ||
@@ -52,16 +50,8 @@ export function selectUnifiedRunRolloutPolicy(input: {
   ) {
     throw new TypeError("unified_rolling_capacity_ceiling_invalid");
   }
-  if (
-    input.receiptSha256 !== null &&
-    !/^[0-9a-f]{64}$/u.test(input.receiptSha256)
-  ) {
-    throw new TypeError("unified_rolling_receipt_sha256_invalid");
-  }
   const bucket = unifiedRunRolloutBucket(input.runId);
-  const safeStage = input.receiptSha256 === null
-    ? "global_barrier"
-    : input.stage;
+  const safeStage = input.stage;
   const isolatedCanary =
     input.sideEffectPolicy === "isolated" &&
     (
@@ -90,11 +80,7 @@ export function selectUnifiedRunRolloutPolicy(input: {
     stage: safeStage,
     bucket,
     admissionPolicy,
-    providerCapacityCeiling:
-      input.receiptSha256 === null
-        ? 1
-        : input.providerCapacityCeiling,
-    receiptSha256: input.receiptSha256
+    providerCapacityCeiling: input.providerCapacityCeiling
   };
 }
 
@@ -109,7 +95,6 @@ export function selectUnifiedRunAdmissionPolicy(input: {
   if (input.createdUnderSchemaVersion < 35) return "barrier";
   return selectUnifiedRunRolloutPolicy({
     ...input,
-    providerCapacityCeiling: 1,
-    receiptSha256: "0".repeat(64)
+    providerCapacityCeiling: 1
   }).admissionPolicy;
 }

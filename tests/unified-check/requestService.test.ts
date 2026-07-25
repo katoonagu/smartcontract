@@ -161,11 +161,10 @@ describe("Unified Check request intake", () => {
         "rollout-request-1",
         "rollout-run-1"
       ),
-      rolloutAuthority: {
+      rolloutPolicy: {
       stage: "bounded_user_check",
       boundedUserCheckBasisPoints: 10_000,
-      providerCapacityCeiling: 4,
-      receiptSha256: "e".repeat(64)
+        providerCapacityCeiling: 4
       } as const
     };
     const first = await intakeUnifiedCheck(firstInput);
@@ -175,7 +174,6 @@ describe("Unified Check request intake", () => {
       stage: "bounded_user_check",
       admissionPolicy: "rolling",
       providerCapacityCeiling: 4,
-      receiptSha256: "e".repeat(64)
     });
 
     const duplicateInput = {
@@ -186,11 +184,10 @@ describe("Unified Check request intake", () => {
         "rollout-request-duplicate",
         "rollout-run-duplicate"
       ),
-      rolloutAuthority: {
+      rolloutPolicy: {
         stage: "global_barrier",
         boundedUserCheckBasisPoints: 0,
-        providerCapacityCeiling: 1,
-        receiptSha256: "f".repeat(64)
+        providerCapacityCeiling: 1
       } as const
     };
     const duplicate = await intakeUnifiedCheck(duplicateInput);
@@ -206,11 +203,10 @@ describe("Unified Check request intake", () => {
         "rollout-request-2",
         "rollout-run-2"
       ),
-      rolloutAuthority: {
+      rolloutPolicy: {
         stage: "global_barrier",
         boundedUserCheckBasisPoints: 0,
-        providerCapacityCeiling: 1,
-        receiptSha256: "f".repeat(64)
+        providerCapacityCeiling: 1
       } as const
     };
     const next = await intakeUnifiedCheck(nextInput);
@@ -220,7 +216,6 @@ describe("Unified Check request intake", () => {
       stage: "global_barrier",
       admissionPolicy: "barrier",
       providerCapacityCeiling: 1,
-      receiptSha256: "f".repeat(64)
     });
   });
 

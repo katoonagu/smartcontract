@@ -40,8 +40,8 @@ GREEN в соответствующем будущем плане.
 Production invariant: Plan 1 создаёт только branch/candidate artifacts. Он не
 применяет migration 032 к production, не перезапускает production bot, не
 мержит branch в deployed runtime и не переключает runtime label. Production
-остаётся на предыдущем verified runtime и schema 031 до общего release gate
-Plan 5. Все `db:migrate`, startup и rollback проверки Plan 1 выполняются только
+остаётся на предыдущем verified runtime и schema 031 до отдельного production rollout.
+Все `db:migrate`, startup и rollback проверки Plan 1 выполняются только
 на disposable PostgreSQL/candidate environment.
 
 ## 2. Изолированное выполнение
@@ -1400,7 +1400,7 @@ Plan 1 does not perform a production rollback because it performs no production
 deployment. In the disposable candidate database migration 032 and its receipt
 remain; no `DROP COLUMN`, receipt deletion or reverse rewrite is allowed. The
 repository compatibility tests prove that the base runtime sees the
-conservative legacy mirror. Plan 5 owns any real deployment/rollback decision.
+conservative legacy mirror. Operations owns any real deployment/rollback decision.
 A checksum/schema failure blocks the candidate and is fixed in code/migration,
 never by editing the receipt manually.
 
@@ -1439,8 +1439,8 @@ Document:
   supplied; Plan 1 does not yet perform the network call or score it;
 - USDD exact route observations exist, but modifier/scoring/copy do not;
 - Plan 1 is candidate-only; deployed production runtime/schema remain on the
-  previous verified release until Plan 5;
-- remaining open problems explicitly retain Plans 2–5 work.
+  previous verified release until an explicit rollout;
+- remaining open problems explicitly retain later-plan work.
 
 Update knowledge 06 only for the new Deep count/limitation coverage contract.
 Do not update knowledge 07 or 08 as if scoring or Telegram UX were implemented.
@@ -1498,7 +1498,7 @@ Expected: no scoring, Telegram/alerts, Address Poisoning or migration-031 diff.
 
 No deploy, production `db:migrate`, production bot restart, merge to deployed
 branch or runtime-label switch is part of this task. The end state is a verified
-candidate branch awaiting Plan 5; production continues on its previous runtime.
+candidate branch awaiting an explicit rollout; production continues on its previous runtime.
 
 - [ ] **Step 5: Commit knowledge**
 
@@ -1568,5 +1568,5 @@ without any premature scoring/UX behavior.
 - [ ] The PostgreSQL acceptance was part of the first recorded RED batch.
 - [ ] Rollback keeps additive migration and conservative legacy mirror.
 - [ ] Address Poisoning diff is empty and its regression remains GREEN.
-- [ ] Plans 2–5 were not created or implemented.
-- [ ] Production runtime/schema remain unchanged until Plan 5 release authority.
+- [ ] Later plans were not created or implemented.
+- [ ] Production runtime/schema remain unchanged until explicit operational approval.

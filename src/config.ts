@@ -68,15 +68,14 @@ export type AppConfig = {
   unifiedRepairMaxSlots: number;
   unifiedRepairMaxWaitChunks: number;
   unifiedReconciliationIntervalMs: number;
-  unifiedAdmissionPolicy: "barrier" | "rolling";
   unifiedRollingRolloutStage:
     | "global_barrier"
     | "isolated_rolling"
     | "bounded_user_check"
     | "rolling_default";
   unifiedRollingUserCheckBasisPoints: number;
-  unifiedVerifiedProviderCapacityCeiling: number;
-  unifiedAdaptiveReleaseReceiptPath: string | null;
+  unifiedProviderCapacityCeiling: number;
+  unifiedIsolatedWorkerOnly: boolean;
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
@@ -185,11 +184,6 @@ function parseNumberInRange(name: string, rawValue: string, minimum: number, max
     throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
   }
   return value;
-}
-
-function parseUnifiedAdmissionPolicy(rawValue: string): "barrier" | "rolling" {
-  if (rawValue === "barrier" || rawValue === "rolling") return rawValue;
-  throw new Error("UNIFIED_ADMISSION_POLICY must be barrier or rolling");
 }
 
 function parseUnifiedRollingRolloutStage(
@@ -538,9 +532,6 @@ export function loadConfig(): AppConfig {
       process.env.UNIFIED_RECONCILIATION_INTERVAL_MS ?? "30000",
       1
     ),
-    unifiedAdmissionPolicy: parseUnifiedAdmissionPolicy(
-      process.env.UNIFIED_ADMISSION_POLICY ?? "barrier"
-    ),
     unifiedRollingRolloutStage: parseUnifiedRollingRolloutStage(
       process.env.UNIFIED_ROLLING_ROLLOUT_STAGE ?? "global_barrier"
     ),
@@ -550,14 +541,17 @@ export function loadConfig(): AppConfig {
       0,
       10_000
     ),
-    unifiedVerifiedProviderCapacityCeiling: parseIntegerInRange(
-      "UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING",
-      process.env.UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING ?? "1",
+    unifiedProviderCapacityCeiling: parseIntegerInRange(
+      "UNIFIED_PROVIDER_CAPACITY_CEILING",
+      process.env.UNIFIED_PROVIDER_CAPACITY_CEILING ?? "1",
       1,
       100
     ),
-    unifiedAdaptiveReleaseReceiptPath:
-      process.env.UNIFIED_ADAPTIVE_RELEASE_RECEIPT_PATH?.trim() || null,
+    unifiedIsolatedWorkerOnly: parseBooleanFlag(
+      "UNIFIED_ISOLATED_WORKER_ONLY",
+      process.env.UNIFIED_ISOLATED_WORKER_ONLY,
+      false
+    ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(
       "TRONSCAN_DASHBOARD_CACHE_TTL_MS",
       process.env.TRONSCAN_DASHBOARD_CACHE_TTL_MS ?? "300000",

@@ -16,7 +16,8 @@ import {
   SCHEMA_033_FILENAME,
   SCHEMA_034_FILENAME,
   SCHEMA_035_FILENAME,
-  verifyRequiredSchema035
+  SCHEMA_036_FILENAME,
+  verifyRequiredSchema036
 } from "../src/storage/schemaMigrations";
 import {
   buildUnifiedAdaptiveBenchmarkSelection,
@@ -44,7 +45,6 @@ import {
   reconcileUnifiedCanaryTechnicalFailures
 } from "../src/unifiedCheck/repository";
 import type { UnifiedWalletDossierV1 } from "../src/unifiedCheck/report";
-import { getActiveCheckGeneration } from "../src/unifiedCheck/rolloutFence";
 import { SELECTED_ATTRIBUTION_POLICY } from "../src/unifiedCheck/selectedAttributionPolicy.generated";
 import { createTronConfirmedSnapshotSource } from "../src/unifiedCheck/snapshot";
 import type { UnifiedWatchdogRunV1 } from "../src/unifiedCheck/watchdog";
@@ -55,9 +55,6 @@ import {
   type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1,
   type UnifiedAdaptiveBenchmarkScenarioSymptomArtifactV1
 } from "../src/unifiedCheck/adaptiveBenchmarkControl";
-import {
-  loadUnifiedVerifiedRolloutAuthority
-} from "../src/unifiedCheck/rolloutAuthority";
 
 async function writeImmutable(path: string, content: string): Promise<void> {
   try {
@@ -201,39 +198,22 @@ export async function runUnifiedWalletCanaryCli(
     const schema035Bytes = await readFile(
       new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)
     );
-    const schemaVerification = await verifyRequiredSchema035(
+    const schema036Bytes = await readFile(
+      new URL(`../migrations/${SCHEMA_036_FILENAME}`, import.meta.url)
+    );
+    const schemaVerification = await verifyRequiredSchema036(
       db,
-      await checksumMigrationBytes(schema035Bytes),
+      await checksumMigrationBytes(schema036Bytes),
       await checksumMigrationBytes(schema032Bytes),
       await checksumMigrationBytes(schema033Bytes),
-      await checksumMigrationBytes(schema034Bytes)
+      await checksumMigrationBytes(schema034Bytes),
+      await checksumMigrationBytes(schema035Bytes)
     );
-    const activeGeneration = await getActiveCheckGeneration(db);
-    const rolloutAuthority =
-      await loadUnifiedVerifiedRolloutAuthority({
-        receiptPath: config.unifiedAdaptiveReleaseReceiptPath,
-        candidateSha: options.candidateCommit,
-        expectedReleaseGenerationId: activeGeneration.generationId,
-        configuredStage: config.unifiedRollingRolloutStage,
-        configuredProviderCapacityCeiling:
-          config.unifiedVerifiedProviderCapacityCeiling
-      });
-    if (
-      activeGeneration.deliveryGeneration !== "unified" ||
-      activeGeneration.runtimeCommit.toLowerCase() !== options.candidateCommit
-    ) {
-      throw new Error("unified_canary_active_generation_mismatch");
-    }
     const canary = options.resumeBatchIdentitySha256 === null
       ? await (async () => {
           const commonSelection = {
             cutoffAt: options.cutoffAt,
             candidateCommit: options.candidateCommit,
-            activeGeneration: {
-              generationId: activeGeneration.generationId,
-              activatedAt: activeGeneration.activatedAt,
-              runtimeCommit: options.candidateCommit
-            },
             databaseSchema: schemaVerification
           };
           const selectionManifest =
@@ -296,10 +276,12 @@ export async function runUnifiedWalletCanaryCli(
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
             },
-            rolloutAuthority: {
-              ...rolloutAuthority,
+            rolloutPolicy: {
+              stage: config.unifiedRollingRolloutStage,
               boundedUserCheckBasisPoints:
-                config.unifiedRollingUserCheckBasisPoints
+                config.unifiedRollingUserCheckBasisPoints,
+              providerCapacityCeiling:
+                config.unifiedProviderCapacityCeiling
             },
             diagnosticHypothesis,
             providerConfiguration,
@@ -326,8 +308,6 @@ export async function runUnifiedWalletCanaryCli(
       canary.batchIdentity.candidateCommit !== options.candidateCommit ||
       canary.batchIdentity.databaseSchemaVersion !==
         schemaVerification.version ||
-      canary.selectionManifest.source.activeGenerationId !==
-        activeGeneration.generationId ||
       canary.batchIdentity.providerConfiguration.sha256 !==
         providerConfiguration.sha256 ||
       (
@@ -427,10 +407,6 @@ export async function runUnifiedWalletCanaryCli(
       candidateCommit: options.candidateCommit,
       selectionManifestSha256: canary.selectionManifestSha256,
       batchIdentitySha256: canary.batchIdentitySha256,
-      activeGeneration: {
-        generationId: activeGeneration.generationId,
-        activatedAt: activeGeneration.activatedAt
-      },
       now: () => new Date(),
       inspect: inspectWithProgress,
       async advance() {

@@ -26,7 +26,7 @@ Approval к одному понятному детерминированному
 не вычисляет риск и не читает LLM/cache JSON: он показывает только проверенный
 кошелёк, действующий typed score anchor или честный no-final, subject-bound
 факты, маршруты и `ForensicCoverageV2`. Старые formatter-функции остаются
-тонкими compatibility wrappers до Plan 5. Approval использует отдельный
+тонкими compatibility wrappers до operational rollout. Approval использует отдельный
 `approval_safety` semantic branch без AML/Where/provenance; общими остаются
 только visual grammar, безопасные ссылки и HTML renderer primitives.
 
@@ -53,7 +53,7 @@ Approval к одному понятному детерминированному
 
 - `PLAN4_BASE_SHA` нельзя заранее подменять SHA из этого черновика. Он обязан
   указывать на фактический `master`, содержащий Plans 1–3 и утверждённый Plan 4.
-- Production остаётся на предыдущем runtime до Plan 5. Ни одна задача Plan 4
+- Production остаётся на предыдущем runtime до explicit rollout. Ни одна задача Plan 4
   не применяет migration, не перезапускает bot/admin/workers и не меняет
   рабочую PostgreSQL.
 
@@ -837,7 +837,7 @@ gate. Task 10 and final verification repeat the same full typecheck.
 3. Prove Plans 1–3 contracts exist with `rg` for `ForensicCoverageV2`,
    `ScoreAnchorV2`, `ApprovalSafetyAssessmentV2`, `ContractDecisionV2` and
    durable delivery state.
-4. Confirm no Plan 5 document is created and AP files match base.
+4. Confirm no production rollout subsystem is created and AP files match base.
 5. Run baseline:
 
    ```powershell
@@ -1352,8 +1352,8 @@ Manifest cases and required screenshot/artifact IDs:
 Each manual record contains fixture ID, checked wallet, expected REQ/AC IDs,
 candidate Git SHA, locale, reviewer, result and screenshot filename. Candidate
 SHA stays in the evidence manifest and must not appear inside the user message.
-Runtime label, migration verification, delivery retry and `/version` release
-checks remain Plan 5; Plan 4 does not claim them from synthetic messages.
+Runtime label, migration verification, delivery retry and `/version` checks
+remain separate; Plan 4 does not claim them from synthetic messages.
 
 **RED:**
 
@@ -1453,7 +1453,7 @@ npm test
 Plan 4 does not change schema, repository, lifecycle or delivery state, but the
 new AC-13 PostgreSQL integration test is mandatory because it proves the
 Plan 1 coverage contract survives real persistence before rendering. Full suite
-also runs the project's configured PostgreSQL tests; Plan 5 repeats
+also runs the project's configured PostgreSQL tests; operations repeats
 production-like PostgreSQL gates.
 
 **Address Poisoning regression (read-only):**
@@ -1489,7 +1489,7 @@ git diff --name-status $env:PLAN4_BASE_SHA..HEAD
 git status --short
 ```
 
-Run §0.3 forbidden audit. Confirm no Plan 5 document, migration, DB/runtime,
+Run §0.3 forbidden audit. Confirm no production rollout document, migration, DB/runtime,
 Telegram production update or unapproved dependency.
 
 **Commit:** `docs: record unified telegram ux behavior`
@@ -1574,7 +1574,7 @@ For every case in Task 9, reviewer records:
 - exact output matches the corresponding independent golden fixture;
 - screenshot filename and REQ/AC IDs are saved.
 
-Manual acceptance does not prove Plan 3 delivery retries or Plan 5 runtime
+Manual acceptance does not prove Plan 3 delivery retries or runtime
 version/migration gates. Those are deliberately separate.
 
 ---
@@ -1588,7 +1588,7 @@ Plan 4 rollback is code-only and does not touch production DB:
 3. restore compatibility formatter entry points from pre-Plan4 code;
 4. rerun typecheck, focused legacy presentation tests, full suite and AP
    regression;
-5. confirm production remains on its pre-Plan5 verified runtime.
+5. confirm production remains on its previously verified runtime.
 
 Because Plan 4 introduces no migration, delivery state or scoring change, no
 data rollback exists. Do not delete immutable forensic results or delivery
@@ -1639,7 +1639,7 @@ fingerprints.
       existing names.
 - [x] Runtime branch/SHA is absent from ordinary payload and remains available
       only through `/version`, Admin and diagnostics.
-- [x] Production PostgreSQL/runtime/version/release remain Plan 5; Plan 4 writes
+- [x] Production PostgreSQL/runtime/version remain operations-owned; Plan 4 writes
       only isolated acceptance rows in `tron_watch_plan4` and cleans them up.
 - [x] AC-13 alone has a disposable PostgreSQL persist→reload→render acceptance;
       it does not change repository/schema and includes cleanup.
@@ -1651,7 +1651,7 @@ fingerprints.
 
 Plan 4 утверждён 2026-07-16. Перед реализацией commit включает только этот plan
 document. Затем создаётся отдельный worktree: Task 0 и Task 1 выполняются
-первыми, Tasks 2–10 — строго по порядку. Plan 5 не создаётся, production
+первыми, Tasks 2–10 — строго по порядку. Production rollout не создаётся, production
 DB/runtime/Telegram не меняются, Address Poisoning closeout не запускается.
 
 После подтверждённого staging-блокера разрешены ровно два дополнительных

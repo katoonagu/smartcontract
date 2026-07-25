@@ -131,8 +131,7 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
           stage: "global_barrier",
           bucket: 0,
           admissionPolicy: "barrier",
-          providerCapacityCeiling: 1,
-          receiptSha256: null
+          providerCapacityCeiling: 1
         }
       };
       await client.query(

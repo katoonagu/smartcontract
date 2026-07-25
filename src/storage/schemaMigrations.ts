@@ -12,8 +12,11 @@ export const SCHEMA_034_FILENAME = "034_unified_check_adaptive_planner.sql";
 export const SCHEMA_035_VERSION = 35;
 export const SCHEMA_035_FILENAME =
   "035_unified_check_run_rollout_policy.sql";
-export const REQUIRED_SCHEMA_VERSION = SCHEMA_035_VERSION;
-export const REQUIRED_SCHEMA_FILENAME = SCHEMA_035_FILENAME;
+export const SCHEMA_036_VERSION = 36;
+export const SCHEMA_036_FILENAME =
+  "036_remove_rollout_authority.sql";
+export const REQUIRED_SCHEMA_VERSION = SCHEMA_036_VERSION;
+export const REQUIRED_SCHEMA_FILENAME = SCHEMA_036_FILENAME;
 export const SCHEMA_MIGRATION_LOCK_ID = 20260712032n;
 export const SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE = 250;
 
@@ -55,6 +58,18 @@ export interface Schema035Verification {
   schema034ChecksumSha256: string;
 }
 
+export interface Schema036Verification {
+  verified: true;
+  version: typeof SCHEMA_036_VERSION;
+  filename: typeof SCHEMA_036_FILENAME;
+  checksumSha256: string;
+  shortChecksum: string;
+  schema032ChecksumSha256: string;
+  schema033ChecksumSha256: string;
+  schema034ChecksumSha256: string;
+  schema035ChecksumSha256: string;
+}
+
 export interface SchemaQueryable {
   query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
 }
@@ -63,6 +78,7 @@ interface SchemaOptions {
   schemaName?: string;
   allowNewerReceipt?: boolean;
   allowSchema035Additions?: boolean;
+  allowSchema036Projection?: boolean;
 }
 
 interface ApplyVerifiedMigration032Options extends SchemaOptions {
@@ -76,6 +92,7 @@ interface ApplyVerifiedTrackedMigrationOptions extends SchemaOptions {
   requiredSchema032Checksum?: string;
   requiredSchema033Checksum?: string;
   requiredSchema034Checksum?: string;
+  requiredSchema035Checksum?: string;
 }
 
 export interface TrackedMigrationVerification {
@@ -1142,11 +1159,37 @@ export const UNIFIED_SCHEMA_035_CATALOG_SHA256 = unifiedCatalogHash(
   SCHEMA_035_NORMALIZED_STRUCTURAL_CATALOG
 );
 
+const SCHEMA_036_IMMUTABILITY_FUNCTION_SOURCE = normalizeDefinition(`
+begin
+  if new.rollout_stage is distinct from old.rollout_stage
+    or new.rollout_bucket is distinct from old.rollout_bucket
+    or new.admission_policy is distinct from old.admission_policy
+    or new.provider_capacity_ceiling is distinct from old.provider_capacity_ceiling
+  then
+    raise exception 'unified_run_rollout_policy_immutable';
+  end if;
+  return new;
+end;
+`);
+const SCHEMA_036_ROLLOUT_POLICY_SHAPE_DEFINITION =
+  "CHECK ((((rollout_bucket IS NULL) AND (rollout_stage = 'global_barrier'::text) AND (admission_policy = 'barrier'::text) AND (provider_capacity_ceiling = 1)) OR ((rollout_bucket IS NOT NULL) AND (((rollout_stage = 'global_barrier'::text) AND (admission_policy = 'barrier'::text)) OR (rollout_stage = ANY (ARRAY['isolated_rolling'::text, 'bounded_user_check'::text])) OR ((rollout_stage = 'rolling_default'::text) AND (admission_policy = 'rolling'::text))))))";
+
 export async function verifySchema035Structure(
   queryable: SchemaQueryable,
   options?: SchemaOptions
 ): Promise<void> {
   const schemaName = resolveSchemaName(options);
+  const projected = options?.allowSchema036Projection === true;
+  const expectedColumns = projected
+    ? SCHEMA_035_COLUMN_CONTRACT.filter(([name]) =>
+        name !== "rollout_receipt_sha256"
+      )
+    : SCHEMA_035_COLUMN_CONTRACT;
+  const expectedConstraints = projected
+    ? SCHEMA_035_CONSTRAINT_NAMES.filter((name) =>
+        name !== "unified_check_runs_rollout_receipt_sha256_check"
+      )
+    : SCHEMA_035_CONSTRAINT_NAMES;
   const columns = await queryable.query(
     `select column_name, data_type, is_nullable, column_default
        from information_schema.columns
@@ -1157,7 +1200,7 @@ export async function verifySchema035Structure(
     [schemaName, SCHEMA_035_COLUMN_CONTRACT.map(([name]) => name)]
   );
   for (const [name, dataType, isNullable, columnDefault] of
-    SCHEMA_035_COLUMN_CONTRACT) {
+    expectedColumns) {
     const row = columns.rows.find((candidate) =>
       candidate.column_name === name
     );
@@ -1183,8 +1226,8 @@ export async function verifySchema035Structure(
     [schemaName, [...SCHEMA_035_CONSTRAINT_NAMES]]
   );
   if (
-    constraints.rows.length !== SCHEMA_035_CONSTRAINT_NAMES.length ||
-    SCHEMA_035_CONSTRAINT_NAMES.some((name) =>
+    constraints.rows.length !== expectedConstraints.length ||
+    expectedConstraints.some((name) =>
       !constraints.rows.some((row) =>
         row.conname === name &&
         row.contype === "c" &&
@@ -1221,7 +1264,9 @@ export async function verifySchema035Structure(
     trigger.rows[0]?.function_result !== "trigger" ||
     trigger.rows[0]?.function_arguments !== "" ||
     normalizeDefinition(trigger.rows[0]?.function_source) !==
-      SCHEMA_035_IMMUTABILITY_FUNCTION_SOURCE
+      (projected
+        ? SCHEMA_036_IMMUTABILITY_FUNCTION_SOURCE
+        : SCHEMA_035_IMMUTABILITY_FUNCTION_SOURCE)
   ) {
     fail("schema_035_catalog_mismatch");
   }
@@ -1247,7 +1292,10 @@ export async function verifyRequiredSchema035(
       limit 1`,
     [SCHEMA_035_VERSION]
   );
-  if (newerReceipt.rows.length > 0) {
+  if (
+    newerReceipt.rows.length > 0 &&
+    options?.allowNewerReceipt !== true
+  ) {
     fail("schema_035_newer_receipt_present");
   }
   await verifyRequiredSchema034(
@@ -1267,7 +1315,10 @@ export async function verifyRequiredSchema035(
     filename: SCHEMA_035_FILENAME,
     checksumSha256: expectedChecksum
   });
-  await verifySchema035Structure(queryable, { schemaName });
+  await verifySchema035Structure(queryable, {
+    schemaName,
+    allowSchema036Projection: options?.allowSchema036Projection
+  });
   return {
     verified: true,
     version: SCHEMA_035_VERSION,
@@ -1277,6 +1328,112 @@ export async function verifyRequiredSchema035(
     schema032ChecksumSha256,
     schema033ChecksumSha256,
     schema034ChecksumSha256
+  };
+}
+
+export async function verifySchema036Structure(
+  queryable: SchemaQueryable,
+  options?: SchemaOptions
+): Promise<void> {
+  const schemaName = resolveSchemaName(options);
+  await verifySchema035Structure(queryable, {
+    schemaName,
+    allowSchema036Projection: true
+  });
+  const removed = await queryable.query(
+    `select (
+       exists (
+         select 1 from information_schema.columns
+          where table_schema = $1
+            and table_name = 'unified_check_runs'
+            and column_name = 'rollout_receipt_sha256'
+       ) or exists (
+         select 1
+           from pg_constraint c
+           join pg_class t on t.oid = c.conrelid
+           join pg_namespace n on n.oid = t.relnamespace
+          where n.nspname = $1
+            and t.relname = 'unified_check_runs'
+            and c.conname = 'unified_check_runs_rollout_receipt_sha256_check'
+       )
+     ) as removed_release_authority_present`,
+    [schemaName]
+  );
+  if (removed.rows[0]?.removed_release_authority_present === true) {
+    fail("schema_036_catalog_mismatch");
+  }
+  const shape = await queryable.query(
+    `select pg_get_constraintdef(c.oid) as definition
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       join pg_namespace n on n.oid = t.relnamespace
+      where n.nspname = $1
+        and t.relname = 'unified_check_runs'
+        and c.conname = 'unified_check_runs_rollout_policy_shape_check'`,
+    [schemaName]
+  );
+  const definition = normalizeDefinition(shape.rows[0]?.definition);
+  if (
+    shape.rows.length !== 1 ||
+    definition !== SCHEMA_036_ROLLOUT_POLICY_SHAPE_DEFINITION
+  ) {
+    fail("schema_036_catalog_mismatch");
+  }
+}
+
+export async function verifyRequiredSchema036(
+  queryable: SchemaQueryable,
+  expectedChecksum: string,
+  schema032ChecksumSha256: string,
+  schema033ChecksumSha256: string,
+  schema034ChecksumSha256: string,
+  schema035ChecksumSha256: string,
+  options?: SchemaOptions
+): Promise<Schema036Verification> {
+  if (!CHECKSUM_PATTERN.test(expectedChecksum)) {
+    fail("schema_036_invalid_expected_checksum");
+  }
+  const schemaName = resolveSchemaName(options);
+  const newerReceipt = await queryable.query(
+    `select version
+       from ${quoteIdentifier(schemaName)}.schema_migration_receipts
+      where version > $1
+      order by version asc
+      limit 1`,
+    [SCHEMA_036_VERSION]
+  );
+  if (newerReceipt.rows.length > 0) {
+    fail("schema_036_newer_receipt_present");
+  }
+  await verifyRequiredSchema035(
+    queryable,
+    schema035ChecksumSha256,
+    schema032ChecksumSha256,
+    schema033ChecksumSha256,
+    schema034ChecksumSha256,
+    {
+      schemaName,
+      allowNewerReceipt: true,
+      allowSchema036Projection: true
+    }
+  );
+  await verifyTrackedMigrationReceipt(queryable, {
+    schemaName,
+    version: SCHEMA_036_VERSION,
+    filename: SCHEMA_036_FILENAME,
+    checksumSha256: expectedChecksum
+  });
+  await verifySchema036Structure(queryable, { schemaName });
+  return {
+    verified: true,
+    version: SCHEMA_036_VERSION,
+    filename: SCHEMA_036_FILENAME,
+    checksumSha256: expectedChecksum,
+    shortChecksum: expectedChecksum.slice(0, 12),
+    schema032ChecksumSha256,
+    schema033ChecksumSha256,
+    schema034ChecksumSha256,
+    schema035ChecksumSha256
   };
 }
 
@@ -1304,6 +1461,9 @@ export async function applyVerifiedTrackedMigration(
   if (options.version === SCHEMA_035_VERSION && options.filename !== SCHEMA_035_FILENAME) {
     fail("schema_035_filename_mismatch");
   }
+  if (options.version === SCHEMA_036_VERSION && options.filename !== SCHEMA_036_FILENAME) {
+    fail("schema_036_filename_mismatch");
+  }
   if (options.version > SCHEMA_032_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema032Checksum ?? "")) {
     fail("schema_migration_schema_032_checksum_required");
   }
@@ -1312,6 +1472,9 @@ export async function applyVerifiedTrackedMigration(
   }
   if (options.version > SCHEMA_034_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema034Checksum ?? "")) {
     fail("schema_migration_schema_034_checksum_required");
+  }
+  if (options.version > SCHEMA_035_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema035Checksum ?? "")) {
+    fail("schema_migration_schema_035_checksum_required");
   }
   const checksumSha256 = await checksumMigrationBytes(options.migrationBytes);
   let sql: string;
@@ -1347,6 +1510,16 @@ export async function applyVerifiedTrackedMigration(
         });
         if (options.version === SCHEMA_032_VERSION) {
           await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+        } else if (options.version === SCHEMA_036_VERSION && options.filename === SCHEMA_036_FILENAME) {
+          await verifyRequiredSchema036(
+            queryable,
+            checksumSha256,
+            options.requiredSchema032Checksum!,
+            options.requiredSchema033Checksum!,
+            options.requiredSchema034Checksum!,
+            options.requiredSchema035Checksum!,
+            { schemaName }
+          );
         } else if (options.version === SCHEMA_035_VERSION && options.filename === SCHEMA_035_FILENAME) {
           await verifyRequiredSchema035(
             queryable,
@@ -1354,7 +1527,12 @@ export async function applyVerifiedTrackedMigration(
             options.requiredSchema032Checksum!,
             options.requiredSchema033Checksum!,
             options.requiredSchema034Checksum!,
-            { schemaName }
+            {
+              schemaName,
+              allowNewerReceipt: options.allowNewerReceipt,
+              allowSchema036Projection:
+                options.allowSchema036Projection
+            }
           );
         } else if (options.version === SCHEMA_034_VERSION && options.filename === SCHEMA_034_FILENAME) {
           await verifyRequiredSchema034(
@@ -1395,7 +1573,16 @@ export async function applyVerifiedTrackedMigration(
       }
     }
 
-    if (options.version > SCHEMA_034_VERSION) {
+    if (options.version > SCHEMA_035_VERSION) {
+      await verifyRequiredSchema035(
+        queryable,
+        options.requiredSchema035Checksum!,
+        options.requiredSchema032Checksum!,
+        options.requiredSchema033Checksum!,
+        options.requiredSchema034Checksum!,
+        { schemaName }
+      );
+    } else if (options.version > SCHEMA_034_VERSION) {
       await verifyRequiredSchema034(
         queryable,
         options.requiredSchema034Checksum!,
@@ -1431,6 +1618,16 @@ export async function applyVerifiedTrackedMigration(
     });
     if (options.version === SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+    } else if (options.version === SCHEMA_036_VERSION && options.filename === SCHEMA_036_FILENAME) {
+      await verifyRequiredSchema036(
+        queryable,
+        checksumSha256,
+        options.requiredSchema032Checksum!,
+        options.requiredSchema033Checksum!,
+        options.requiredSchema034Checksum!,
+        options.requiredSchema035Checksum!,
+        { schemaName }
+      );
     } else if (options.version === SCHEMA_035_VERSION && options.filename === SCHEMA_035_FILENAME) {
       await verifyRequiredSchema035(
         queryable,

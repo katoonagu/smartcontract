@@ -35,7 +35,7 @@ Current production workers retain their existing queue and pagination
 semantics until cutover. More API keys improve throughput but do not prove
 history completeness.
 
-## Implemented Release Candidate
+## Unified Data Contract
 
 Every Unified run pins one confirmed snapshot block number, hash, and
 timestamp. Direct USDT history pages until authoritative provider exhaustion or
@@ -125,15 +125,11 @@ exact scores until P1 blind review/adjudication. Frozen real-address
 performance replay is also pending because the earlier live runtime did not
 persist canonical provider response pages.
 
-The protected candidate path verifies the exact schema-035 rollout-policy
-migration, schema-034 planner migration, and schema-033 predecessor before
-canary selection. The adaptive runtime
-has no fixed four-slot ceiling: it can expand to the configured and verified
+The runtime verifies exact schema 036 and its schema-032 through schema-035
+predecessors before canary selection. The adaptive runtime has no fixed
+four-slot ceiling: it can expand to the configured
 provider-worker ceiling while bounded chunks, durable buffer reservations,
 DB/memory guards, group health, and eligible demand constrain actual use.
 Frozen replay through logical capacity 100 is algorithmic correctness evidence,
-not measured live RPS. A completed promotion receipt has ceiling one unless
-capacity four has both an independent-group audit and live evidence; no
-promotion ceiling is authorized before live capacity one passes. The
-production stage remains global barrier until signed rollout evidence
-authorizes the next stage.
+not measured live RPS. Raise live capacity only after the corresponding
+independent-group audit, live benchmark, and memory check.

@@ -6,53 +6,54 @@ import {
 } from "../../src/runtime/runtimeVersion";
 
 const gitCommitSha = "a".repeat(40);
-const migration035 = {
+const migration036 = {
   verified: true as const,
-  version: 35 as const,
-  filename: "035_unified_check_run_rollout_policy.sql" as const,
+  version: 36 as const,
+  filename: "036_remove_rollout_authority.sql" as const,
   checksumSha256: "b".repeat(64),
   shortChecksum: "b".repeat(12),
   schema032ChecksumSha256: "c".repeat(64),
   schema033ChecksumSha256: "d".repeat(64),
-  schema034ChecksumSha256: "e".repeat(64)
+  schema034ChecksumSha256: "e".repeat(64),
+  schema035ChecksumSha256: "f".repeat(64)
 };
 
-describe("active runtime schema 035 identity", () => {
-  it("accepts and renders only the exact verified schema-035 shape", () => {
+describe("active runtime schema 036 identity", () => {
+  it("accepts and renders only the exact verified schema-036 shape", () => {
     const runtime = buildRuntimeVersion({
       gitCommitSha,
       runtimeInstanceLabel: "candidate-aaaaaaaa",
-      migration: migration035
+      migration: migration036
     });
-    expect(runtime.migration).toEqual(migration035);
-    expect(formatRuntimeVersion(runtime, "en")).toContain("schema 035 verified");
-    expect(formatRuntimeVersion(runtime, "ru")).toContain("schema 035 verified");
+    expect(runtime.migration).toEqual(migration036);
+    expect(formatRuntimeVersion(runtime, "en")).toContain("schema 036 verified");
+    expect(formatRuntimeVersion(runtime, "ru")).toContain("schema 036 verified");
   });
 
   it.each([
     {
-      name: "schema 033",
+      name: "schema 035",
       migration: {
-        ...migration035,
-        version: 33,
-        filename: "033_unified_wallet_check.sql"
+        ...migration036,
+        version: 35,
+        filename: "035_unified_check_run_rollout_policy.sql"
       },
       code: "runtime_version_migration_version_mismatch"
     },
     {
-      name: "unknown schema 036",
+      name: "unknown schema 037",
       migration: {
-        ...migration035,
-        version: 36,
-        filename: "036_unknown.sql"
+        ...migration036,
+        version: 37,
+        filename: "037_unknown.sql"
       },
       code: "runtime_version_migration_version_mismatch"
     },
     {
-      name: "missing schema 033 predecessor checksum",
+      name: "missing schema 035 predecessor checksum",
       migration: Object.fromEntries(
-        Object.entries(migration035).filter(([key]) =>
-          key !== "schema034ChecksumSha256"
+        Object.entries(migration036).filter(([key]) =>
+          key !== "schema035ChecksumSha256"
         )
       ),
       code: "runtime_version_migration_shape_invalid"

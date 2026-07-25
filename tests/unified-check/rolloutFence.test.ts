@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activateUnifiedGeneration,
-  createUnifiedGenerationRuntimeGate,
+  createUnifiedRuntimeGate,
   getActiveCheckGeneration,
   handoffWalletDeliveryAndAcceptRequest,
   handoffWalletDeliveryToUnified,
@@ -44,15 +44,9 @@ describe("Unified rollout generation fence", () => {
     ])).toEqual([]);
   });
 
-  it("starts controller ownership once only for the Unified generation", () => {
+  it("starts isolated controller work without granting Telegram delivery ownership", () => {
     const legacyEvents: string[] = [];
-    const legacy = createUnifiedGenerationRuntimeGate({
-      generation: {
-        deliveryGeneration: "legacy",
-        generationId: null,
-        activatedAt: null,
-        runtimeCommit: null
-      },
+    const legacy = createUnifiedRuntimeGate({
       startController: () => legacyEvents.push("start"),
       wakeController: () => legacyEvents.push("wake"),
       activateBarrierFallback: () => legacyEvents.push("fallback"),
@@ -60,21 +54,22 @@ describe("Unified rollout generation fence", () => {
       unregisterBarrierFallback: () => legacyEvents.push("unregister")
     });
 
-    expect(legacy.start()).toBe(false);
-    expect(legacy.wakeController()).toBe(false);
-    expect(legacy.requestBarrierFallback()).toBe(false);
+    expect(legacy.start()).toBe(true);
+    expect(legacy.wakeController()).toBe(true);
+    expect(legacy.requestBarrierFallback()).toBe(true);
     legacy.stop();
-    expect(legacyEvents).toEqual([]);
+    expect(legacyEvents).toEqual([
+      "start",
+      "register",
+      "wake",
+      "wake",
+      "fallback",
+      "unregister"
+    ]);
 
     const unifiedEvents: string[] = [];
     const fallbackListeners: Array<() => void> = [];
-    const unified = createUnifiedGenerationRuntimeGate({
-      generation: {
-        deliveryGeneration: "unified",
-        generationId: "generation-1",
-        activatedAt: "2026-07-25T00:00:00.000Z",
-        runtimeCommit: "a".repeat(40)
-      },
+    const unified = createUnifiedRuntimeGate({
       startController: () => unifiedEvents.push("start"),
       wakeController: () => unifiedEvents.push("wake"),
       activateBarrierFallback: () => unifiedEvents.push("fallback"),

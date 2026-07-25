@@ -39,7 +39,7 @@
 - Modify Unified release receipt/finalization scripts: require the appropriate
   replay, live, isolated-delivery, restart, and target-Linux gates.
 - Add focused tests under `tests/unified-check`, `tests/admin`, and
-  `tests/release`.
+  `tests/runtime`.
 - Update knowledge pages 03, 04, 07, 08, 09, 10, and 12 after rollout behavior
   is implemented.
 
@@ -460,12 +460,9 @@ Expected: PASS; WSL evidence cannot masquerade as target-Linux capacity proof.
 ### Task 6: Add fail-closed rollout evidence and hot fallback
 
 **Files:**
-- Modify: `src/release/unifiedReleaseGateReceipt.ts`
-- Modify: `tests/release/unifiedReleaseGateReceipt.unit.test.ts`
 - Modify: `scripts/runUnifiedWalletCanary.ts`
-- Modify: `scripts/finalizeUnifiedReleaseGates.ts`
-- Modify: `scripts/runUnifiedReleaseGateCommand.ts`
-- Create: `tests/release/adaptiveRollingGate.acceptance.test.ts`
+- Create: `tests/unified-check/rolloutPolicy.test.ts`
+- Create: `tests/runtime/runtimeVersion036.test.ts`
 - Modify: `src/config.ts`
 - Modify: `src/index.ts`
 
@@ -516,7 +513,7 @@ Do not generate destructive down-migration SQL.
 - [ ] **Step 4: Run the automated rollout gate**
 
 ```powershell
-npm test -- tests/release/unifiedReleaseGateReceipt.unit.test.ts tests/release/adaptiveRollingGate.acceptance.test.ts
+npm test -- tests/unified-check/rolloutPolicy.test.ts tests/runtime/runtimeVersion036.test.ts
 npm run typecheck
 ```
 
@@ -552,8 +549,8 @@ correctness mismatch, unbounded resource trend, or unexplained idle capacity.
 - [ ] **Step 7: Commit release wiring**
 
 ```powershell
-git add src/release/unifiedReleaseGateReceipt.ts tests/release/unifiedReleaseGateReceipt.unit.test.ts scripts/runUnifiedWalletCanary.ts scripts/finalizeUnifiedReleaseGates.ts scripts/runUnifiedReleaseGateCommand.ts tests/release/adaptiveRollingGate.acceptance.test.ts src/config.ts src/index.ts
-git commit -m "feat(release): gate adaptive rolling promotion"
+git add scripts/runUnifiedWalletCanary.ts tests/unified-check/rolloutPolicy.test.ts tests/runtime/runtimeVersion036.test.ts src/config.ts src/index.ts
+git commit -m "feat(unified): configure adaptive rolling runtime"
 ```
 
 ### Task 7: Final verification and knowledge handoff
@@ -599,7 +596,7 @@ unverified scale and measured bottlenecks open.
 - [ ] **Step 3: Re-run doc-sensitive checks**
 
 ```powershell
-npm test -- tests/release/adaptiveRollingGate.acceptance.test.ts tests/unified-check/rollingOracleEquivalence.postgres.test.ts
+npm test -- tests/unified-check/rolloutPolicy.test.ts tests/unified-check/rollingOracleEquivalence.postgres.test.ts
 git diff --check
 git status --short
 ```

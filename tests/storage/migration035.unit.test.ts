@@ -3,9 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { Db } from "../../src/storage/db";
 import {
   checksumMigrationBytes,
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
   SCHEMA_035_FILENAME,
+  SCHEMA_035_VERSION,
   UNIFIED_SCHEMA_035_MIGRATION_SHA256,
   verifySchema035Structure
 } from "../../src/storage/schemaMigrations";
@@ -70,10 +69,9 @@ function schema035Db(functionSource = IMMUTABILITY_SOURCE): Db {
 }
 
 describe("migration 035 rollout policy", () => {
-  it("is the additive required schema and pins immutable run policy", async () => {
+  it("preserves the historical checksum and immutable receipt-era policy", async () => {
     const bytes = readFileSync(`migrations/${SCHEMA_035_FILENAME}`);
-    expect(REQUIRED_SCHEMA_VERSION).toBe(35);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe(SCHEMA_035_FILENAME);
+    expect(SCHEMA_035_VERSION).toBe(35);
     await expect(checksumMigrationBytes(bytes)).resolves.toBe(
       UNIFIED_SCHEMA_035_MIGRATION_SHA256
     );

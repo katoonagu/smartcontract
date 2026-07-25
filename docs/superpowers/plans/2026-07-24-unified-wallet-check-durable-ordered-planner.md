@@ -38,8 +38,8 @@
   identity for new user runs.
 - Modify schema/runtime/release verification files to make migration 034
   fail-closed without editing migration 033.
-- Add focused tests under `tests/storage`, `tests/unified-check`,
-  `tests/runtime`, and `tests/release`.
+- Add focused tests under `tests/storage`, `tests/unified-check`, and
+  `tests/runtime`.
 - Update knowledge pages 03, 04, 09, 10, and 12 after behavior is implemented.
 
 ### Task 1: Add and verify migration 034
@@ -886,20 +886,12 @@ git commit -m "test(unified-check): prove ordered planner restart equivalence"
 **Files:**
 - Modify: `src/runtime/startupSchemaGate.ts`
 - Modify: `src/runtime/runtimeVersion.ts`
-- Modify: `src/release/unifiedReleaseGateReceipt.ts`
-- Modify: `src/release/remediationReleaseManifestV2.ts`
-- Modify: `scripts/verifySchema032.ts`
-- Modify: `scripts/runSchema032ReleaseSequence.ts`
-- Modify: `scripts/runUnifiedReleaseGateCommand.ts`
+- Create: `scripts/verifyCurrentSchema.ts`
 - Modify: `scripts/runUnifiedWalletCanary.ts`
-- Modify: `scripts/finalizeUnifiedReleaseGates.ts`
-- Modify: `scripts/verifyRemediationRelease.ts`
-- Modify: `scripts/rehearseRemediationRuntime.ts`
 - Modify: `tests/runtime/startupSchemaGate.test.ts`
-- Create: `tests/runtime/runtimeVersion034.test.ts`
-- Modify: `tests/release/unifiedReleaseGateReceipt.unit.test.ts`
-- Modify: `tests/release/schema032Release.acceptance.test.ts`
-- Modify: `tests/fixtures/release/remediationReleaseFixtures.ts`
+- Create: `tests/runtime/runtimeVersion036.test.ts`
+- Create: `tests/storage/migration036.unit.test.ts`
+- Create: `tests/storage/migration036.postgres.test.ts`
 
 - [ ] **Step 1: Make release tests RED for schema 034**
 
@@ -925,7 +917,7 @@ version.
 - [ ] **Step 2: Confirm RED**
 
 ```powershell
-npm test -- tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion034.test.ts tests/release/unifiedReleaseGateReceipt.unit.test.ts tests/release/schema032Release.acceptance.test.ts
+npm test -- tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion036.test.ts tests/storage/migration036.unit.test.ts
 ```
 
 Expected: FAIL on required schema version/filename and missing 034 receipt.
@@ -973,7 +965,7 @@ npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startup
 - [ ] **Step 5: Run focused release gates**
 
 ```powershell
-npm test -- tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion034.test.ts tests/release/unifiedReleaseGateReceipt.unit.test.ts tests/release/schema032Release.acceptance.test.ts
+npm test -- tests/storage/migration034.postgres.test.ts tests/storage/migration036.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion036.test.ts
 npm run typecheck
 ```
 
@@ -995,8 +987,8 @@ but adaptive rolling capacity remains pending Plan 2.
 - [ ] **Step 7: Commit**
 
 ```powershell
-git add src/runtime/startupSchemaGate.ts src/runtime/runtimeVersion.ts src/release/unifiedReleaseGateReceipt.ts src/release/remediationReleaseManifestV2.ts scripts/verifySchema032.ts scripts/runSchema032ReleaseSequence.ts scripts/runUnifiedReleaseGateCommand.ts scripts/runUnifiedWalletCanary.ts scripts/finalizeUnifiedReleaseGates.ts scripts/verifyRemediationRelease.ts scripts/rehearseRemediationRuntime.ts tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion034.test.ts tests/release/unifiedReleaseGateReceipt.unit.test.ts tests/release/schema032Release.acceptance.test.ts tests/fixtures/release/remediationReleaseFixtures.ts docs/knowledge/03-job-lifecycle.md docs/knowledge/04-data-sources-tronscan-indexing.md docs/knowledge/09-current-decisions.md docs/knowledge/10-open-problems.md docs/knowledge/12-runbooks.md
-git commit -m "chore(release): require unified planner schema 034"
+git add src/runtime/startupSchemaGate.ts src/runtime/runtimeVersion.ts scripts/verifyCurrentSchema.ts scripts/runUnifiedWalletCanary.ts tests/runtime/startupSchemaGate.test.ts tests/runtime/runtimeVersion036.test.ts tests/storage/migration036.unit.test.ts tests/storage/migration036.postgres.test.ts docs/knowledge/03-job-lifecycle.md docs/knowledge/04-data-sources-tronscan-indexing.md docs/knowledge/09-current-decisions.md docs/knowledge/10-open-problems.md docs/knowledge/12-runbooks.md
+git commit -m "chore(schema): require current unified schema"
 ```
 
 ## Plan 1 completion gate
