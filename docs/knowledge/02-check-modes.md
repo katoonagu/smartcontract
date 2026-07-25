@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-25
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -48,5 +48,5 @@ never retried automatically. The generation fence makes legacy and Unified
 delivery authority mutually exclusive.
 
 The candidate code and production request boundary are implemented and tested.
-They are not deployed: production remains on the legacy path until schema 033
+They are not deployed: production remains on the legacy path until schema 034
 and the Unified generation are activated by the protected release flow.

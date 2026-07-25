@@ -338,3 +338,20 @@ boundary, any address-history marker requires the complete expected task,
 stored task, artifact kind/schema, and canonical-key tuple. Specialized
 validation may be skipped only for a genuinely marker-free generic artifact.
 Content integrity does not substitute for contextual identity binding.
+
+## 2026-07-25: Release Labels Do Not Prove The Executed Command
+
+Agent mistakes:
+
+- The canonical release command string named migration 034 while the spawned
+  argv still ran the migration-033 test.
+- Schema-034 fields were added in place to historical release-evidence V1,
+  execution-receipt V2, and prepared-settlement V2 shapes.
+
+Correct rule:
+
+- Test the actual executable and argv independently from the displayed command
+  string.
+- Versioned evidence is immutable. A new required field needs a new
+  discriminator and current path; keep exact historical validators and use an
+  explicit versioned reader only where old evidence must remain readable.

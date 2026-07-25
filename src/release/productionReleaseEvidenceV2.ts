@@ -5,7 +5,7 @@ import {
   validateProductionRecoveryInputV2,
   validateProductionRollbackEvidenceV2 as validateTypedRollbackEvidenceV2,
   validateProductionRolloutEvidenceV2,
-  validateSchema032ProductionExecutionReceiptV2
+  validateSchema032ProductionExecutionReceiptVersioned
 } from "./remediationReleaseManifestV2";
 
 const SHA40 = /^[0-9a-f]{40}$/u;
@@ -60,7 +60,7 @@ function rejectSecrets(value: unknown, path = "root"): void {
 
 function validateOptionalTypedArtifacts(bundle: Record<string, unknown>): void {
   if (bundle.schemaExecutionReceipt !== undefined) {
-    validateSchema032ProductionExecutionReceiptV2(bundle.schemaExecutionReceipt);
+    validateSchema032ProductionExecutionReceiptVersioned(bundle.schemaExecutionReceipt);
   }
   if (bundle.rolloutEvidence !== undefined) validateProductionRolloutEvidenceV2(bundle.rolloutEvidence);
   if (bundle.canaryEvidence !== undefined) validateProductionCanaryEvidenceV2(bundle.canaryEvidence);

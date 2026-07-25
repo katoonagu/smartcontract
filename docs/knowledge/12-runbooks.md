@@ -122,7 +122,9 @@ approved final receipts
 Migrations 033 and 034 are checksum-verified before the DB session can mutate
 their respective tracked step. G07 clean/clone evidence and G13 production
 receipt bind the schema-033 predecessor proof and authoritative schema-034
-proof. Unknown migration 035+ fails closed.
+proof. The current G13 terminal artifact is
+`schema032-production-execution-receipt-v3.json`; V2 remains historical
+read-only evidence. Unknown migration 035+ fails closed.
 
 ## Frozen Performance Capture
 

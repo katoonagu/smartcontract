@@ -132,6 +132,9 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
 - Current release receipts and protected promotion/canary inputs require
   schema 034. They retain exact schema-033 checksum/catalog evidence as the
   immutable predecessor and bind clean/clone schema-034 verification receipts.
+- Current schema evidence uses release-evidence V2; G13 uses execution receipt
+  V3 and prepared settlement V3. Exact historical V1/V2 readers remain
+  available and do not accept schema-034 fields as optional extensions.
 - The protected migration sequence applies and verifies through schema 034;
   an unknown on-disk migration 035+ or database receipt 035+ fails closed.
 - Candidate scope uses exact tracked paths for the Golden lock; unknown files

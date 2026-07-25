@@ -635,6 +635,12 @@ export type Schema032ReleaseEvidenceV1 = {
     catalogSha256: string;
     verificationReceiptSha256: string;
   };
+  firstApply: "applied" | "already_verified";
+  secondApply: "already_verified";
+};
+
+export type Schema032ReleaseEvidenceV2 = Schema032ReleaseEvidenceV1 & {
+  version: "schema-032-release-evidence-v2";
   schema034: {
     version: 34;
     migrationFilename: "034_unified_check_adaptive_planner.sql";
@@ -642,8 +648,6 @@ export type Schema032ReleaseEvidenceV1 = {
     catalogSha256: string;
     verificationReceiptSha256: string;
   };
-  firstApply: "applied" | "already_verified";
-  secondApply: "already_verified";
 };
 
 export type Schema032Stage = "first_migration" | "first_verification" | "second_migration" | "final_verification";
@@ -668,7 +672,6 @@ export type Schema032ProductionExecutionReceiptCommonV2 = {
   preparedSettlementSha256: string;
   migrationBytesChecksumSha256: string;
   migration033BytesChecksumSha256: string;
-  migration034BytesChecksumSha256: string;
 };
 export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecutionReceiptCommonV2 & {
   result: "applied_and_verified";
@@ -681,7 +684,6 @@ export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecution
   receiptChecksumSha256: string;
   postconditionsSha256: string;
   schema033: Schema032ReleaseEvidenceV1["schema033"];
-  schema034: Schema032ReleaseEvidenceV1["schema034"];
 };
 export type Schema032StageFailureArtifactPath<S extends Schema032Stage> =
   S extends "first_migration" ? "schema032-failures/first-migration-failure-v2.json"
@@ -713,6 +715,42 @@ export type Schema032ProductionExecutionReceiptV2 =
 
 export type PreparedSchema032ProductionSettlementV2 = {
   version: "prepared-schema-032-production-settlement-v2";
+  preparedAt: string;
+  executionReceiptCore: Record<string, unknown>;
+};
+
+export type Schema032ProductionExecutionReceiptCommonV3 =
+  Omit<Schema032ProductionExecutionReceiptCommonV2, "version"> & {
+    version: "schema-032-production-execution-receipt-v3";
+    migration034BytesChecksumSha256: string;
+  };
+export type Schema032ProductionExecutionSuccessV3 = Schema032ProductionExecutionReceiptCommonV3 & {
+  result: "applied_and_verified";
+  completedStages: Schema032ProductionExecutionSuccessV2["completedStages"];
+  receiptChecksumSha256: string;
+  postconditionsSha256: string;
+  schema033: Schema032ReleaseEvidenceV1["schema033"];
+  schema034: Schema032ReleaseEvidenceV2["schema034"];
+};
+export type Schema032ProductionExecutionFailureV3 = Schema032ProductionExecutionReceiptCommonV3 & (
+  | { result: "failed_after_attempt"; failedStep: "first_migration"; completedStages: [];
+      failureArtifact: Schema032StageFailureArtifactV2<"first_migration"> }
+  | { result: "failed_after_attempt"; failedStep: "first_verification";
+      completedStages: [Schema032CompletedStageV2<"first_migration">];
+      failureArtifact: Schema032StageFailureArtifactV2<"first_verification"> }
+  | { result: "failed_after_attempt"; failedStep: "second_migration";
+      completedStages: [Schema032CompletedStageV2<"first_migration">, Schema032CompletedStageV2<"first_verification">];
+      failureArtifact: Schema032StageFailureArtifactV2<"second_migration"> }
+  | { result: "failed_after_attempt"; failedStep: "final_verification";
+      completedStages: [Schema032CompletedStageV2<"first_migration">, Schema032CompletedStageV2<"first_verification">,
+        Schema032CompletedStageV2<"second_migration">];
+      failureArtifact: Schema032StageFailureArtifactV2<"final_verification"> }
+);
+export type Schema032ProductionExecutionReceiptV3 =
+  | Schema032ProductionExecutionSuccessV3 | Schema032ProductionExecutionFailureV3;
+
+export type PreparedSchema032ProductionSettlementV3 = {
+  version: "prepared-schema-032-production-settlement-v3";
   preparedAt: string;
   executionReceiptCore: Record<string, unknown>;
 };
@@ -2791,7 +2829,7 @@ const SCHEMA032_CHECKSUM_V2 = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effda
 const SCHEMA033_CHECKSUM_V2 = "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
 const SCHEMA033_CATALOG_SHA256_V2 = "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 const SCHEMA034_CHECKSUM_V2 = "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb";
-const SCHEMA034_CATALOG_SHA256_V2 = "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57";
+const SCHEMA034_CATALOG_SHA256_V2 = "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a";
 const SCHEMA032_STAGES_V2 = [
   "first_migration", "first_verification", "second_migration", "final_verification"
 ] as const;
@@ -3284,7 +3322,7 @@ export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032Rel
   const input = record(value, "schema032_release_evidence");
   exactKeys(input, ["candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
     "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
-    "schema033", "schema034", "firstApply", "secondApply"], "schema032_release_evidence");
+    "schema033", "firstApply", "secondApply"], "schema032_release_evidence");
   sha(input.candidateSha, SHA40, "schema032_candidate");
   oneOf(input.databaseRole, ["clean", "production_clone", "runtime_sanitized", "production"] as const, "schema032_database_role");
   sha(input.databaseFingerprintSha256, SHA256, "schema032_database_fingerprint");
@@ -3303,6 +3341,22 @@ export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032Rel
     throw new Error("schema033_release_evidence_invalid");
   }
   sha(schema033.verificationReceiptSha256, SHA256, "schema033_verification_receipt");
+  oneOf(input.firstApply, ["applied", "already_verified"] as const, "schema032_first_apply");
+  if (input.secondApply !== "already_verified") throw new Error("schema032_second_apply_invalid");
+  return input as Schema032ReleaseEvidenceV1;
+}
+
+export function validateSchema032ReleaseEvidenceV2(value: unknown): Schema032ReleaseEvidenceV2 {
+  assertNoSecrets(value);
+  const input = record(value, "schema032_release_evidence_v2");
+  exactKeys(input, ["version", "candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
+    "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
+    "schema033", "schema034", "firstApply", "secondApply"], "schema032_release_evidence_v2");
+  if (input.version !== "schema-032-release-evidence-v2") {
+    throw new Error("schema032_release_evidence_v2_literal_invalid");
+  }
+  const { version: _version, schema034: _schema034, ...historical } = input;
+  validateSchema032ReleaseEvidenceV1(historical);
   const schema034 = record(input.schema034, "schema034_release_evidence");
   exactKeys(schema034, [
     "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
@@ -3313,9 +3367,16 @@ export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032Rel
     throw new Error("schema034_release_evidence_invalid");
   }
   sha(schema034.verificationReceiptSha256, SHA256, "schema034_verification_receipt");
-  oneOf(input.firstApply, ["applied", "already_verified"] as const, "schema032_first_apply");
-  if (input.secondApply !== "already_verified") throw new Error("schema032_second_apply_invalid");
-  return input as Schema032ReleaseEvidenceV1;
+  return input as Schema032ReleaseEvidenceV2;
+}
+
+export function validateSchema032ReleaseEvidenceVersioned(
+  value: unknown
+): Schema032ReleaseEvidenceV1 | Schema032ReleaseEvidenceV2 {
+  const input = record(value, "schema032_release_evidence_versioned");
+  return Object.hasOwn(input, "version")
+    ? validateSchema032ReleaseEvidenceV2(value)
+    : validateSchema032ReleaseEvidenceV1(value);
 }
 
 const SCHEMA032_FAILURE_PATHS_V2: Record<Schema032Stage, string> = {
@@ -3350,15 +3411,13 @@ function validateSchema032ProductionExecutionReceiptFieldsV2(
     "advisoryLockKey", "databaseSessionIdentitySha256",
     "lockAcquiredAt", "lockReleasedAt",
     ...(requirePreparedSettlement ? ["preparedSettlementRelativePath", "preparedSettlementSha256"] : []),
-    "migrationBytesChecksumSha256", "migration033BytesChecksumSha256",
-    "migration034BytesChecksumSha256", "result", "completedStages"];
+    "migrationBytesChecksumSha256", "migration033BytesChecksumSha256", "result", "completedStages"];
   exactKeys(input, input.result === "applied_and_verified"
-    ? [...common, "receiptChecksumSha256", "postconditionsSha256", "schema033", "schema034"]
+    ? [...common, "receiptChecksumSha256", "postconditionsSha256", "schema033"]
     : [...common, "failedStep", "failureArtifact"], "schema032_production_execution_receipt");
   if (input.version !== "schema-032-production-execution-receipt-v2" || input.advisoryLockKey !== 320032500
       || input.migrationBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2
-      || input.migration033BytesChecksumSha256 !== SCHEMA033_CHECKSUM_V2
-      || input.migration034BytesChecksumSha256 !== SCHEMA034_CHECKSUM_V2) {
+      || input.migration033BytesChecksumSha256 !== SCHEMA033_CHECKSUM_V2) {
     throw new Error("schema032_production_receipt_literal_invalid");
   }
   sha(input.candidateSha, SHA40, "schema032_production_candidate");
@@ -3398,16 +3457,6 @@ function validateSchema032ProductionExecutionReceiptFieldsV2(
       throw new Error("schema033_production_receipt_invalid");
     }
     sha(schema033.verificationReceiptSha256, SHA256, "schema033_production_receipt_invalid");
-    const schema034 = record(input.schema034, "schema034_production_receipt_invalid");
-    exactKeys(schema034, [
-      "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
-    ], "schema034_production_receipt_invalid");
-    if (schema034.version !== 34 || schema034.migrationFilename !== "034_unified_check_adaptive_planner.sql"
-        || schema034.checksumSha256 !== SCHEMA034_CHECKSUM_V2
-        || schema034.catalogSha256 !== SCHEMA034_CATALOG_SHA256_V2) {
-      throw new Error("schema034_production_receipt_invalid");
-    }
-    sha(schema034.verificationReceiptSha256, SHA256, "schema034_production_receipt_invalid");
   } else if (input.result === "failed_after_attempt") {
     const failedStep = oneOf(input.failedStep, SCHEMA032_STAGES_V2, "schema032_failed_step");
     validateSchemaStages(input.completedStages, SCHEMA032_STAGES_V2.slice(0, SCHEMA032_STAGES_V2.indexOf(failedStep)), "schema032_failure");
@@ -3467,6 +3516,95 @@ export function validateSchema032ProductionExecutionReceiptV2(
   value: unknown
 ): Schema032ProductionExecutionReceiptV2 {
   return validateSchema032ProductionExecutionReceiptFieldsV2(value, true) as Schema032ProductionExecutionReceiptV2;
+}
+
+function validateSchema032ProductionExecutionReceiptFieldsV3(
+  value: unknown,
+  requirePreparedSettlement: boolean
+): Record<string, unknown> {
+  assertNoSecrets(value);
+  const input = record(value, "schema032_production_execution_receipt_v3");
+  const common = ["version", "candidateSha", "releaseFreezeIdentitySha256", "operationalAttestationSha256",
+    ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
+      ? ["operationalAttestationIssuerReceiptSha256"] : []),
+    "authorityConsumptionSha256", "sourceManifestSha256", "g12TransitionReceiptSha256",
+    "productionBackupEvidenceSha256", "executionAttemptRelativePath", "executionAttemptSha256",
+    "advisoryLockKey", "databaseSessionIdentitySha256",
+    "lockAcquiredAt", "lockReleasedAt",
+    ...(requirePreparedSettlement ? ["preparedSettlementRelativePath", "preparedSettlementSha256"] : []),
+    "migrationBytesChecksumSha256", "migration033BytesChecksumSha256",
+    "migration034BytesChecksumSha256", "result", "completedStages"];
+  exactKeys(input, input.result === "applied_and_verified"
+    ? [...common, "receiptChecksumSha256", "postconditionsSha256", "schema033", "schema034"]
+    : [...common, "failedStep", "failureArtifact"], "schema032_production_execution_receipt_v3");
+  if (input.version !== "schema-032-production-execution-receipt-v3"
+      || input.migration034BytesChecksumSha256 !== SCHEMA034_CHECKSUM_V2) {
+    throw new Error("schema032_production_receipt_v3_literal_invalid");
+  }
+  if (input.result === "applied_and_verified") {
+    const schema034 = record(input.schema034, "schema034_production_receipt_invalid");
+    exactKeys(schema034, [
+      "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
+    ], "schema034_production_receipt_invalid");
+    if (schema034.version !== 34 || schema034.migrationFilename !== "034_unified_check_adaptive_planner.sql"
+        || schema034.checksumSha256 !== SCHEMA034_CHECKSUM_V2
+        || schema034.catalogSha256 !== SCHEMA034_CATALOG_SHA256_V2) {
+      throw new Error("schema034_production_receipt_invalid");
+    }
+    sha(schema034.verificationReceiptSha256, SHA256, "schema034_production_receipt_invalid");
+  }
+  const {
+    migration034BytesChecksumSha256: _migration034BytesChecksumSha256,
+    schema034: _schema034,
+    ...historicalFields
+  } = input;
+  validateSchema032ProductionExecutionReceiptFieldsV2({
+    ...historicalFields,
+    version: "schema-032-production-execution-receipt-v2"
+  }, requirePreparedSettlement);
+  return input;
+}
+
+export function validateSchema032ProductionExecutionReceiptV3(
+  value: unknown
+): Schema032ProductionExecutionReceiptV3 {
+  return validateSchema032ProductionExecutionReceiptFieldsV3(value, true) as Schema032ProductionExecutionReceiptV3;
+}
+
+export function validateSchema032ProductionExecutionReceiptVersioned(
+  value: unknown
+): Schema032ProductionExecutionReceiptV2 | Schema032ProductionExecutionReceiptV3 {
+  const input = record(value, "schema032_production_execution_receipt_versioned");
+  return input.version === "schema-032-production-execution-receipt-v3"
+    ? validateSchema032ProductionExecutionReceiptV3(value)
+    : validateSchema032ProductionExecutionReceiptV2(value);
+}
+
+export function validatePreparedSchema032ProductionSettlementV3(
+  value: unknown
+): PreparedSchema032ProductionSettlementV3 {
+  assertNoSecrets(value);
+  const prepared = record(value, "schema032_prepared_settlement_v3");
+  exactKeys(prepared, ["version", "preparedAt", "executionReceiptCore"], "schema032_prepared_settlement_v3");
+  if (prepared.version !== "prepared-schema-032-production-settlement-v3") {
+    throw new Error("schema032_prepared_settlement_v3_literal_invalid");
+  }
+  const preparedAt = iso(prepared.preparedAt, "schema032_prepared_at_v3");
+  const core = record(prepared.executionReceiptCore, "schema032_prepared_settlement_core_v3");
+  validateSchema032ProductionExecutionReceiptFieldsV3({ ...core, lockReleasedAt: preparedAt }, false);
+  if (Date.parse(preparedAt) < Date.parse(String(core.lockAcquiredAt))) {
+    throw new Error("schema032_prepared_settlement_order_invalid");
+  }
+  return prepared as PreparedSchema032ProductionSettlementV3;
+}
+
+export function validatePreparedSchema032ProductionSettlementVersioned(
+  value: unknown
+): PreparedSchema032ProductionSettlementV2 | PreparedSchema032ProductionSettlementV3 {
+  const input = record(value, "schema032_prepared_settlement_versioned");
+  return input.version === "prepared-schema-032-production-settlement-v3"
+    ? validatePreparedSchema032ProductionSettlementV3(value)
+    : validatePreparedSchema032ProductionSettlementV2(value);
 }
 
 const ROLLOUT_STEPS_V2 = ["verify_g13", "verify_schema", "verify_previous_runtime_identity",

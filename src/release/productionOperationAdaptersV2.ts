@@ -20,7 +20,7 @@ import {
   validateCommittedProductionOperationLeaseTakeoverV2,
   validatePreparedProductionOperationLeaseTakeoverV2,
   validateRemediationReleaseManifestV2,
-  validateSchema032ProductionExecutionReceiptV2,
+  validateSchema032ProductionExecutionReceiptV3,
   validateProductionOperationTerminalAbandonedV2,
   validateProductionOperationTerminalCleanupV2,
   validateProductionOperationClaimV2,
@@ -1303,8 +1303,8 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
     return valueCapture(input, { manifestSha256: manifest.sha256, transitionId: manifest.value.transitionId });
   }
   if (input.stepId === "verify_schema") {
-    const executionReceipt = readCanonical(root, "schema032-production-execution-receipt-v2.json",
-      validateSchema032ProductionExecutionReceiptV2);
+    const executionReceipt = readCanonical(root, "schema032-production-execution-receipt-v3.json",
+      validateSchema032ProductionExecutionReceiptV3);
     if (executionReceipt.value.result !== "applied_and_verified") throw new Error("production_schema_not_verified");
     const external = await readExternalConfig(root);
     const live = await observeTask0BProductionDatabase(external.config);

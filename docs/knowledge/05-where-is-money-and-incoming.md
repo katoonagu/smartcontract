@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-25
 owner_area: forensics
 code_refs:
   - src/forensics/moneyOriginTrace.ts
@@ -47,4 +47,4 @@ Coverage remains a factual denominator, not a risk floor or publication gate.
 Provider/execution failure remains `FAILED_TECHNICAL` without a partial report.
 
 This contract is implemented and tested but not deployed. Production keeps the
-legacy Where/Incoming path until schema 033 and the generation fence activate.
+legacy Where/Incoming path until schema 034 and the generation fence activate.

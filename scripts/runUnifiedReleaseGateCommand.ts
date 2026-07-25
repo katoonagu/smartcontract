@@ -69,7 +69,7 @@ export function unifiedReleaseCommandInvocation(
     executable: npx.executable,
     args: [
       ...npx.prefix, "vitest", "run",
-      "tests/storage/migration033.postgres.test.ts",
+      "tests/storage/migration034.postgres.test.ts",
       "tests/runtime/startupSchemaGate.test.ts",
       "tests/unified-check/productionRuntime.postgres.test.ts",
       "--maxWorkers=1"

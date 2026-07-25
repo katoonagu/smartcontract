@@ -79,6 +79,35 @@ postgresDescribe("migration 034 PostgreSQL acceptance", () => {
         schema033ChecksumSha256: schema033Checksum
       });
       await expect(verifySchema034Structure(client, { schemaName: schema })).resolves.toBeUndefined();
+      await client.query("begin");
+      await client.query(`alter table unified_check_planner_entries
+        add constraint unified_check_planner_entries_unexpected_check check (true)`);
+      await expect(verifySchema034Structure(client, { schemaName: schema }))
+        .rejects.toThrow("schema_034_catalog_mismatch");
+      await client.query("rollback");
+      await client.query("begin");
+      await client.query(`create index unified_check_planner_entries_unexpected_idx
+        on unified_check_planner_entries(task_id)`);
+      await expect(verifySchema034Structure(client, { schemaName: schema }))
+        .rejects.toThrow("schema_034_catalog_mismatch");
+      await client.query("rollback");
+      await client.query("begin");
+      await client.query(`alter table unified_check_planner_entries
+        drop constraint unified_check_planner_entries_state_check`);
+      await client.query(`alter table unified_check_planner_entries
+        add constraint unified_check_planner_entries_state_check check (true)`);
+      await expect(verifySchema034Structure(client, { schemaName: schema }))
+        .rejects.toThrow("schema_034_catalog_mismatch");
+      await client.query("rollback");
+      await client.query("begin");
+      await client.query(`create function planner_unexpected_trigger_fn() returns trigger
+        language plpgsql as $$ begin return new; end $$`);
+      await client.query(`create trigger unified_check_planner_entries_unexpected_trigger
+        before insert on unified_check_planner_entries
+        for each row execute function planner_unexpected_trigger_fn()`);
+      await expect(verifySchema034Structure(client, { schemaName: schema }))
+        .rejects.toThrow("schema_034_catalog_mismatch");
+      await client.query("rollback");
       await expect(client.query("select id, fairness_owner_id from unified_check_runs order by id")).resolves.toMatchObject({
         rows: [{ id: "run-a", fairness_owner_id: "run-a" }, { id: "run-b", fairness_owner_id: "run-b" }]
       });

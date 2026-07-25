@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   releaseFreezeIdentitySha256V2,
   validateProductionFailureEvidenceV2,
-  validateSchema032ProductionExecutionReceiptV2
+  validateSchema032ProductionExecutionReceiptV3
 } from "../../src/release/remediationReleaseManifestV2";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
@@ -25,7 +25,7 @@ import {
 import {
   SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256,
   SCHEMA_032_PRODUCTION_MIGRATION_TEMPLATE_SHA256,
-  persistSchema032ProductionFailureRouteV2,
+  persistSchema032ProductionFailureRouteV3,
   runSchema032ReleaseSequence
 } from "../../scripts/runSchema032ReleaseSequence";
 import { runTerminalizeExpiredUnclaimedAuthority } from "../../scripts/terminalizeExpiredUnclaimedAuthority";
@@ -89,6 +89,9 @@ function materializeInitialGateEvidence(
       policy.requiredKinds[index] ?? policy.allowedKinds[0]!, relativePath,
       relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
         : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
+          : relativePath === "trusted-os-principal-policy-v2.json"
+              || relativePath === "artifact-root-trust-boundary-evidence-v1.json"
+            ? JSON.parse(readFileSync(join(root, relativePath), "utf8")) as Record<string, unknown>
           : {
               version: "gate-evidence-v2", candidateSha: exactCandidateSha,
               gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0]
@@ -97,6 +100,60 @@ function materializeInitialGateEvidence(
   }
   expect(gates.map((gate) => gate.id)).toEqual(PRE_RELEASE_GATE_IDS.filter((id) => id !== "G05_TELEGRAM"));
   return gates;
+}
+
+function materializeG00TrustFixtures(
+  root: string,
+  task0b: ReturnType<typeof buildTask0BReleaseFreezeEvidence>,
+  freeze: ReturnType<typeof buildReleaseFreezeIdentityV2Fixture>
+): void {
+  const platform = process.platform === "win32" ? "windows" : "posix";
+  const principals = process.platform === "win32"
+    ? [execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
+    { encoding: "utf8" }).trim(), "S-1-5-18", "S-1-5-32-544"]
+    : [String(process.getuid?.() ?? 0)];
+  const task0bBytes = canonicalBytesV2(task0b);
+  const observedAt = "2026-07-18T10:00:00.000Z";
+  const policy = {
+    ...store.normalizeTrustedPrincipalPolicyV2({ platform, principals }),
+    candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+    task0BPreflightEvidenceSha256: sha256(task0bBytes),
+    ownerIdentityFingerprintSha256: task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256: task0b.artifactRoot.accessControlFingerprintSha256,
+    authoritativePolicySource: "task0b_allowlisted_writer_principals_v2",
+    observedAt,
+    source: "task0b_acl_policy_read_only",
+    verified: true
+  } as const;
+  const policyBytes = canonicalBytesV2(policy);
+  const boundary = {
+    version: "artifact-root-trust-boundary-evidence-v1",
+    candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+    task0BPreflightEvidenceSha256: sha256(task0bBytes),
+    artifactRootObservationSha256: sha256(canonicalBytesV2(task0b.artifactRoot)),
+    trustedOsPrincipalPolicySha256: sha256(policyBytes),
+    ownerIdentityFingerprintSha256: task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256: task0b.artifactRoot.accessControlFingerprintSha256,
+    accessControlSource: task0b.artifactRoot.accessControlSource,
+    outsideRepository: task0b.artifactRoot.outsideRepository,
+    noSymlink: task0b.artifactRoot.noSymlink,
+    restrictiveAccessVerified: task0b.artifactRoot.restrictiveAccessVerified,
+    exclusiveWriteVerified: task0b.artifactRoot.exclusiveWriteVerified,
+    observedAt,
+    source: "task0b_protected_root_acl_read_only",
+    verified: true
+  } as const;
+  writeFileSync(join(root, "trusted-os-principal-policy-v2.json"), policyBytes, { flag: "wx" });
+  writeFileSync(join(root, "artifact-root-trust-boundary-evidence-v1.json"), canonicalBytesV2(boundary), {
+    flag: "wx"
+  });
 }
 
 function protectedRoot(): string {
@@ -122,6 +179,7 @@ async function materializeG12Source(root: string, exactCandidateSha: string) {
   await store.materializeReleaseFreezeV2({ artifactRoot: root, freezeIdentity: freeze,
     task0BPreflightEvidence: task0b, producerId: "release_freeze_materialize",
     evaluatedAt: "2026-07-18T10:00:00.000Z" });
+  materializeG00TrustFixtures(root, task0b, freeze);
   const initialized = await store.initializeReleaseManifestV2({ artifactRoot: root,
     evaluatedAt: "2026-07-18T10:00:00.000Z",
     verifiedGateOutputs: materializeInitialGateEvidence(root, exactCandidateSha, freeze.releaseGenerationId) });
@@ -401,7 +459,7 @@ describe("schema 032 production failure route", () => {
         .map((step, index) => ({ step, receiptSha256: digest(String(index + 1)) }));
       const input = {
         executionReceipt: {
-          version: "schema-032-production-execution-receipt-v2",
+          version: "schema-032-production-execution-receipt-v3",
           candidateSha,
           releaseFreezeIdentitySha256: digest("b"),
           operationalAttestationSha256: digest("c"),
@@ -426,21 +484,21 @@ describe("schema 032 production failure route", () => {
         },
         failureCode: "schema_032_migration_command_failed"
       } as const;
-      await expect(persistSchema032ProductionFailureRouteV2(root, {
+      await expect(persistSchema032ProductionFailureRouteV3(root, {
         ...input, faultAt: "after_execution_receipt"
       })).rejects.toThrow("schema_032_test_fault_after_execution_receipt");
-      expect(existsSync(join(root, "schema032-production-execution-receipt-v2.json"))).toBe(true);
+      expect(existsSync(join(root, "schema032-production-execution-receipt-v3.json"))).toBe(true);
       expect(existsSync(join(root, "production-failure-evidence-v2.json"))).toBe(false);
-      const result = await persistSchema032ProductionFailureRouteV2(root, input);
+      const result = await persistSchema032ProductionFailureRouteV3(root, input);
 
       const stageFailureBytes = readFileSync(join(root, result.executionReceipt.failureArtifact.relativePath));
-      const executionReceiptBytes = readFileSync(join(root, "schema032-production-execution-receipt-v2.json"));
+      const executionReceiptBytes = readFileSync(join(root, "schema032-production-execution-receipt-v3.json"));
       const failureEvidenceBytes = readFileSync(join(root, "production-failure-evidence-v2.json"));
 
       expect(result.executionReceipt.failureArtifact.evidenceSha256).toBe(sha256(stageFailureBytes));
       expect(result.failureEvidence.failedExecutionEvidenceSha256).toBe(sha256(executionReceiptBytes));
       expect(JSON.parse(failureEvidenceBytes.toString("utf8"))).toEqual(result.failureEvidence);
-      expect(validateSchema032ProductionExecutionReceiptV2(result.executionReceipt)).toEqual(result.executionReceipt);
+      expect(validateSchema032ProductionExecutionReceiptV3(result.executionReceipt)).toEqual(result.executionReceipt);
       expect(validateProductionFailureEvidenceV2(result.failureEvidence)).toMatchObject({
         candidateSha,
         releaseFreezeIdentitySha256: digest("b"),
@@ -515,7 +573,7 @@ describe("schema 032 production failure route", () => {
         evidenceSha256: sha256(canonicalBytesV2(stageFailure))
       };
       const receiptCore = {
-        version: "schema-032-production-execution-receipt-v2" as const, candidateSha: exactCandidateSha,
+        version: "schema-032-production-execution-receipt-v3" as const, candidateSha: exactCandidateSha,
         releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(context.freeze),
         operationalAttestationSha256: context.selectedG13.attestationSha256,
         operationalAttestationIssuerReceiptSha256: context.selectedG13.issuerReceiptSha256,
@@ -532,7 +590,7 @@ describe("schema 032 production failure route", () => {
         completedStages: [] as [], failureArtifact
       };
       const preparedValue = {
-        version: "prepared-schema-032-production-settlement-v2",
+        version: "prepared-schema-032-production-settlement-v3",
         preparedAt: "2026-07-18T10:06:00.500Z", executionReceiptCore: receiptCore
       };
       const preparedSha256 = sha256(canonicalBytesV2(preparedValue));
@@ -540,7 +598,7 @@ describe("schema 032 production failure route", () => {
       writeEvidence(root, "production_migration_prepared_settlement", preparedPath,
         preparedValue, exactCandidateSha);
       const { failureArtifact: _preparedFailureArtifact, ...failureInputCore } = receiptCore;
-      await expect(persistSchema032ProductionFailureRouteV2(root, {
+      await expect(persistSchema032ProductionFailureRouteV3(root, {
         executionReceipt: {
           ...failureInputCore, lockReleasedAt,
           preparedSettlementRelativePath: preparedPath, preparedSettlementSha256: preparedSha256
@@ -549,7 +607,7 @@ describe("schema 032 production failure route", () => {
         faultAt: "after_execution_receipt"
       })).rejects.toThrow("schema_032_test_fault_after_execution_receipt");
       expect(existsSync(join(root, "production-failure-evidence-v2.json"))).toBe(false);
-      const receiptPath = join(root, "schema032-production-execution-receipt-v2.json");
+      const receiptPath = join(root, "schema032-production-execution-receipt-v3.json");
       const originalReceiptBytes = readFileSync(receiptPath);
       const attemptCount = readdirSync(root).filter((name) => name.startsWith("schema032-production-attempt-")).length;
       process.env.NODE_ENV = "test";

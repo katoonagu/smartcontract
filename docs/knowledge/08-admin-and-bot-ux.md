@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-25
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -60,7 +60,7 @@ percent complete or ETA. `FAILED_TECHNICAL` is operational.
 and warned.
 
 The rollout fence and `/check` wiring are implemented in the candidate.
-Production continues legacy delivery until schema 033 and the Unified
+Production continues legacy delivery until schema 034 and the Unified
 generation are activated through the protected release flow.
 
 ## Remaining Product Work

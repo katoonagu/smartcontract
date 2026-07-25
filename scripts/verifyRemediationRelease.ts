@@ -289,6 +289,7 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/risk/scoreAnchorV3.test.ts",
   "tests/risk/scoringSignalMatrixV4.test.ts",
   "tests/release/releaseGateEvidencePolicy.unit.test.ts",
+  "tests/release/schema034VersionedArtifacts.unit.test.ts",
   "tests/release/unifiedReleaseGateReceipt.unit.test.ts",
   "tests/runtime/runtimeVersion033.test.ts",
   "tests/runtime/runtimeVersion034.test.ts",

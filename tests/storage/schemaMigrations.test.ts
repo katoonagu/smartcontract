@@ -168,23 +168,47 @@ function schema034Db(options?: {
   stateShape?: string;
   foreignSchema?: string;
   taskForeignKeyDeleteAction?: string;
+  extraConstraint?: boolean;
+  extraIndex?: boolean;
+  extraTrigger?: boolean;
 }): Db {
-  let informationSchemaCall = 0;
   return {
     query: async (sql: string) => {
-      if (sql.includes("information_schema.columns")) {
-        informationSchemaCall += 1;
+      if (sql.includes("pg_get_userbyid")) {
         return {
-          rows: informationSchemaCall === 1
-            ? PLANNER_COLUMNS.map(([column_name, data_type, is_nullable, column_default]) => ({
-              column_name, data_type, is_nullable, column_default
-            }))
-            : [{ data_type: "text", is_nullable: "NO", column_default: null }]
+          rows: [{
+            table_name: "unified_check_planner_entries",
+            table_owner: "test_owner",
+            current_user: "test_owner"
+          }]
+        };
+      }
+      if (sql.includes("information_schema.columns")) {
+        return {
+          rows: [
+            ...PLANNER_COLUMNS.map(([column_name, data_type, is_nullable, column_default], index) => ({
+              table_name: "unified_check_planner_entries",
+              ordinal_position: index + 1,
+              column_name,
+              data_type,
+              is_nullable,
+              column_default
+            })),
+            {
+              table_name: "unified_check_runs",
+              ordinal_position: 18,
+              column_name: "fairness_owner_id",
+              data_type: "text",
+              is_nullable: "NO",
+              column_default: null
+            }
+          ]
         };
       }
       if (sql.includes("pg_constraint")) {
         return {
-          rows: PLANNER_CONSTRAINTS.map(([conname, table_name, contype, definition]) => ({
+          rows: [
+            ...PLANNER_CONSTRAINTS.map(([conname, table_name, contype, definition]) => ({
             conname,
             table_name,
             contype,
@@ -226,17 +250,51 @@ function schema034Db(options?: {
               : conname === "unified_check_planner_entries_run_id_fkey" ? "a" : null,
             condeferrable: false,
             condeferred: false
-          }))
+            })),
+            ...(options?.extraConstraint ? [{
+              conname: "unified_check_planner_entries_unexpected_check",
+              table_name: "unified_check_planner_entries",
+              contype: "c",
+              convalidated: true,
+              definition: "CHECK (true)",
+              columns: null,
+              foreign_table_name: null,
+              foreign_columns: null,
+              foreign_schema_name: null,
+              foreign_match_type: null,
+              foreign_update_type: null,
+              foreign_delete_type: null,
+              condeferrable: false,
+              condeferred: false
+            }] : [])
+          ].sort((left, right) => `${left.table_name}.${left.conname}`
+            .localeCompare(`${right.table_name}.${right.conname}`))
         };
       }
       if (sql.includes("pg_indexes")) {
         return {
           rows: [
-            ["unified_check_planner_entries_next_uncommitted_idx", "CREATE INDEX x ON y (run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)"],
-            ["unified_check_planner_entries_ready_prefix_idx", "CREATE INDEX x ON y (run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)"],
-            ["unified_check_planner_entries_admitted_task_idx", "CREATE INDEX x ON y (run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))"],
-            ["unified_check_planner_entries_buffer_aggregate_idx", "CREATE INDEX x ON y (run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)"]
-          ].map(([indexname, indexdef]) => ({ indexname, indexdef }))
+            ["unified_check_planner_entries", "unified_check_planner_entries_admitted_task_idx", "CREATE INDEX unified_check_planner_entries_admitted_task_idx ON public.unified_check_planner_entries USING btree (run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))"],
+            ["unified_check_planner_entries", "unified_check_planner_entries_buffer_aggregate_idx", "CREATE INDEX unified_check_planner_entries_buffer_aggregate_idx ON public.unified_check_planner_entries USING btree (run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)"],
+            ["unified_check_planner_entries", "unified_check_planner_entries_next_uncommitted_idx", "CREATE INDEX unified_check_planner_entries_next_uncommitted_idx ON public.unified_check_planner_entries USING btree (run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)"],
+            ["unified_check_planner_entries", "unified_check_planner_entries_pkey", "CREATE UNIQUE INDEX unified_check_planner_entries_pkey ON public.unified_check_planner_entries USING btree (run_id, canonical_sequence)"],
+            ["unified_check_planner_entries", "unified_check_planner_entries_ready_prefix_idx", "CREATE INDEX unified_check_planner_entries_ready_prefix_idx ON public.unified_check_planner_entries USING btree (run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)"],
+            ["unified_check_planner_entries", "unified_check_planner_entries_run_id_task_id_key", "CREATE UNIQUE INDEX unified_check_planner_entries_run_id_task_id_key ON public.unified_check_planner_entries USING btree (run_id, task_id)"],
+            ["unified_check_tasks", "unified_check_tasks_run_id_id_key", "CREATE UNIQUE INDEX unified_check_tasks_run_id_id_key ON public.unified_check_tasks USING btree (run_id, id)"],
+            ...(options?.extraIndex
+              ? [["unified_check_planner_entries", "unified_check_planner_entries_unexpected_idx", "CREATE INDEX unified_check_planner_entries_unexpected_idx ON public.unified_check_planner_entries USING btree (task_id)"]]
+              : [])
+          ].map(([tablename, indexname, indexdef]) => ({ tablename, indexname, indexdef }))
+            .sort((left, right) => `${left.tablename}.${left.indexname}`
+              .localeCompare(`${right.tablename}.${right.indexname}`))
+        };
+      }
+      if (sql.includes("pg_trigger")) {
+        return {
+          rows: options?.extraTrigger
+            ? [{ table_name: "unified_check_planner_entries", trigger_name: "unexpected_trigger",
+                definition: "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON public.unified_check_planner_entries" }]
+            : []
         };
       }
       return { rows: [] };
@@ -524,16 +582,25 @@ describe("verified schema 034 metadata", () => {
   it("pins 034 structural checks, including the planner state shape", async () => {
     await expect(verifySchema034Structure(schema034Db())).resolves.toBeUndefined();
     await expect(verifySchema034Structure(schema034Db({ stateShape: "CHECK (true)" }))).rejects.toThrow(
-      "schema_034_constraint_definition_mismatch"
+      "schema_034_catalog_mismatch"
+    );
+    await expect(verifySchema034Structure(schema034Db({ extraConstraint: true }))).rejects.toThrow(
+      "schema_034_catalog_mismatch"
+    );
+    await expect(verifySchema034Structure(schema034Db({ extraIndex: true }))).rejects.toThrow(
+      "schema_034_catalog_mismatch"
+    );
+    await expect(verifySchema034Structure(schema034Db({ extraTrigger: true }))).rejects.toThrow(
+      "schema_034_catalog_mismatch"
     );
   });
 
   it("rejects cross-schema and cascading planner foreign keys", async () => {
     await expect(verifySchema034Structure(schema034Db({ foreignSchema: "other_schema" }))).rejects.toThrow(
-      "schema_034_foreign_key_mismatch"
+      "schema_034_catalog_mismatch"
     );
     await expect(verifySchema034Structure(schema034Db({ taskForeignKeyDeleteAction: "c" }))).rejects.toThrow(
-      "schema_034_foreign_key_mismatch"
+      "schema_034_catalog_mismatch"
     );
   });
 

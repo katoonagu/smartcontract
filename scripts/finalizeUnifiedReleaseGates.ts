@@ -4,7 +4,7 @@ import { constants as fsConstants, readFileSync, realpathSync } from "node:fs";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateSchema032ReleaseEvidenceV1 } from "../src/release/remediationReleaseManifestV2";
+import { validateSchema032ReleaseEvidenceV2 } from "../src/release/remediationReleaseManifestV2";
 import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
 import {
   APPROVED_GOLDEN_CASE_CATALOG_SHA256,
@@ -289,8 +289,8 @@ export async function finalizeUnifiedReleaseGates(
     readFile(join(physicalRoot, "schema-clean", "schema032-release-evidence.json")),
     readFile(join(physicalRoot, "schema-production-clone", "schema032-release-evidence.json"))
   ]);
-  const clean = validateSchema032ReleaseEvidenceV1(JSON.parse(cleanBytes.toString("utf8")));
-  const clone = validateSchema032ReleaseEvidenceV1(JSON.parse(cloneBytes.toString("utf8")));
+  const clean = validateSchema032ReleaseEvidenceV2(JSON.parse(cleanBytes.toString("utf8")));
+  const clone = validateSchema032ReleaseEvidenceV2(JSON.parse(cloneBytes.toString("utf8")));
   if (clean.candidateSha !== candidateSha || clean.databaseRole !== "clean"
       || clone.candidateSha !== candidateSha || clone.databaseRole !== "production_clone") {
     throw new Error("unified_release_schema034_candidate_binding_invalid");

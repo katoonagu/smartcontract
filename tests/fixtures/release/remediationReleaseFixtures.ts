@@ -991,7 +991,8 @@ export function buildRuntimeVersion(): RuntimeVersionV1 {
   };
 }
 
-export type Schema032ReleaseEvidenceV1 = {
+export type Schema032ReleaseEvidenceV2 = {
+  version: "schema-032-release-evidence-v2";
   candidateSha: string;
   databaseRole: "clean" | "production_clone" | "runtime_sanitized" | "production";
   databaseFingerprintSha256: string;
@@ -1018,8 +1019,9 @@ export type Schema032ReleaseEvidenceV1 = {
   secondApply: "already_verified";
 };
 
-export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV1 {
+export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV2 {
   return {
+    version: "schema-032-release-evidence-v2",
     candidateSha: CANDIDATE_SHA,
     databaseRole: "runtime_sanitized",
     databaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
@@ -1039,7 +1041,7 @@ export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV1 {
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: "f".repeat(64)
     },
     firstApply: "applied",
@@ -1131,7 +1133,7 @@ export function buildUnifiedReleaseGateEvidenceFixture(
       schema034: {
         filename: "034_unified_check_adaptive_planner.sql",
         checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-        catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+        catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
         cleanVerificationReceiptSha256: "f".repeat(64),
         cloneVerificationReceiptSha256: "f".repeat(64)
       },

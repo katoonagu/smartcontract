@@ -27,12 +27,12 @@ import {
   buildSchema032MigrationOutcomeArtifact,
   classifySchema032Database,
   parseSchema032MigrationOutcomeArtifact,
-  validateSchema032ReleaseEvidence,
+  validateSchema032ReleaseEvidenceV2,
   verifySchema032Release,
   assertSchema032OfflineEnvironment,
   type Schema032FirstPhaseEvidenceV1,
   type Schema032MigrationTargetBinding,
-  type Schema032ReleaseEvidenceV1
+  type Schema032ReleaseEvidenceV2
 } from "./verifySchema032";
 import {
   SCHEMA_033_FILENAME,
@@ -51,18 +51,18 @@ import {
 } from "../src/release/schema032MigrationIdentity";
 import {
   releaseFreezeIdentitySha256V2,
-  validatePreparedSchema032ProductionSettlementV2,
+  validatePreparedSchema032ProductionSettlementV3,
   validateSchema032ProductionExecutionAttemptV2,
   validateProductionFailureEvidenceV2,
-  validateSchema032ProductionExecutionReceiptV2,
+  validateSchema032ProductionExecutionReceiptV3,
   type ProductionFailureEvidenceV2,
   type ExecutedReleaseGateV2,
   type GateEvidenceRefV2,
-  type PreparedSchema032ProductionSettlementV2,
+  type PreparedSchema032ProductionSettlementV3,
   type Schema032ProductionExecutionAttemptV2,
   type Schema032CompletedStageV2,
-  type Schema032ProductionExecutionReceiptCommonV2,
-  type Schema032ProductionExecutionReceiptV2
+  type Schema032ProductionExecutionReceiptCommonV3,
+  type Schema032ProductionExecutionReceiptV3
 } from "../src/release/remediationReleaseManifestV2";
 import {
   selectOperationalAttestationFromStoreV2,
@@ -517,8 +517,8 @@ export async function executeSchema032ReleaseSequence(input: {
   verifyPhase(
     phase: "first" | "final",
     artifacts: { firstMigrationOutcome: string; secondMigrationOutcome?: string }
-  ): Promise<Schema032FirstPhaseEvidenceV1 | Schema032ReleaseEvidenceV1>;
-}): Promise<Schema032ReleaseEvidenceV1> {
+  ): Promise<Schema032FirstPhaseEvidenceV1 | Schema032ReleaseEvidenceV2>;
+}): Promise<Schema032ReleaseEvidenceV2> {
   const root = await attestArtifactRoot(input.artifactRoot, input.target.databaseRole === "production");
   await input.validateOperation?.();
   const state = await readSequenceState(root);
@@ -586,9 +586,9 @@ export async function executeSchema032ReleaseSequence(input: {
     firstMigrationOutcome: firstOutcome,
     secondMigrationOutcome: secondOutcome
   });
-  const finalEvidence = validateSchema032ReleaseEvidence(freshFinal, {
+  const finalEvidence = validateSchema032ReleaseEvidenceV2(freshFinal, {
     candidateSha: input.target.candidateSha,
-    postconditionsSha256: String((freshFinal as Schema032ReleaseEvidenceV1).postconditionsSha256)
+    postconditionsSha256: String((freshFinal as Schema032ReleaseEvidenceV2).postconditionsSha256)
   });
   if (finalEvidence.databaseRole !== input.target.databaseRole
       || finalEvidence.databaseFingerprintSha256 !== input.target.databaseFingerprintSha256) {
@@ -596,7 +596,7 @@ export async function executeSchema032ReleaseSequence(input: {
   }
   if (state.finalEvidence !== null) {
     const persistedRaw = parseJson(state.finalEvidence, "schema_032_sequence_final_evidence_invalid");
-    const persisted = validateSchema032ReleaseEvidence(persistedRaw, {
+    const persisted = validateSchema032ReleaseEvidenceV2(persistedRaw, {
       candidateSha: input.target.candidateSha,
       postconditionsSha256: String((persistedRaw as Record<string, unknown>).postconditionsSha256 ?? "")
     });
@@ -1580,25 +1580,25 @@ async function authorizeProductionMutation(input: {
   };
 }
 
-export async function persistSchema032ProductionExecutionReceiptV2(
+export async function persistSchema032ProductionExecutionReceiptV3(
   artifactRoot: string,
   value: unknown
-): Promise<Schema032ProductionExecutionReceiptV2> {
-  const receipt = validateSchema032ProductionExecutionReceiptV2(value);
-  await writeArtifactExclusive(artifactRoot, "schema032-production-execution-receipt-v2.json", receipt);
+): Promise<Schema032ProductionExecutionReceiptV3> {
+  const receipt = validateSchema032ProductionExecutionReceiptV3(value);
+  await writeArtifactExclusive(artifactRoot, "schema032-production-execution-receipt-v3.json", receipt);
   return receipt;
 }
 
-async function prepareSchema032ProductionSettlementV2(
+async function prepareSchema032ProductionSettlementV3(
   artifactRoot: string,
   executionReceiptCore: Record<string, unknown>
 ): Promise<{
-  prepared: PreparedSchema032ProductionSettlementV2;
+  prepared: PreparedSchema032ProductionSettlementV3;
   relativePath: string;
   sha256: string;
 }> {
-  const prepared = validatePreparedSchema032ProductionSettlementV2({
-    version: "prepared-schema-032-production-settlement-v2",
+  const prepared = validatePreparedSchema032ProductionSettlementV3({
+    version: "prepared-schema-032-production-settlement-v3",
     preparedAt: new Date().toISOString(),
     executionReceiptCore
   });
@@ -1609,23 +1609,23 @@ async function prepareSchema032ProductionSettlementV2(
   return { prepared, relativePath, sha256 };
 }
 
-type Schema032ProductionExecutionFailureV2 = Extract<Schema032ProductionExecutionReceiptV2,
+type Schema032ProductionExecutionFailureV3 = Extract<Schema032ProductionExecutionReceiptV3,
   { result: "failed_after_attempt" }>;
-type Schema032ProductionExecutionFailureInputV2 = Schema032ProductionExecutionReceiptCommonV2 & {
+type Schema032ProductionExecutionFailureInputV3 = Schema032ProductionExecutionReceiptCommonV3 & {
   result: "failed_after_attempt";
   failedStep: keyof typeof SCHEMA_032_FAILURE_PATHS;
   completedStages: Schema032CompletedStageV2[];
 };
 
-export async function persistSchema032ProductionFailureRouteV2(
+export async function persistSchema032ProductionFailureRouteV3(
   artifactRoot: string,
   input: {
-    executionReceipt: Schema032ProductionExecutionFailureInputV2;
+    executionReceipt: Schema032ProductionExecutionFailureInputV3;
     failureCode: string;
     faultAt?: "after_execution_receipt";
   }
 ): Promise<{
-  executionReceipt: Schema032ProductionExecutionFailureV2;
+  executionReceipt: Schema032ProductionExecutionFailureV3;
   failureEvidence: ProductionFailureEvidenceV2;
 }> {
   if (input.failureCode.length > 160 || !/^schema_032_[a-z0-9_:.-]+$/u.test(input.failureCode)) {
@@ -1640,7 +1640,7 @@ export async function persistSchema032ProductionFailureRouteV2(
     observedAt: input.executionReceipt.lockReleasedAt
   };
   const stageFailureBytes = canonicalBytesV2(stageFailure);
-  const executionReceipt = validateSchema032ProductionExecutionReceiptV2({
+  const executionReceipt = validateSchema032ProductionExecutionReceiptV3({
     ...input.executionReceipt,
     failureArtifact: {
       kind: "schema032_stage_failure",
@@ -1648,7 +1648,7 @@ export async function persistSchema032ProductionFailureRouteV2(
       relativePath: SCHEMA_032_FAILURE_PATHS[failedStep],
       evidenceSha256: hash(stageFailureBytes)
     }
-  }) as Schema032ProductionExecutionFailureV2;
+  }) as Schema032ProductionExecutionFailureV3;
   const executionReceiptBytes = canonicalBytesV2(executionReceipt);
   const failureEvidence = validateProductionFailureEvidenceV2({
     version: "production-failure-evidence-v2",
@@ -1663,18 +1663,18 @@ export async function persistSchema032ProductionFailureRouteV2(
     failureCode: `${failedStep}_failed`
   });
   await writeArtifactExactReplay(artifactRoot, SCHEMA_032_FAILURE_PATHS[failedStep], stageFailure);
-  await writeArtifactExactReplay(artifactRoot, "schema032-production-execution-receipt-v2.json", executionReceipt);
+  await writeArtifactExactReplay(artifactRoot, "schema032-production-execution-receipt-v3.json", executionReceipt);
   if (input.faultAt === "after_execution_receipt") fail("schema_032_test_fault_after_execution_receipt");
   await writeArtifactExactReplay(artifactRoot, "production-failure-evidence-v2.json", failureEvidence);
   return { executionReceipt, failureEvidence };
 }
 
-async function replaySchema032ProductionTerminalReceiptV2(input: {
+async function replaySchema032ProductionTerminalReceiptV3(input: {
   prepared: PreparedSchema032ProductionAuthorizationV2;
   receiptBytes: Buffer;
 }): Promise<string> {
   const { prepared, receiptBytes } = input;
-  const receipt = validateSchema032ProductionExecutionReceiptV2(
+  const receipt = validateSchema032ProductionExecutionReceiptV3(
     parseJson(receiptBytes.toString("utf8"), "schema_032_sequence_production_receipt_invalid")
   );
   if (!receiptBytes.equals(canonicalBytesV2(receipt))) {
@@ -1707,7 +1707,7 @@ async function replaySchema032ProductionTerminalReceiptV2(input: {
     { kind: "production_migration_attempt", relativePath: receipt.executionAttemptRelativePath, bytes: attemptBytes },
     { kind: "production_migration_prepared_settlement", relativePath: receipt.preparedSettlementRelativePath,
       bytes: settlementBytes },
-    { kind: "production_migration_sequence", relativePath: "schema032-production-execution-receipt-v2.json",
+    { kind: "production_migration_sequence", relativePath: "schema032-production-execution-receipt-v3.json",
       bytes: receiptBytes }
   ] as const;
   const evidence: GateEvidenceRefV2[] = evidenceInputs.map(({ kind, relativePath, bytes }) => {
@@ -1830,7 +1830,7 @@ export async function runSchema032ReleaseSequence(
     readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
     readMigrationBytes?: (filename: string) => Promise<Buffer>;
   }
-): Promise<Schema032ReleaseEvidenceV1> {
+): Promise<Schema032ReleaseEvidenceV2> {
   if (testDependencies !== undefined && process.env.NODE_ENV !== "test") {
     fail("schema_032_sequence_test_dependencies_forbidden");
   }
@@ -1864,11 +1864,11 @@ export async function runSchema032ReleaseSequence(
   }
   const artifactRoot = await attestArtifactRoot(validated.artifactRoot, validated.databaseRole === "production");
   const existingProductionReceiptText = validated.databaseRole === "production"
-    ? await readOptionalArtifact(artifactRoot, "schema032-production-execution-receipt-v2.json") : null;
+    ? await readOptionalArtifact(artifactRoot, "schema032-production-execution-receipt-v3.json") : null;
   const existingProductionReceiptBytes = existingProductionReceiptText === null
     ? null : Buffer.from(existingProductionReceiptText, "utf8");
   const existingProductionReceipt = existingProductionReceiptBytes === null ? null
-    : validateSchema032ProductionExecutionReceiptV2(parseJson(existingProductionReceiptText!,
+    : validateSchema032ProductionExecutionReceiptV3(parseJson(existingProductionReceiptText!,
       "schema_032_sequence_production_receipt_invalid"));
   const preparedProduction = validated.databaseRole === "production"
     ? await prepareProductionMutationAuthorization({
@@ -1880,7 +1880,7 @@ export async function runSchema032ReleaseSequence(
     })
     : null;
   if (preparedProduction !== null && existingProductionReceiptBytes !== null) {
-    const failureCode = await replaySchema032ProductionTerminalReceiptV2({
+    const failureCode = await replaySchema032ProductionTerminalReceiptV3({
       prepared: preparedProduction,
       receiptBytes: existingProductionReceiptBytes
     });
@@ -1893,11 +1893,11 @@ export async function runSchema032ReleaseSequence(
   let productionBinding: Schema032ProductionExecutionBindingV2 | null = null;
   let revalidateProductionOperation: (() => Promise<void>) | null = null;
   let productionSettlementAuthorized = false;
-  let pendingSettlement: Awaited<ReturnType<typeof prepareSchema032ProductionSettlementV2>> | null = null;
+  let pendingSettlement: Awaited<ReturnType<typeof prepareSchema032ProductionSettlementV3>> | null = null;
   let pendingExecutionReceiptCore: Record<string, unknown> | null = null;
   let pendingFailureCode: string | null = null;
   let pendingStageFailureObservedAt: string | null = null;
-  let completedEvidence: Schema032ReleaseEvidenceV1 | null = null;
+  let completedEvidence: Schema032ReleaseEvidenceV2 | null = null;
   let sessionIdentitySha256: string | null = null;
   let caughtError: unknown = null;
   try {
@@ -2002,7 +2002,7 @@ export async function runSchema032ReleaseSequence(
       if (ordered.some((value) => value === null)) fail("schema_032_production_execution_stage_missing");
       await revalidateProductionOperation();
       pendingExecutionReceiptCore = {
-        version: "schema-032-production-execution-receipt-v2",
+        version: "schema-032-production-execution-receipt-v3",
         candidateSha: validated.candidateSha,
         ...productionBinding,
         advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
@@ -2019,7 +2019,7 @@ export async function runSchema032ReleaseSequence(
         schema033: evidence.schema033,
         schema034: evidence.schema034
       };
-      pendingSettlement = await prepareSchema032ProductionSettlementV2(
+      pendingSettlement = await prepareSchema032ProductionSettlementV3(
         artifactRoot, pendingExecutionReceiptCore
       );
       productionSettlementAuthorized = true;
@@ -2066,7 +2066,7 @@ export async function runSchema032ReleaseSequence(
           fail("schema_032_sequence_stage_failure_invalid");
         }
         pendingExecutionReceiptCore = {
-          version: "schema-032-production-execution-receipt-v2",
+          version: "schema-032-production-execution-receipt-v3",
           candidateSha: validated.candidateSha,
           ...productionBinding,
           advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
@@ -2087,7 +2087,7 @@ export async function runSchema032ReleaseSequence(
             evidenceSha256: hash(stageFailureBytes)
           }
         };
-        pendingSettlement = await prepareSchema032ProductionSettlementV2(
+        pendingSettlement = await prepareSchema032ProductionSettlementV3(
           artifactRoot, pendingExecutionReceiptCore
         );
         productionSettlementAuthorized = true;
@@ -2110,14 +2110,14 @@ export async function runSchema032ReleaseSequence(
   }
   if (validated.databaseRole === "production" && pendingSettlement !== null
       && pendingExecutionReceiptCore !== null && lockReleasedAt !== null) {
-    const finalReceipt = validateSchema032ProductionExecutionReceiptV2({
+    const finalReceipt = validateSchema032ProductionExecutionReceiptV3({
       ...pendingExecutionReceiptCore,
       lockReleasedAt,
       preparedSettlementRelativePath: pendingSettlement.relativePath,
       preparedSettlementSha256: pendingSettlement.sha256
     });
     if (finalReceipt.result === "applied_and_verified") {
-      await persistSchema032ProductionExecutionReceiptV2(artifactRoot, finalReceipt);
+      await persistSchema032ProductionExecutionReceiptV3(artifactRoot, finalReceipt);
     } else {
       if (pendingFailureCode === null) fail("schema_032_sequence_failure_code_invalid");
       if (pendingStageFailureObservedAt === null) fail("schema_032_sequence_stage_failure_invalid");
@@ -2137,7 +2137,7 @@ export async function runSchema032ReleaseSequence(
         attemptedExternalEffect: true,
         failureCode: `${finalReceipt.failedStep}_failed`
       });
-      await writeArtifactExactReplay(artifactRoot, "schema032-production-execution-receipt-v2.json", finalReceipt);
+      await writeArtifactExactReplay(artifactRoot, "schema032-production-execution-receipt-v3.json", finalReceipt);
       await writeArtifactExactReplay(artifactRoot, "production-failure-evidence-v2.json", failureEvidence);
     }
   }

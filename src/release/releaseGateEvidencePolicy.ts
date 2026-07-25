@@ -15,9 +15,9 @@ import {
   validateProductionOperationTerminalCleanupV2,
   validateProductionOrchestrationReceiptV2,
   validateProductionRolloutEvidenceV2,
-  validatePreparedSchema032ProductionSettlementV2,
+  validatePreparedSchema032ProductionSettlementV3,
   validateSchema032ProductionExecutionAttemptV2,
-  validateSchema032ProductionExecutionReceiptV2
+  validateSchema032ProductionExecutionReceiptV3
 } from "./remediationReleaseManifestV2";
 import type {
   ExecutedReleaseGateV2,
@@ -120,7 +120,7 @@ export const PRODUCTION_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
     "production_backup_list_progress", "production_backup_dump", "production_backup_restore_list",
     "production_backup_evidence"], true),
   G13_PRODUCTION_MIGRATION: policy("G13_PRODUCTION_MIGRATION", [
-    "schema032-production-execution-receipt-v2.json"
+    "schema032-production-execution-receipt-v3.json"
   ], ["operational_attestation", "production_migration_authority", "production_migration_consumption",
     "production_migration_attempt", "production_migration_prepared_settlement", "production_migration_sequence"], true),
   G14_PRODUCTION_ROLLOUT: policy("G14_PRODUCTION_ROLLOUT", ["production-rollout-evidence-v2.json"],
@@ -483,7 +483,7 @@ function validateProductionEvidencePath(
     production_backup_dump: "production-backup.dump",
     production_backup_restore_list: "production-backup-restore-list.txt",
     production_backup_evidence: "production-backup-evidence.json",
-    production_migration_sequence: "schema032-production-execution-receipt-v2.json",
+    production_migration_sequence: "schema032-production-execution-receipt-v3.json",
     production_rollout_manager: "production-rollout-manager-captures-v2.json",
     production_rollout_queries: "production-rollout-query-captures-v2.json",
     production_rollout_orchestration: "production-rollout-orchestration-receipt-v2.json",
@@ -604,9 +604,9 @@ function validateTypedEvidence(
   else if (ref.kind === "production_migration_consumption") validateProductionMigrationConsumption(value);
   else if (ref.kind === "production_migration_attempt") validateSchema032ProductionExecutionAttemptV2(value);
   else if (ref.kind === "production_migration_prepared_settlement") {
-    validatePreparedSchema032ProductionSettlementV2(value);
+    validatePreparedSchema032ProductionSettlementV3(value);
   }
-  else if (ref.kind === "production_migration_sequence") validateSchema032ProductionExecutionReceiptV2(value);
+  else if (ref.kind === "production_migration_sequence") validateSchema032ProductionExecutionReceiptV3(value);
   else if (ref.kind === "plan_a_gate_receipt") {
     validatePlanAGateReceiptV1(value, { candidateSha: ref.candidateSha }, bytes);
   }

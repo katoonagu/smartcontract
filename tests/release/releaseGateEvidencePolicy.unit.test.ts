@@ -185,7 +185,7 @@ it("binds the Unified release receipt to the exact Plan-A receipt and rollout ge
     schema034: {
       filename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       cleanVerificationReceiptSha256: SHA,
       cloneVerificationReceiptSha256: SHA
     },
@@ -375,7 +375,7 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
     sourceManifestSha256: SOURCE
   });
   const schema = {
-    version: "schema-032-production-execution-receipt-v2",
+    version: "schema-032-production-execution-receipt-v3",
     candidateSha: CANDIDATE_SHA,
     releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
     operationalAttestationSha256: SHA,
@@ -406,7 +406,7 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: SHA
     }
   };
@@ -418,7 +418,7 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
     ref("production_migration_consumption",
       `schema032-production-authority-consumed-${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}.json`,
       { version: "schema-032-production-authority-consumption-v1", candidateSha: CANDIDATE_SHA }),
-    ref("production_migration_sequence", "schema032-production-execution-receipt-v2.json", schema)
+    ref("production_migration_sequence", "schema032-production-execution-receipt-v3.json", schema)
   ];
   expect(() => validateGateEvidenceBytesV2(
     gate("G13_PRODUCTION_MIGRATION", items) as any,
@@ -565,7 +565,7 @@ function validG13Items() {
       claimedAt: STARTED, resumeExpiresAt: authorityValue.expiresAt
     });
   const receiptCore = {
-    version: "schema-032-production-execution-receipt-v2", candidateSha: CANDIDATE_SHA,
+    version: "schema-032-production-execution-receipt-v3", candidateSha: CANDIDATE_SHA,
     releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256, operationalAttestationSha256: attestation.ref.sha256,
     operationalAttestationIssuerReceiptSha256: "8".repeat(64),
     authorityConsumptionSha256: consumption.ref.sha256, sourceManifestSha256: SOURCE,
@@ -593,7 +593,7 @@ function validG13Items() {
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: SHA
     }
   };
@@ -614,11 +614,11 @@ function validG13Items() {
   receiptCore.executionAttemptSha256 = attempt.ref.sha256;
   const prepared = ref("production_migration_prepared_settlement",
     "schema032-production-settlement-prepared-placeholder.json", {
-      version: "prepared-schema-032-production-settlement-v2", preparedAt: STARTED,
+      version: "prepared-schema-032-production-settlement-v3", preparedAt: STARTED,
       executionReceiptCore: receiptCore
     });
   prepared.ref.relativePath = `schema032-production-settlement-prepared-${prepared.ref.sha256}.json`;
-  const receipt = ref("production_migration_sequence", "schema032-production-execution-receipt-v2.json", {
+  const receipt = ref("production_migration_sequence", "schema032-production-execution-receipt-v3.json", {
     ...receiptCore,
     lockReleasedAt: FINISHED,
     preparedSettlementRelativePath: prepared.ref.relativePath,

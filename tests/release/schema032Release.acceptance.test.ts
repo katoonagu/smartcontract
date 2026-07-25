@@ -333,7 +333,7 @@ async function rehearseLegacy31ToSchema032(options: {
     });
     expect(evidence.databaseFingerprintSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(evidence.postconditionsSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(() => api.validateSchema032ReleaseEvidence(evidence, {
+    expect(() => api.validateSchema032ReleaseEvidenceV2(evidence, {
       candidateSha: evidence.candidateSha,
       postconditionsSha256: evidence.postconditionsSha256
     })).not.toThrow();
@@ -443,7 +443,7 @@ async function rehearseLegacy31ThroughProducer(options: {
 it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receipt checksum or postcondition mismatch", async () => {
   const api = await loadApi();
   const expected = { candidateSha: CANDIDATE_SHA, postconditionsSha256: POSTCONDITIONS_SHA256 };
-  expect(() => api.validateSchema032ReleaseEvidence(buildSchema032ReleaseEvidence(), expected)).not.toThrow();
+  expect(() => api.validateSchema032ReleaseEvidenceV2(buildSchema032ReleaseEvidence(), expected)).not.toThrow();
   expect(buildSchema032ReleaseEvidence()).toMatchObject({
     schema033: {
       version: 33,
@@ -472,7 +472,7 @@ it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receip
   for (const mutate of invalid) {
     const value: any = cloneFixture(buildSchema032ReleaseEvidence());
     mutate(value);
-    expect(() => api.validateSchema032ReleaseEvidence(value, expected)).toThrow();
+    expect(() => api.validateSchema032ReleaseEvidenceV2(value, expected)).toThrow();
   }
 });
 
@@ -796,6 +796,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and 
     postconditionsSha256: "e".repeat(64),
     firstApply: "applied"
   } : {
+    version: "schema-032-release-evidence-v2",
     candidateSha: target.candidateSha,
     databaseRole: target.databaseRole,
     databaseFingerprintSha256: target.databaseFingerprintSha256,
@@ -815,7 +816,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and 
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: APPROVED_PLANNER_CHECKSUM,
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: "a".repeat(64)
     },
     firstApply: "applied",

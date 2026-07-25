@@ -430,14 +430,172 @@ export const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
   "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 export const UNIFIED_SCHEMA_034_MIGRATION_SHA256 =
   "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb";
-export const UNIFIED_SCHEMA_034_CATALOG_SHA256 = unifiedCatalogHash({
-  predecessorCatalogSha256: UNIFIED_SCHEMA_033_CATALOG_SHA256,
-  migrationFilename: SCHEMA_034_FILENAME,
-  migrationChecksumSha256: UNIFIED_SCHEMA_034_MIGRATION_SHA256
-});
 
 function unifiedCatalogHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+const SCHEMA_034_NORMALIZED_DELTA_CATALOG = {
+  tables: [{ tableName: "unified_check_planner_entries" }],
+  columns: [
+    ["unified_check_planner_entries", 1, "run_id", "text", "NO", null],
+    ["unified_check_planner_entries", 2, "canonical_sequence", "bigint", "NO", null],
+    ["unified_check_planner_entries", 3, "task_id", "text", "NO", null],
+    ["unified_check_planner_entries", 4, "planner_state", "text", "NO", null],
+    ["unified_check_planner_entries", 5, "result_bytes", "bigint", "YES", null],
+    ["unified_check_planner_entries", 6, "admitted_at", "timestamp with time zone", "YES", null],
+    ["unified_check_planner_entries", 7, "reserved_bytes", "bigint", "YES", null],
+    ["unified_check_planner_entries", 8, "planned_at", "timestamp with time zone", "NO", "statement_timestamp()"],
+    ["unified_check_planner_entries", 9, "ready_at", "timestamp with time zone", "YES", null],
+    ["unified_check_planner_entries", 10, "committed_at", "timestamp with time zone", "YES", null],
+    ["unified_check_runs", 18, "fairness_owner_id", "text", "NO", null]
+  ].map(([tableName, ordinalPosition, columnName, dataType, isNullable, columnDefault]) => ({
+    tableName, ordinalPosition, columnName, dataType, isNullable, columnDefault
+  })),
+  constraints: [
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_canonical_sequence_check",
+      type: "c", validated: true,
+      definition: "CHECK ((canonical_sequence >= 0))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_pkey",
+      type: "p", validated: true,
+      definition: "PRIMARY KEY (run_id, canonical_sequence)",
+      keyColumns: ["run_id", "canonical_sequence"], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_reserved_bytes_check",
+      type: "c", validated: true,
+      definition: "CHECK (((reserved_bytes IS NULL) OR (reserved_bytes >= 0)))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_result_bytes_check",
+      type: "c", validated: true,
+      definition: "CHECK (((result_bytes IS NULL) OR (result_bytes >= 0)))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_run_id_fkey",
+      type: "f", validated: true,
+      definition: "FOREIGN KEY (run_id) REFERENCES unified_check_runs(id)",
+      keyColumns: ["run_id"],
+      foreign: {
+        schemaName: "<schema>", tableName: "unified_check_runs", columns: ["id"],
+        matchType: "s", updateType: "a", deleteType: "a", deferrable: false, deferred: false
+      }
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_run_id_task_id_key",
+      type: "u", validated: true,
+      definition: "UNIQUE (run_id, task_id)",
+      keyColumns: ["run_id", "task_id"], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_run_task_fk",
+      type: "f", validated: true,
+      definition: "FOREIGN KEY (run_id, task_id) REFERENCES unified_check_tasks(run_id, id)",
+      keyColumns: ["run_id", "task_id"],
+      foreign: {
+        schemaName: "<schema>", tableName: "unified_check_tasks", columns: ["run_id", "id"],
+        matchType: "s", updateType: "a", deleteType: "a", deferrable: false, deferred: false
+      }
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_state_check",
+      type: "c", validated: true,
+      definition: "CHECK ((planner_state = ANY (ARRAY['planned'::text, 'ready'::text, 'committed'::text])))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_state_shape_check",
+      type: "c", validated: true,
+      definition: "CHECK ((((planner_state = 'planned'::text) AND (result_bytes IS NULL) AND (ready_at IS NULL) AND (committed_at IS NULL) AND (((admitted_at IS NULL) AND (reserved_bytes IS NULL)) OR ((admitted_at IS NOT NULL) AND (reserved_bytes IS NOT NULL)))) OR ((planner_state = 'ready'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NULL)) OR ((planner_state = 'committed'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NOT NULL))))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_timestamp_order_check",
+      type: "c", validated: true,
+      definition: "CHECK ((((admitted_at IS NULL) OR (admitted_at >= planned_at)) AND ((ready_at IS NULL) OR (ready_at >= admitted_at)) AND ((committed_at IS NULL) OR (committed_at >= ready_at))))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_runs",
+      name: "unified_check_runs_fairness_owner_not_blank_check",
+      type: "c", validated: true,
+      definition: "CHECK ((btrim(fairness_owner_id) <> ''::text))",
+      keyColumns: [], foreign: null
+    },
+    {
+      tableName: "unified_check_tasks",
+      name: "unified_check_tasks_run_id_id_key",
+      type: "u", validated: true,
+      definition: "UNIQUE (run_id, id)",
+      keyColumns: ["run_id", "id"], foreign: null
+    }
+  ],
+  indexes: [
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_admitted_task_idx",
+      definition: "CREATE INDEX unified_check_planner_entries_admitted_task_idx ON <schema>.unified_check_planner_entries USING btree (run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))"
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_buffer_aggregate_idx",
+      definition: "CREATE INDEX unified_check_planner_entries_buffer_aggregate_idx ON <schema>.unified_check_planner_entries USING btree (run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)"
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_next_uncommitted_idx",
+      definition: "CREATE INDEX unified_check_planner_entries_next_uncommitted_idx ON <schema>.unified_check_planner_entries USING btree (run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)"
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_pkey",
+      definition: "CREATE UNIQUE INDEX unified_check_planner_entries_pkey ON <schema>.unified_check_planner_entries USING btree (run_id, canonical_sequence)"
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_ready_prefix_idx",
+      definition: "CREATE INDEX unified_check_planner_entries_ready_prefix_idx ON <schema>.unified_check_planner_entries USING btree (run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)"
+    },
+    {
+      tableName: "unified_check_planner_entries",
+      name: "unified_check_planner_entries_run_id_task_id_key",
+      definition: "CREATE UNIQUE INDEX unified_check_planner_entries_run_id_task_id_key ON <schema>.unified_check_planner_entries USING btree (run_id, task_id)"
+    },
+    {
+      tableName: "unified_check_tasks",
+      name: "unified_check_tasks_run_id_id_key",
+      definition: "CREATE UNIQUE INDEX unified_check_tasks_run_id_id_key ON <schema>.unified_check_tasks USING btree (run_id, id)"
+    }
+  ],
+  triggers: []
+} as const;
+
+const SCHEMA_034_NORMALIZED_STRUCTURAL_CATALOG = {
+  predecessorCatalogSha256: UNIFIED_SCHEMA_033_CATALOG_SHA256,
+  delta: SCHEMA_034_NORMALIZED_DELTA_CATALOG
+} as const;
+
+export const UNIFIED_SCHEMA_034_CATALOG_SHA256 =
+  "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a";
+if (unifiedCatalogHash(SCHEMA_034_NORMALIZED_STRUCTURAL_CATALOG)
+    !== UNIFIED_SCHEMA_034_CATALOG_SHA256) {
+  throw new Error("schema_034_expected_catalog_identity_invalid");
 }
 
 const SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES = new Set([
@@ -629,75 +787,39 @@ async function verifySchema033LineageForSchema034(
   await verifySchema033StructureInternal(queryable, { schemaName }, true);
 }
 
-const REQUIRED_SCHEMA_034_COLUMNS = [
-  ["run_id", "text", "NO", null],
-  ["canonical_sequence", "bigint", "NO", null],
-  ["task_id", "text", "NO", null],
-  ["planner_state", "text", "NO", null],
-  ["result_bytes", "bigint", "YES", null],
-  ["admitted_at", "timestamp with time zone", "YES", null],
-  ["reserved_bytes", "bigint", "YES", null],
-  ["planned_at", "timestamp with time zone", "NO", "statement_timestamp()"],
-  ["ready_at", "timestamp with time zone", "YES", null],
-  ["committed_at", "timestamp with time zone", "YES", null]
-] as const;
-
-const REQUIRED_SCHEMA_034_CONSTRAINTS = [
-  ["unified_check_runs_fairness_owner_not_blank_check", "unified_check_runs", "c"],
-  ["unified_check_tasks_run_id_id_key", "unified_check_tasks", "u"],
-  ["unified_check_planner_entries_pkey", "unified_check_planner_entries", "p"],
-  ["unified_check_planner_entries_run_id_task_id_key", "unified_check_planner_entries", "u"],
-  ["unified_check_planner_entries_run_id_fkey", "unified_check_planner_entries", "f"],
-  ["unified_check_planner_entries_run_task_fk", "unified_check_planner_entries", "f"],
-  ["unified_check_planner_entries_canonical_sequence_check", "unified_check_planner_entries", "c"],
-  ["unified_check_planner_entries_result_bytes_check", "unified_check_planner_entries", "c"],
-  ["unified_check_planner_entries_reserved_bytes_check", "unified_check_planner_entries", "c"],
-  ["unified_check_planner_entries_state_check", "unified_check_planner_entries", "c"],
-  ["unified_check_planner_entries_state_shape_check", "unified_check_planner_entries", "c"],
-  ["unified_check_planner_entries_timestamp_order_check", "unified_check_planner_entries", "c"]
-] as const;
-
-const REQUIRED_SCHEMA_034_INDEXES = [
-  "unified_check_planner_entries_next_uncommitted_idx",
-  "unified_check_planner_entries_ready_prefix_idx",
-  "unified_check_planner_entries_admitted_task_idx",
-  "unified_check_planner_entries_buffer_aggregate_idx"
-] as const;
-
 export async function verifySchema034Structure(
   queryable: SchemaQueryable,
   options?: SchemaOptions
 ): Promise<void> {
   const schemaName = resolveSchemaName(options);
-  const columns = await queryable.query(
-    `select column_name, data_type, is_nullable, column_default
-       from information_schema.columns
-      where table_schema = $1 and table_name = 'unified_check_planner_entries'
-      order by ordinal_position`,
+  const normalizeSchema = (value: unknown) => normalizeDefinition(value)
+    .replaceAll(`${schemaName}.`, "<schema>.")
+    .replaceAll(`"${schemaName}".`, "<schema>.");
+  const tables = await queryable.query(
+    `select c.relname as table_name,
+            pg_get_userbyid(c.relowner) as table_owner,
+            current_user as current_user
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relkind = 'r'
+        and c.relname = 'unified_check_planner_entries'
+      order by c.relname`,
     [schemaName]
   );
-  if (columns.rows.length !== REQUIRED_SCHEMA_034_COLUMNS.length) fail("schema_034_column_count_mismatch");
-  for (const [index, [columnName, dataType, nullable, columnDefault]] of REQUIRED_SCHEMA_034_COLUMNS.entries()) {
-    const row = columns.rows[index];
-    if (
-      row?.column_name !== columnName || row.data_type !== dataType || row.is_nullable !== nullable ||
-      normalizeDefinition(row.column_default) !== normalizeDefinition(columnDefault)
-    ) {
-      fail("schema_034_column_mismatch");
-    }
-  }
-  const fairnessOwner = await queryable.query(
-    `select data_type, is_nullable, column_default
-       from information_schema.columns
-      where table_schema = $1 and table_name = 'unified_check_runs' and column_name = 'fairness_owner_id'`,
-    [schemaName]
-  );
-  const fairnessOwnerRow = fairnessOwner.rows[0];
   if (
-    fairnessOwner.rows.length !== 1 || fairnessOwnerRow.data_type !== "text" ||
-    fairnessOwnerRow.is_nullable !== "NO" || fairnessOwnerRow.column_default !== null
-  ) fail("schema_034_fairness_owner_column_mismatch");
-
+    tables.rows.length !== 1 ||
+    tables.rows[0]?.table_name !== "unified_check_planner_entries" ||
+    tables.rows[0]?.table_owner !== tables.rows[0]?.current_user
+  ) fail("schema_034_catalog_mismatch");
+  const columns = await queryable.query(
+    `select table_name, ordinal_position, column_name, data_type, is_nullable, column_default
+       from information_schema.columns
+      where table_schema = $1
+        and (table_name = 'unified_check_planner_entries'
+          or (table_name = 'unified_check_runs' and column_name = 'fairness_owner_id'))
+      order by table_name, ordinal_position`,
+    [schemaName]
+  );
   const constraints = await queryable.query(
     `select t.relname as table_name, c.conname, c.contype, c.convalidated,
             pg_get_constraintdef(c.oid) as definition,
@@ -725,79 +847,84 @@ export async function verifySchema034Structure(
        join pg_namespace n on n.oid = t.relnamespace
        left join pg_class ft on ft.oid = c.confrelid
        left join pg_namespace fn on fn.oid = ft.relnamespace
-      where n.nspname = $1 and t.relname in ('unified_check_runs', 'unified_check_tasks', 'unified_check_planner_entries')
+      where n.nspname = $1
+        and (t.relname = 'unified_check_planner_entries'
+          or (t.relname = 'unified_check_runs'
+            and c.conname = 'unified_check_runs_fairness_owner_not_blank_check')
+          or (t.relname = 'unified_check_tasks'
+            and c.conname = 'unified_check_tasks_run_id_id_key'))
       order by t.relname, c.conname`,
     [schemaName]
   );
-  for (const [name, tableName, type] of REQUIRED_SCHEMA_034_CONSTRAINTS) {
-    const row = constraints.rows.find((candidate) => candidate.conname === name);
-    if (!row || row.table_name !== tableName || row.contype !== type || row.convalidated !== true) {
-      fail("schema_034_constraint_mismatch");
-    }
-  }
-  const exactConstraint = (name: string, definition: string) => {
-    const row = constraints.rows.find((candidate) => candidate.conname === name);
-    if (normalizeDefinition(row?.definition) !== normalizeDefinition(definition)) {
-      fail("schema_034_constraint_definition_mismatch");
-    }
-  };
-  exactConstraint("unified_check_runs_fairness_owner_not_blank_check", "CHECK ((btrim(fairness_owner_id) <> ''::text))");
-  exactConstraint("unified_check_planner_entries_canonical_sequence_check", "CHECK ((canonical_sequence >= 0))");
-  exactConstraint("unified_check_planner_entries_result_bytes_check", "CHECK (((result_bytes IS NULL) OR (result_bytes >= 0)))");
-  exactConstraint("unified_check_planner_entries_reserved_bytes_check", "CHECK (((reserved_bytes IS NULL) OR (reserved_bytes >= 0)))");
-  exactConstraint("unified_check_planner_entries_state_check", "CHECK ((planner_state = ANY (ARRAY['planned'::text, 'ready'::text, 'committed'::text])))");
-  exactConstraint(
-    "unified_check_planner_entries_state_shape_check",
-    "CHECK ((((planner_state = 'planned'::text) AND (result_bytes IS NULL) AND (ready_at IS NULL) AND (committed_at IS NULL) AND (((admitted_at IS NULL) AND (reserved_bytes IS NULL)) OR ((admitted_at IS NOT NULL) AND (reserved_bytes IS NOT NULL)))) OR ((planner_state = 'ready'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NULL)) OR ((planner_state = 'committed'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NOT NULL))))"
-  );
-  exactConstraint(
-    "unified_check_planner_entries_timestamp_order_check",
-    "CHECK ((((admitted_at IS NULL) OR (admitted_at >= planned_at)) AND ((ready_at IS NULL) OR (ready_at >= admitted_at)) AND ((committed_at IS NULL) OR (committed_at >= ready_at))))"
-  );
-  const taskKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_tasks_run_id_id_key");
-  const plannerPrimaryKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_pkey");
-  const plannerTaskKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_id_task_id_key");
-  if (
-    JSON.stringify(taskKey?.columns) !== JSON.stringify(["run_id", "id"]) ||
-    JSON.stringify(plannerPrimaryKey?.columns) !== JSON.stringify(["run_id", "canonical_sequence"]) ||
-    JSON.stringify(plannerTaskKey?.columns) !== JSON.stringify(["run_id", "task_id"])
-  ) fail("schema_034_unique_constraint_mismatch");
-  const runForeignKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_id_fkey");
-  const taskForeignKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_task_fk");
-  if (
-    runForeignKey?.foreign_table_name !== "unified_check_runs" ||
-    runForeignKey.foreign_schema_name !== schemaName ||
-    JSON.stringify(runForeignKey.columns) !== JSON.stringify(["run_id"]) ||
-    JSON.stringify(runForeignKey.foreign_columns) !== JSON.stringify(["id"]) ||
-    runForeignKey.foreign_match_type !== "s" ||
-    runForeignKey.foreign_update_type !== "a" ||
-    runForeignKey.foreign_delete_type !== "a" ||
-    runForeignKey.condeferrable !== false ||
-    runForeignKey.condeferred !== false ||
-    taskForeignKey?.foreign_table_name !== "unified_check_tasks" ||
-    taskForeignKey.foreign_schema_name !== schemaName ||
-    JSON.stringify(taskForeignKey.columns) !== JSON.stringify(["run_id", "task_id"]) ||
-    JSON.stringify(taskForeignKey.foreign_columns) !== JSON.stringify(["run_id", "id"]) ||
-    taskForeignKey.foreign_match_type !== "s" ||
-    taskForeignKey.foreign_update_type !== "a" ||
-    taskForeignKey.foreign_delete_type !== "a" ||
-    taskForeignKey.condeferrable !== false ||
-    taskForeignKey.condeferred !== false
-  ) fail("schema_034_foreign_key_mismatch");
   const indexes = await queryable.query(
-    `select indexname, indexdef from pg_indexes
-      where schemaname = $1 and tablename = 'unified_check_planner_entries'
-        and indexname = any($2::text[])`,
-    [schemaName, [...REQUIRED_SCHEMA_034_INDEXES]]
+    `select tablename, indexname, indexdef
+       from pg_indexes
+      where schemaname = $1
+        and (tablename = 'unified_check_planner_entries'
+          or (tablename = 'unified_check_tasks'
+            and indexname = 'unified_check_tasks_run_id_id_key'))
+      order by tablename, indexname`,
+    [schemaName]
   );
-  if (indexes.rows.length !== REQUIRED_SCHEMA_034_INDEXES.length) fail("schema_034_index_missing");
-  const indexByName = new Map(indexes.rows.map((row) => [row.indexname, normalizeDefinition(row.indexdef)]));
-  if (
-    !indexByName.get("unified_check_planner_entries_next_uncommitted_idx")?.includes("(run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)") ||
-    !indexByName.get("unified_check_planner_entries_ready_prefix_idx")?.includes("(run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)") ||
-    !indexByName.get("unified_check_planner_entries_admitted_task_idx")?.includes("(run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))") ||
-    !indexByName.get("unified_check_planner_entries_buffer_aggregate_idx")?.includes("(run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)")
-  ) fail("schema_034_index_mismatch");
+  const triggers = await queryable.query(
+    `select c.relname as table_name, t.tgname as trigger_name,
+            pg_get_triggerdef(t.oid) as definition
+       from pg_trigger t
+       join pg_class c on c.oid = t.tgrelid
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relname = 'unified_check_planner_entries'
+        and not t.tgisinternal
+      order by c.relname, t.tgname`,
+    [schemaName]
+  );
+  const delta = {
+    tables: tables.rows.map((row) => ({ tableName: row.table_name })),
+    columns: columns.rows.map((row) => ({
+      tableName: row.table_name,
+      ordinalPosition: Number(row.ordinal_position),
+      columnName: row.column_name,
+      dataType: row.data_type,
+      isNullable: row.is_nullable,
+      columnDefault: row.column_default === null ? null : normalizeSchema(row.column_default)
+    })),
+    constraints: constraints.rows.map((row) => ({
+      tableName: row.table_name,
+      name: row.conname,
+      type: row.contype,
+      validated: row.convalidated,
+      definition: normalizeSchema(row.definition),
+      keyColumns: row.contype === "p" || row.contype === "u" || row.contype === "f"
+        ? row.columns
+        : [],
+      foreign: row.contype === "f"
+        ? {
+            schemaName: row.foreign_schema_name === schemaName ? "<schema>" : row.foreign_schema_name,
+            tableName: row.foreign_table_name,
+            columns: row.foreign_columns,
+            matchType: row.foreign_match_type,
+            updateType: row.foreign_update_type,
+            deleteType: row.foreign_delete_type,
+            deferrable: row.condeferrable,
+            deferred: row.condeferred
+          }
+        : null
+    })),
+    indexes: indexes.rows.map((row) => ({
+      tableName: row.tablename,
+      name: row.indexname,
+      definition: normalizeSchema(row.indexdef)
+    })),
+    triggers: triggers.rows.map((row) => ({
+      tableName: row.table_name,
+      name: row.trigger_name,
+      definition: normalizeSchema(row.definition)
+    }))
+  };
+  const actualHash = unifiedCatalogHash({
+    predecessorCatalogSha256: UNIFIED_SCHEMA_033_CATALOG_SHA256,
+    delta
+  });
+  if (actualHash !== UNIFIED_SCHEMA_034_CATALOG_SHA256) fail("schema_034_catalog_mismatch");
 }
 
 export async function verifyRequiredSchema034(

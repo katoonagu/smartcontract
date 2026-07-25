@@ -176,6 +176,23 @@ describe("Unified release gate receipts", () => {
         id: "migration_startup_rehearsal",
         command: "npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"
       });
+    const invocation = unifiedReleaseCommandInvocation("migration_startup_rehearsal");
+    const commandArgs = process.platform === "win32"
+      ? invocation.args.slice(1)
+      : invocation.args;
+    expect(commandArgs).toEqual([
+      "vitest", "run",
+      "tests/storage/migration034.postgres.test.ts",
+      "tests/runtime/startupSchemaGate.test.ts",
+      "tests/unified-check/productionRuntime.postgres.test.ts",
+      "--maxWorkers=1"
+    ]);
+    if (process.platform === "win32") {
+      expect(invocation.executable).toBe(process.execPath);
+      expect(invocation.args[0]).toMatch(/npm[\\/]bin[\\/]npx-cli\.js$/u);
+    } else {
+      expect(invocation.executable).toBe("npx");
+    }
   });
 
   it("rejects a self-consistent Golden replacement or incomplete command set", () => {

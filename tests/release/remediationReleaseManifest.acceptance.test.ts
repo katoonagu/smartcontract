@@ -271,6 +271,7 @@ it("[REQ-38][STRICT-RELEASE-EVIDENCE] reaches semantic trace validation from the
 it("[REQ-35][REQ-38][RUNTIME-ARTIFACT-SEMANTICS] rejects hashable but false runtime rollback or legacy evidence", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const runtimeSchema = Buffer.from(JSON.stringify({
+    version: "schema-032-release-evidence-v2",
     candidateSha: CANDIDATE_SHA,
     databaseRole: "runtime_sanitized",
     databaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
@@ -290,7 +291,7 @@ it("[REQ-35][REQ-38][RUNTIME-ARTIFACT-SEMANTICS] rejects hashable but false runt
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: "f".repeat(64)
     },
     firstApply: "applied",
@@ -1644,6 +1645,7 @@ it("[REQ-38][ARTIFACT-HANDLE] rejects identity changes and platform-invalid cont
 it("[REQ-38][G07-SCHEMA-BINDING] requires distinct semantic clean and production-clone schema evidence", async () => {
   const runner: any = await import("../../scripts/verifyRemediationRelease");
   const base = {
+    version: "schema-032-release-evidence-v2",
     candidateSha: CANDIDATE_SHA,
     databaseRole: "clean",
     databaseFingerprintSha256: "1".repeat(64),
@@ -1663,7 +1665,7 @@ it("[REQ-38][G07-SCHEMA-BINDING] requires distinct semantic clean and production
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
       verificationReceiptSha256: "f".repeat(64)
     },
     firstApply: "applied",

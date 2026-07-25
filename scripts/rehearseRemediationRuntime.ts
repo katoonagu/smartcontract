@@ -29,7 +29,7 @@ const APPROVED_SCHEMA_033_CATALOG_SHA256 =
   "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 const APPROVED_SCHEMA_034_CHECKSUM = "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb";
 const APPROVED_SCHEMA_034_CATALOG_SHA256 =
-  "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57";
+  "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a";
 const EMPTY_ALLOWANCE_MIRROR_MISMATCH_SHA256 = createHash("sha256").update("[]", "utf8").digest("hex");
 export const ROLLBACK_REHEARSAL_COMMAND_TEMPLATE_SHA256 = "9d98c145698d181dca0e35b3694a501994c7668ba61291687287775cea880f29";
 
@@ -1534,11 +1534,12 @@ export function validateSchemaEvidenceForRehearsal(
   const schema = record(value, "runtime_schema_evidence_invalid");
   assertNoSecretLikeArtifactValues(schema);
   exactKeys(schema, [
-    "candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
+    "version", "candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
     "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
     "schema033", "schema034", "firstApply", "secondApply"
   ], "runtime_schema_evidence_shape_invalid");
-  if (schema.candidateSha !== expected.candidateSha || schema.databaseRole !== expected.databaseRole
+  if (schema.version !== "schema-032-release-evidence-v2"
+      || schema.candidateSha !== expected.candidateSha || schema.databaseRole !== expected.databaseRole
       || schema.databaseFingerprintSha256 !== expected.databaseFingerprintSha256
       || schema.migrationFilename !== "032_telegram_runtime_forensics_data_contracts.sql"
       || schema.candidateBytesChecksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM

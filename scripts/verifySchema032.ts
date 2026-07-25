@@ -81,6 +81,12 @@ export type Schema032ReleaseEvidenceV1 = {
     catalogSha256: string;
     verificationReceiptSha256: string;
   };
+  firstApply: "applied" | "already_verified";
+  secondApply: "already_verified";
+};
+
+export type Schema032ReleaseEvidenceV2 = Schema032ReleaseEvidenceV1 & {
+  version: "schema-032-release-evidence-v2";
   schema034: {
     version: typeof RELEASE_SCHEMA_VERSION;
     migrationFilename: typeof RELEASE_SCHEMA_FILENAME;
@@ -88,8 +94,6 @@ export type Schema032ReleaseEvidenceV1 = {
     catalogSha256: string;
     verificationReceiptSha256: string;
   };
-  firstApply: "applied" | "already_verified";
-  secondApply: "already_verified";
 };
 
 export type Schema032FirstPhaseEvidenceV1 = {
@@ -137,7 +141,7 @@ const MIGRATION_OUTCOME_KEYS = [
   "stdout",
   "stdoutSha256"
 ] as const;
-const EVIDENCE_KEYS = [
+const EVIDENCE_KEYS_V1 = [
   "candidateSha",
   "databaseRole",
   "databaseFingerprintSha256",
@@ -147,10 +151,10 @@ const EVIDENCE_KEYS = [
   "shortChecksum",
   "postconditionsSha256",
   "schema033",
-  "schema034",
   "firstApply",
   "secondApply"
 ] as const;
+const EVIDENCE_KEYS_V2 = ["version", ...EVIDENCE_KEYS_V1, "schema034"] as const;
 
 function fail(code: string): never {
   throw new Error(code);
@@ -360,7 +364,7 @@ export function validateSchema032ReleaseEvidence(
   expected: { candidateSha: string; postconditionsSha256: string }
 ): Schema032ReleaseEvidenceV1 {
   if (!isRecord(value)) fail("schema_032_release_evidence_invalid");
-  if (Object.keys(value).sort().join("|") !== [...EVIDENCE_KEYS].sort().join("|")) {
+  if (Object.keys(value).sort().join("|") !== [...EVIDENCE_KEYS_V1].sort().join("|")) {
     fail("schema_032_release_evidence_fields_mismatch");
   }
   if (!SHA_PATTERN.test(expected.candidateSha) || value.candidateSha !== expected.candidateSha) {
@@ -399,6 +403,26 @@ export function validateSchema032ReleaseEvidence(
       || !SHA256_PATTERN.test(String(value.schema033.verificationReceiptSha256 ?? ""))) {
     fail("schema_033_release_evidence_invalid");
   }
+  if (value.firstApply !== "applied" && value.firstApply !== "already_verified") {
+    fail("schema_032_release_first_apply_invalid");
+  }
+  if (value.secondApply !== "already_verified") fail("schema_032_release_second_apply_invalid");
+  return value as Schema032ReleaseEvidenceV1;
+}
+
+export function validateSchema032ReleaseEvidenceV2(
+  value: unknown,
+  expected: { candidateSha: string; postconditionsSha256: string }
+): Schema032ReleaseEvidenceV2 {
+  if (!isRecord(value)) fail("schema_032_release_evidence_v2_invalid");
+  if (Object.keys(value).sort().join("|") !== [...EVIDENCE_KEYS_V2].sort().join("|")) {
+    fail("schema_032_release_evidence_v2_fields_mismatch");
+  }
+  if (value.version !== "schema-032-release-evidence-v2") {
+    fail("schema_032_release_evidence_v2_version_mismatch");
+  }
+  const { version: _version, schema034: _schema034, ...historical } = value;
+  validateSchema032ReleaseEvidence(historical, expected);
   if (!isRecord(value.schema034)
       || Object.keys(value.schema034).sort().join("|")
         !== ["catalogSha256", "checksumSha256", "migrationFilename", "verificationReceiptSha256", "version"]
@@ -410,11 +434,7 @@ export function validateSchema032ReleaseEvidence(
       || !SHA256_PATTERN.test(String(value.schema034.verificationReceiptSha256 ?? ""))) {
     fail("schema_034_release_evidence_invalid");
   }
-  if (value.firstApply !== "applied" && value.firstApply !== "already_verified") {
-    fail("schema_032_release_first_apply_invalid");
-  }
-  if (value.secondApply !== "already_verified") fail("schema_032_release_second_apply_invalid");
-  return value as Schema032ReleaseEvidenceV1;
+  return value as Schema032ReleaseEvidenceV2;
 }
 
 export function classifySchema032Database(
@@ -653,7 +673,7 @@ export async function verifySchema032Release(options: {
   firstMigrationOutcome: string;
   secondMigrationOutcome?: string;
   clientFactory?: (config: ClientConfig) => Schema032Client;
-}): Promise<Schema032FirstPhaseEvidenceV1 | Schema032ReleaseEvidenceV1> {
+}): Promise<Schema032FirstPhaseEvidenceV1 | Schema032ReleaseEvidenceV2> {
   const phase = options.phase ?? "final";
   if (!SHA_PATTERN.test(options.candidateSha)) fail("schema_032_candidate_sha_invalid");
   const expectedEndpoint = normalizeExpectedEndpoint(options.expectedEndpoint);
@@ -754,7 +774,8 @@ export async function verifySchema032Release(options: {
       };
     }
     if (secondMigration === null) fail("schema_032_second_migration_outcome_required");
-    const evidence: Schema032ReleaseEvidenceV1 = {
+    const evidence: Schema032ReleaseEvidenceV2 = {
+      version: "schema-032-release-evidence-v2",
       candidateSha: options.candidateSha,
       databaseRole: target.databaseRole,
       databaseFingerprintSha256,
@@ -786,7 +807,7 @@ export async function verifySchema032Release(options: {
       firstApply: firstMigration.status,
       secondApply: "already_verified"
     };
-    return validateSchema032ReleaseEvidence(evidence, {
+    return validateSchema032ReleaseEvidenceV2(evidence, {
       candidateSha: options.candidateSha,
       postconditionsSha256
     });
