@@ -126,7 +126,14 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         snapshotHash,
         snapshot,
         analysisManifestSha256: manifestHash,
-        analysisManifest: manifest
+        analysisManifest: manifest,
+        rolloutPolicy: {
+          stage: "global_barrier",
+          bucket: 0,
+          admissionPolicy: "barrier",
+          providerCapacityCeiling: 1,
+          receiptSha256: null
+        }
       };
       await client.query(
         `insert into unified_check_runs (

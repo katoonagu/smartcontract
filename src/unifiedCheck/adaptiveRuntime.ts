@@ -388,6 +388,9 @@ export async function loadUnifiedProviderRunDemand(
         group by run_id
      )
      select run.id as run_id, run.fairness_owner_id,
+            run.run_purpose, run.side_effect_policy,
+            run.admission_policy,
+            run.provider_capacity_ceiling,
             per_scope.ready_work, per_scope.priority_lane,
             service.served_at,
             owner_service.owner_served_at,
@@ -450,6 +453,15 @@ export async function loadUnifiedProviderRunDemand(
       runId: String(row.run_id),
       ownerId: String(row.fairness_owner_id),
       lane: lane as ProviderRunDemand["lane"],
+      runPurpose: String(row.run_purpose) as
+        NonNullable<ProviderRunDemand["runPurpose"]>,
+      sideEffectPolicy: String(row.side_effect_policy) as
+        NonNullable<ProviderRunDemand["sideEffectPolicy"]>,
+      admissionPolicy:
+        String(row.admission_policy) === "rolling"
+          ? "rolling"
+          : "barrier",
+      providerCapacityCeiling: Number(row.provider_capacity_ceiling),
       eligibleReadyWork: Number(row.ready_work),
       ownerLastServedAtMs: Number.isFinite(ownerServedAtMs)
         ? ownerServedAtMs
@@ -890,7 +902,7 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
       : 0;
     const result = await input.refill({
       runId: run.runId,
-      policy: input.config.admissionPolicy,
+      policy: run.admissionPolicy ?? input.config.admissionPolicy,
       lookaheadTarget,
       readyBufferMaxEntries: input.config.readyBufferMaxEntries,
       readyBufferMaxBytes: input.config.readyBufferMaxBytes,

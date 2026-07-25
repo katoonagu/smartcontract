@@ -74,10 +74,11 @@ import {
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
   SCHEMA_034_FILENAME,
-  SCHEMA_034_VERSION,
+  SCHEMA_035_FILENAME,
+  SCHEMA_035_VERSION,
   checksumMigrationBytes,
-  verifyRequiredSchema034,
-  type Schema034Verification
+  verifyRequiredSchema035,
+  type Schema035Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -233,7 +234,13 @@ import {
   createPostgresUnifiedAdmissionRuntimeControl,
   type UnifiedAdmissionPolicy
 } from "./unifiedCheck/admissionRuntimeControl";
+import type {
+  ProviderRunDemand
+} from "./unifiedCheck/fairProviderAllocator";
 import { refillOrderedAdmissions } from "./unifiedCheck/plannerRepository";
+import {
+  loadUnifiedVerifiedRolloutAuthority
+} from "./unifiedCheck/rolloutAuthority";
 import { createUnifiedReconciliation } from "./unifiedCheck/reconciliation";
 import {
   createUnifiedAdminRunDecisionStore
@@ -291,7 +298,7 @@ const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
-  let schemaVerification: Schema034Verification | null = null;
+  let schemaVerification: Schema035Verification | null = null;
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
   );
@@ -301,13 +308,25 @@ try {
   );
   const schema033Checksum = await checksumMigrationBytes(schema033MigrationBytes);
   const requiredMigrationBytes = await readFile(
+    new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)
+  );
+  const schema034MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
+  );
+  const schema034Checksum = await checksumMigrationBytes(
+    schema034MigrationBytes
   );
   const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
     verifyStartupSchema: () => runStartupSchemaGate({
       verify: () =>
-        verifyRequiredSchema034(db, requiredChecksum, schema032Checksum, schema033Checksum),
+        verifyRequiredSchema035(
+          db,
+          requiredChecksum,
+          schema032Checksum,
+          schema033Checksum,
+          schema034Checksum
+        ),
       onVerified: (verification) => {
         schemaVerification = verification;
         logger.info("schema_migration_verified", {
@@ -334,6 +353,15 @@ try {
   throw error;
 }
 const activeCheckGeneration = await getActiveCheckGeneration(db);
+const unifiedVerifiedRolloutAuthority =
+  await loadUnifiedVerifiedRolloutAuthority({
+    receiptPath: config.unifiedAdaptiveReleaseReceiptPath,
+    candidateSha: runtimeVersion.gitCommitSha,
+    expectedReleaseGenerationId: activeCheckGeneration.generationId,
+    configuredStage: config.unifiedRollingRolloutStage,
+    configuredProviderCapacityCeiling:
+      config.unifiedVerifiedProviderCapacityCeiling
+  });
 logger.info("unified_generation_fence_loaded", {
   deliveryGeneration: activeCheckGeneration.deliveryGeneration,
   generationId: activeCheckGeneration.generationId
@@ -935,7 +963,10 @@ let unifiedLastRuntimeResourceState:
 const unifiedAdmissionRuntimeControl =
   createPostgresUnifiedAdmissionRuntimeControl({
     db: unifiedTransactionHost,
-    initialPolicy: config.unifiedAdmissionPolicy,
+    initialPolicy:
+      unifiedVerifiedRolloutAuthority.stage === "global_barrier"
+        ? "barrier"
+        : "rolling",
     readyBufferMaxEntries: config.unifiedReadyBufferMaxEntries,
     readyBufferMaxBytes: config.unifiedReadyBufferMaxBytes,
     reservedBufferMaxBytes: config.unifiedReservedBufferMaxBytes,
@@ -965,7 +996,7 @@ const runUnifiedControllerCycle = async (
   const providerGroups = tronscanScheduler.groupSnapshots();
   const providerAvailable =
     hasHealthyCapableProviderGroup(providerGroups);
-  const loadedDemand = await measureUnifiedDb(() =>
+  const loadedDemandWithoutPolicy = await measureUnifiedDb(() =>
     loadUnifiedProviderRunDemand(unifiedTransactionHost, {
       now: new Date(startedAtMs),
       providerAvailable,
@@ -975,10 +1006,16 @@ const runUnifiedControllerCycle = async (
       providerConfigurationSha256: unifiedProviderConfiguration.sha256
       })
   );
+  const loadedDemand = loadedDemandWithoutPolicy.map((run) => ({
+    ...run,
+    admissionPolicy: admissionPolicy === "barrier"
+      ? "barrier" as const
+      : run.admissionPolicy ?? "barrier"
+  }));
   let benchmarkControl:
     Awaited<ReturnType<typeof loadUnifiedAdaptiveBenchmarkControl>> =
       null;
-  let demand = [...loadedDemand];
+  let demand: ProviderRunDemand[] = [...loadedDemand];
   try {
     benchmarkControl = await measureUnifiedDb(() =>
       loadUnifiedAdaptiveBenchmarkControl(unifiedTransactionHost, {
@@ -1100,7 +1137,10 @@ const runUnifiedControllerCycle = async (
       unifiedPacingTracker.isSlotPaced(slot),
     config: {
       configuredProviderConcurrencyLimit:
-        config.unifiedProviderConcurrencyLimit,
+        Math.min(
+          config.unifiedProviderConcurrencyLimit,
+          unifiedVerifiedRolloutAuthority.providerCapacityCeiling
+        ),
       providerWorkerLimit: Math.min(
         config.unifiedProviderWorkerLimit,
         scheduler.maxInFlight
@@ -2260,7 +2300,16 @@ const bot = createBot(config, db, tronClient, {
         scoringPolicyVersion: SCORING_POLICY_V4.version,
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
         runtimeCommit: runtimeVersion.gitCommitSha,
-        schemaVersion: SCHEMA_034_VERSION
+        schemaVersion: SCHEMA_035_VERSION
+      },
+      rolloutAuthority: {
+        stage: unifiedVerifiedRolloutAuthority.stage,
+        boundedUserCheckBasisPoints:
+          config.unifiedRollingUserCheckBasisPoints,
+        providerCapacityCeiling:
+          unifiedVerifiedRolloutAuthority.providerCapacityCeiling,
+        receiptSha256:
+          unifiedVerifiedRolloutAuthority.receiptSha256
       },
       freezeLabelDataset: async ({
         snapshotHash,

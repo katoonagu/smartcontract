@@ -12,6 +12,11 @@ export interface ProviderRunDemand {
   runId: string;
   ownerId: string;
   lane: ProviderWorkLane;
+  admissionPolicy?: "barrier" | "rolling";
+  runPurpose?: "user_check" | "admin_diagnostic" | "release_canary" |
+    "synthetic_test" | "maintenance";
+  sideEffectPolicy?: "authoritative" | "isolated";
+  providerCapacityCeiling?: number;
   eligibleReadyWork: number;
   ownerLastServedAtMs: number;
   lastServedAtMs: number;
@@ -77,7 +82,11 @@ function initialReason(run: ProviderRunDemand): AllocationReason | null {
   return null;
 }
 
-function allocateLane(states: AllocationState[], budget: number): number {
+function allocateLane(
+  states: AllocationState[],
+  budget: number,
+  remainingCapacityByRun: Map<string, number>
+): number {
   let allocated = 0;
   while (allocated < budget) {
     const byOwner = new Map<string, AllocationState[]>();
@@ -88,7 +97,10 @@ function allocateLane(states: AllocationState[], budget: number): number {
     }
     const owner = [...byOwner.entries()]
       .filter(([_ownerId, ownerRuns]) =>
-        ownerRuns.some((state) => state.remaining > 0)
+        ownerRuns.some((state) =>
+          state.remaining > 0 &&
+          (remainingCapacityByRun.get(state.run.runId) ?? 0) > 0
+        )
       )
       .sort(([leftOwner, leftRuns], [rightOwner, rightRuns]) =>
         leftRuns.reduce(
@@ -109,7 +121,10 @@ function allocateLane(states: AllocationState[], budget: number): number {
       )[0];
     if (!owner) break;
     const selected = owner[1]
-      .filter((state) => state.remaining > 0)
+      .filter((state) =>
+        state.remaining > 0 &&
+        (remainingCapacityByRun.get(state.run.runId) ?? 0) > 0
+      )
       .sort((left, right) =>
       left.occupied + left.slots - (right.occupied + right.slots) ||
       left.run.lastServedAtMs - right.run.lastServedAtMs ||
@@ -117,6 +132,10 @@ function allocateLane(states: AllocationState[], budget: number): number {
     )[0]!;
     selected.remaining -= 1;
     selected.slots += 1;
+    remainingCapacityByRun.set(
+      selected.run.runId,
+      (remainingCapacityByRun.get(selected.run.runId) ?? 0) - 1
+    );
     allocated += 1;
   }
 
@@ -146,10 +165,32 @@ export function allocateProviderSlots(input: {
   const capacity = Math.max(0, Math.floor(input.capacity));
   const occupied = input.occupied ?? [];
   const occupiedByIdentity = new Map<string, number>();
+  const occupiedByRun = new Map<string, number>();
   for (const slot of occupied) {
     const key = allocationIdentity(slot);
     occupiedByIdentity.set(key, (occupiedByIdentity.get(key) ?? 0) + 1);
+    occupiedByRun.set(
+      slot.runId,
+      (occupiedByRun.get(slot.runId) ?? 0) + 1
+    );
   }
+  const capacityByRun = new Map<string, number>();
+  for (const run of input.runs) {
+    const ceiling = Math.max(
+      0,
+      Math.floor(run.providerCapacityCeiling ?? capacity)
+    );
+    capacityByRun.set(
+      run.runId,
+      Math.min(capacityByRun.get(run.runId) ?? ceiling, ceiling)
+    );
+  }
+  const remainingCapacityByRun = new Map([...capacityByRun].map(
+    ([runId, ceiling]) => [
+      runId,
+      Math.max(0, ceiling - (occupiedByRun.get(runId) ?? 0))
+    ]
+  ));
   const blockedReasons = new Map<string, AllocationReason>();
   const states = input.runs.map((run): AllocationState => {
     const reason = initialReason(run);
@@ -186,7 +227,11 @@ export function allocateProviderSlots(input: {
     interactiveReadyWork > 0
   ) {
     const repairDue = input.repair.chunksSinceLastRepair >= input.repair.repairMaxWaitChunks;
-    used += allocateLane(repairDue ? repair : interactive, 1);
+    used += allocateLane(
+      repairDue ? repair : interactive,
+      1,
+      remainingCapacityByRun
+    );
   } else {
     const repairMinimum = Math.max(0, calculateRepairMinimum({
       effectiveCapacity: capacity,
@@ -194,11 +239,23 @@ export function allocateProviderSlots(input: {
       repairShare: input.repair.repairShare,
       repairMaxSlots: input.repair.repairMaxSlots
     }) - occupiedRepair);
-    used += allocateLane(repair, repairMinimum);
-    used += allocateLane(interactive, available - used);
-    used += allocateLane(repair, available - used);
+    used += allocateLane(repair, repairMinimum, remainingCapacityByRun);
+    used += allocateLane(
+      interactive,
+      available - used,
+      remainingCapacityByRun
+    );
+    used += allocateLane(
+      repair,
+      available - used,
+      remainingCapacityByRun
+    );
   }
-  used += allocateLane(background, available - used);
+  used += allocateLane(
+    background,
+    available - used,
+    remainingCapacityByRun
+  );
 
   return states.map((state): ProviderSlotAllocation => ({
     runId: state.run.runId,
@@ -209,8 +266,12 @@ export function allocateProviderSlots(input: {
     reason: state.slots > 0
       ? "allocated"
       : blockedReasons.get(allocationIdentity(state.run)) ??
-        (state.run.lane === "background"
-          ? "background_preempted"
-          : "fairness_wait")
+        (
+          (remainingCapacityByRun.get(state.run.runId) ?? 0) === 0
+            ? "class_capacity_limit"
+            : state.run.lane === "background"
+              ? "background_preempted"
+              : "fairness_wait"
+        )
   }));
 }

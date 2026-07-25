@@ -19,6 +19,11 @@ import type {
   UnifiedTransactionalQueryable
 } from "./repository";
 import type { FrozenLabelDatasetV1 } from "./frozenLabels";
+import {
+  selectUnifiedRunRolloutPolicy,
+  type UnifiedRollingRolloutStage,
+  type UnifiedRunRolloutPolicy
+} from "./rolloutPolicy";
 
 export type CheckRequestStatus = "ACCEPTED" | "ATTACHED" | "FAILED_TECHNICAL";
 
@@ -51,6 +56,7 @@ export type AnalysisRunRecord = {
   readonly snapshot: ConfirmedWalletSnapshotV1;
   readonly analysisManifestSha256: string;
   readonly analysisManifest: AnalysisManifestV1;
+  readonly rolloutPolicy: UnifiedRunRolloutPolicy;
 };
 
 export type UnifiedInitialTask = {
@@ -137,7 +143,48 @@ async function runRecord(
     snapshotHash: manifest.snapshotHash,
     snapshot,
     analysisManifestSha256: String(row.analysis_manifest_sha256),
-    analysisManifest: manifest
+    analysisManifest: manifest,
+    rolloutPolicy: requiredRunRolloutPolicy(row)
+  };
+}
+
+function requiredRunRolloutPolicy(
+  row: Record<string, unknown>
+): UnifiedRunRolloutPolicy {
+  const stage = row.rollout_stage;
+  const admissionPolicy = row.admission_policy;
+  const bucket = Number(row.rollout_bucket);
+  const providerCapacityCeiling = Number(row.provider_capacity_ceiling);
+  const receiptSha256 = row.rollout_receipt_sha256 === null
+    ? null
+    : String(row.rollout_receipt_sha256);
+  if (
+    ![
+      "global_barrier",
+      "isolated_rolling",
+      "bounded_user_check",
+      "rolling_default"
+    ].includes(String(stage)) ||
+    !["barrier", "rolling"].includes(String(admissionPolicy)) ||
+    !Number.isSafeInteger(bucket) ||
+    bucket < 0 ||
+    bucket > 9_999 ||
+    !Number.isSafeInteger(providerCapacityCeiling) ||
+    providerCapacityCeiling < 1 ||
+    providerCapacityCeiling > 100 ||
+    (
+      receiptSha256 !== null &&
+      !/^[0-9a-f]{64}$/u.test(receiptSha256)
+    )
+  ) {
+    throw new Error("unified_run_rollout_policy_invalid");
+  }
+  return {
+    stage: stage as UnifiedRollingRolloutStage,
+    bucket,
+    admissionPolicy: admissionPolicy as "barrier" | "rolling",
+    providerCapacityCeiling,
+    receiptSha256
   };
 }
 
@@ -280,8 +327,10 @@ export function createPostgresUnifiedRequestStore(
           const inserted = await client.query(
             `insert into unified_check_runs (
               id, analysis_key_sha256, subject_address, status, run_purpose,
-              side_effect_policy, analysis_manifest_sha256, fairness_owner_id
-            ) values ($1,$2,$3,'RUNNING',$4,$5,$6,$7)
+              side_effect_policy, analysis_manifest_sha256, fairness_owner_id,
+              rollout_stage, rollout_bucket, admission_policy,
+              provider_capacity_ceiling, rollout_receipt_sha256
+            ) values ($1,$2,$3,'RUNNING',$4,$5,$6,$7,$8,$9,$10,$11,$12)
             on conflict do nothing returning *`,
             [
               input.candidateRun.id,
@@ -290,7 +339,12 @@ export function createPostgresUnifiedRequestStore(
               input.candidateRun.runPurpose,
               input.candidateRun.sideEffectPolicy,
               input.candidateRun.analysisManifestSha256,
-              input.candidateRun.fairnessOwnerId
+              input.candidateRun.fairnessOwnerId,
+              input.candidateRun.rolloutPolicy.stage,
+              input.candidateRun.rolloutPolicy.bucket,
+              input.candidateRun.rolloutPolicy.admissionPolicy,
+              input.candidateRun.rolloutPolicy.providerCapacityCeiling,
+              input.candidateRun.rolloutPolicy.receiptSha256
             ]
           );
           runRow = inserted.rows[0];
@@ -410,6 +464,12 @@ type IntakeInput = {
   candidateRunId: string;
   initialTasks?: readonly UnifiedInitialTask[];
   versions: UnifiedAnalysisVersions;
+  rolloutAuthority?: {
+    readonly stage: UnifiedRollingRolloutStage;
+    readonly boundedUserCheckBasisPoints: number;
+    readonly providerCapacityCeiling: number;
+    readonly receiptSha256: string | null;
+  };
   freezeLabelDataset?(input: {
     readonly snapshot: ConfirmedWalletSnapshotV1;
     readonly snapshotHash: string;
@@ -628,7 +688,20 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
         snapshotHash,
         snapshot,
         analysisManifestSha256: fingerprintCanonicalArtifact(manifest),
-        analysisManifest: manifest
+        analysisManifest: manifest,
+        rolloutPolicy: selectUnifiedRunRolloutPolicy({
+          stage:
+            input.rolloutAuthority?.stage ?? "global_barrier",
+          boundedUserCheckBasisPoints:
+            input.rolloutAuthority?.boundedUserCheckBasisPoints ?? 0,
+          providerCapacityCeiling:
+            input.rolloutAuthority?.providerCapacityCeiling ?? 1,
+          receiptSha256:
+            input.rolloutAuthority?.receiptSha256 ?? null,
+          runId: input.candidateRunId,
+          runPurpose: accepted.runPurpose,
+          sideEffectPolicy: accepted.sideEffectPolicy
+        })
       }
     });
     return { kind: "attached", ...attached, snapshot };

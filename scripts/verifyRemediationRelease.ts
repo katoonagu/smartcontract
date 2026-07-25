@@ -59,6 +59,7 @@ import { verifyCurrentReleaseManifestChainV2 } from "../src/release/releaseManif
 import {
   PLAN_A_GATE_RECEIPT_RELATIVE_PATH,
   validatePlanAGateReceiptV1,
+  validateUnifiedAdaptiveRollingReleaseReceiptV1,
   validateUnifiedWalletReleaseGateReceiptV1,
   type UnifiedWalletReleaseGateReceiptV1
 } from "../src/release/unifiedReleaseGateReceipt";
@@ -255,11 +256,14 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "docs/superpowers/specs/2026-07-24-unified-wallet-check-traversal-performance-design.md",
   "migrations/033_unified_wallet_check.sql",
   "migrations/034_unified_check_adaptive_planner.sql",
+  "migrations/035_unified_check_run_rollout_policy.sql",
   "scripts/adjudicateTronUsdtGoldenV2.ts",
+  "scripts/captureUnifiedWslMemory.ps1",
   "scripts/captureTronUsdtGoldenV2.ts",
   "scripts/compareUnifiedWalletGolden.ts",
   "scripts/generateUnifiedGoldenBindings.ts",
   "scripts/finalizeUnifiedReleaseGates.ts",
+  "scripts/runUnifiedAdaptiveBenchmark.ts",
   "scripts/runUnifiedReleaseGateCommand.ts",
   "scripts/runSchema032ReleaseSequence.ts",
   "scripts/runUnifiedWalletCanary.ts",
@@ -285,10 +289,13 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "src/wallet/metrics.ts",
   "tests/admin/adminConsole.test.ts",
   "tests/admin/adminServer.test.ts",
+  "tests/admin/unifiedRunSnapshot.test.ts",
+  "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
   "tests/forensics/canonicalJson.test.ts",
   "tests/risk/scoreAnchorV3.test.ts",
   "tests/risk/scoringSignalMatrixV4.test.ts",
   "tests/release/releaseGateEvidencePolicy.unit.test.ts",
+  "tests/release/adaptiveRollingGate.acceptance.test.ts",
   "tests/release/schema034VersionedArtifacts.unit.test.ts",
   "tests/release/unifiedReleaseGateReceipt.unit.test.ts",
   "tests/runtime/runtimeVersion033.test.ts",
@@ -296,9 +303,13 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/runtime/startupSchedule.test.ts",
   "tests/runtime/startupSchemaGate.test.ts",
   "tests/scripts/schema033Compatibility.test.ts",
+  "tests/scripts/captureUnifiedWslMemory.test.ts",
+  "tests/scripts/runUnifiedAdaptiveBenchmark.test.ts",
   "tests/storage/migration032.postgres.test.ts",
   "tests/storage/migration033.postgres.test.ts",
   "tests/storage/migration034.postgres.test.ts",
+  "tests/storage/migration035.postgres.test.ts",
+  "tests/storage/migration035.unit.test.ts",
   "tests/storage/schemaMigrations.test.ts",
   "tests/storage/unifiedCheck.postgres.test.ts",
   "tests/tron/tronClient.test.ts",
@@ -1723,6 +1734,23 @@ export async function verifyPreReleaseConcreteEvidenceV2(
       releaseGenerationId: String(unifiedValue.releaseGenerationId ?? ""),
       planAGateReceiptSha256: createHash("sha256").update(planABytes).digest("hex")
     });
+    const adaptiveBytes = await readGateEvidenceByKind(
+      root,
+      manifest,
+      "G06_FULL",
+      "adaptive_release_gate_receipt",
+      "adaptive-rolling-release-gate-receipt-v1.json"
+    );
+    validateUnifiedAdaptiveRollingReleaseReceiptV1(
+      parseJson(adaptiveBytes),
+      {
+        candidateSha: manifest.candidateSha,
+        releaseGenerationId: String(
+          unifiedValue.releaseGenerationId ?? ""
+        )
+      },
+      adaptiveBytes
+    );
     for (const [gateId, groupId] of [
       ["G02_DATA", "plan1"],
       ["G03_SCORING", "plan2"],

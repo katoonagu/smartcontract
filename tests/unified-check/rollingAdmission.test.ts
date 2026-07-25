@@ -305,7 +305,7 @@ describe("Unified durable rolling admission", () => {
     })).resolves.toEqual({
       admittedTaskIds: [],
       deAdmittedTaskIds: [],
-      blocker: "no_ready_work"
+      blocker: "canonical_head_wait"
     });
   });
 });

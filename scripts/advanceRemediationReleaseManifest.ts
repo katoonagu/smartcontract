@@ -108,6 +108,7 @@ const OFFICIAL_PRE_RELEASE_PRODUCER_BY_PATH = Object.freeze({
   "full-regression-evidence.json": "release:verify:non-vitest",
   "plan-a-gate-receipt-v1.json": "release:unified:gates:finalize",
   "unified-wallet-release-gate-receipt-v1.json": "release:unified:gates:finalize",
+  "adaptive-rolling-release-gate-receipt-v1.json": "release:unified:gates:finalize",
   "suite-plan5.vitest.json": "release:suite:plan5",
   "suite-plan5.evidence.json": "release:suite:plan5",
   "schema-clean/schema032-release-evidence.json": "release:evidence:g07-promote",

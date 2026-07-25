@@ -38,6 +38,9 @@ import {
 import {
   buildUnifiedPerformanceBenchmarkManifest
 } from "../../src/unifiedCheck/performanceMetrics";
+import {
+  loadAdaptiveBenchmarkIndexForFinalizer
+} from "../../scripts/finalizeUnifiedReleaseGates";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1101,6 +1104,57 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       ...withoutHash,
       indexSha256: fingerprintCanonicalArtifact(withoutHash)
     };
+    await writeFile(
+      output,
+      `${canonicalizeArtifactJson(index)}\n`,
+      "utf8"
+    );
+    await expect(loadAdaptiveBenchmarkIndexForFinalizer(
+      root,
+      basename(output),
+      {
+        mode: "live",
+        candidateSha: candidateCommit
+      }
+    )).resolves.toMatchObject({
+      index: {
+        mode: "live",
+        candidateCommit,
+        executionIdentitySha256
+      },
+      evidence: artifacts.map((artifact) => ({
+        scenarioId: artifact.scenarioId,
+        performanceManifest: {
+          executionIdentitySha256:
+            artifact.executionIdentitySha256
+        }
+      }))
+    });
+    const conflatedIdentityWithoutHash = {
+      ...withoutHash,
+      executionIdentitySha256:
+        artifacts[0]!.executionIdentitySha256
+    };
+    await writeFile(
+      output,
+      `${canonicalizeArtifactJson({
+        ...conflatedIdentityWithoutHash,
+        indexSha256: fingerprintCanonicalArtifact(
+          conflatedIdentityWithoutHash
+        )
+      })}\n`,
+      "utf8"
+    );
+    await expect(loadAdaptiveBenchmarkIndexForFinalizer(
+      root,
+      basename(output),
+      {
+        mode: "live",
+        candidateSha: candidateCommit
+      }
+    )).rejects.toThrow(
+      "unified_adaptive_index_artifact_invalid"
+    );
     await writeFile(
       output,
       `${canonicalizeArtifactJson(index)}\n`,

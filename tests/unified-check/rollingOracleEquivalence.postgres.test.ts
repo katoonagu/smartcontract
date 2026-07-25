@@ -236,7 +236,14 @@ function runRecord(): AnalysisRunRecord {
     snapshotHash,
     snapshot,
     analysisManifestSha256: fingerprintCanonicalJson(analysisManifest),
-    analysisManifest
+    analysisManifest,
+    rolloutPolicy: {
+      stage: "global_barrier",
+      bucket: 0,
+      admissionPolicy: "barrier",
+      providerCapacityCeiling: 1,
+      receiptSha256: null
+    }
   };
 }
 

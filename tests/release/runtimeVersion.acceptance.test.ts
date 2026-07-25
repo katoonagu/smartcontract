@@ -24,12 +24,13 @@ function buildActiveRuntimeVersion(): RuntimeVersion {
     ...buildRuntimeVersion(),
     migration: {
       verified: true,
-      version: 34,
-      filename: "034_unified_check_adaptive_planner.sql",
+      version: 35,
+      filename: "035_unified_check_run_rollout_policy.sql",
       checksumSha256: SCHEMA_032_CHECKSUM,
       shortChecksum: SCHEMA_032_CHECKSUM.slice(0, 12),
       schema032ChecksumSha256: "c".repeat(64),
-      schema033ChecksumSha256: "d".repeat(64)
+      schema033ChecksumSha256: "d".repeat(64),
+      schema034ChecksumSha256: "e".repeat(64)
     }
   };
 }
@@ -129,7 +130,7 @@ it("[REQ-32][RUNTIME-VERSION] renders exact pure RU and EN version output", asyn
     "Scoring policy: scoring-signal-matrix-v3",
     "Result schema: score-anchor-v2+forensic-coverage-v2",
     "Narrative: telegram-forensic-result-v1",
-    `Database schema: schema 034 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
+    `Database schema: schema 035 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
   ].join("\n"));
   expect(api.formatRuntimeVersion(runtimeVersion, "ru")).toBe([
     "Версия runtime",
@@ -138,7 +139,7 @@ it("[REQ-32][RUNTIME-VERSION] renders exact pure RU and EN version output", asyn
     "Политика скоринга: scoring-signal-matrix-v3",
     "Схема результата: score-anchor-v2+forensic-coverage-v2",
     "Версия объяснения: telegram-forensic-result-v1",
-    `Схема БД: schema 034 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
+    `Схема БД: schema 035 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
   ].join("\n"));
   expect(api.formatRuntimeVersion(runtimeVersion, "en")).toBe(api.formatRuntimeVersion(runtimeVersion, "en"));
 });

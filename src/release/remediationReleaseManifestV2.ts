@@ -40,6 +40,7 @@ export const GATE_EVIDENCE_KINDS_V2 = [
   "task0_baseline", "trusted_os_principal_policy", "release_freeze_materialization",
   "acceptance_trace", "task8b_red", "suite_report", "suite_evidence",
   "full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+  "adaptive_release_gate_receipt",
   "schema_clean", "schema_production_clone",
   "schema_runtime_sanitized", "runtime_rehearsal", "terminal_legacy_population",
   "rollback_rehearsal", "manual_telegram_acceptance", "operational_attestation",

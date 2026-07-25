@@ -54,13 +54,18 @@ and watchdog actions. The authorized Unified detail view also shows the
 current phase, active/idle/cooling provider slots, request rate, opaque
 key-group use, exact discovered outstanding work, frontier current/peak,
 address-history reuse, cache/network counts, and checkpoint/delta bytes.
+Its on-demand adaptive snapshot shows opaque owner and lane, fair share,
+active slots, last service time, lookahead, durable/admitted/leased/ready/
+committed planner counts, canonical-head age, ready/reserved buffer, last
+commit, throughput, and the decision-time blocker. These run-level identities
+do not become permanent metric labels.
 When the frontier can expand it says `total still expanding`; it never invents
 percent complete or ETA. `FAILED_TECHNICAL` is operational.
 `DELIVERY_UNKNOWN` is visible and never auto-retried; manual resend is explicit
 and warned.
 
 The rollout fence and `/check` wiring are implemented in the candidate.
-Production continues legacy delivery until schema 034 and the Unified
+Production continues legacy delivery until schema 035 and the Unified
 generation are activated through the protected release flow.
 
 ## Remaining Product Work

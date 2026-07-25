@@ -15,6 +15,9 @@ import {
 } from "./repository";
 import type { SnapshotSource } from "./snapshot";
 import type { UnifiedWatchdogRunV1 } from "./watchdog";
+import type {
+  UnifiedRollingRolloutStage
+} from "./rolloutPolicy";
 
 const EXCLUDED_REGRESSION_ADDRESSES = new Set([
   "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
@@ -603,6 +606,12 @@ export async function prepareUnifiedCanaryBatch(input: {
   readonly selectionManifest: UnifiedCanarySelectionManifestV1;
   readonly snapshotSource: SnapshotSource;
   readonly versions: UnifiedAnalysisVersions;
+  readonly rolloutAuthority?: {
+    readonly stage: UnifiedRollingRolloutStage;
+    readonly boundedUserCheckBasisPoints: number;
+    readonly providerCapacityCeiling: number;
+    readonly receiptSha256: string | null;
+  };
   readonly repository: UnifiedCanaryBatchRepository;
   readonly createId: () => string;
   readonly providerConfiguration: {
@@ -747,6 +756,7 @@ export async function prepareUnifiedCanaryBatch(input: {
       candidateRunId: runId,
       initialTasks,
       versions: input.versions,
+      rolloutAuthority: input.rolloutAuthority,
       now: () => new Date(acceptedAt)
     });
     if (result.kind !== "attached" || result.reused) {

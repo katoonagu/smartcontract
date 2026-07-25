@@ -1,4 +1,8 @@
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign
+} from "node:crypto";
 import { expect, it } from "vitest";
 import {
   PRE_RELEASE_GATE_EVIDENCE_POLICY_V2,
@@ -18,6 +22,7 @@ import {
   APPROVED_PLAN_A_LOCK_TREE_SHA,
   APPROVED_PLAN_A_LOCKED_ROOT_TREE_SHA,
   APPROVED_LOCKED_GOLDEN_MANIFEST_SHA256,
+  canonicalAdaptiveRollingReceiptPayload,
   PLAN_A_GATE_RECEIPT_RELATIVE_PATH,
   UNIFIED_RELEASE_COMMANDS
 } from "../../src/release/unifiedReleaseGateReceipt";
@@ -25,6 +30,7 @@ import {
   buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
   buildReleaseManifestV2Fixture,
+  buildUnifiedReleaseGateEvidenceFixture,
   CANDIDATE_SHA,
   COMMAND_TEMPLATE_SHA256,
   buildTask0BReleaseFreezeEvidence,
@@ -104,11 +110,13 @@ it("binds every focused suite report and sidecar to exactly one pre-release gate
     "full-regression-evidence.json",
     "plan-a-gate-receipt-v1.json",
     "unified-wallet-release-gate-receipt-v1.json",
+    "adaptive-rolling-release-gate-receipt-v1.json",
     "suite-plan5.vitest.json",
     "suite-plan5.evidence.json"
   ]);
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G06_FULL.requiredKinds).toEqual([
     "full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+    "adaptive_release_gate_receipt",
     "suite_report", "suite_evidence"
   ]);
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G05_TELEGRAM.allowedKinds).toEqual([
@@ -197,24 +205,86 @@ it("binds the Unified release receipt to the exact Plan-A receipt and rollout ge
   };
   const unified = ref("unified_release_gate_receipt", "unified-wallet-release-gate-receipt-v1.json",
     unifiedValue);
+  const adaptive = ref(
+    "adaptive_release_gate_receipt",
+    "adaptive-rolling-release-gate-receipt-v1.json",
+    buildUnifiedReleaseGateEvidenceFixture(
+      CANDIDATE_SHA,
+      RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId
+    ).adaptive
+  );
   const legacy = [
     ref("full_regression", "full-regression-evidence.json", { candidateSha: CANDIDATE_SHA }),
     ref("suite_report", "suite-plan5.vitest.json", { success: true }, "vitest-json-report-v1"),
     ref("suite_evidence", "suite-plan5.evidence.json",
       { version: "release-suite-group-evidence-v1", candidateSha: CANDIDATE_SHA })
   ];
-  const items = [...legacy, planA, unified];
+  const items = [...legacy, planA, unified, adaptive];
   expect(() => validateGateEvidenceBytesV2(
     gate("G06_FULL", items) as any,
     new Map(items.map((item) => [item.ref.relativePath, item.content])),
     expected()
-  )).not.toThrow();
+  )).toThrow(/approval_signature_invalid/i);
+
+  const adaptiveValue = adaptive.content.length > 0
+    ? JSON.parse(adaptive.content.toString("utf8"))
+    : null;
+  const { approval: _approval, ...adaptiveBody } = adaptiveValue;
+  const foreignKeys = generateKeyPairSync("ed25519");
+  const foreignAdaptive = ref(
+    adaptive.ref.kind,
+    adaptive.ref.relativePath,
+    {
+      ...adaptiveBody,
+      approval: {
+        algorithm: "ed25519",
+        keyId: adaptiveValue.approval.keyId,
+        signatureBase64: sign(
+          null,
+          canonicalAdaptiveRollingReceiptPayload(adaptiveBody),
+          foreignKeys.privateKey
+        ).toString("base64")
+      }
+    }
+  );
+  const foreignItems = [...legacy, planA, unified, foreignAdaptive];
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G06_FULL", foreignItems) as any,
+    new Map(foreignItems.map((item) => [
+      item.ref.relativePath,
+      item.content
+    ])),
+    expected()
+  )).toThrow(/approval_signature_invalid/i);
+
+  const tamperedAdaptive = ref(
+    adaptive.ref.kind,
+    adaptive.ref.relativePath,
+    {
+      ...adaptiveValue,
+      recordedAt: "2026-07-18T09:59:01.000Z"
+    }
+  );
+  const tamperedAdaptiveItems = [
+    ...legacy,
+    planA,
+    unified,
+    tamperedAdaptive
+  ];
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G06_FULL", tamperedAdaptiveItems) as any,
+    new Map(tamperedAdaptiveItems.map((item) => [
+      item.ref.relativePath,
+      item.content
+    ])),
+    expected()
+  )).toThrow(/approval_signature_invalid/i);
 
   const replaced = ref("unified_release_gate_receipt", unified.ref.relativePath, {
     ...unifiedValue,
     planAGate: { ...unifiedValue.planAGate, sha256: "b".repeat(64) }
   });
-  const tampered = [...legacy, planA, replaced];
+  const tampered = [...legacy, planA, replaced, adaptive];
   expect(() => validateGateEvidenceBytesV2(
     gate("G06_FULL", tampered) as any,
     new Map(tampered.map((item) => [item.ref.relativePath, item.content])),

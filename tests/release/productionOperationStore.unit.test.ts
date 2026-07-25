@@ -5,6 +5,44 @@ import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+
+vi.mock(
+  "../../src/release/unifiedReleaseGateReceipt",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import(
+        "../../src/release/unifiedReleaseGateReceipt"
+      )
+    >();
+    return {
+      ...actual,
+      // ponytail: operation-store tests exercise lifecycle invariants;
+      // pinned signature rejection is covered by the G06 policy tests.
+      validateUnifiedAdaptiveRollingReleaseReceiptV1(
+        value: unknown,
+        context: {
+          candidateSha: string;
+          releaseGenerationId: string;
+        }
+      ) {
+        const receipt = value as {
+          candidateSha?: unknown;
+          releaseGenerationId?: unknown;
+        };
+        if (
+          receipt.candidateSha !== context.candidateSha ||
+          receipt.releaseGenerationId !==
+            context.releaseGenerationId
+        ) {
+          throw new Error(
+            "unified_adaptive_release_identity_invalid"
+          );
+        }
+        return value;
+      }
+    };
+  }
+);
 import {
   PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
   ProductionOperationStoreV2
@@ -225,6 +263,7 @@ async function materializeInitialGateEvidence(root: string, candidateSha: string
       if (!existsSync(path)) {
         await mkdir(resolve(path, ".."), { recursive: true });
         const value = relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+          : relativePath === "adaptive-rolling-release-gate-receipt-v1.json" ? unified.adaptive
           : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
             : { version: "gate-evidence-v2", candidateSha,
               gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };

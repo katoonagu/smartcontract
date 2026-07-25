@@ -15,12 +15,13 @@ function runtimeVersion() {
     runtimeInstanceLabel: `candidate-${SHA.slice(0, 8)}`,
     migration: {
       verified: true,
-      version: 34,
-      filename: "034_unified_check_adaptive_planner.sql",
+      version: 35,
+      filename: "035_unified_check_run_rollout_policy.sql",
       checksumSha256: CHECKSUM,
       shortChecksum: CHECKSUM.slice(0, 12),
       schema032ChecksumSha256: "b".repeat(64),
-      schema033ChecksumSha256: "c".repeat(64)
+      schema033ChecksumSha256: "c".repeat(64),
+      schema034ChecksumSha256: "d".repeat(64)
     }
   });
 }

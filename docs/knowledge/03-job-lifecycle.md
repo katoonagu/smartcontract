@@ -14,10 +14,13 @@ code_refs:
   - src/unifiedCheck/repository.ts
   - src/unifiedCheck/productionWorker.ts
   - src/unifiedCheck/providerPool.ts
+  - src/unifiedCheck/rolloutPolicy.ts
+  - src/unifiedCheck/admissionRuntimeControl.ts
   - src/unifiedCheck/traversalDelta.ts
   - src/unifiedCheck/productionFinalizer.ts
   - src/unifiedCheck/delivery.ts
   - src/unifiedCheck/watchdog.ts
+  - src/release/unifiedReleaseGateReceipt.ts
 ---
 
 # Job Lifecycle
@@ -84,11 +87,16 @@ external effect and forbids automatic resend. Manual resend creates a new
 warned presentation and audit record.
 
 These contracts are implemented in the release candidate but inactive in
-production until the protected schema-034 cutover and generation-fence switch.
+production until the protected schema-035 cutover and generation-fence switch.
 
-The active candidate startup contract now requires exact schema 034 with
-verified schema-032 and schema-033 predecessor receipts. New run creation
-persists an opaque stable fairness owner, and the durable planner repository
+The active candidate startup contract now requires exact schema 035 with
+verified schema-032, schema-033, and schema-034 predecessor receipts. Migration
+035 additively stores immutable rollout stage, stable bucket, admission policy,
+verified provider ceiling, and signed-receipt SHA on `unified_check_runs`.
+New run creation persists those fields and the opaque stable fairness owner in
+the same transaction; restart and configuration changes load the stored
+decision instead of inferring it from planner rows or recalculating it. The
+durable planner repository
 can append capacity-independent canonical task rows under a run lock.
 Acceptance of an admitted ordered task is now one idempotent PostgreSQL
 transaction: it inserts the immutable result artifact and attempt, completes
@@ -130,6 +138,14 @@ eligible canonical head may still take its protected slot. Switching to
 barrier de-admits only unleased tail rows; leased bounded chunks finish and
 the same ordered commit path continues head-first.
 
+Rollout policy is selected per new run. The explicit stages are global
+barrier, isolated synthetic/canary rolling, a stable bounded share of new
+`user_check` runs, and rolling by default for new runs. A run without a
+schema-035 rollout policy remains on barrier behavior; the rollout does not
+reconstruct or silently convert pre-035 work. The process-wide one-way
+fallback overrides every stage to barrier and uses the same durable
+planner/commit functions.
+
 Controller wakes coalesce after durable intake, provider lifecycle changes,
 planning/commit, and cooldown expiry. A rare reconciliation tick invokes the
 same cycle after restart or a lost signal. It reconstructs nothing from
@@ -139,14 +155,20 @@ without interrupting an in-flight provider request.
 
 ## Remaining Operational Work
 
-The schema-034 startup, release-receipt, protected migration, planner,
-adaptive-capacity, and reconciliation implementation gaps are closed.
-Production configuration still defaults to barrier admission until Plan 3
-benchmark and rollout evidence authorize rolling. P1 boundary activation still waits
+The schema-035 startup verifier, additive rollout-policy migration, planner, adaptive-capacity,
+reconciliation, staged policy, memory-evidence validator, and signed adaptive
+promotion-receipt implementations are closed. Production configuration still
+defaults to the `global_barrier` stage. The deterministic frozen replay and
+logical capacities through 100 are automated evidence; actual live capacity
+1/4, three-wallet, target-Linux memory, and signed promotion artifacts have
+not been produced. P1 boundary activation still waits
 for blind review/adjudication, and the performance matrix waits for frozen
 TPCP/TFWG/TXc provider bundles. Protected backup/migration/startup, generation
 activation, and post-deploy canary also remain external rollout work. The
 protected release receipt retains schema 033 as immutable predecessor evidence
-and requires the exact schema-034 migration, structural catalog identity, and
-clean/clone verification receipts. This contract authorizes no production
-mutation by itself.
+and requires the exact schema-034 planner predecessor plus schema-035 rollout
+policy checksum/structural identity and a canonical Ed25519-signed adaptive
+promotion receipt. The finalizer derives that receipt from canonical replay,
+PostgreSQL oracle, live, lifecycle, fallback, and target-Linux memory artifacts;
+caller-selected authority keys are not accepted. This contract authorizes no
+production mutation by itself.

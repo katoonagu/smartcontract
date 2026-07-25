@@ -6,6 +6,44 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "pg";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock(
+  "../../src/release/unifiedReleaseGateReceipt",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import(
+        "../../src/release/unifiedReleaseGateReceipt"
+      )
+    >();
+    return {
+      ...actual,
+      // ponytail: protected-backup tests exercise orchestration; pinned
+      // signature rejection is covered by the dedicated G06 policy tests.
+      validateUnifiedAdaptiveRollingReleaseReceiptV1(
+        value: unknown,
+        context: {
+          candidateSha: string;
+          releaseGenerationId: string;
+        }
+      ) {
+        const receipt = value as {
+          candidateSha?: unknown;
+          releaseGenerationId?: unknown;
+        };
+        if (
+          receipt.candidateSha !== context.candidateSha ||
+          receipt.releaseGenerationId !==
+            context.releaseGenerationId
+        ) {
+          throw new Error(
+            "unified_adaptive_release_identity_invalid"
+          );
+        }
+        return value;
+      }
+    };
+  }
+);
 import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   CANDIDATE_SHA,
@@ -157,6 +195,7 @@ function materializeInitialGateEvidence(root: string) {
         const value = relativePath === "trusted-os-principal-policy-v2.json" ? trustPolicy
           : relativePath === "artifact-root-trust-boundary-evidence-v1.json" ? trustBoundary
           : relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+          : relativePath === "adaptive-rolling-release-gate-receipt-v1.json" ? unified.adaptive
           : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
           : { version: "gate-evidence-v2", candidateSha: CANDIDATE_SHA,
             gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };

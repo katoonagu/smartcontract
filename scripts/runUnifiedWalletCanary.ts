@@ -15,7 +15,8 @@ import {
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
   SCHEMA_034_FILENAME,
-  verifyRequiredSchema034
+  SCHEMA_035_FILENAME,
+  verifyRequiredSchema035
 } from "../src/storage/schemaMigrations";
 import {
   buildUnifiedAdaptiveBenchmarkSelection,
@@ -54,6 +55,9 @@ import {
   type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1,
   type UnifiedAdaptiveBenchmarkScenarioSymptomArtifactV1
 } from "../src/unifiedCheck/adaptiveBenchmarkControl";
+import {
+  loadUnifiedVerifiedRolloutAuthority
+} from "../src/unifiedCheck/rolloutAuthority";
 
 async function writeImmutable(path: string, content: string): Promise<void> {
   try {
@@ -194,13 +198,26 @@ export async function runUnifiedWalletCanaryCli(
     const schema034Bytes = await readFile(
       new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
     );
-    const schemaVerification = await verifyRequiredSchema034(
+    const schema035Bytes = await readFile(
+      new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)
+    );
+    const schemaVerification = await verifyRequiredSchema035(
       db,
-      await checksumMigrationBytes(schema034Bytes),
+      await checksumMigrationBytes(schema035Bytes),
       await checksumMigrationBytes(schema032Bytes),
-      await checksumMigrationBytes(schema033Bytes)
+      await checksumMigrationBytes(schema033Bytes),
+      await checksumMigrationBytes(schema034Bytes)
     );
     const activeGeneration = await getActiveCheckGeneration(db);
+    const rolloutAuthority =
+      await loadUnifiedVerifiedRolloutAuthority({
+        receiptPath: config.unifiedAdaptiveReleaseReceiptPath,
+        candidateSha: options.candidateCommit,
+        expectedReleaseGenerationId: activeGeneration.generationId,
+        configuredStage: config.unifiedRollingRolloutStage,
+        configuredProviderCapacityCeiling:
+          config.unifiedVerifiedProviderCapacityCeiling
+      });
     if (
       activeGeneration.deliveryGeneration !== "unified" ||
       activeGeneration.runtimeCommit.toLowerCase() !== options.candidateCommit
@@ -278,6 +295,11 @@ export async function runUnifiedWalletCanaryCli(
               attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
+            },
+            rolloutAuthority: {
+              ...rolloutAuthority,
+              boundedUserCheckBasisPoints:
+                config.unifiedRollingUserCheckBasisPoints
             },
             diagnosticHypothesis,
             providerConfiguration,

@@ -39,6 +39,7 @@ import {
   SCHEMA_033_VERSION,
   SCHEMA_034_FILENAME as RELEASE_SCHEMA_FILENAME,
   SCHEMA_034_VERSION as RELEASE_SCHEMA_VERSION,
+  SCHEMA_035_FILENAME,
   SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
   SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
   applyVerifiedTrackedMigration,
@@ -344,8 +345,9 @@ export function validateSchema032CandidateRepositoryState(input: {
       || legacyReleaseFiles.filter((name) => name === SCHEMA_033_FILENAME).length !== 1
       || legacyReleaseFiles.filter((name) => name === RELEASE_SCHEMA_FILENAME).length !== 1
       || Math.max(...legacyReleaseFiles.map((name) => Number.parseInt(name.slice(0, 3), 10))) !== RELEASE_SCHEMA_VERSION
-      || deferredFiles.length > 0
-      || versions.some((version) => version > RELEASE_SCHEMA_VERSION)) {
+      || deferredFiles.length !== 1
+      || deferredFiles[0] !== SCHEMA_035_FILENAME
+      || versions.some((version) => version > RELEASE_SCHEMA_VERSION + 1)) {
     fail("schema_032_sequence_candidate_repository_unverified");
   }
 }

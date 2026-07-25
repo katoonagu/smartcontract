@@ -3,11 +3,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
 import {
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
   SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION,
   verifyRequiredSchema034,
   verifySchema034Structure,
   applyVerifiedMigration032,
@@ -28,8 +27,8 @@ async function installApprovalBaseline(client: pg.PoolClient): Promise<void> {
 
 postgresDescribe("migration 034 PostgreSQL acceptance", () => {
   it("applies after the tracked 032/033 receipt chain, preserves 033 lineage, and enforces the adaptive planner", async () => {
-    expect(REQUIRED_SCHEMA_VERSION).toBe(34);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
+    expect(SCHEMA_034_VERSION).toBe(34);
+    expect(SCHEMA_034_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
 
     const pool = new pg.Pool({ connectionString });
     const client = await pool.connect();

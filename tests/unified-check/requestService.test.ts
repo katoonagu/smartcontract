@@ -151,6 +151,79 @@ function input(
 }
 
 describe("Unified Check request intake", () => {
+  it("freezes rollout policy on run creation while later runs use new authority", async () => {
+    const store = new MemoryStore();
+    const firstInput = {
+      ...input(
+        store,
+        source("84713573"),
+        "rollout-action-1",
+        "rollout-request-1",
+        "rollout-run-1"
+      ),
+      rolloutAuthority: {
+      stage: "bounded_user_check",
+      boundedUserCheckBasisPoints: 10_000,
+      providerCapacityCeiling: 4,
+      receiptSha256: "e".repeat(64)
+      } as const
+    };
+    const first = await intakeUnifiedCheck(firstInput);
+    expect(first.kind).toBe("attached");
+    if (first.kind !== "attached") return;
+    expect(first.run.rolloutPolicy).toMatchObject({
+      stage: "bounded_user_check",
+      admissionPolicy: "rolling",
+      providerCapacityCeiling: 4,
+      receiptSha256: "e".repeat(64)
+    });
+
+    const duplicateInput = {
+      ...input(
+        store,
+        source("84713573"),
+        "rollout-action-1",
+        "rollout-request-duplicate",
+        "rollout-run-duplicate"
+      ),
+      rolloutAuthority: {
+        stage: "global_barrier",
+        boundedUserCheckBasisPoints: 0,
+        providerCapacityCeiling: 1,
+        receiptSha256: "f".repeat(64)
+      } as const
+    };
+    const duplicate = await intakeUnifiedCheck(duplicateInput);
+    expect(duplicate.kind).toBe("attached");
+    if (duplicate.kind !== "attached") return;
+    expect(duplicate.run.rolloutPolicy).toEqual(first.run.rolloutPolicy);
+
+    const nextInput = {
+      ...input(
+        store,
+        source("84713574", HASH_B),
+        "rollout-action-2",
+        "rollout-request-2",
+        "rollout-run-2"
+      ),
+      rolloutAuthority: {
+        stage: "global_barrier",
+        boundedUserCheckBasisPoints: 0,
+        providerCapacityCeiling: 1,
+        receiptSha256: "f".repeat(64)
+      } as const
+    };
+    const next = await intakeUnifiedCheck(nextInput);
+    expect(next.kind).toBe("attached");
+    if (next.kind !== "attached") return;
+    expect(next.run.rolloutPolicy).toMatchObject({
+      stage: "global_barrier",
+      admissionPolicy: "barrier",
+      providerCapacityCeiling: 1,
+      receiptSha256: "f".repeat(64)
+    });
+  });
+
   it("uses stable opaque Telegram owners and run IDs for non-user work", () => {
     const first = unifiedFairnessOwnerId({
       runPurpose: "user_check",

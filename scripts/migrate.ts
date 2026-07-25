@@ -4,6 +4,8 @@ import { Client } from "pg";
 import {
   SCHEMA_032_VERSION,
   SCHEMA_033_VERSION,
+  SCHEMA_034_VERSION,
+  SCHEMA_035_VERSION,
   applyVerifiedTrackedMigration
 } from "../src/storage/schemaMigrations";
 import {
@@ -17,6 +19,7 @@ const maximumVersionText = process.env.SCHEMA_MIGRATION_MAX_VERSION;
 const maximumVersion = maximumVersionText === undefined
   ? Number.POSITIVE_INFINITY
   : Number.parseInt(maximumVersionText, 10);
+const verifyLatestSchemaLineage = maximumVersion >= SCHEMA_035_VERSION;
 let migrationFiles: string[];
 
 if (
@@ -72,6 +75,7 @@ try {
   await assertReleaseSessionIdentity();
   let requiredSchema032Checksum: string | undefined;
   let requiredSchema033Checksum: string | undefined;
+  let requiredSchema034Checksum: string | undefined;
   for (const migrationFile of migrationFiles) {
     const migrationPath = new URL(`../migrations/${migrationFile}`, import.meta.url);
     const versionText = /^(\d+)_/.exec(migrationFile)?.[1];
@@ -89,10 +93,14 @@ try {
       filename: migrationFile,
       migrationBytes: await readFile(migrationPath),
       requiredSchema032Checksum,
-      requiredSchema033Checksum
+      requiredSchema033Checksum,
+      requiredSchema034Checksum,
+      allowNewerReceipt: verifyLatestSchemaLineage,
+      allowSchema035Additions: verifyLatestSchemaLineage
     });
     if (version === SCHEMA_032_VERSION) requiredSchema032Checksum = verification.checksumSha256;
     if (version === SCHEMA_033_VERSION) requiredSchema033Checksum = verification.checksumSha256;
+    if (version === SCHEMA_034_VERSION) requiredSchema034Checksum = verification.checksumSha256;
     const action = verification.status === "applied" ? "applied and verified" : "already verified";
     console.log(
       `Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`

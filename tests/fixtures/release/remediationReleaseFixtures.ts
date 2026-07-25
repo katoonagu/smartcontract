@@ -4,6 +4,17 @@ import { adaptTelegramForensicResult } from "../../../src/telegram/forensicPrese
 import { renderTelegramForensicResult } from "../../../src/telegram/forensicResultRenderer";
 import { MANUAL_TELEGRAM_ACCEPTANCE_CASES } from "../../../scripts/renderTelegramUxAcceptance";
 import { remediationTelegramUxCase } from "../telegram/remediationTelegramUxCases";
+import {
+  APPROVED_ADAPTIVE_RELEASE_KEY_ID,
+  APPROVED_SCHEMA_034_CATALOG_SHA256,
+  APPROVED_SCHEMA_034_CHECKSUM,
+  APPROVED_SCHEMA_035_CATALOG_SHA256,
+  APPROVED_SCHEMA_035_CHECKSUM,
+  sealUnifiedAdaptiveRollingReleaseReceiptV1
+} from "../../../src/release/unifiedReleaseGateReceipt";
+import {
+  sealUnifiedMemoryGateEvidenceV1
+} from "../../../src/unifiedCheck/adaptiveBenchmarkEvidence";
 
 export const CANDIDATE_SHA = "c".repeat(40);
 export const PLAN_BASE_SHA = "4761e1453ea03a96845b68039e6d6f4812aae540";
@@ -1053,6 +1064,45 @@ export function buildUnifiedReleaseGateEvidenceFixture(
   candidateSha = CANDIDATE_SHA,
   releaseGenerationId = RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId
 ) {
+  const memory = sealUnifiedMemoryGateEvidenceV1({
+    scope: "target_linux_cgroup_gate",
+    runId: "fixture-memory-run",
+    scenarioId: "fixture-target-linux",
+    completedAt: "2026-07-18T09:58:00.000Z",
+    samples: (["before", "during", "after"] as const).map(
+      (phase, index) => ({
+        version: "unified-memory-sample-v1" as const,
+        phase,
+        runId: "fixture-memory-run",
+        scenarioId: "fixture-target-linux",
+        capturedAt: `2026-07-18T09:5${index}:00.000Z`,
+        nodePid: 42,
+        localWslDiagnostic: {
+          status: "skipped" as const,
+          vmmemWslWorkingSetBytes: null,
+          linuxMemAvailableBytes: null,
+          linuxSwapTotalBytes: null,
+          linuxSwapFreeBytes: null
+        },
+        runtime: {
+          rssBytes: 256_000_000 + index,
+          heapUsedBytes: 128_000_000 + index
+        }
+      })
+    ),
+    database: { latencyMs: 10, checkpointLatencyMs: 12 },
+    availableMemorySource: "cgroup",
+    availableMemoryBytes: 8_589_934_592,
+    targetAttestation: {
+      platform: "linux",
+      measurement: "observed",
+      processPid: 42,
+      processStartTimeTicks: "123456",
+      executableSha256: "9".repeat(64),
+      memorySourcePath: "/sys/fs/cgroup/memory.current",
+      memorySourceArtifactSha256: "8".repeat(64)
+    }
+  }).envelope;
   const planA = {
     version: "plan-a-gate-receipt-v1",
     candidateSha,
@@ -1105,8 +1155,91 @@ export function buildUnifiedReleaseGateEvidenceFixture(
     outputSha256: "a".repeat(64),
     provenanceReceiptSha256: "a".repeat(64)
   }));
+  const adaptive =
+    sealUnifiedAdaptiveRollingReleaseReceiptV1({
+      version: "unified-adaptive-rolling-release-receipt-v1",
+      candidateSha,
+      releaseGenerationId,
+      authorizedStage: "global_barrier",
+      recordedAt: "2026-07-18T09:59:00.000Z",
+      schema034: {
+        checksumSha256: APPROVED_SCHEMA_034_CHECKSUM,
+        catalogSha256: APPROVED_SCHEMA_034_CATALOG_SHA256,
+        structuralGatePassed: true
+      },
+      schema035: {
+        checksumSha256: APPROVED_SCHEMA_035_CHECKSUM,
+        catalogSha256: APPROVED_SCHEMA_035_CATALOG_SHA256,
+        structuralGatePassed: true
+      },
+      frozenReplay: {
+        evidenceIndexSha256: "1".repeat(64),
+        oracleReceiptSha256: "2".repeat(64),
+        exactEquivalent: true,
+        logicalCapacities: [1, 4, 8, 16, 32, 100]
+      },
+      transactionalRecovery: {
+        evidenceSha256: "3".repeat(64),
+        retryPassed: true,
+        restartPassed: true,
+        duplicateCommits: 0,
+        duplicateDeliveryIntents: 0
+      },
+      live: {
+        capacity1EvidenceSha256: "4".repeat(64),
+        capacity4: {
+          status: "unverified",
+          reason: "independent_groups_not_audited"
+        },
+        wallets: [
+          "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
+          "TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr",
+          "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"
+        ].map((subjectAddress, index) => ({
+          subjectAddress: subjectAddress as
+            | "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV"
+            | "TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr"
+            | "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+          score: index,
+          decision: "REVIEW" as const,
+          closureComplete: true as const,
+          evidenceBundleSha256: String(index + 1).repeat(64),
+          traversalClosureSha256: String(index + 4).repeat(64),
+          scoringBundleSha256: String(index + 7).repeat(64),
+          reportSha256: String(index + 1).repeat(64)
+        })),
+        externalTelegramSends: 0
+      },
+      targetLinuxMemory: memory,
+      hotFallback: {
+        evidenceSha256: "5".repeat(64),
+        rollingToBarrierPassed: true,
+        samePlannerCommitPath: true,
+        unleasedTailDeAdmitted: true,
+        leasedChunksFinishedBounded: true
+      },
+      binaryRollback: {
+        pre034BinaryHot: false,
+        retainSchema034: true,
+        destructiveDownMigration: false,
+        orderedSteps: [
+          "close_generation_to_new_claims",
+          "drain_or_block_active_rolling_runs",
+          "stop_new_runtime",
+          "start_old_binary",
+          "retain_migration_034"
+        ]
+      },
+      verifiedCapacityCeiling: 1,
+      approval: {
+        algorithm: "ed25519",
+        keyId: APPROVED_ADAPTIVE_RELEASE_KEY_ID,
+        signatureBase64: Buffer.alloc(64).toString("base64")
+      }
+    }).envelope;
   return {
     planA,
+    adaptive,
     unified: {
       version: "unified-wallet-release-gate-receipt-v1",
       candidateSha,

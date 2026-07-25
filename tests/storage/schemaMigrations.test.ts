@@ -9,6 +9,8 @@ import {
   SCHEMA_033_VERSION,
   SCHEMA_034_FILENAME,
   SCHEMA_034_VERSION,
+  SCHEMA_035_FILENAME,
+  SCHEMA_035_VERSION,
   SCHEMA_032_FILENAME,
   SCHEMA_032_VERSION,
   SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
@@ -18,6 +20,7 @@ import {
   type Schema032Verification,
   checksumMigrationBytes,
   projectSchema033CatalogAfter034,
+  projectSchema033TriggersAfter035,
   verifyRequiredSchema032,
   verifyRequiredSchema034,
   verifySchema032Structure,
@@ -317,8 +320,11 @@ describe("verified schema 032 metadata", () => {
     expect(SCHEMA_033_VERSION).toBe(33);
     expect(SCHEMA_033_FILENAME).toBe("033_unified_wallet_check.sql");
     expect(SCHEMA_034_VERSION).toBe(34);
-    expect(REQUIRED_SCHEMA_VERSION).toBe(34);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
+    expect(SCHEMA_034_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
+    expect(SCHEMA_035_VERSION).toBe(35);
+    expect(SCHEMA_035_FILENAME).toBe("035_unified_check_run_rollout_policy.sql");
+    expect(REQUIRED_SCHEMA_VERSION).toBe(35);
+    expect(REQUIRED_SCHEMA_FILENAME).toBe("035_unified_check_run_rollout_policy.sql");
     expect(SCHEMA_MIGRATION_LOCK_ID).toBe(20260712032n);
     await expect(checksumMigrationBytes(Buffer.from("a\nb\n"))).resolves.toMatch(/^[a-f0-9]{64}$/);
     expect(await checksumMigrationBytes(Buffer.from("a\nb\n"))).not.toBe(
@@ -564,6 +570,29 @@ describe("verified schema 034 metadata", () => {
     expect(values).toEqual([[34]]);
   });
 
+  it("rejects partial schema 035 drift through standalone verifyRequiredSchema034", async () => {
+    const db = {
+      query: async (sql: string) => {
+        if (sql.includes("where version > $1")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.includes("schema_035_drift")) {
+          return {
+            rows: [{ schema_035_drift: true }],
+            rowCount: 1
+          };
+        }
+        throw new Error("standalone_schema_034_drift_check_missing");
+      }
+    } as unknown as Db;
+    await expect(verifyRequiredSchema034(
+      db,
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64)
+    )).rejects.toThrow("schema_034_catalog_mismatch");
+  });
+
   it("normalizes only the table-qualified 034 additions from the frozen 033 catalog", () => {
     const projection = projectSchema033CatalogAfter034({
       columns: [
@@ -584,6 +613,50 @@ describe("verified schema 034 metadata", () => {
       columns: [{ table_name: "unified_check_requests", column_name: "fairness_owner_id" }],
       constraints: [{ table_name: "unified_check_requests", conname: "unified_check_tasks_run_id_id_key" }],
       indexes: [{ tablename: "unified_check_requests", indexname: "unified_check_tasks_run_id_id_key" }]
+    });
+  });
+
+  it("projects the immutable rollout trigger only for verified schema 035 lineage", () => {
+    const legacy = {
+      table_name: "unified_check_runs",
+      tgname: "unified_check_runs_immutable"
+    };
+    const rollout = {
+      table_name: "unified_check_runs",
+      tgname: "unified_check_runs_rollout_policy_immutable"
+    };
+    expect(projectSchema033TriggersAfter035(
+      [legacy, rollout],
+      false
+    )).toEqual([legacy, rollout]);
+    expect(projectSchema033TriggersAfter035(
+      [legacy, rollout],
+      true
+    )).toEqual([legacy]);
+  });
+
+  it("does not hide partial schema 035 drift from standalone schema 034 verification", () => {
+    const partial035 = {
+      columns: [{
+        table_name: "unified_check_runs",
+        column_name: "rollout_stage"
+      }],
+      constraints: [{
+        table_name: "unified_check_runs",
+        conname: "unified_check_runs_rollout_stage_check"
+      }],
+      indexes: []
+    };
+    expect(projectSchema033CatalogAfter034(
+      partial035
+    )).toEqual(partial035);
+    expect(projectSchema033CatalogAfter034(
+      partial035,
+      true
+    )).toEqual({
+      columns: [],
+      constraints: [],
+      indexes: []
     });
   });
 

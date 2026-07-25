@@ -3,7 +3,51 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
+
+vi.mock(
+  "../../src/release/unifiedReleaseGateReceipt",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import(
+        "../../src/release/unifiedReleaseGateReceipt"
+      )
+    >();
+    return {
+      ...actual,
+      // ponytail: this orchestration fixture has no release private key;
+      // pinned-signature behavior is covered by the G06 policy tests.
+      validateUnifiedAdaptiveRollingReleaseReceiptV1(
+        value: unknown,
+        context: {
+          candidateSha: string;
+          releaseGenerationId: string;
+        }
+      ) {
+        const receipt = value as {
+          candidateSha?: unknown;
+          releaseGenerationId?: unknown;
+        };
+        if (
+          receipt.candidateSha !== context.candidateSha ||
+          receipt.releaseGenerationId !==
+            context.releaseGenerationId
+        ) {
+          throw new Error(
+            "unified_adaptive_release_identity_invalid"
+          );
+        }
+        return value;
+      }
+    };
+  }
+);
 import { runAdvanceRemediationReleaseManifest } from "../../scripts/advanceRemediationReleaseManifest";
 import * as releaseEvidenceProducer from "../../scripts/advanceRemediationReleaseManifest";
 import {
@@ -192,6 +236,7 @@ function initialGateOutputs(candidateSha: string, artifactRoot: string) {
           const fixture = relativePath === "trusted-os-principal-policy-v2.json" ? g00Policy
             : relativePath === "artifact-root-trust-boundary-evidence-v1.json" ? g00Boundary
               : relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+                : relativePath === "adaptive-rolling-release-gate-receipt-v1.json" ? unified.adaptive
                 : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
               : { version: "gate-evidence-v2", candidateSha,
                 gateId: id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };

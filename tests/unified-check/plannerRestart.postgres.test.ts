@@ -122,6 +122,12 @@ async function withScenario<T>(
         "utf8"
       )
     );
+    await client.query(
+      await readFile(
+        "migrations/035_unified_check_run_rollout_policy.sql",
+        "utf8"
+      )
+    );
     const labelDataset = {
       version: "unified-label-dataset-v1",
       rows: []
@@ -171,7 +177,7 @@ async function withScenario<T>(
         scoringPolicyVersion: "scoring-signal-matrix-v4",
         attributionPolicyVersion: "selected-attribution-policy-v1",
         runtimeCommit: "candidate",
-        schemaVersion: 34
+        schemaVersion: 35
       },
       now: () => new Date("2026-07-23T13:00:00.000Z")
     });

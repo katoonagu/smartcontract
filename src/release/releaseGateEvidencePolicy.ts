@@ -3,6 +3,7 @@ import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifes
 import { canonicalBytesV2 } from "./releaseRootWriterStore";
 import {
   validatePlanAGateReceiptV1,
+  validateUnifiedAdaptiveRollingReleaseReceiptV1,
   validateUnifiedWalletReleaseGateReceiptV1
 } from "./unifiedReleaseGateReceipt";
 import {
@@ -95,8 +96,10 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G06_FULL: policy("G06_FULL", [
     "full-regression-evidence.json", "plan-a-gate-receipt-v1.json",
     "unified-wallet-release-gate-receipt-v1.json",
+    "adaptive-rolling-release-gate-receipt-v1.json",
     "suite-plan5.vitest.json", "suite-plan5.evidence.json"
   ], ["full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+    "adaptive_release_gate_receipt",
     "suite_report", "suite_evidence"]),
   G07_SCHEMA_OFFLINE: policy("G07_SCHEMA_OFFLINE", [
     "schema-clean/schema032-release-evidence.json",
@@ -631,6 +634,7 @@ function validateTypedEvidence(
 type ParsedGateArtifact = Readonly<{
   ref: GateEvidenceRefV2;
   byteLength: number;
+  bytes: Buffer | null;
   value: Record<string, unknown> | null;
 }>;
 
@@ -1004,7 +1008,7 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_bytes_invalid");
     }
     const value = validateTypedEvidence(ref, bytes, byteLength);
-    const artifact = { ref, byteLength, value } as const;
+    const artifact = { ref, byteLength, bytes, value } as const;
     artifacts.set(ref.kind, artifact);
     artifactsByPath.set(ref.relativePath, artifact);
     if (gatePolicy.production) validateProductionEvidencePath(ref, expected);
@@ -1021,6 +1025,10 @@ export function validateGateEvidenceBytesV2(
   if (gate.id === "G06_FULL") {
     const planA = requireJsonArtifact(artifacts, "plan_a_gate_receipt");
     const unified = requireJsonArtifact(artifacts, "unified_release_gate_receipt");
+    const adaptive = requireJsonArtifactByPath(
+      artifactsByPath,
+      "adaptive-rolling-release-gate-receipt-v1.json"
+    );
     if (expected.releaseGenerationId === undefined) {
       throw new Error("unified_release_generation_binding_missing");
     }
@@ -1029,6 +1037,17 @@ export function validateGateEvidenceBytesV2(
       releaseGenerationId: expected.releaseGenerationId,
       planAGateReceiptSha256: planA.ref.sha256
     });
+    if (adaptive.bytes === null) {
+      throw new Error("gate_evidence_bytes_invalid");
+    }
+    validateUnifiedAdaptiveRollingReleaseReceiptV1(
+      adaptive.value,
+      {
+        candidateSha: gate.candidateSha,
+        releaseGenerationId: expected.releaseGenerationId
+      },
+      adaptive.bytes
+    );
   }
   if (gate.id === "G00_BASE") validateG00TrustBindings(artifactsByPath, expected);
   if (gatePolicy.production) validateProductionGateBindings(gate, artifacts, expected);

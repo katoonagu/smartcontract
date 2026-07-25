@@ -69,6 +69,14 @@ export type AppConfig = {
   unifiedRepairMaxWaitChunks: number;
   unifiedReconciliationIntervalMs: number;
   unifiedAdmissionPolicy: "barrier" | "rolling";
+  unifiedRollingRolloutStage:
+    | "global_barrier"
+    | "isolated_rolling"
+    | "bounded_user_check"
+    | "rolling_default";
+  unifiedRollingUserCheckBasisPoints: number;
+  unifiedVerifiedProviderCapacityCeiling: number;
+  unifiedAdaptiveReleaseReceiptPath: string | null;
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
@@ -182,6 +190,25 @@ function parseNumberInRange(name: string, rawValue: string, minimum: number, max
 function parseUnifiedAdmissionPolicy(rawValue: string): "barrier" | "rolling" {
   if (rawValue === "barrier" || rawValue === "rolling") return rawValue;
   throw new Error("UNIFIED_ADMISSION_POLICY must be barrier or rolling");
+}
+
+function parseUnifiedRollingRolloutStage(
+  rawValue: string
+): AppConfig["unifiedRollingRolloutStage"] {
+  if (
+    [
+      "global_barrier",
+      "isolated_rolling",
+      "bounded_user_check",
+      "rolling_default"
+    ].includes(rawValue)
+  ) {
+    return rawValue as AppConfig["unifiedRollingRolloutStage"];
+  }
+  throw new Error(
+    "UNIFIED_ROLLING_ROLLOUT_STAGE must be global_barrier, " +
+    "isolated_rolling, bounded_user_check, or rolling_default"
+  );
 }
 
 function parseHttpsUrl(name: string, rawValue: string): URL {
@@ -514,6 +541,23 @@ export function loadConfig(): AppConfig {
     unifiedAdmissionPolicy: parseUnifiedAdmissionPolicy(
       process.env.UNIFIED_ADMISSION_POLICY ?? "barrier"
     ),
+    unifiedRollingRolloutStage: parseUnifiedRollingRolloutStage(
+      process.env.UNIFIED_ROLLING_ROLLOUT_STAGE ?? "global_barrier"
+    ),
+    unifiedRollingUserCheckBasisPoints: parseIntegerInRange(
+      "UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS",
+      process.env.UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS ?? "0",
+      0,
+      10_000
+    ),
+    unifiedVerifiedProviderCapacityCeiling: parseIntegerInRange(
+      "UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING",
+      process.env.UNIFIED_VERIFIED_PROVIDER_CAPACITY_CEILING ?? "1",
+      1,
+      100
+    ),
+    unifiedAdaptiveReleaseReceiptPath:
+      process.env.UNIFIED_ADAPTIVE_RELEASE_RECEIPT_PATH?.trim() || null,
     tronscanDashboardCacheTtlMs: parsePositiveInteger(
       "TRONSCAN_DASHBOARD_CACHE_TTL_MS",
       process.env.TRONSCAN_DASHBOARD_CACHE_TTL_MS ?? "300000",

@@ -5,6 +5,44 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock(
+  "../../src/release/unifiedReleaseGateReceipt",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import(
+        "../../src/release/unifiedReleaseGateReceipt"
+      )
+    >();
+    return {
+      ...actual,
+      // ponytail: historical G13 tests exercise recovery semantics;
+      // pinned signature rejection is covered by the G06 policy tests.
+      validateUnifiedAdaptiveRollingReleaseReceiptV1(
+        value: unknown,
+        context: {
+          candidateSha: string;
+          releaseGenerationId: string;
+        }
+      ) {
+        const receipt = value as {
+          candidateSha?: unknown;
+          releaseGenerationId?: unknown;
+        };
+        if (
+          receipt.candidateSha !== context.candidateSha ||
+          receipt.releaseGenerationId !==
+            context.releaseGenerationId
+        ) {
+          throw new Error(
+            "unified_adaptive_release_identity_invalid"
+          );
+        }
+        return value;
+      }
+    };
+  }
+);
 import {
   releaseFreezeIdentitySha256V2,
   validateProductionFailureEvidenceV2,
@@ -44,6 +82,15 @@ const sha256 = (value: Buffer | string): string => createHash("sha256").update(v
 const candidateSha = "a".repeat(40);
 const digest = (character: string): string => character.repeat(64);
 const stages = ["first_migration", "first_verification", "second_migration", "final_verification"] as const;
+
+function historicalSchema034MigrationFiles(): string[] {
+  return readdirSync("migrations")
+    .filter((name) =>
+      name.endsWith(".sql") &&
+      Number.parseInt(name.slice(0, 3), 10) <= 34
+    )
+    .sort();
+}
 
 function writeEvidence(root: string, kind: string, relativePath: string, value: Buffer | Record<string, unknown>,
   exactCandidateSha: string, reuseExisting = false) {
@@ -88,6 +135,7 @@ function materializeInitialGateEvidence(
     gate.evidence = paths.map((relativePath, index) => writeEvidence(root,
       policy.requiredKinds[index] ?? policy.allowedKinds[0]!, relativePath,
       relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+        : relativePath === "adaptive-rolling-release-gate-receipt-v1.json" ? unified.adaptive
         : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
           : relativePath === "trusted-os-principal-policy-v2.json"
               || relativePath === "artifact-root-trust-boundary-evidence-v1.json"
@@ -292,7 +340,7 @@ describe("schema 032 production failure route", () => {
     process.env.NODE_ENV = "test";
     try {
       const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      const migrationFiles = readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort();
+      const migrationFiles = historicalSchema034MigrationFiles();
       await expect(runSchema032ReleaseSequence({
         databaseUrlEnvName: "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
         databaseUrl: "postgresql://test:test@127.0.0.1:55998/tron_watch_plan5_clean",
@@ -367,7 +415,7 @@ describe("schema 032 production failure route", () => {
       }, {
         observeCandidateRepositoryState: async () => ({
           headSha: exactCandidateSha, status: "",
-          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+          migrationFiles: historicalSchema034MigrationFiles()
         }),
         readCurrentTask0BReleaseRevalidation: async () => ({
           frozenBytes: context.task0bBytes, freeze: context.freeze
@@ -403,7 +451,7 @@ describe("schema 032 production failure route", () => {
       }, {
         observeCandidateRepositoryState: async () => ({
           headSha: exactCandidateSha, status: "",
-          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+          migrationFiles: historicalSchema034MigrationFiles()
         }),
         readCurrentTask0BReleaseRevalidation: async () => ({
           frozenBytes: context.task0bBytes, freeze: context.freeze
@@ -437,7 +485,7 @@ describe("schema 032 production failure route", () => {
       }, {
         observeCandidateRepositoryState: async () => ({
           headSha: exactCandidateSha, status: "",
-          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+          migrationFiles: historicalSchema034MigrationFiles()
         }),
         readCurrentTask0BReleaseRevalidation: async (_root, evaluatedAt) => {
           seen.push(String(evaluatedAt));
@@ -623,7 +671,7 @@ describe("schema 032 production failure route", () => {
       const testDependencies = {
         observeCandidateRepositoryState: async () => ({
           headSha: exactCandidateSha, status: "",
-          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+          migrationFiles: historicalSchema034MigrationFiles()
         }),
         readCurrentTask0BReleaseRevalidation: async () => ({
           frozenBytes: context.task0bBytes, freeze: context.freeze

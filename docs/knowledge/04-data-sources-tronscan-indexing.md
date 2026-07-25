@@ -64,6 +64,12 @@ half-open probe restores it. Request pacing, endpoint/account limits, cooldown,
 and RPS remain inside the TronScan scheduler and are separate from the
 controller's concurrent-chunk target.
 
+An ordered task is not bound to a provider group in advance. It is eligible
+when at least one healthy capable group can execute it under the ordinary
+claim, cooldown, and pacing rules. Canonical-head priority changes scheduling
+order only; it neither selects a permanent group nor creates a duplicate
+claim.
+
 A snapshot/address/USDT history is materialized once as content-addressed
 chunks and reused by all funding episodes. Episode attribution stays separate;
 history reuse does not merge origins or change proportional attribution.
@@ -119,10 +125,15 @@ exact scores until P1 blind review/adjudication. Frozen real-address
 performance replay is also pending because the earlier live runtime did not
 persist canonical provider response pages.
 
-The protected candidate path now verifies the exact schema-034 planner
-migration and its schema-033 predecessor before canary selection. The adaptive
-runtime can expand from the current four configured independent groups to its
-validated provider-worker ceiling, while bounded chunks, durable buffer
-reservations, DB/memory guards, and eligible demand constrain actual use.
-Logical replay through capacity 100 is algorithmic evidence, not measured live
-RPS. Barrier remains the production default until Plan 3 rollout gates pass.
+The protected candidate path verifies the exact schema-035 rollout-policy
+migration, schema-034 planner migration, and schema-033 predecessor before
+canary selection. The adaptive runtime
+has no fixed four-slot ceiling: it can expand to the configured and verified
+provider-worker ceiling while bounded chunks, durable buffer reservations,
+DB/memory guards, group health, and eligible demand constrain actual use.
+Frozen replay through logical capacity 100 is algorithmic correctness evidence,
+not measured live RPS. A completed promotion receipt has ceiling one unless
+capacity four has both an independent-group audit and live evidence; no
+promotion ceiling is authorized before live capacity one passes. The
+production stage remains global barrier until signed rollout evidence
+authorizes the next stage.

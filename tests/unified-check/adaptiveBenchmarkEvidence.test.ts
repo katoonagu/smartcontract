@@ -208,12 +208,53 @@ describe("Unified adaptive benchmark evidence V1", () => {
           "provider-group-2",
           "provider-group-3",
           "provider-group-4"
+        ],
+        dispatchedGroupIds: [
+          "provider-group-1",
+          "provider-group-2",
+          "provider-group-3",
+          "provider-group-4"
         ]
       }]
     });
 
     expect(sealed.envelope.actualAuditedIndependentGroupCapacity).toBe(4);
     expect(sealed.envelope.oracle).toBeNull();
+  });
+
+  it("rejects live capacity four when only one audited group was dispatched", () => {
+    const audit = sealUnifiedProviderGroupAuditV1({
+      auditedAt: "2026-07-24T12:00:00.000Z",
+      groups: Array.from({ length: 4 }, (_, index) => ({
+        opaqueGroupId: `provider-group-${index + 1}`,
+        state: "healthy" as const,
+        concurrencyLimit: 1,
+        independenceEvidenceSha256: String(index + 1).repeat(64)
+      }))
+    }).envelope;
+
+    expect(() => sealUnifiedAdaptiveBenchmarkEvidenceV1({
+      ...replayEvidence(),
+      scenarioId: "live:capacity-4-one-dispatched-group",
+      mode: "live",
+      requestedCapacity: 4,
+      actualAuditedIndependentGroupCapacity: 4,
+      independentGroupAudit: audit,
+      oracle: null,
+      runtimeObservationArtifactSha256s: ["a".repeat(64)],
+      scenarioSymptomArtifactSha256s: ["b".repeat(64)],
+      measurement: observedMeasurement,
+      liveOutcomes: [{
+        ...liveOutcome,
+        auditedGroupIds: [
+          "provider-group-1",
+          "provider-group-2",
+          "provider-group-3",
+          "provider-group-4"
+        ],
+        dispatchedGroupIds: ["provider-group-1"]
+      }]
+    })).toThrow("unified_benchmark_live_capacity_unaudited");
   });
 
   it("binds every live outcome to one control and the audited healthy groups", () => {

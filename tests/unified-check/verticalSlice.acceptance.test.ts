@@ -80,7 +80,14 @@ const run: AnalysisRunRecord = {
   snapshotHash,
   snapshot,
   analysisManifestSha256: fingerprintCanonicalJson(boundManifest),
-  analysisManifest: boundManifest
+  analysisManifest: boundManifest,
+  rolloutPolicy: {
+    stage: "global_barrier",
+    bucket: 0,
+    admissionPolicy: "barrier",
+    providerCapacityCeiling: 1,
+    receiptSha256: null
+  }
 };
 
 const branches: MinimalBranchResult[] = (["fast", "deep", "where"] as const).map(

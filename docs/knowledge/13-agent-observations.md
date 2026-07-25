@@ -355,3 +355,57 @@ Correct rule:
 - Versioned evidence is immutable. A new required field needs a new
   discriminator and current path; keep exact historical validators and use an
   explicit versioned reader only where old evidence must remain readable.
+
+## 2026-07-25: Promotion Claims Need Bound Evidence, Not Configuration
+
+Repeated corrections:
+
+- Four key strings were treated as proof of four independent provider groups.
+- A local WSL percentage was treated as production memory evidence.
+- A completed benchmark command was treated as permission to enable rolling
+  without a staged, canonical approval artifact.
+
+Correct rule:
+
+- Live capacity is capped by audited independent groups actually exercised.
+- Missing WSL is a local diagnostic skip; WSL trends never substitute for a
+  target Linux cgroup/host gate with process, DB, checkpoint, and post-run
+  evidence.
+- Keep historical receipt versions exact. Adaptive promotion uses its own
+  canonical signed receipt, advances one rollout stage at a time, and states an
+  honest capacity ceiling. On Windows invoke the benchmark with direct Node or
+  `npm.cmd`; never loosen its CLI because `npm.ps1` swallowed flags.
+
+## 2026-07-25: Rollout Policy And Signature Authority Must Be Durable
+
+Repeated corrections:
+
+- Rollout was inferred from planner-row existence and recomputed from current
+  configuration after restart.
+- The promotion CLI accepted an operator-selected public key.
+- Promotion trusted success booleans and SHA-shaped strings without loading
+  the referenced evidence.
+
+Correct rule:
+
+- Migration 035 freezes stage, bucket, admission policy, provider ceiling, and
+  receipt identity on each new run in its creation transaction.
+- Pin the authority key ID/public key/hash, reject symlinked key material, and
+  let configuration only narrow a verified receipt.
+- Canonical-load the replay/live indexes and their artifacts, PostgreSQL
+  oracle, lifecycle/fallback evidence, and target-Linux memory source before
+  materializing the official receipt.
+
+## 2026-07-25: Schema Catalog Mocks Do Not Prove PostgreSQL Driver Types
+
+Agent mistake: schema-034 catalog verification passed mocked unit rows but
+failed on PostgreSQL because `array(attname)` returned `name[]`, which
+`node-postgres` did not decode as the `text[]` expected by the canonical hash.
+Several PostgreSQL fixtures also stopped at schema 034 after runtime writes
+had moved to schema 035.
+
+Correct rule: cast catalog identities to stable transport types such as
+`attname::text`, run the real migration acceptance, and execute the migration
+command twice on the same disposable database. Any fixture exercising current
+runtime writes must install the current additive schema; historical schema
+gates remain separate and fail closed on newer drift.

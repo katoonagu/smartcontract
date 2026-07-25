@@ -77,6 +77,12 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           "utf8"
         )
       );
+      await pool.query(
+        await readFile(
+          "migrations/035_unified_check_run_rollout_policy.sql",
+          "utf8"
+        )
+      );
       const selection = buildUnifiedAdaptiveBenchmarkSelection({
         scenarios: ["one", "two", "three"].map((scenarioId) => ({
           scenarioId,
@@ -91,7 +97,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           runtimeCommit: "a".repeat(40)
         },
         databaseSchema: {
-          version: 34,
+          version: 35,
           checksumSha256: "b".repeat(64),
           schema032ChecksumSha256: "c".repeat(64)
         }
@@ -117,7 +123,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "a".repeat(40),
-          schemaVersion: 34
+          schemaVersion: 35
         },
         providerConfiguration: PROVIDER_CONFIGURATION,
         repository: {
@@ -161,6 +167,12 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
       await pool.query(
         await readFile(
           "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
+      await pool.query(
+        await readFile(
+          "migrations/035_unified_check_run_rollout_policy.sql",
           "utf8"
         )
       );

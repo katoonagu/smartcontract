@@ -461,7 +461,16 @@ describe("adaptive Unified runtime", () => {
         repairMaxWaitChunks: 8,
         chunksSinceLastRepair: 0
       },
-      demand: [demand("run-a", "owner-a", 10), demand("run-b", "owner-b", 10)],
+      demand: [
+        {
+          ...demand("run-a", "owner-a", 10),
+          admissionPolicy: "barrier"
+        },
+        {
+          ...demand("run-b", "owner-b", 10),
+          admissionPolicy: "rolling"
+        }
+      ],
       refill,
       countActionableProviderWork: async () => [
         { runId: "run-a", lane: "interactive", count: 1 },
@@ -502,7 +511,7 @@ describe("adaptive Unified runtime", () => {
       policy: input.policy,
       lookaheadTarget: input.lookaheadTarget
     }))).toEqual([
-      { runId: "run-a", policy: "rolling", lookaheadTarget: 4 },
+      { runId: "run-a", policy: "barrier", lookaheadTarget: 4 },
       { runId: "run-b", policy: "rolling", lookaheadTarget: 4 }
     ]);
     expect(setPoolTarget).toHaveBeenCalledWith(3);
@@ -510,6 +519,69 @@ describe("adaptive Unified runtime", () => {
       result.claimAssignments
     );
     expect(wakePool).toHaveBeenCalledOnce();
+  });
+
+  it("uses rolling surplus while keeping a legacy barrier run at its durable ceiling", async () => {
+    const setPoolTarget = vi.fn();
+    const result = await runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 4, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "verified-capacity-four",
+        state: "healthy",
+        concurrencyLimit: 4,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 4,
+        providerWorkerLimit: 4,
+        providerIncreaseStep: 4,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling",
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 4,
+        readyBufferMaxEntries: 8,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [{
+        ...demand("legacy-barrier", "legacy-owner", 8),
+        admissionPolicy: "barrier",
+        providerCapacityCeiling: 1
+      }, {
+        ...demand("rolling", "rolling-owner", 8),
+        admissionPolicy: "rolling",
+        providerCapacityCeiling: 4
+      }],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      setPoolTarget,
+      wakePool: vi.fn()
+    });
+
+    expect(result.providerCapacityLimit).toBe(4);
+    expect(result.targetActiveProviderSlots).toBe(4);
+    expect(Object.fromEntries(result.allocations.map((allocation) => [
+      allocation.runId,
+      allocation.slots
+    ]))).toEqual({
+      "legacy-barrier": 1,
+      rolling: 3
+    });
+    expect(setPoolTarget).toHaveBeenCalledWith(4);
   });
 
   it("keeps mixed lane identity and refills a shared run once from its aggregate share", async () => {

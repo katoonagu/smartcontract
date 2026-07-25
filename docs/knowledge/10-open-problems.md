@@ -28,11 +28,18 @@ candidate, or explicit production authority:
 
 - run the fixed final gate set once and create exact-SHA write-once receipts;
 - obtain explicit production GO and protected action authority;
-- create the production backup, apply/verify through schema 034, start the
+- create the production backup, apply/verify through additive schema 035, start the
   candidate, and activate the Unified generation fence through the updated
   protected flow;
 - run the isolated recent-eight canary only after deployment and choose GO or
   the existing rollback/recovery path.
+- run the adaptive live capacity-one matrix and the three named isolated
+  wallets, repeat it at capacity four only after four independent groups are
+  audited, and capture the target Linux/cgroup memory gate;
+- provision the protected adaptive signing authority matching the pinned
+  public-key identity and create the canonical signed adaptive promotion
+  receipt from those real
+  artifacts. Local WSL samples cannot close this blocker.
 
 Production remains legacy until those operations complete.
 
@@ -62,12 +69,19 @@ the serialized production barrier fallback are implemented:
 
 - `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
 
-The exact claim-permit, restart recovery, ordered commit/refill, and hot
-barrier-fallback tests pass against the temporary PostgreSQL test database.
-Until frozen provider replay, the one/four-group live benchmark, and Plan 3
-memory/release evidence pass, head-only barrier admission remains configured.
-Simulations above four groups prove algorithmic behavior only; they do not
-prove live scaling on unavailable provider groups.
+The exact claim-permit, restart recovery, ordered commit/refill, hot
+barrier-fallback, frozen replay oracle, and logical-capacity tests pass.
+The earlier fixed-four-slot architecture problem is resolved: capacity now
+comes from healthy independent groups, eligible demand, and resource guards.
+Until the one/four-group live benchmark and target-Linux signed promotion
+evidence pass, the global barrier stage remains configured. Simulation above
+the audited live ceiling proves algorithmic behavior only; the real saturation
+point, head-of-line loss, provider RPS, and next DB/CPU/memory bottleneck remain
+unverified.
+
+Order-independent merge remains deferred. It becomes a candidate only if
+measured `canonical_head` or `merge_buffer_full` loss materially limits the
+ordered design.
 
 ## Non-Blocking Follow-Ups
 

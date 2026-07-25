@@ -7,6 +7,7 @@ code_refs:
   - src/storage/schemaMigrations.ts
   - src/runtime/startupSchemaGate.ts
   - src/unifiedCheck
+  - src/release/unifiedReleaseGateReceipt.ts
   - src/risk/scoringSignalMatrixV4.ts
   - src/risk/scoreAnchorV3.ts
   - migrations/033_unified_wallet_check.sql
@@ -14,6 +15,7 @@ code_refs:
   - scripts/verifyRemediationRelease.ts
   - scripts/runSchema032ReleaseSequence.ts
   - scripts/finalizeUnifiedReleaseGates.ts
+  - scripts/captureUnifiedWslMemory.ps1
 ---
 
 # Current Decisions
@@ -92,6 +94,12 @@ audit artifacts. It is not a second source of current product truth.
   not a hot action. Checkpoint latency is the maximum sample since the previous
   controller decision and resets after sampling, so one slow checkpoint cannot
   freeze resource state without a new slow sample.
+  The rollout selector has four explicit stages for new work:
+  `global_barrier`, `isolated_rolling`, `bounded_user_check`, and
+  `rolling_default`. Migration 035 freezes the selected stage, stable bucket,
+  admission policy, verified ceiling, and receipt SHA on each new run;
+  pre-035 runs stay barrier. The one-way runtime fallback overrides the stage
+  globally and does not introduce a second traversal implementation.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
@@ -141,23 +149,40 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
 - Wall time and machine metadata are measurements outside canonical analysis
   hashes. Any eventual SLO is internal observability, never a user timeout,
   coverage gate, completion condition, or publication rule.
+- Frozen replay is the exact barrier-versus-rolling oracle and exercises
+  logical capacities 1, 4, 8, 16, 32, and 100. Live evidence may claim only
+  audited groups actually exercised. A signed receipt can authorize ceiling
+  one only after live capacity one passes, and ceiling four only after four
+  independent groups pass the live gate. No such live promotion receipt exists
+  yet.
+- Local WSL samples are diagnostics only. They record vmmemWSL, Linux
+  available memory/swap, and process RSS/heap trends, but only a target
+  Linux cgroup/host gate with observed source bytes, process PID/start and
+  executable identity, DB/checkpoint latency, and a derived bounded RSS trend
+  can satisfy production memory evidence.
 
 ## Release Safety
 
 - The active candidate startup contract is exact through
-  `034_unified_check_adaptive_planner.sql`; database receipt versions 035+
-  fail closed. Future migration files on disk remain Task-7 allowlist scope.
-- Startup verifies the exact migration-034 checksum and the verified
-  schema-032/schema-033 predecessor checksums and receipts before provider,
+  `035_unified_check_run_rollout_policy.sql`; database receipt versions 036+
+  fail closed. Migration 033 remains immutable and migration 034 remains the
+  planner predecessor.
+- Startup verifies the exact migration-035 checksum and the verified
+  schema-032/schema-033/schema-034 predecessor checksums and receipts before provider,
   bot, or worker initialization.
-- Current release receipts and protected promotion/canary inputs require
-  schema 034. They retain exact schema-033 checksum/catalog evidence as the
-  immutable predecessor and bind clean/clone schema-034 verification receipts.
+- Adaptive promotion and candidate runtime inputs require schema 035 and retain
+  exact schema-034 planner evidence as predecessor. Historical Plan-5
+  schema-034 receipt readers remain exact rather than being rewritten.
 - Current schema evidence uses release-evidence V2; G13 uses execution receipt
   V3 and prepared settlement V3. Exact historical V1/V2 readers remain
   available and do not accept schema-034 fields as optional extensions.
-- The protected migration sequence applies and verifies through schema 034;
-  an unknown on-disk migration 035+ or database receipt 035+ fails closed.
+- The generic tracked migrator applies migration 035 additively. The historical
+  protected Plan-5 migration receipt remains schema-034 evidence; production
+  rollout cannot advance until its protected additive schema-035 step and
+  receipt are materialized. Standalone schema-034 verification rejects even a
+  partial schema-035 column, constraint, or trigger; only the schema-035
+  verifier may explicitly project those additions while proving its exact
+  structure.
 - Protected rollout `verify_schema` re-runs the exact schema-034 checksum,
   predecessor-receipt, and structural verification in a bounded read-only
   production snapshot and binds that result to the accepted V3 receipt.
@@ -165,6 +190,22 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
   below the locked root are rejected.
 - Final full suite, typecheck, Golden verify, comparator, RU/EN acceptance, and
   migration/startup rehearsal run once after the final candidate commit.
+- Adaptive rolling promotion additionally consumes a separate canonical
+  Ed25519-signed receipt. The key ID, public key, and public-key hash are pinned;
+  an arbitrary CLI key/path is not authority. The finalizer canonical-loads
+  replay/live indexes and their artifacts, the PostgreSQL oracle,
+  restart/fallback transition evidence, target-Linux memory evidence, and the
+  raw memory-source attestation before materializing the official receipt. It
+  fails closed unless schema 035, exact frozen
+  replay, retry/restart, logical scale, live capacity one, the three named
+  isolated wallets, zero Telegram sends, target-Linux memory, and the tested
+  rolling-to-barrier fallback are present. Capacity four is either explicitly
+  verified from four independent groups or remains explicitly unverified with
+  a ceiling of one. The benchmark index execution identity names the whole
+  benchmark invocation and is distinct from every scenario performance
+  identity stored in its artifact entries. G06 revalidates the exact adaptive
+  receipt bytes against the pinned signature and rollout generation; it never
+  treats resealing a caller-provided value as authority.
 - The independently reviewed Golden lock is rooted in immutable commit
   `5149573503394815925d771ba33b2733e3248dc3`; a candidate must prove the
   locked tree is byte-identical to that authority before any final gate runs.
@@ -176,6 +217,9 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
   and rollout generation.
 - The existing protected backup/migration/rollout/recovery flow remains the
   only production path. No deploy or live canary occurs without explicit GO.
+- Rollback to a pre-034 binary is not hot: close new claims, drain or block
+  rolling runs, stop the new runtime, start the old binary, and retain
+  migration 034. No destructive down-migration is generated.
 
 ## Separate Decisions
 

@@ -22,6 +22,20 @@ import {
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
 
+export function unifiedAdaptiveBenchmarkInvocation(
+  args: readonly string[]
+): { executable: string; args: string[] } {
+  return {
+    executable: process.execPath,
+    args: [
+      "--import",
+      "tsx",
+      "scripts/runUnifiedAdaptiveBenchmark.ts",
+      ...args
+    ]
+  };
+}
+
 export function unifiedReleaseCommandInvocation(
   id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"],
   sourceEnv: NodeJS.ProcessEnv = process.env

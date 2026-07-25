@@ -1,7 +1,16 @@
+import { verify } from "node:crypto";
+import { canonicalizeArtifactJson } from "../forensics/canonicalJson";
+import {
+  parseUnifiedMemoryGateEvidenceV1,
+  satisfiesUnifiedProductionMemoryGate,
+  type UnifiedMemoryGateEvidenceV1
+} from "../unifiedCheck/adaptiveBenchmarkEvidence";
 import { canonicalBytesV2 } from "./releaseRootWriterStore";
 import {
   UNIFIED_SCHEMA_034_CATALOG_SHA256,
-  UNIFIED_SCHEMA_034_MIGRATION_SHA256
+  UNIFIED_SCHEMA_034_MIGRATION_SHA256,
+  UNIFIED_SCHEMA_035_CATALOG_SHA256,
+  UNIFIED_SCHEMA_035_MIGRATION_SHA256
 } from "../storage/schemaMigrations";
 
 const SHA40 = /^[a-f0-9]{40}$/u;
@@ -32,6 +41,18 @@ export const APPROVED_SCHEMA_034_CHECKSUM =
   UNIFIED_SCHEMA_034_MIGRATION_SHA256;
 export const APPROVED_SCHEMA_034_CATALOG_SHA256 =
   UNIFIED_SCHEMA_034_CATALOG_SHA256;
+export const APPROVED_SCHEMA_035_CHECKSUM =
+  UNIFIED_SCHEMA_035_MIGRATION_SHA256;
+export const APPROVED_SCHEMA_035_CATALOG_SHA256 =
+  UNIFIED_SCHEMA_035_CATALOG_SHA256;
+export const APPROVED_ADAPTIVE_RELEASE_KEY_ID =
+  "unified-adaptive-release-2026-07";
+export const APPROVED_ADAPTIVE_RELEASE_PUBLIC_KEY_PEM =
+  "-----BEGIN PUBLIC KEY-----\n" +
+  "MCowBQYDK2VwAyEAMEPsvRjjQOGxtEU+9vYdzLcigSZtAVhSpLgtw+PP2+w=\n" +
+  "-----END PUBLIC KEY-----\n";
+export const APPROVED_ADAPTIVE_RELEASE_PUBLIC_KEY_SHA256 =
+  "28675345896e86b6f113bcb3a84a4704fb29328333bc75bc2b7146407aa1b107";
 
 export const UNIFIED_RELEASE_COMMANDS = Object.freeze([
   { id: "full_test", command: "npm test" },
@@ -417,4 +438,551 @@ export function validateUnifiedWalletReleaseGateReceiptV1(
     commands,
     recordedAt: input.recordedAt
   };
+}
+
+const ADAPTIVE_WALLETS = [
+  "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
+  "TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr",
+  "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"
+] as const;
+const ADAPTIVE_CAPACITIES = [1, 4, 8, 16, 32, 100] as const;
+const BINARY_ROLLBACK_STEPS = [
+  "close_generation_to_new_claims",
+  "drain_or_block_active_rolling_runs",
+  "stop_new_runtime",
+  "start_old_binary",
+  "retain_migration_034"
+] as const;
+
+export type UnifiedAdaptiveRollingReleaseReceiptV1 = {
+  readonly version: "unified-adaptive-rolling-release-receipt-v1";
+  readonly candidateSha: string;
+  readonly releaseGenerationId: string;
+  readonly authorizedStage:
+    | "global_barrier"
+    | "isolated_rolling"
+    | "bounded_user_check"
+    | "rolling_default";
+  readonly recordedAt: string;
+  readonly schema034: {
+    readonly checksumSha256: string;
+    readonly catalogSha256: string;
+    readonly structuralGatePassed: true;
+  };
+  readonly schema035: {
+    readonly checksumSha256: string;
+    readonly catalogSha256: string;
+    readonly structuralGatePassed: true;
+  };
+  readonly frozenReplay: {
+    readonly evidenceIndexSha256: string;
+    readonly oracleReceiptSha256: string;
+    readonly exactEquivalent: true;
+    readonly logicalCapacities: typeof ADAPTIVE_CAPACITIES;
+  };
+  readonly transactionalRecovery: {
+    readonly evidenceSha256: string;
+    readonly retryPassed: true;
+    readonly restartPassed: true;
+    readonly duplicateCommits: 0;
+    readonly duplicateDeliveryIntents: 0;
+  };
+  readonly live: {
+    readonly capacity1EvidenceSha256: string;
+    readonly capacity4:
+      | {
+          readonly status: "verified";
+          readonly evidenceSha256: string;
+          readonly auditedIndependentGroups: 4;
+        }
+      | {
+          readonly status: "unverified";
+          readonly reason: "independent_groups_not_audited";
+        };
+    readonly wallets: readonly {
+      readonly subjectAddress: typeof ADAPTIVE_WALLETS[number];
+      readonly score: number;
+      readonly decision: "ACCEPTABLE" | "REVIEW" | "DECLINE";
+      readonly closureComplete: true;
+      readonly evidenceBundleSha256: string;
+      readonly traversalClosureSha256: string;
+      readonly scoringBundleSha256: string;
+      readonly reportSha256: string;
+    }[];
+    readonly externalTelegramSends: 0;
+  };
+  readonly targetLinuxMemory: UnifiedMemoryGateEvidenceV1;
+  readonly hotFallback: {
+    readonly evidenceSha256: string;
+    readonly rollingToBarrierPassed: true;
+    readonly samePlannerCommitPath: true;
+    readonly unleasedTailDeAdmitted: true;
+    readonly leasedChunksFinishedBounded: true;
+  };
+  readonly binaryRollback: {
+    readonly pre034BinaryHot: false;
+    readonly retainSchema034: true;
+    readonly destructiveDownMigration: false;
+    readonly orderedSteps: typeof BINARY_ROLLBACK_STEPS;
+  };
+  readonly verifiedCapacityCeiling: 1 | 4;
+  readonly approval: {
+    readonly algorithm: "ed25519";
+    readonly keyId: string;
+    readonly signatureBase64: string;
+  };
+};
+
+type AdaptiveUnsignedReceipt = Omit<
+  UnifiedAdaptiveRollingReleaseReceiptV1,
+  "approval"
+>;
+
+export function canonicalAdaptiveRollingReceiptPayload(
+  value: AdaptiveUnsignedReceipt
+): Uint8Array {
+  return canonicalBytesV2(value);
+}
+
+function adaptiveTrue(value: unknown, code: string): true {
+  if (value !== true) throw new Error(code);
+  return true;
+}
+
+function adaptiveZero(value: unknown, code: string): 0 {
+  if (value !== 0) throw new Error(code);
+  return 0;
+}
+
+function validateAdaptiveRollingReleaseReceipt(
+  value: unknown,
+  context?: {
+    candidateSha: string;
+    releaseGenerationId: string;
+  }
+): UnifiedAdaptiveRollingReleaseReceiptV1 {
+  const input = record(
+    value,
+    "unified_adaptive_release_receipt_invalid"
+  );
+  exactKeys(input, [
+    "approval",
+    "authorizedStage",
+    "binaryRollback",
+    "candidateSha",
+    "frozenReplay",
+    "hotFallback",
+    "live",
+    "recordedAt",
+    "releaseGenerationId",
+    "schema034",
+    "schema035",
+    "targetLinuxMemory",
+    "transactionalRecovery",
+    "verifiedCapacityCeiling",
+    "version"
+  ], "unified_adaptive_release_receipt_invalid");
+  if (
+    input.version !==
+      "unified-adaptive-rolling-release-receipt-v1" ||
+    ![
+      "global_barrier",
+      "isolated_rolling",
+      "bounded_user_check",
+      "rolling_default"
+    ].includes(String(input.authorizedStage)) ||
+    !SHA40.test(String(input.candidateSha)) ||
+    !GENERATION.test(String(input.releaseGenerationId)) ||
+    typeof input.recordedAt !== "string" ||
+    !ISO.test(input.recordedAt)
+  ) {
+    throw new Error("unified_adaptive_release_identity_invalid");
+  }
+  if (
+    context &&
+    (
+      input.candidateSha !== context.candidateSha ||
+      input.releaseGenerationId !== context.releaseGenerationId
+    )
+  ) {
+    throw new Error("unified_adaptive_release_identity_invalid");
+  }
+  const schema034 = record(
+    input.schema034,
+    "unified_adaptive_schema034_invalid"
+  );
+  exactKeys(schema034, [
+    "catalogSha256",
+    "checksumSha256",
+    "structuralGatePassed"
+  ], "unified_adaptive_schema034_invalid");
+  if (
+    schema034.checksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM ||
+    schema034.catalogSha256 !==
+      APPROVED_SCHEMA_034_CATALOG_SHA256
+  ) {
+    throw new Error("unified_adaptive_schema034_invalid");
+  }
+  adaptiveTrue(
+    schema034.structuralGatePassed,
+    "unified_adaptive_schema034_invalid"
+  );
+  const schema035 = record(
+    input.schema035,
+    "unified_adaptive_schema035_invalid"
+  );
+  exactKeys(schema035, [
+    "catalogSha256",
+    "checksumSha256",
+    "structuralGatePassed"
+  ], "unified_adaptive_schema035_invalid");
+  if (
+    schema035.checksumSha256 !== APPROVED_SCHEMA_035_CHECKSUM ||
+    schema035.catalogSha256 !==
+      APPROVED_SCHEMA_035_CATALOG_SHA256
+  ) {
+    throw new Error("unified_adaptive_schema035_invalid");
+  }
+  adaptiveTrue(
+    schema035.structuralGatePassed,
+    "unified_adaptive_schema035_invalid"
+  );
+  const frozenReplay = record(
+    input.frozenReplay,
+    "unified_adaptive_replay_invalid"
+  );
+  exactKeys(frozenReplay, [
+    "evidenceIndexSha256",
+    "exactEquivalent",
+    "logicalCapacities",
+    "oracleReceiptSha256"
+  ], "unified_adaptive_replay_invalid");
+  sha(
+    frozenReplay.evidenceIndexSha256,
+    SHA256,
+    "unified_adaptive_replay_invalid"
+  );
+  sha(
+    frozenReplay.oracleReceiptSha256,
+    SHA256,
+    "unified_adaptive_replay_invalid"
+  );
+  adaptiveTrue(
+    frozenReplay.exactEquivalent,
+    "unified_adaptive_replay_invalid"
+  );
+  if (
+    !Array.isArray(frozenReplay.logicalCapacities) ||
+    frozenReplay.logicalCapacities.length !==
+      ADAPTIVE_CAPACITIES.length ||
+    frozenReplay.logicalCapacities.some((capacity, index) =>
+      capacity !== ADAPTIVE_CAPACITIES[index]
+    )
+  ) {
+    throw new Error("unified_adaptive_replay_invalid");
+  }
+  const recovery = record(
+    input.transactionalRecovery,
+    "unified_adaptive_recovery_invalid"
+  );
+  exactKeys(recovery, [
+    "duplicateCommits",
+    "duplicateDeliveryIntents",
+    "evidenceSha256",
+    "restartPassed",
+    "retryPassed"
+  ], "unified_adaptive_recovery_invalid");
+  sha(
+    recovery.evidenceSha256,
+    SHA256,
+    "unified_adaptive_recovery_invalid"
+  );
+  adaptiveTrue(
+    recovery.retryPassed,
+    "unified_adaptive_recovery_invalid"
+  );
+  adaptiveTrue(
+    recovery.restartPassed,
+    "unified_adaptive_recovery_invalid"
+  );
+  adaptiveZero(
+    recovery.duplicateCommits,
+    "unified_adaptive_recovery_invalid"
+  );
+  adaptiveZero(
+    recovery.duplicateDeliveryIntents,
+    "unified_adaptive_recovery_invalid"
+  );
+  const live = record(input.live, "unified_adaptive_live_invalid");
+  exactKeys(live, [
+    "capacity1EvidenceSha256",
+    "capacity4",
+    "externalTelegramSends",
+    "wallets"
+  ], "unified_adaptive_live_invalid");
+  sha(
+    live.capacity1EvidenceSha256,
+    SHA256,
+    "unified_adaptive_live_capacity1_invalid"
+  );
+  adaptiveZero(
+    live.externalTelegramSends,
+    "unified_adaptive_live_delivery_invalid"
+  );
+  const capacity4 = record(
+    live.capacity4,
+    "unified_adaptive_live_capacity4_invalid"
+  );
+  if (capacity4.status === "verified") {
+    exactKeys(capacity4, [
+      "auditedIndependentGroups",
+      "evidenceSha256",
+      "status"
+    ], "unified_adaptive_live_capacity4_invalid");
+    if (capacity4.auditedIndependentGroups !== 4) {
+      throw new Error("unified_adaptive_live_capacity4_invalid");
+    }
+    sha(
+      capacity4.evidenceSha256,
+      SHA256,
+      "unified_adaptive_live_capacity4_invalid"
+    );
+  } else {
+    exactKeys(
+      capacity4,
+      ["reason", "status"],
+      "unified_adaptive_live_capacity4_invalid"
+    );
+    if (
+      capacity4.status !== "unverified" ||
+      capacity4.reason !== "independent_groups_not_audited"
+    ) {
+      throw new Error("unified_adaptive_live_capacity4_invalid");
+    }
+  }
+  if (
+    !Array.isArray(live.wallets) ||
+    live.wallets.length !== ADAPTIVE_WALLETS.length
+  ) {
+    throw new Error("unified_adaptive_live_wallets_invalid");
+  }
+  const wallets =
+    live.wallets.map((value, index) => {
+      const wallet = record(
+        value,
+        "unified_adaptive_live_wallet_invalid"
+      );
+      exactKeys(wallet, [
+        "closureComplete",
+        "decision",
+        "evidenceBundleSha256",
+        "reportSha256",
+        "score",
+        "scoringBundleSha256",
+        "subjectAddress",
+        "traversalClosureSha256"
+      ], "unified_adaptive_live_wallet_invalid");
+      if (
+        wallet.subjectAddress !== ADAPTIVE_WALLETS[index] ||
+        !Number.isSafeInteger(wallet.score) ||
+        Number(wallet.score) < 0 ||
+        Number(wallet.score) > 100 ||
+        !["ACCEPTABLE", "REVIEW", "DECLINE"].includes(
+          String(wallet.decision)
+        )
+      ) {
+        throw new Error("unified_adaptive_live_wallet_invalid");
+      }
+      adaptiveTrue(
+        wallet.closureComplete,
+        "unified_adaptive_live_wallet_invalid"
+      );
+      for (const key of [
+        "evidenceBundleSha256",
+        "traversalClosureSha256",
+        "scoringBundleSha256",
+        "reportSha256"
+      ] as const) {
+        sha(
+          wallet[key],
+          SHA256,
+          "unified_adaptive_live_wallet_invalid"
+        );
+      }
+      return wallet as
+        UnifiedAdaptiveRollingReleaseReceiptV1["live"]["wallets"][number];
+    });
+  const targetLinuxMemory = parseUnifiedMemoryGateEvidenceV1(
+    canonicalizeArtifactJson(input.targetLinuxMemory)
+  );
+  if (!satisfiesUnifiedProductionMemoryGate(targetLinuxMemory)) {
+    throw new Error("unified_adaptive_target_memory_invalid");
+  }
+  const hotFallback = record(
+    input.hotFallback,
+    "unified_adaptive_hot_fallback_invalid"
+  );
+  exactKeys(hotFallback, [
+    "evidenceSha256",
+    "leasedChunksFinishedBounded",
+    "rollingToBarrierPassed",
+    "samePlannerCommitPath",
+    "unleasedTailDeAdmitted"
+  ], "unified_adaptive_hot_fallback_invalid");
+  sha(
+    hotFallback.evidenceSha256,
+    SHA256,
+    "unified_adaptive_hot_fallback_invalid"
+  );
+  for (const key of [
+    "rollingToBarrierPassed",
+    "samePlannerCommitPath",
+    "unleasedTailDeAdmitted",
+    "leasedChunksFinishedBounded"
+  ] as const) {
+    adaptiveTrue(
+      hotFallback[key],
+      "unified_adaptive_hot_fallback_invalid"
+    );
+  }
+  const binaryRollback = record(
+    input.binaryRollback,
+    "unified_adaptive_binary_rollback_invalid"
+  );
+  exactKeys(binaryRollback, [
+    "destructiveDownMigration",
+    "orderedSteps",
+    "pre034BinaryHot",
+    "retainSchema034"
+  ], "unified_adaptive_binary_rollback_invalid");
+  if (
+    binaryRollback.pre034BinaryHot !== false ||
+    binaryRollback.retainSchema034 !== true ||
+    binaryRollback.destructiveDownMigration !== false ||
+    !Array.isArray(binaryRollback.orderedSteps) ||
+    binaryRollback.orderedSteps.length !==
+      BINARY_ROLLBACK_STEPS.length ||
+    binaryRollback.orderedSteps.some((step, index) =>
+      step !== BINARY_ROLLBACK_STEPS[index]
+    )
+  ) {
+    throw new Error("unified_adaptive_binary_rollback_invalid");
+  }
+  const expectedCeiling =
+    capacity4.status === "verified" ? 4 : 1;
+  if (input.verifiedCapacityCeiling !== expectedCeiling) {
+    throw new Error("unified_adaptive_capacity_ceiling_invalid");
+  }
+  const approval = record(
+    input.approval,
+    "unified_adaptive_approval_invalid"
+  );
+  exactKeys(approval, [
+    "algorithm",
+    "keyId",
+    "signatureBase64"
+  ], "unified_adaptive_approval_invalid");
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(String(approval.signatureBase64), "base64");
+  } catch {
+    throw new Error("unified_adaptive_approval_invalid");
+  }
+  if (
+    approval.algorithm !== "ed25519" ||
+    approval.keyId !== APPROVED_ADAPTIVE_RELEASE_KEY_ID ||
+    signature.length !== 64 ||
+    signature.toString("base64") !== approval.signatureBase64
+  ) {
+    throw new Error("unified_adaptive_approval_invalid");
+  }
+  const receipt = {
+    version: "unified-adaptive-rolling-release-receipt-v1" as const,
+    candidateSha: input.candidateSha as string,
+    releaseGenerationId: input.releaseGenerationId as string,
+    authorizedStage: input.authorizedStage as
+      UnifiedAdaptiveRollingReleaseReceiptV1["authorizedStage"],
+    recordedAt: input.recordedAt,
+    schema034: schema034 as
+      UnifiedAdaptiveRollingReleaseReceiptV1["schema034"],
+    schema035: schema035 as
+      UnifiedAdaptiveRollingReleaseReceiptV1["schema035"],
+    frozenReplay: frozenReplay as
+      UnifiedAdaptiveRollingReleaseReceiptV1["frozenReplay"],
+    transactionalRecovery: recovery as
+      UnifiedAdaptiveRollingReleaseReceiptV1["transactionalRecovery"],
+    live: {
+      capacity1EvidenceSha256: live.capacity1EvidenceSha256 as string,
+      capacity4: capacity4 as
+        UnifiedAdaptiveRollingReleaseReceiptV1["live"]["capacity4"],
+      wallets,
+      externalTelegramSends: 0 as const
+    },
+    targetLinuxMemory,
+    hotFallback: hotFallback as
+      UnifiedAdaptiveRollingReleaseReceiptV1["hotFallback"],
+    binaryRollback: binaryRollback as
+      UnifiedAdaptiveRollingReleaseReceiptV1["binaryRollback"],
+    verifiedCapacityCeiling: expectedCeiling as 1 | 4,
+    approval: approval as
+      UnifiedAdaptiveRollingReleaseReceiptV1["approval"]
+  };
+  if (
+    context &&
+    !verify(
+      null,
+      canonicalAdaptiveRollingReceiptPayload((({
+        approval: _approval,
+        ...body
+      }) => body)(receipt)),
+      APPROVED_ADAPTIVE_RELEASE_PUBLIC_KEY_PEM,
+      signature
+    )
+  ) {
+    throw new Error("unified_adaptive_approval_signature_invalid");
+  }
+  return receipt;
+}
+
+export function sealUnifiedAdaptiveRollingReleaseReceiptV1(
+  input: UnifiedAdaptiveRollingReleaseReceiptV1
+): {
+  readonly envelope: UnifiedAdaptiveRollingReleaseReceiptV1;
+  readonly canonicalJson: string;
+} {
+  const envelope = validateAdaptiveRollingReleaseReceipt(input);
+  return {
+    envelope,
+    canonicalJson: canonicalizeArtifactJson(envelope)
+  };
+}
+
+export function validateUnifiedAdaptiveRollingReleaseReceiptV1(
+  value: unknown,
+  context: {
+    candidateSha: string;
+    releaseGenerationId: string;
+  },
+  bytes?: Uint8Array
+): UnifiedAdaptiveRollingReleaseReceiptV1 {
+  const receipt = validateAdaptiveRollingReleaseReceipt(value, context);
+  if (bytes !== undefined) {
+    const canonical = Buffer.from(
+      canonicalizeArtifactJson(value),
+      "utf8"
+    );
+    const provided = Buffer.from(bytes);
+    if (
+      !provided.equals(canonical) &&
+      !provided.equals(Buffer.concat([
+        canonical,
+        Buffer.from("\n", "utf8")
+      ]))
+    ) {
+      throw new Error(
+        "unified_adaptive_release_receipt_not_canonical"
+      );
+    }
+  }
+  return receipt;
 }
