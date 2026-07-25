@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-24
+last_verified: 2026-07-25
 owner_area: docs
 code_refs:
   - scripts/verifyRemediationRelease.ts
@@ -46,27 +46,28 @@ Production remains legacy until those operations complete.
 
 ## Dense Traversal Capacity
 
-The coordinator now persists the full distinct mandatory address-history batch
-and consumes accepted results through atomic bounded ordered commit. The
-current fallback policy intentionally admits only one canonical head, so a
-dense run can still expose one claimable ordered history while the provider
-pool has four configured slots. This is now an admission-policy limit rather
-than a discovery or commit-ordering gap.
+The coordinator persists the full distinct mandatory address-history batch,
+consumes accepted results through atomic bounded ordered commit, and supports
+durable adaptive rolling admission. The provider pool follows healthy
+independent-group capacity, eligible demand, owner/run fairness, repair reserve,
+and runtime guards. Lane/owner/run permits and epoch-guarded idle-slot
+assignment prevent mixed-lane collapse and stale chunk-boundary restart.
+Deterministic simulation covers capacities through 100, including cooldown,
+slow head, buffer pressure, repair arrival, and restart.
 
 Migration 034, its protected release/schema gates, stable fairness-owner
-persistence, run-locked planning,
-planner-aware claiming, atomic ordered acceptance, committed-manifest reuse,
-and barrier ordered commit are implemented. The remaining target is adaptive
-rolling admission and capacity control over the same tasks, planner rows,
-artifacts, and commit path:
+persistence, run-locked planning, planner-aware claiming, atomic ordered
+acceptance, committed-manifest reuse, adaptive capacity, reconciliation, and
+the serialized production barrier fallback are implemented:
 
 - `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
 
-Until rolling admission, restart gates, replay equivalence, and the
-one/four-group live canary pass, head-only barrier admission remains current
-candidate execution behavior. Replay simulations above four groups prove
-algorithmic behavior only; they do not prove live scaling on unavailable
-provider groups.
+The exact claim-permit, restart recovery, ordered commit/refill, and hot
+barrier-fallback tests pass against the temporary PostgreSQL test database.
+Until frozen provider replay, the one/four-group live benchmark, and Plan 3
+memory/release evidence pass, head-only barrier admission remains configured.
+Simulations above four groups prove algorithmic behavior only; they do not
+prove live scaling on unavailable provider groups.
 
 ## Non-Blocking Follow-Ups
 

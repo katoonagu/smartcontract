@@ -100,6 +100,12 @@ postgresDescribe("Unified Check repository", () => {
           }
         ]
       });
+      await client.query(
+        await readFile(
+          "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
       const workerA = await pool.connect();
       const workerB = await pool.connect();
       await workerA.query(`set search_path to "${schema}"`);

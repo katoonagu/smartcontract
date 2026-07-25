@@ -61,6 +61,7 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
       await client.query(`create schema "${schema}"`);
       await client.query(`set search_path to "${schema}"`);
       await client.query(await readFile("migrations/033_unified_wallet_check.sql", "utf8"));
+      await client.query(await readFile("migrations/034_unified_check_adaptive_planner.sql", "utf8"));
       const snapshot = {
         version: "confirmed-wallet-snapshot-v1",
         schemaVersion: 1,
@@ -130,9 +131,15 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
       await client.query(
         `insert into unified_check_runs (
           id, analysis_key_sha256, subject_address, status, run_purpose,
-          side_effect_policy, analysis_manifest_sha256
-        ) values ($1,$2,$3,'RUNNING','synthetic_test','isolated',$4)`,
-        [run.id, run.analysisKeySha256, run.subjectAddress, manifestHash]
+          side_effect_policy, analysis_manifest_sha256, fairness_owner_id
+        ) values ($1,$2,$3,'RUNNING','synthetic_test','isolated',$4,$5)`,
+        [
+          run.id,
+          run.analysisKeySha256,
+          run.subjectAddress,
+          manifestHash,
+          run.fairnessOwnerId
+        ]
       );
       await client.query(
         `insert into unified_check_artifacts
@@ -391,10 +398,10 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
       await client.query(
         `insert into unified_check_runs (
           id, analysis_key_sha256, subject_address, status, run_purpose,
-          side_effect_policy, analysis_manifest_sha256
+          side_effect_policy, analysis_manifest_sha256, fairness_owner_id
         ) values (
           'run-failed-admin', $1, $2, 'RUNNING', 'admin_diagnostic',
-          'isolated', $3
+          'isolated', $3, 'run-failed-admin'
         )`,
         ["9".repeat(64), run.subjectAddress, "8".repeat(64)]
       );

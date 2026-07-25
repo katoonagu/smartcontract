@@ -9,6 +9,7 @@ import {
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
+  lastClaimInput: unknown = null;
   task: (Mutable<UnifiedWorkerTask> & {
     status: "QUEUED" | "LEASED" | "WAITING_RETRY" | "COMPLETED" | "BLOCKED_ADMIN" | "FAILED_TECHNICAL" | "CANCELLED";
     leaseToken: string | null;
@@ -38,7 +39,9 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
 
   async claim(input: {
     leaseToken: string;
+    permit?: unknown;
   }): Promise<UnifiedWorkerTask | null> {
+    this.lastClaimInput = input;
     if (
       !["QUEUED", "WAITING_RETRY"].includes(this.task.status) ||
       Date.parse(this.task.readyAt) > this.now.getTime()
@@ -331,5 +334,41 @@ describe("Unified resumable worker", () => {
     expect(result.outcome).toBe("blocked");
     expect(repository.task.status).toBe("CANCELLED");
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("forwards an immutable provider permit and reports the serviced run and lane", async () => {
+    const repository = new MemoryWorkerRepository();
+    const permit = Object.freeze({
+      lane: "repair" as const,
+      ownerId: "owner-1",
+      runId: "run-1",
+      canonicalHeadPreferred: true
+    });
+    repository.task.priorityLane = "repair";
+
+    const result = await runUnifiedTaskCycle({
+      workerId: "worker-1",
+      now: () => repository.now,
+      leaseMs: 60_000,
+      repository,
+      handlers: {
+        direct_history: async () => ({
+          kind: "checkpoint",
+          checkpoint: { cursor: "next" }
+        })
+      },
+      claimPermit: permit,
+      createId: () => "lease-1"
+    });
+
+    expect(repository.lastClaimInput).toEqual(expect.objectContaining({
+      permit
+    }));
+    expect(result).toMatchObject({
+      claimed: true,
+      runId: "run-1",
+      priorityLane: "repair",
+      outcome: "checkpointed"
+    });
   });
 });

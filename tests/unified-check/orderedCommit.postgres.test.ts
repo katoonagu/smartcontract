@@ -22,6 +22,8 @@ import {
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
+const ANALYSIS_KEY_SHA256 = "a".repeat(64);
+const ANALYSIS_MANIFEST_SHA256 = "b".repeat(64);
 const OLD_HEAD = "a".repeat(64);
 const NEXT_HEAD = "b".repeat(64);
 
@@ -84,16 +86,18 @@ async function withScenario(
          id, analysis_key_sha256, subject_address, status, run_purpose,
          side_effect_policy, analysis_manifest_sha256, fairness_owner_id
        ) values (
-         'run-1','analysis-1','TSubject','RUNNING','synthetic_test',
-         'isolated','analysis-manifest-1','owner-1'
-       )`
+         'run-1',$1,'TSubject','RUNNING','synthetic_test',
+         'isolated',$2,'owner-1'
+       )`,
+      [ANALYSIS_KEY_SHA256, ANALYSIS_MANIFEST_SHA256]
     );
     await db.query(
       `insert into unified_check_artifacts (
          sha256, created_by_run_id, kind, schema_version, artifact_json
        ) values (
-         'analysis-manifest-1','run-1','analysis_manifest','1','{}'::jsonb
-       )`
+         $1,'run-1','analysis_manifest','1','{}'::jsonb
+       )`,
+      [ANALYSIS_MANIFEST_SHA256]
     );
     await work({
       db,
@@ -206,7 +210,7 @@ async function insertAcceptedHistory(
        admitted_at, reserved_bytes, ready_at
      ) values (
        'run-1',$1,$2,$3,
-       case when $3 = 'ready' then $4 else null end,
+       case when $3 = 'ready' then $4::bigint else null end,
        case when $3 = 'ready' then statement_timestamp() else null end,
        null,
        case when $3 = 'ready' then statement_timestamp() else null end
@@ -519,10 +523,17 @@ postgresDescribe("Unified ordered commit", () => {
         [otherSha256, JSON.stringify(otherManifest)]
       );
       await db.query(
-        `update unified_check_attempts
-            set artifact_sha256 = $1
-          where id = 'attempt-history-1'`,
+        `insert into unified_check_attempts (
+           id, task_id, attempt, artifact_sha256, completed_at
+         ) values (
+           'attempt-history-1-other','history-1',2,$1,statement_timestamp()
+         )`,
         [otherSha256]
+      );
+      await db.query(
+        `update unified_check_tasks
+            set accepted_attempt_id = 'attempt-history-1-other'
+          where id = 'history-1'`
       );
       await db.query(
         `update unified_check_planner_entries
@@ -533,6 +544,7 @@ postgresDescribe("Unified ordered commit", () => {
 
       await expect(checkpointUnifiedTask(host, commitInput({
         ...entry,
+        acceptedAttemptId: "attempt-history-1-other",
         resultBytes: otherBytes
       }))).rejects.toThrow("unified_ordered_commit_prefix_mismatch");
       expect((await db.query(
@@ -708,6 +720,7 @@ postgresDescribe("Unified ordered commit", () => {
         "select status from unified_check_tasks where id = 'traversal-1'"
       )).rows[0]?.status).toBe("QUEUED");
 
+      await insertCompletedDirectHistory(db);
       const claimed = await claimUnifiedTask(db, {
         workerId: "analysis-ready-head",
         leaseToken: "lease-ready-head",

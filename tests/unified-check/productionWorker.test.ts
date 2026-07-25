@@ -14,6 +14,9 @@ describe("Unified production worker adapter", () => {
       }
       if (sql.includes("with candidate as")) {
         expect(values[3]).toEqual(["direct_history"]);
+        expect(values[7]).toBe("run-1");
+        expect(values[8]).toBe("repair");
+        expect(sql).toContain("canonical_sequence");
         return {
           rows: [{
             id: "task-1",
@@ -40,7 +43,13 @@ describe("Unified production worker adapter", () => {
     await expect(repository.claim({
       workerId: "worker",
       leaseToken: "lease",
-      leaseMs: 30_000
+      leaseMs: 30_000,
+      permit: {
+        lane: "repair",
+        ownerId: "owner-1",
+        runId: "run-1",
+        canonicalHeadPreferred: true
+      }
     })).resolves.toEqual({
       id: "task-1",
       runId: "run-1",
@@ -51,5 +60,44 @@ describe("Unified production worker adapter", () => {
       checkpoint: { cursor: "50" },
       cancellationRequestedAt: null
     });
+  });
+
+  it("does not fall back to a global claim when the permitted run has no task", async () => {
+    const query = vi.fn(async (sql: string, values: readonly unknown[] = []) => {
+      if (sql.includes("to_regclass('unified_check_planner_entries')")) {
+        return { rows: [{ planner_table: "unified_check_planner_entries" }] };
+      }
+      if (sql.includes("with candidate as")) {
+        expect(values[7]).toBe("run-missing");
+        expect(values[8]).toBe("interactive");
+        return { rows: [] };
+      }
+      throw new Error(`unexpected_sql:${sql}`);
+    });
+    const db = {
+      query,
+      transaction: (work) => work({ query })
+    } as UnifiedTransactionalQueryable;
+    const repository = createPostgresUnifiedTaskCycleRepository(
+      db,
+      ["direct_history"],
+      "candidate",
+      "e".repeat(64)
+    );
+
+    await expect(repository.claim({
+      workerId: "worker",
+      leaseToken: "lease",
+      leaseMs: 30_000,
+      permit: {
+        lane: "interactive",
+        ownerId: "owner",
+        runId: "run-missing",
+        canonicalHeadPreferred: false
+      }
+    })).resolves.toBeNull();
+    expect(query.mock.calls.filter(([sql]) =>
+      String(sql).includes("with candidate as")
+    )).toHaveLength(1);
   });
 });

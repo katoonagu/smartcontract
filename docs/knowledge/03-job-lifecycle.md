@@ -57,13 +57,16 @@ mark a real technical failure, but cannot convert unfinished traversal into
 An eligible task that checkpoints refreshes its scheduling age and yields to
 older ready work in the same priority lane. A long traversal therefore cannot
 reclaim every provider cycle while another interactive run remains queued.
-The event-driven provider pool has four slots when four keys are configured.
-A dense run can use all idle slots, but run-aware claiming preserves progress
-opportunities for later interactive runs. Direct history and direct hard
-evidence can run alongside traversal; they still cannot finalize or deliver.
-A wake received while a slot is still finishing its active cycle is latched
-per slot. Repeated wakes coalesce into one immediate restart, and pool drain
-does not report idle between that active cycle and its latched restart.
+The event-driven provider pool starts at target zero and is resized by the
+adaptive controller. Capacity comes from healthy independent provider groups,
+configured worker/provider ceilings, eligible demand, and runtime guards; raw
+key count is not capacity. Work-conserving owner-to-run max-min rounds divide
+interactive and repair work, and unused repair reserve is borrowed. Direct
+history and direct hard evidence can run alongside traversal; they still
+cannot finalize or deliver.
+A wake received while a slot is finishing a bounded chunk is coalesced without
+restarting that slot from a stale permit. At the chunk boundary the slot returns
+to the controller, which reallocates it from a fresh occupancy/epoch snapshot.
 
 Traversal checkpoints use a versioned V2 head plus immutable delta/chunk
 artifacts. They do not copy the growing frontier, visited set, page inventory,
@@ -120,13 +123,26 @@ kind and logical key. At the checkpoint boundary, any address-history marker
 requires the complete expected task, stored task, artifact kind/schema, and
 canonical key tuple; only marker-free generic artifacts bypass these
 address-specific semantics. Committed manifests remain reusable without
-duplicate provider work. Adaptive rolling admission, provider-group selection,
-and the capacity controller remain later steps.
+duplicate provider work. Rolling admission uses fair provider share for a
+bounded per-run lookahead and persists admission plus reservation before
+claim. A full run buffer yields capacity to other runs, while an ordinarily
+eligible canonical head may still take its protected slot. Switching to
+barrier de-admits only unleased tail rows; leased bounded chunks finish and
+the same ordered commit path continues head-first.
+
+Controller wakes coalesce after durable intake, provider lifecycle changes,
+planning/commit, and cooldown expiry. A rare reconciliation tick invokes the
+same cycle after restart or a lost signal. It reconstructs nothing from
+process memory, and a no-action tick mutates no task. Provider, analysis, and
+finalization retain separate capacity; pressure lowers or pauses new claims
+without interrupting an in-flight provider request.
 
 ## Remaining Operational Work
 
-The schema-034 startup, release-receipt, protected migration, and base
-planner-persistence gaps are closed. P1 boundary activation still waits
+The schema-034 startup, release-receipt, protected migration, planner,
+adaptive-capacity, and reconciliation implementation gaps are closed.
+Production configuration still defaults to barrier admission until Plan 3
+benchmark and rollout evidence authorize rolling. P1 boundary activation still waits
 for blind review/adjudication, and the performance matrix waits for frozen
 TPCP/TFWG/TXc provider bundles. Protected backup/migration/startup, generation
 activation, and post-deploy canary also remain external rollout work. The

@@ -11,6 +11,13 @@ export type UnifiedWorkerTask = {
   readonly cancellationRequestedAt: string | null;
 };
 
+export type UnifiedProviderClaimPermit = Readonly<{
+  lane: "interactive" | "repair" | "background";
+  ownerId: string;
+  runId: string;
+  canonicalHeadPreferred: boolean;
+}>;
+
 export type UnifiedAcceptedArtifact = {
   readonly kind: string;
   readonly schemaVersion: string;
@@ -114,6 +121,7 @@ export type UnifiedTaskCycleRepository = {
     workerId: string;
     leaseToken: string;
     leaseMs: number;
+    permit?: UnifiedProviderClaimPermit;
   }): Promise<UnifiedWorkerTask | null>;
   heartbeat(input: {
     taskId: string;
@@ -180,20 +188,42 @@ export async function runUnifiedTaskCycle(input: {
   repository: UnifiedTaskCycleRepository;
   handlers: Record<string, UnifiedChunkHandler>;
   createId?: () => string;
+  claimPermit?: UnifiedProviderClaimPermit;
   onProviderWorkAvailable?(): void | Promise<void>;
-}): Promise<{
-  claimed: boolean;
-  taskId: string | null;
-  outcome: "idle" | "checkpointed" | "completed" | "waiting" | "blocked" | "failed";
-}> {
+}): Promise<
+  | {
+      claimed: false;
+      taskId: null;
+      outcome: "idle";
+    }
+  | {
+      claimed: true;
+      taskId: string;
+      runId: string;
+      priorityLane: UnifiedWorkerTask["priorityLane"] | null;
+      outcome: "checkpointed" | "completed" | "waiting" | "blocked" | "failed";
+    }
+> {
   const createId = input.createId ?? randomUUID;
   const leaseToken = createId();
   const task = await input.repository.claim({
     workerId: input.workerId,
     leaseToken,
-    leaseMs: input.leaseMs
+    leaseMs: input.leaseMs,
+    permit: input.claimPermit
   });
-  if (!task) return { claimed: false, taskId: null, outcome: "idle" };
+  if (!task) {
+    return { claimed: false, taskId: null, outcome: "idle" };
+  }
+  const cycleResult = (
+    outcome: "checkpointed" | "completed" | "waiting" | "blocked" | "failed"
+  ) => ({
+    claimed: true as const,
+    taskId: task.id,
+    runId: task.runId,
+    priorityLane: task.priorityLane ?? null,
+    outcome
+  });
   const settle = (
     status: "WAITING_RETRY" | "BLOCKED_ADMIN" | "FAILED_TECHNICAL" | "CANCELLED",
     extra: {
@@ -210,12 +240,12 @@ export async function runUnifiedTaskCycle(input: {
   });
   if (task.cancellationRequestedAt !== null) {
     if (!await settle("CANCELLED")) throw new Error("unified_worker_lease_lost");
-    return { claimed: true, taskId: task.id, outcome: "blocked" };
+    return cycleResult("blocked");
   }
   const handler = input.handlers[task.kind];
   if (!handler) {
     await settle("BLOCKED_ADMIN", { lastError: "unified_handler_missing" });
-    return { claimed: true, taskId: task.id, outcome: "blocked" };
+    return cycleResult("blocked");
   }
   try {
     const result = await handler({
@@ -243,7 +273,7 @@ export async function runUnifiedTaskCycle(input: {
       if (checkpointed.providerWorkAvailable) {
         await input.onProviderWorkAvailable?.();
       }
-      return { claimed: true, taskId: task.id, outcome: "checkpointed" };
+      return cycleResult("checkpointed");
     }
     if (result.kind === "completed") {
       if (!await input.repository.complete({
@@ -254,7 +284,7 @@ export async function runUnifiedTaskCycle(input: {
         artifactSha256: result.artifactSha256,
         acceptedArtifact: result.acceptedArtifact
       })) throw new Error("unified_worker_lease_lost");
-      return { claimed: true, taskId: task.id, outcome: "completed" };
+      return cycleResult("completed");
     }
     if (result.kind === "provider_wait") {
       const readyAt = timestamp(result.readyAt);
@@ -276,23 +306,19 @@ export async function runUnifiedTaskCycle(input: {
             lastError: result.reason
           });
       if (!recorded) throw new Error("unified_worker_lease_lost");
-      return { claimed: true, taskId: task.id, outcome: "waiting" };
+      return cycleResult("waiting");
     }
     const status = result.kind === "blocked" ? "BLOCKED_ADMIN" : "FAILED_TECHNICAL";
     if (!await settle(status, {
       checkpoint: result.checkpoint,
       lastError: result.reason
     })) throw new Error("unified_worker_lease_lost");
-    return {
-      claimed: true,
-      taskId: task.id,
-      outcome: result.kind === "blocked" ? "blocked" : "failed"
-    };
+    return cycleResult(result.kind === "blocked" ? "blocked" : "failed");
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unified_worker_failed";
     if (reason !== "unified_worker_lease_lost") {
       await settle("FAILED_TECHNICAL", { lastError: reason });
     }
-    return { claimed: true, taskId: task.id, outcome: "failed" };
+    return cycleResult("failed");
   }
 }

@@ -1,3 +1,7 @@
+import type {
+  UnifiedProviderClaimPermit
+} from "./worker";
+
 export type UnifiedProviderPoolSnapshot = {
   readonly configuredLimit: number;
   readonly targetSlots: number;
@@ -5,20 +9,42 @@ export type UnifiedProviderPoolSnapshot = {
   readonly idleSlots: number;
 };
 
+export type UnifiedProviderSlotSnapshot = {
+  readonly slotId: number;
+  readonly epoch: number;
+  readonly active: boolean;
+  readonly activePermit: UnifiedProviderClaimPermit | null;
+};
+
+export type UnifiedProviderSlotAssignment = {
+  readonly slotId: number;
+  readonly expectedEpoch: number;
+  readonly permit: UnifiedProviderClaimPermit;
+};
+
 export interface UnifiedProviderPool {
   setTargetSlots(target: number): void;
+  assignPermits(
+    assignments: readonly UnifiedProviderSlotAssignment[]
+  ): UnifiedProviderSlotAssignment[];
   wake(): void;
   drain(): Promise<void>;
   snapshot(): UnifiedProviderPoolSnapshot;
+  slotSnapshots(): UnifiedProviderSlotSnapshot[];
   waitForIdle(): Promise<void>;
-  stop(): Promise<void>;
 }
 
 export function createUnifiedProviderPool(input: {
   configuredLimit: number;
-  runCycle(slotId: number): Promise<{ claimed: boolean }>;
+  runCycle(
+    slotId: number,
+    assignment?: UnifiedProviderSlotAssignment
+  ): Promise<{ claimed: boolean }>;
+  requiresPermit?: boolean;
+  yieldAfterClaim?: boolean;
   onError(error: unknown, slotId: number): void;
   onInFlight?(current: number): void;
+  onSlotBoundary?(snapshot: UnifiedProviderSlotSnapshot): void;
 }): UnifiedProviderPool {
   if (
     !Number.isSafeInteger(input.configuredLimit) ||
@@ -32,9 +58,21 @@ export function createUnifiedProviderPool(input: {
     Array.from({ length: input.configuredLimit }, () => null);
   const pendingWake =
     Array.from({ length: input.configuredLimit }, () => false);
+  const epochs =
+    Array.from({ length: input.configuredLimit }, () => 0);
+  const activePermits: Array<UnifiedProviderClaimPermit | null> =
+    Array.from({ length: input.configuredLimit }, () => null);
+  const pendingAssignments: Array<UnifiedProviderSlotAssignment | null> =
+    Array.from({ length: input.configuredLimit }, () => null);
   const idleWaiters = new Set<() => void>();
 
   const activeCount = () => active.filter(Boolean).length;
+  const slotSnapshot = (slotId: number): UnifiedProviderSlotSnapshot => ({
+    slotId,
+    epoch: epochs[slotId]!,
+    active: active[slotId] !== null,
+    activePermit: activePermits[slotId]
+  });
   const notify = () => {
     const count = activeCount();
     input.onInFlight?.(count);
@@ -44,11 +82,13 @@ export function createUnifiedProviderPool(input: {
     }
   };
   const run = async (
-    slotId: number
+    slotId: number,
+    assignment: UnifiedProviderSlotAssignment | undefined
   ): Promise<"idle" | "retired" | "drained"> => {
     while (!draining) {
-      const result = await input.runCycle(slotId);
+      const result = await input.runCycle(slotId, assignment);
       if (!result.claimed) return "idle";
+      if (input.yieldAfterClaim === true) return "idle";
       if (slotId >= targetSlots || activeCount() > targetSlots) {
         return "retired";
       }
@@ -60,21 +100,32 @@ export function createUnifiedProviderPool(input: {
       draining ||
       slotId >= targetSlots ||
       active[slotId] !== null ||
-      activeCount() >= targetSlots
+      activeCount() >= targetSlots ||
+      (
+        input.requiresPermit === true &&
+        pendingAssignments[slotId] === null
+      )
     ) {
       return;
     }
+    const assignment = pendingAssignments[slotId] ?? undefined;
+    pendingAssignments[slotId] = null;
+    activePermits[slotId] = assignment?.permit ?? null;
+    epochs[slotId] = epochs[slotId]! + 1;
     let running!: Promise<void>;
     running = (async () => {
       let exit: "idle" | "retired" | "drained" = "idle";
       try {
-        exit = await run(slotId);
+        exit = await run(slotId, assignment);
       } catch (error) {
         input.onError(error, slotId);
       } finally {
         if (active[slotId] !== running) return;
         active[slotId] = null;
-        const restart = !draining &&
+        activePermits[slotId] = null;
+        epochs[slotId] = epochs[slotId]! + 1;
+        const restart = input.requiresPermit !== true &&
+          !draining &&
           slotId < targetSlots &&
           pendingWake[slotId];
         pendingWake[slotId] = false;
@@ -84,6 +135,11 @@ export function createUnifiedProviderPool(input: {
           fill();
         }
         notify();
+        try {
+          input.onSlotBoundary?.(slotSnapshot(slotId));
+        } catch {
+          // Boundary notification is a best-effort wake signal.
+        }
       }
     })();
     active[slotId] = running;
@@ -127,11 +183,43 @@ export function createUnifiedProviderPool(input: {
       targetSlots = target;
       for (let slotId = target; slotId < pendingWake.length; slotId += 1) {
         pendingWake[slotId] = false;
+        if (pendingAssignments[slotId] !== null) {
+          pendingAssignments[slotId] = null;
+          epochs[slotId] = epochs[slotId]! + 1;
+        }
       }
       fill();
     },
+    assignPermits(assignments) {
+      const accepted: UnifiedProviderSlotAssignment[] = [];
+      for (const assignment of assignments) {
+        if (
+          !Number.isSafeInteger(assignment.slotId) ||
+          assignment.slotId < 0 ||
+          assignment.slotId >= input.configuredLimit ||
+          !Number.isSafeInteger(assignment.expectedEpoch) ||
+          assignment.expectedEpoch < 0
+        ) {
+          throw new TypeError("unified_provider_slot_assignment_invalid");
+        }
+        const slotId = assignment.slotId;
+        if (
+          draining ||
+          active[slotId] !== null ||
+          pendingAssignments[slotId] !== null ||
+          epochs[slotId] !== assignment.expectedEpoch
+        ) continue;
+        pendingAssignments[slotId] = assignment;
+        accepted.push(assignment);
+      }
+      return accepted;
+    },
     wake() {
       if (draining) return;
+      if (input.requiresPermit === true) {
+        fill();
+        return;
+      }
       for (let slotId = 0; slotId < targetSlots; slotId += 1) {
         if (active[slotId] === null) {
           start(slotId);
@@ -145,9 +233,10 @@ export function createUnifiedProviderPool(input: {
       if (activeCount() === 0) return Promise.resolve();
       return new Promise((resolve) => idleWaiters.add(resolve));
     },
-    // ponytail: retained until the Plan 2 runtime wiring switches its shutdown
-    // call to drain(); both names have the same terminal semantics.
-    stop: drain,
+    slotSnapshots: () => Array.from(
+      { length: input.configuredLimit },
+      (_unused, slotId) => slotSnapshot(slotId)
+    ),
     snapshot(): UnifiedProviderPoolSnapshot {
       const activeSlots = activeCount();
       return {

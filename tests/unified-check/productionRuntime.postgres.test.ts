@@ -599,15 +599,22 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       await client.query(
         await readFile("migrations/033_unified_wallet_check.sql", "utf8")
       );
+      await client.query(
+        await readFile(
+          "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
       for (const [index, suffix] of ["a", "b", "c"].entries()) {
         const runId = `run-${suffix}`;
         const manifestSha256 = suffix.repeat(64);
         await client.query(
           `insert into unified_check_runs (
              id, analysis_key_sha256, subject_address, status, run_purpose,
-             side_effect_policy, analysis_manifest_sha256, created_at, updated_at
+             side_effect_policy, analysis_manifest_sha256, fairness_owner_id,
+             created_at, updated_at
            ) values (
-             $1,$2,$3,'RUNNING','user_check','authoritative',$4,
+             $1,$2,$3,'RUNNING','user_check','authoritative',$4,$1,
              $5::timestamptz,$5::timestamptz
            )`,
           [

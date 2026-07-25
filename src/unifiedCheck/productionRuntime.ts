@@ -63,6 +63,7 @@ import {
 } from "./repository";
 import {
   runUnifiedTaskCycle,
+  type UnifiedProviderClaimPermit,
   type UnifiedProviderChunkBudget
 } from "./worker";
 
@@ -274,6 +275,8 @@ export function createUnifiedProductionRuntime(input: {
   commitMaxEntries?: number;
   commitMaxBytes?: number;
   onProviderWorkAvailable?(): void;
+  onCheckpointLatencyMs?(latencyMs: number): void;
+  requireProviderClaimPermit?: boolean;
   loadProviderPage(input: {
     run: LoadedRun;
     address?: string;
@@ -644,7 +647,16 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   return {
-    runProviderCycle: (slotId = 0) => runUnifiedTaskCycle({
+    runProviderCycle: (
+      slotId = 0,
+      claimPermit?: UnifiedProviderClaimPermit
+    ) => input.requireProviderClaimPermit === true && !claimPermit
+      ? Promise.resolve({
+          claimed: false as const,
+          taskId: null,
+          outcome: "idle" as const
+        })
+      : runUnifiedTaskCycle({
       workerId: `unified-provider-${slotId}`,
       now,
       leaseMs,
@@ -654,13 +666,17 @@ export function createUnifiedProductionRuntime(input: {
         input.runtimeCommit,
         input.providerConfigurationSha256,
         input.runPurpose,
-        { manifestMaxBytes }
+        {
+          manifestMaxBytes,
+          onCheckpointLatencyMs: input.onCheckpointLatencyMs
+        }
       ),
       handlers: {
         direct_history: directHistory,
         address_history: addressHistory,
         deep_direct: directEvidence
       },
+      claimPermit,
       createId
     }),
     runAnalysisCycle: () => runUnifiedTaskCycle({
@@ -673,7 +689,10 @@ export function createUnifiedProductionRuntime(input: {
         input.runtimeCommit,
         input.providerConfigurationSha256,
         input.runPurpose,
-        { manifestMaxBytes }
+        {
+          manifestMaxBytes,
+          onCheckpointLatencyMs: input.onCheckpointLatencyMs
+        }
       ),
       handlers: { traversal, ...branches },
       createId,

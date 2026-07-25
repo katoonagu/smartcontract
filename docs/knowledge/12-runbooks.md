@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-25
 owner_area: docs
 code_refs:
   - package.json
@@ -155,6 +155,51 @@ The current blocker is missing historical response pages for those three
 addresses. Therefore there is no measured before/after table or proposed
 internal SLO yet. Once bundles exist, compare only runs with identical semantic
 identity; execution identity may differ for the declared mechanical changes.
+
+## Adaptive Provider Controller Checks
+
+The candidate still defaults to barrier admission:
+
+```powershell
+$env:UNIFIED_ADMISSION_POLICY = "barrier"
+```
+
+Run deterministic controller, fairness, pool, admission, reconciliation,
+fallback, and scale checks before Plan 3:
+
+```powershell
+npm test -- tests/unified-check/providerCapacityController.test.ts tests/unified-check/fairProviderAllocator.test.ts tests/unified-check/providerPool.test.ts tests/unified-check/rollingAdmission.test.ts tests/unified-check/adaptiveRuntime.test.ts tests/unified-check/admissionRuntimeControl.test.ts tests/unified-check/reconciliation.test.ts tests/unified-check/providerScaleSimulation.test.ts
+```
+
+PostgreSQL recovery and fallback checks require the temporary test database
+and are not a pass when Vitest reports them skipped:
+
+```powershell
+$env:TEST_DATABASE_URL = "<temporary-postgresql-url>"
+npm test -- tests/unified-check/rollingAdmission.postgres.test.ts tests/unified-check/claimPermits.postgres.test.ts tests/unified-check/reconciliation.postgres.test.ts tests/unified-check/barrierFallback.postgres.test.ts tests/unified-check/productionRuntime.postgres.test.ts
+```
+
+Capacities above the four currently configured independent groups are
+simulation evidence only. Raise the live ceiling only after the matching Plan
+3 canary and memory gate.
+
+### Emergency rolling-to-barrier fallback
+
+On the Linux runtime whose active generation fence assigns ownership to
+Unified, request the one-way hot fallback with:
+
+```bash
+kill -USR2 <bot-pid>
+```
+
+The `unified_admission_barrier_fallback` log confirms the serialized switch and
+lists affected runs/de-admitted task IDs. New rolling admissions stop before
+the switch completes. Unleased ordered tails are de-admitted; an already
+leased provider request is not interrupted and yields at its bounded chunk
+before the next barrier controller cycle. Repeating `SIGUSR2` is idempotent.
+There is intentionally no hot barrier-to-rolling signal in this rollout.
+The process does not register this signal handler while the legacy generation
+owns delivery.
 
 ## Live Canary
 

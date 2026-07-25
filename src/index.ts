@@ -203,6 +203,7 @@ import {
   UnifiedProviderWaitError
 } from "./unifiedCheck/requestService";
 import {
+  createUnifiedGenerationRuntimeGate,
   getActiveCheckGeneration,
   handoffWalletDeliveryAndAcceptRequest,
   ownsWalletDelivery,
@@ -213,6 +214,21 @@ import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionP
 import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
 import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
 import { createUnifiedProviderPool } from "./unifiedCheck/providerPool";
+import {
+  countUnifiedActionableProviderWork,
+  createUnifiedCheckpointLatencySampler,
+  createUnifiedDbLatencySampler,
+  createUnifiedRepairServiceTracker,
+  loadUnifiedProviderRunDemand,
+  readUnifiedRuntimeResources,
+  runUnifiedAdaptiveControllerCycle
+} from "./unifiedCheck/adaptiveRuntime";
+import {
+  createPostgresUnifiedAdmissionRuntimeControl,
+  type UnifiedAdmissionPolicy
+} from "./unifiedCheck/admissionRuntimeControl";
+import { refillOrderedAdmissions } from "./unifiedCheck/plannerRepository";
+import { createUnifiedReconciliation } from "./unifiedCheck/reconciliation";
 import {
   buildUnifiedCanaryProviderConfiguration
 } from "./unifiedCheck/canary";
@@ -323,7 +339,11 @@ const tronscanScheduler = createTronscanScheduler({
   apiKeyGroups: config.tronscanApiKeyGroups,
   accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
   maxInFlight: config.tronscanMaxInFlight,
-  maxInFlightPerGroup: config.tronscanGroupMaxInFlight
+  maxInFlightPerGroup: config.tronscanGroupMaxInFlight,
+  // ponytail: fixed first-rollout breaker; calibrate the threshold from Plan 3
+  // provider-error evidence before exposing another deployment knob.
+  providerFailureCircuitThreshold: 3,
+  providerCircuitOpenMs: config.tronscanRateLimitCooldownMs
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
@@ -464,7 +484,9 @@ const unifiedProviderConfiguration =
       keyCount: group.apiKeys.length
     }))
   });
-let wakeUnifiedProviderPool: () => void = () => undefined;
+let wakeUnifiedController: () => void = () => undefined;
+const unifiedCheckpointLatencySampler =
+  createUnifiedCheckpointLatencySampler();
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
   runtimeCommit: runtimeVersion.gitCommitSha,
@@ -477,7 +499,14 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   },
   now: () => new Date(),
   createId: randomUUID,
-  onProviderWorkAvailable: () => wakeUnifiedProviderPool(),
+  manifestMaxBytes: config.unifiedManifestHardLimitBytes,
+  commitMaxEntries: config.unifiedReadyBufferMaxEntries,
+  commitMaxBytes: config.unifiedReadyBufferMaxBytes,
+  onProviderWorkAvailable: () => wakeUnifiedController(),
+  onCheckpointLatencyMs: (latencyMs) => {
+    unifiedCheckpointLatencySampler.record(latencyMs);
+  },
+  requireProviderClaimPermit: true,
   async loadProviderPage({
     run,
     address = run.subjectAddress,
@@ -769,17 +798,32 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     }
   }
 });
-// ponytail: preserve the barrier rollout's current live target until the
-// adaptive controller owns setTargetSlots in the next Plan 2 batch.
-const initialUnifiedProviderSlots = Math.min(
-  4,
-  config.unifiedProviderConcurrencyLimit,
-  Math.max(1, config.tronscanApiKeys.length)
-);
+const unifiedRepairServiceTracker = createUnifiedRepairServiceTracker();
+const unifiedDbLatencySampler = createUnifiedDbLatencySampler();
+const measureUnifiedDb = async <T>(work: () => Promise<T>): Promise<T> => {
+  const startedAtMs = performance.now();
+  try {
+    return await work();
+  } finally {
+    unifiedDbLatencySampler.record(performance.now() - startedAtMs);
+  }
+};
 const unifiedProviderPool = createUnifiedProviderPool({
   configuredLimit: config.unifiedProviderConcurrencyLimit,
-  runCycle: (slotId) =>
-    unifiedProductionRuntime.runProviderCycle(slotId),
+  requiresPermit: true,
+  yieldAfterClaim: true,
+  async runCycle(slotId, assignment) {
+    if (!assignment) return { claimed: false };
+    const result = await unifiedProductionRuntime.runProviderCycle(
+      slotId,
+      assignment.permit
+    );
+    if (result.claimed) {
+      unifiedRepairServiceTracker.recordClaim(assignment.permit.lane);
+    }
+    return result;
+  },
+  onSlotBoundary: () => wakeUnifiedController(),
   onError(error, slotId) {
     logger.error("unified_provider_pool_slot_failed", {
       slotId,
@@ -787,8 +831,200 @@ const unifiedProviderPool = createUnifiedProviderPool({
     });
   }
 });
-unifiedProviderPool.setTargetSlots(initialUnifiedProviderSlots);
-wakeUnifiedProviderPool = () => unifiedProviderPool.wake();
+let unifiedProviderRampState = {
+  target: 0,
+  lastIncreaseAtMs:
+    Date.now() - config.unifiedProviderIncreaseIntervalMs
+};
+const unifiedAdmissionRuntimeControl =
+  createPostgresUnifiedAdmissionRuntimeControl({
+    db: unifiedTransactionHost,
+    initialPolicy: config.unifiedAdmissionPolicy,
+    readyBufferMaxEntries: config.unifiedReadyBufferMaxEntries,
+    readyBufferMaxBytes: config.unifiedReadyBufferMaxBytes,
+    reservedBufferMaxBytes: config.unifiedReservedBufferMaxBytes,
+    reservationBytesPerTask: config.unifiedManifestHardLimitBytes,
+    now: () => new Date(),
+    wake: () => wakeUnifiedController()
+  });
+let unifiedCooldownWake: NodeJS.Timeout | null = null;
+const unifiedResourceThresholds = {
+  // ponytail: conservative first-rollout guards; expose deployment-specific
+  // calibration only after Plan 3 benchmark evidence exists.
+  pressureAvailableMemoryBytes: 1_073_741_824,
+  criticalAvailableMemoryBytes: 268_435_456,
+  pressureRssBytes: 2_147_483_648,
+  criticalRssBytes: 3_221_225_472,
+  pressureDbWaitingCount: 4,
+  criticalDbWaitingCount: 16,
+  pressureDbLatencyMs: 500,
+  criticalDbLatencyMs: 2_000,
+  pressureCheckpointLatencyMs: 1_000,
+  criticalCheckpointLatencyMs: 5_000
+};
+const runUnifiedControllerCycle = async (
+  admissionPolicy: UnifiedAdmissionPolicy
+) => {
+  const startedAtMs = Date.now();
+  const providerGroups = tronscanScheduler.groupSnapshots();
+  const providerAvailable = providerGroups.some((group) =>
+    group.state === "healthy"
+  );
+  const demand = await measureUnifiedDb(() =>
+    loadUnifiedProviderRunDemand(unifiedTransactionHost, {
+      now: new Date(startedAtMs),
+      providerAvailable,
+      readyBufferMaxEntries: config.unifiedReadyBufferMaxEntries,
+      readyBufferMaxBytes: config.unifiedReadyBufferMaxBytes,
+      runtimeCommit: runtimeVersion.gitCommitSha,
+      providerConfigurationSha256: unifiedProviderConfiguration.sha256
+    })
+  );
+  unifiedRepairServiceTracker.updateRepairReady(demand.some((run) =>
+    run.lane === "repair" && run.eligibleReadyWork > 0
+  ));
+  const resources = await readUnifiedRuntimeResources({
+    dbWaitingCount: db.waitingCount,
+    dbLatencyMs: unifiedDbLatencySampler.sampleAndReset(),
+    checkpointLatencyMs:
+      unifiedCheckpointLatencySampler.sampleAndReset()
+  });
+  const scheduler = tronscanScheduler.diagnostics();
+  const result = await runUnifiedAdaptiveControllerCycle({
+    nowMs: startedAtMs,
+    rampState: unifiedProviderRampState,
+    providerGroups,
+    resources,
+    thresholds: unifiedResourceThresholds,
+    providerSlots: unifiedProviderPool.slotSnapshots(),
+    config: {
+      configuredProviderConcurrencyLimit:
+        config.unifiedProviderConcurrencyLimit,
+      providerWorkerLimit: Math.min(
+        config.unifiedProviderWorkerLimit,
+        scheduler.maxInFlight
+      ),
+      providerIncreaseStep: config.unifiedProviderIncreaseStep,
+      providerIncreaseIntervalMs:
+        config.unifiedProviderIncreaseIntervalMs,
+      analysisConcurrencyLimit: config.unifiedAnalysisConcurrencyLimit,
+      finalizationConcurrencyLimit:
+        config.unifiedFinalizationConcurrencyLimit,
+      admissionPolicy,
+      lookaheadFactor: config.unifiedLookaheadFactor,
+      perRunLookaheadMaximum:
+        config.unifiedPerRunLookaheadMaximum,
+      readyBufferMaxEntries: config.unifiedReadyBufferMaxEntries,
+      readyBufferMaxBytes: config.unifiedReadyBufferMaxBytes,
+      reservedBufferMaxBytes: config.unifiedReservedBufferMaxBytes,
+      reservationBytesPerTask: config.unifiedManifestHardLimitBytes,
+      repairShare: config.unifiedRepairShare,
+      repairMaxSlots: config.unifiedRepairMaxSlots,
+      repairMaxWaitChunks: config.unifiedRepairMaxWaitChunks,
+      chunksSinceLastRepair:
+        unifiedRepairServiceTracker.snapshot().chunksSinceLastRepair
+    },
+    demand,
+    refill: (admission) => measureUnifiedDb(() =>
+      refillOrderedAdmissions(unifiedTransactionHost, admission)
+    ),
+    countActionableProviderWork: (scopes) => measureUnifiedDb(() =>
+      countUnifiedActionableProviderWork(unifiedTransactionHost, {
+        now: new Date(),
+        scopes,
+        runtimeCommit: runtimeVersion.gitCommitSha,
+        providerConfigurationSha256: unifiedProviderConfiguration.sha256
+      })
+    ),
+    assignProviderPermits: (assignments) =>
+      unifiedProviderPool.assignPermits(assignments),
+    setPoolTarget: (target) =>
+      unifiedProviderPool.setTargetSlots(target),
+    wakePool: () => unifiedProviderPool.wake()
+  });
+  unifiedProviderRampState = result.rampState;
+
+  if (unifiedCooldownWake !== null) {
+    clearTimeout(unifiedCooldownWake);
+    unifiedCooldownWake = null;
+  }
+  const nextCooldown = providerGroups
+    .map((group) => group.cooldownUntil)
+    .filter((value): value is number =>
+      value !== null && value > Date.now()
+    )
+    .sort((left, right) => left - right)[0];
+  if (nextCooldown !== undefined) {
+    unifiedCooldownWake = setTimeout(
+      () => wakeUnifiedController(),
+      Math.max(1, nextCooldown - Date.now())
+    );
+    unifiedCooldownWake.unref?.();
+  }
+  const analysisResults = await Promise.all(Array.from(
+    { length: result.analysisConcurrencyLimit },
+    () => unifiedProductionRuntime.runAnalysisCycle()
+  ));
+  if (analysisResults.some((cycle) => cycle.claimed)) {
+    // Coordinator commits and task lifecycle changes are durable now. The
+    // coalesced pending cycle recalculates admission from that new state.
+    wakeUnifiedController();
+  }
+  const finalizationResults = await Promise.all(Array.from(
+    { length: result.finalizationConcurrencyLimit },
+    () => unifiedProductionRuntime.runFinalizationCycle()
+  ));
+  for (const finalized of finalizationResults) {
+    if (!finalized.finalized) continue;
+    logger.info("unified_wallet_check_finalized", {
+      runId: finalized.runId
+    });
+  }
+  return {
+    actionableWorkFound: result.eligibleReadyProviderWork > 0,
+    admitted: result.admitted,
+    wokenSlots: result.actionableProviderSlots
+  };
+};
+const unifiedReconciliation = createUnifiedReconciliation({
+  intervalMs: config.unifiedReconciliationIntervalMs,
+  runCycle: () =>
+    unifiedAdmissionRuntimeControl.runControllerCycle(
+      runUnifiedControllerCycle
+    ),
+  onError(error) {
+    logger.error("unified_reconciliation_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+const requestUnifiedBarrierFallback = () => {
+  void unifiedAdmissionRuntimeControl.switchToBarrier().then((result) => {
+    logger.warn("unified_admission_barrier_fallback", result);
+  }).catch((error) => {
+    logger.error("unified_admission_barrier_fallback_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+};
+const unifiedGenerationRuntime = createUnifiedGenerationRuntimeGate({
+  generation: activeCheckGeneration,
+  startController: () => unifiedReconciliation.start(),
+  wakeController: () => {
+    unifiedRepairServiceTracker.recordWake();
+    unifiedReconciliation.wake();
+  },
+  activateBarrierFallback: requestUnifiedBarrierFallback,
+  registerBarrierFallback: (listener) => {
+    if (process.platform !== "win32") process.on("SIGUSR2", listener);
+  },
+  unregisterBarrierFallback: (listener) => {
+    if (process.platform !== "win32") process.off("SIGUSR2", listener);
+  }
+});
+wakeUnifiedController = () => {
+  unifiedGenerationRuntime.wakeController();
+};
 const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
 function getBackgroundUsdtAllowance(input: {
@@ -1278,6 +1514,7 @@ const bot = createBot(config, db, tronClient, {
       }),
       now: () => now
     });
+    wakeUnifiedController();
     logger.info("unified_wallet_check_intake", {
       requestCorrelationId: request.requestCorrelationId,
       subjectAddress: request.subjectAddress,
@@ -2334,19 +2571,13 @@ function startBackgroundWorkSchedule(): void {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
     }
   });
-  const unifiedProviderWork = async () => {
-    unifiedProviderPool.wake();
-  };
-  const unifiedAnalysisWork = () =>
-    unifiedProductionRuntime.runAnalysisCycle().then(() => undefined);
-  const unifiedFinalizationWork = () =>
-    unifiedProductionRuntime.runFinalizationCycle().then((result) => {
-      if (result.finalized) {
-        logger.info("unified_wallet_check_finalized", {
-          runId: result.runId
-        });
-      }
-    });
+  unifiedGenerationRuntime.start();
+  const unifiedProviderWork = async () => undefined;
+  // Provider, analysis/coordinator, and finalization are advanced by the
+  // coalesced controller cycle. Periodic labels remain inert compatibility
+  // entries so the startup schedule cannot create a second claimant loop.
+  const unifiedAnalysisWork = async () => undefined;
+  const unifiedFinalizationWork = async () => undefined;
   const unifiedWatchdogWork = () =>
     listUnifiedWatchdogRuns(unifiedTransactionHost, { limit: 100 })
       .then((runs) => {
@@ -2401,12 +2632,18 @@ function startBackgroundWorkSchedule(): void {
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  unifiedGenerationRuntime.stop();
   logger.info("shutdown_started", { signal });
   startupWorkSchedule?.stop();
   startupWorkSchedule = null;
   unifiedWorkSchedule?.stop();
   unifiedWorkSchedule = null;
-  await unifiedProviderPool.stop();
+  if (unifiedCooldownWake !== null) {
+    clearTimeout(unifiedCooldownWake);
+    unifiedCooldownWake = null;
+  }
+  await unifiedReconciliation.stop();
+  await unifiedProviderPool.drain();
 
   if (activePoll) {
     try {

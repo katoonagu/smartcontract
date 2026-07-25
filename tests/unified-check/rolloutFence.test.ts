@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activateUnifiedGeneration,
+  createUnifiedGenerationRuntimeGate,
   getActiveCheckGeneration,
   handoffWalletDeliveryAndAcceptRequest,
   handoffWalletDeliveryToUnified,
@@ -41,6 +42,68 @@ describe("Unified rollout generation fence", () => {
     expect(selectUnifiedStartupSchedule(generation, [
       { label: "unified_delivery" }
     ])).toEqual([]);
+  });
+
+  it("starts controller ownership once only for the Unified generation", () => {
+    const legacyEvents: string[] = [];
+    const legacy = createUnifiedGenerationRuntimeGate({
+      generation: {
+        deliveryGeneration: "legacy",
+        generationId: null,
+        activatedAt: null,
+        runtimeCommit: null
+      },
+      startController: () => legacyEvents.push("start"),
+      wakeController: () => legacyEvents.push("wake"),
+      activateBarrierFallback: () => legacyEvents.push("fallback"),
+      registerBarrierFallback: () => legacyEvents.push("register"),
+      unregisterBarrierFallback: () => legacyEvents.push("unregister")
+    });
+
+    expect(legacy.start()).toBe(false);
+    expect(legacy.wakeController()).toBe(false);
+    expect(legacy.requestBarrierFallback()).toBe(false);
+    legacy.stop();
+    expect(legacyEvents).toEqual([]);
+
+    const unifiedEvents: string[] = [];
+    const fallbackListeners: Array<() => void> = [];
+    const unified = createUnifiedGenerationRuntimeGate({
+      generation: {
+        deliveryGeneration: "unified",
+        generationId: "generation-1",
+        activatedAt: "2026-07-25T00:00:00.000Z",
+        runtimeCommit: "a".repeat(40)
+      },
+      startController: () => unifiedEvents.push("start"),
+      wakeController: () => unifiedEvents.push("wake"),
+      activateBarrierFallback: () => unifiedEvents.push("fallback"),
+      registerBarrierFallback: (listener) => {
+        unifiedEvents.push("register");
+        fallbackListeners.push(listener);
+      },
+      unregisterBarrierFallback: (listener) => {
+        expect(listener).toBe(fallbackListeners[0]);
+        unifiedEvents.push("unregister");
+      }
+    });
+
+    expect(unified.start()).toBe(true);
+    expect(unified.start()).toBe(false);
+    expect(unifiedEvents).toEqual(["start", "register", "wake"]);
+    expect(unified.wakeController()).toBe(true);
+    fallbackListeners[0]!();
+    expect(unifiedEvents).toEqual([
+      "start",
+      "register",
+      "wake",
+      "wake",
+      "fallback"
+    ]);
+    unified.stop();
+    expect(unifiedEvents.at(-1)).toBe("unregister");
+    expect(unified.wakeController()).toBe(false);
+    expect(unified.requestBarrierFallback()).toBe(false);
   });
 
   it("activates one generation transactionally and accepts only an exact retry", async () => {

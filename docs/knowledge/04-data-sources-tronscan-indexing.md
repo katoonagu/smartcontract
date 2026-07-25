@@ -55,6 +55,15 @@ Identical provider requests share an identity and may coalesce across child
 branches. The fair scheduler tracks per-key/group health and cooldowns so an
 old or waiting heavy job cannot reserve the entire pool.
 
+Provider capacity snapshots expose only opaque independent group IDs, health
+(`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,
+and cooldown expiry. Multiple keys in one provider account share one group
+limit. A 429 cools only that group when independent groups are configured;
+repeated configured provider failures open its circuit, and a successful
+half-open probe restores it. Request pacing, endpoint/account limits, cooldown,
+and RPS remain inside the TronScan scheduler and are separate from the
+controller's concurrent-chunk target.
+
 A snapshot/address/USDT history is materialized once as content-addressed
 chunks and reused by all funding episodes. Episode attribution stays separate;
 history reuse does not merge origins or change proportional attribution.
@@ -111,6 +120,9 @@ performance replay is also pending because the earlier live runtime did not
 persist canonical provider response pages.
 
 The protected candidate path now verifies the exact schema-034 planner
-migration and its schema-033 predecessor before canary selection. This release
-identity change does not alter provider coverage, traversal closure, labels, or
-scoring policy; adaptive rolling admission remains pending.
+migration and its schema-033 predecessor before canary selection. The adaptive
+runtime can expand from the current four configured independent groups to its
+validated provider-worker ceiling, while bounded chunks, durable buffer
+reservations, DB/memory guards, and eligible demand constrain actual use.
+Logical replay through capacity 100 is algorithmic evidence, not measured live
+RPS. Barrier remains the production default until Plan 3 rollout gates pass.

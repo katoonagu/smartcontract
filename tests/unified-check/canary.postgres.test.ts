@@ -71,6 +71,12 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
         await readFile("migrations/033_unified_wallet_check.sql", "utf8")
       );
       await pool.query(
+        await readFile(
+          "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
+      await pool.query(
         `create table telegram_users (
           telegram_user_id text primary key
         );

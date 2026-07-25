@@ -16,6 +16,8 @@ import {
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
+const ANALYSIS_KEY_SHA256 = "a".repeat(64);
+const ANALYSIS_MANIFEST_SHA256 = "b".repeat(64);
 
 const acceptedArtifact = {
   version: "unified-address-history-manifest-v1",
@@ -73,9 +75,10 @@ async function withScenario(
         id, analysis_key_sha256, subject_address, status, run_purpose,
         side_effect_policy, analysis_manifest_sha256, fairness_owner_id
       ) values (
-        'run-1','analysis-1','TSubject','RUNNING','synthetic_test',
-        'isolated','analysis-manifest-1','run-1'
-      )`
+        'run-1',$1,'TSubject','RUNNING','synthetic_test',
+        'isolated',$2,'run-1'
+      )`,
+      [ANALYSIS_KEY_SHA256, ANALYSIS_MANIFEST_SHA256]
     );
     await work({ db, pool, schema, transactionHost });
   } finally {
@@ -114,11 +117,11 @@ async function insertLeasedTask(
     ) values (
       'run-1',
       (select count(*) from unified_check_planner_entries),
-      $1,
-      'planned',
-      case when $2 then statement_timestamp() else null end,
-      case when $2 then $3 else null end
-    )`,
+       $1,
+       'planned',
+       case when $2 then statement_timestamp() else null end,
+       case when $2 then $3::bigint else null end
+     )`,
     [input.taskId, input.admitted !== false, input.reservedBytes ?? 4_096]
   );
 }

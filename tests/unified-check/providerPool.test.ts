@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createUnifiedProviderPool
 } from "../../src/unifiedCheck/providerPool";
+import {
+  runUnifiedAdaptiveControllerCycle
+} from "../../src/unifiedCheck/adaptiveRuntime";
+import type {
+  UnifiedProviderClaimPermit
+} from "../../src/unifiedCheck/worker";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -244,5 +250,204 @@ describe("Unified resizable provider pool", () => {
       activeSlots: 0,
       idleSlots: 0
     });
+  });
+
+  it("can yield after exactly one claimed bounded chunk in production mode", async () => {
+    const runCycle = vi.fn(async () => ({ claimed: true }));
+    const pool = createUnifiedProviderPool({
+      configuredLimit: 1,
+      runCycle,
+      yieldAfterClaim: true,
+      onError: vi.fn()
+    });
+
+    pool.setTargetSlots(1);
+    await pool.waitForIdle();
+
+    expect(runCycle).toHaveBeenCalledOnce();
+    expect(pool.snapshot()).toMatchObject({
+      targetSlots: 1,
+      activeSlots: 0
+    });
+  });
+
+  it("rejects stale permits during a chunk and reallocates the idle boundary slot from repair to interactive", async () => {
+    const repairChunk = deferred<{ claimed: boolean }>();
+    const firstInteractiveChunk = deferred<{ claimed: boolean }>();
+    const secondInteractiveChunk = deferred<{ claimed: boolean }>();
+    const cycles: Array<{
+      slotId: number;
+      permit: UnifiedProviderClaimPermit;
+    }> = [];
+    const boundaries: number[] = [];
+    const pool = createUnifiedProviderPool({
+      configuredLimit: 2,
+      requiresPermit: true,
+      yieldAfterClaim: true,
+      runCycle(slotId, assignment) {
+        if (!assignment) throw new Error("missing_assignment");
+        cycles.push({ slotId, permit: assignment.permit });
+        if (assignment.permit.lane === "repair") {
+          return repairChunk.promise;
+        }
+        return cycles.filter((cycle) =>
+          cycle.permit.lane === "interactive"
+        ).length === 1
+          ? firstInteractiveChunk.promise
+          : secondInteractiveChunk.promise;
+      },
+      onSlotBoundary(snapshot) {
+        boundaries.push(snapshot.slotId);
+      },
+      onError: vi.fn()
+    });
+    const initial = pool.slotSnapshots();
+    pool.assignPermits([
+      {
+        slotId: 0,
+        expectedEpoch: initial[0]!.epoch,
+        permit: {
+          lane: "repair",
+          ownerId: "owner",
+          runId: "run",
+          canonicalHeadPreferred: false
+        }
+      },
+      {
+        slotId: 1,
+        expectedEpoch: initial[1]!.epoch,
+        permit: {
+          lane: "interactive",
+          ownerId: "owner",
+          runId: "run",
+          canonicalHeadPreferred: true
+        }
+      }
+    ]);
+    pool.setTargetSlots(2);
+    await vi.waitFor(() => expect(cycles).toHaveLength(2));
+
+    const controllerCycle = () => runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 2, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "a",
+        state: "healthy" as const,
+        concurrencyLimit: 2,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      providerSlots: pool.slotSnapshots(),
+      resources: {
+        rssBytes: 100,
+        heapUsedBytes: 50,
+        availableMemoryBytes: 10_000,
+        dbWaitingCount: 0,
+        dbLatencyMs: 1,
+        checkpointLatencyMs: 1
+      },
+      thresholds: {
+        pressureAvailableMemoryBytes: 1_000,
+        criticalAvailableMemoryBytes: 100,
+        pressureRssBytes: 5_000,
+        criticalRssBytes: 10_000,
+        pressureDbWaitingCount: 4,
+        criticalDbWaitingCount: 10,
+        pressureDbLatencyMs: 250,
+        criticalDbLatencyMs: 1_000,
+        pressureCheckpointLatencyMs: 500,
+        criticalCheckpointLatencyMs: 2_000
+      },
+      config: {
+        configuredProviderConcurrencyLimit: 2,
+        providerWorkerLimit: 2,
+        providerIncreaseStep: 2,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling" as const,
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 2,
+        readyBufferMaxEntries: 10,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.5,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [
+        {
+          runId: "run",
+          ownerId: "owner",
+          lane: "repair" as const,
+          eligibleReadyWork: 2,
+          ownerLastServedAtMs: 0,
+          lastServedAtMs: 0,
+          mergeBufferFull: false,
+          providerAvailable: true,
+          resourceGuarded: false,
+          canonicalHeadEligible: false
+        },
+        {
+          runId: "run",
+          ownerId: "owner",
+          lane: "interactive" as const,
+          eligibleReadyWork: 2,
+          ownerLastServedAtMs: 0,
+          lastServedAtMs: 0,
+          mergeBufferFull: false,
+          providerAvailable: true,
+          resourceGuarded: false,
+          canonicalHeadEligible: true
+        }
+      ],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      countActionableProviderWork: async (scopes) =>
+        scopes.map((scope) => ({ ...scope, count: 2 })),
+      assignProviderPermits: (assignments) =>
+        pool.assignPermits(assignments),
+      setPoolTarget: (target) => pool.setTargetSlots(target),
+      wakePool: () => pool.wake()
+    });
+
+    const duringChunk = await controllerCycle();
+    pool.wake();
+    expect(duringChunk.claimPermits).toEqual([]);
+    expect(cycles).toHaveLength(2);
+
+    firstInteractiveChunk.resolve({ claimed: true });
+    await vi.waitFor(() =>
+      expect(pool.slotSnapshots()[1]).toMatchObject({
+        active: false,
+        epoch: 2
+      })
+    );
+    expect(cycles).toHaveLength(2);
+    const afterBoundary = await controllerCycle();
+    await vi.waitFor(() => expect(cycles).toHaveLength(3));
+    expect(afterBoundary.claimPermits).toEqual([
+      expect.objectContaining({
+        lane: "interactive",
+        canonicalHeadPreferred: true
+      })
+    ]);
+    expect(cycles.filter((cycle) =>
+      cycle.permit.lane === "repair"
+    )).toHaveLength(1);
+    expect(cycles[2]).toMatchObject({
+      slotId: 1,
+      permit: { lane: "interactive" }
+    });
+
+    repairChunk.resolve({ claimed: true });
+    secondInteractiveChunk.resolve({ claimed: true });
+    await pool.waitForIdle();
+    expect(boundaries.sort()).toEqual([0, 1, 1]);
   });
 });

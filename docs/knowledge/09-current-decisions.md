@@ -60,17 +60,38 @@ audit artifacts. It is not a second source of current product truth.
   accepted-attempt, and artifact identity. A ready next head has released its
   provider reservation, remains traversal-actionable, and does not trigger a
   provider wake; wake happens only after a newly admitted planned head commits.
-  A wake that arrives during an active provider slot is latched per slot;
-  repeated wakes coalesce, the slot restarts once immediately, and drain waits
-  through that restart.
+  A wake that arrives during an active provider slot is coalesced without
+  latching a stale restart. At the bounded chunk boundary the slot returns to
+  the controller for reallocation from a fresh occupancy/epoch snapshot.
   Coordinator application and prefix commit both recompute address-history
   identity and bind it to the exact planner kind and logical key before
   mutation. Any address-history marker at the checkpoint boundary requires the
   complete expected/stored task, artifact kind/schema, and canonical-key tuple;
   generic identity handling applies only when no such marker exists. Arrival
   order cannot change the canonical traversal result.
-  Adaptive rolling admission, provider-group selection, and capacity control
-  remain later work.
+  Adaptive rolling admission and capacity control are implemented over the
+  same planner/tasks/commit path. Independent provider groups supply capacity;
+  owner-to-run max-min fairness, a borrowable repair reserve, durable bounded
+  lookahead, resource guards, coalesced event wakes, and rare reconciliation
+  determine admission. Ordered tasks are eligible when at least one healthy
+  capable group exists; no task stores or preselects a provider group.
+  Allocation and claim permits use the full lane/owner/run identity. If one
+  run has repair and interactive work simultaneously, both lanes remain
+  independently schedulable, while their slot shares are aggregated into one
+  planner refill/lookahead decision for that run.
+  Provider slots expose their active permit and monotonic epoch. A controller
+  snapshot subtracts active occupancy and can assign only an idle slot whose
+  epoch is unchanged; a wake during an HTTP/chunk does not latch a stale
+  restart, and the post-boundary controller wake performs the next allocation.
+  Production configuration remains `barrier` pending Plan 3 evidence. Hot
+  fallback changes admission only: unleased tail is de-admitted, leased chunks
+  finish, and canonical commit is unchanged. Only the active Unified generation
+  starts reconciliation or registers its Linux `SIGUSR2` handler. That signal
+  invokes the one-way rolling-to-barrier production control path serialized
+  with controller cycles; switching back requires restart/configuration and is
+  not a hot action. Checkpoint latency is the maximum sample since the previous
+  controller decision and resets after sampling, so one slow checkpoint cannot
+  freeze resource state without a new slow sample.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.

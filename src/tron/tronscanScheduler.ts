@@ -27,6 +27,14 @@ export type TronscanApiKeyGroup = {
   apiKeys: readonly string[];
 };
 
+export type ProviderGroupCapacitySnapshot = {
+  groupId: string;
+  state: "healthy" | "cooldown" | "circuit_open";
+  concurrencyLimit: number;
+  inFlight: number;
+  cooldownUntil: number | null;
+};
+
 export type TronscanSchedulerDiagnostics = {
   apiKeyConfigured: boolean;
   apiKeyCount: number;
@@ -51,6 +59,7 @@ export type TronscanSchedulerDiagnostics = {
 export type TronscanScheduler = {
   schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T>;
   diagnostics(): TronscanSchedulerDiagnostics;
+  groupSnapshots(): ProviderGroupCapacitySnapshot[];
 };
 
 export type TronscanSchedulerOptions = {
@@ -62,6 +71,8 @@ export type TronscanSchedulerOptions = {
   accountGroupRequestMinIntervalMs?: number;
   maxInFlight?: number;
   maxInFlightPerGroup?: number;
+  providerFailureCircuitThreshold?: number;
+  providerCircuitOpenMs?: number;
   apiKeyConfigured?: boolean;
   apiKeys?: readonly string[];
   now?: () => number;
@@ -98,6 +109,9 @@ type RateLimitScopeState = {
 type AccountGroupState = {
   inFlight: number;
   dispatchedRequests: number;
+  consecutiveProviderFailures: number;
+  circuitOpenUntilMs: number;
+  halfOpenProbeInFlight: boolean;
   nextRequestAtMs: number;
   cooldownUntilMs: number;
   nextRequestAtMsByScope: Record<TronscanRateLimitScope, number>;
@@ -206,6 +220,13 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       }];
   const maxInFlight = normalizeConcurrencyLimit(options.maxInFlight, Math.max(1, slots.length));
   const maxInFlightPerGroup = normalizeConcurrencyLimit(options.maxInFlightPerGroup, 2);
+  const providerFailureCircuitThreshold = options.providerFailureCircuitThreshold === undefined
+    ? 0
+    : Math.max(0, Math.floor(options.providerFailureCircuitThreshold));
+  const providerCircuitOpenMs = Math.max(
+    1,
+    Math.floor(options.providerCircuitOpenMs ?? Math.max(1, rateLimitCooldownMs))
+  );
   const accountGroupState = new Map<string, AccountGroupState>();
   function accountGroupForSlot(slot: ApiKeySlot): AccountGroupState {
     const existing = accountGroupState.get(slot.groupId);
@@ -213,6 +234,9 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     const created: AccountGroupState = {
       inFlight: 0,
       dispatchedRequests: 0,
+      consecutiveProviderFailures: 0,
+      circuitOpenUntilMs: 0,
+      halfOpenProbeInFlight: false,
       nextRequestAtMs: 0,
       cooldownUntilMs: 0,
       nextRequestAtMsByScope: emptyScopeRecord(0),
@@ -285,6 +309,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       slot.cooldownUntilMsByScope[scope],
       groupState?.nextRequestAtMs ?? 0,
       groupState?.cooldownUntilMs ?? 0,
+      groupState?.circuitOpenUntilMs ?? 0,
       accountGroupPacingEnabled ? groupScopeNextRequestAtMs : scopedGlobalState.nextRequestAtMs,
       accountGroupPacingEnabled ? 0 : scopedGlobalState.cooldownUntilMs,
       accountGroupPacingEnabled ? groupEndpointNextRequestAtMs : bucketState.nextRequestAtMs,
@@ -321,8 +346,17 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
 
   function availableSlots(item: QueueItem<unknown>): ApiKeySlot[] {
     const scopedSlots = item.input.slotScope === "single" ? [slots[0]] : slots;
-    if (!accountGroupPacingEnabled) return scopedSlots;
-    return scopedSlots.filter((slot) => accountGroupForSlot(slot).inFlight < maxInFlightPerGroup);
+    return scopedSlots.filter((slot) => {
+      const group = accountGroupForSlot(slot);
+      if (accountGroupPacingEnabled && group.inFlight >= maxInFlightPerGroup) {
+        return false;
+      }
+      return !(
+        group.circuitOpenUntilMs > 0 &&
+        group.circuitOpenUntilMs <= now() &&
+        group.halfOpenProbeInFlight
+      );
+    });
   }
 
   function takeNextReadyItem(): { item: QueueItem<unknown>; slot: ApiKeySlot } | undefined {
@@ -382,17 +416,27 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     }
     inFlight += 1;
     accountGroup.inFlight += 1;
+    if (
+      accountGroup.circuitOpenUntilMs > 0 &&
+      accountGroup.circuitOpenUntilMs <= dispatchNow
+    ) {
+      accountGroup.halfOpenProbeInFlight = true;
+    }
     accountGroup.dispatchedRequests += 1;
     dispatchedRequests += 1;
     void (async () => {
       try {
         const value = await item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex });
         slot.consecutive429CountByScope[scope] = 0;
+        accountGroup.consecutiveProviderFailures = 0;
+        accountGroup.circuitOpenUntilMs = 0;
+        accountGroup.halfOpenProbeInFlight = false;
         completedRequests += 1;
         item.resolve(value);
       } catch (error) {
         failedRequests += 1;
-        if (isRateLimitError(error) && rateLimitCooldownMs > 0) {
+        const rateLimited = isRateLimitError(error);
+        if (rateLimited && rateLimitCooldownMs > 0) {
           rateLimitedRequests += 1;
           slot.consecutive429CountByScope[scope] += 1;
           const cooldownMs = Math.min(
@@ -417,6 +461,23 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
             scopedGlobalStateForItem.cooldownUntilMs = Math.max(scopedGlobalStateForItem.cooldownUntilMs, cooldownUntilMs);
             endpointStateForItem.cooldownUntilMs = Math.max(endpointStateForItem.cooldownUntilMs, cooldownUntilMs);
           }
+          if (accountGroup.halfOpenProbeInFlight) {
+            accountGroup.circuitOpenUntilMs = cooldownUntilMs;
+            accountGroup.halfOpenProbeInFlight = false;
+          }
+        } else if (
+          !rateLimited &&
+          providerFailureCircuitThreshold > 0
+        ) {
+          accountGroup.consecutiveProviderFailures += 1;
+          if (
+            accountGroup.consecutiveProviderFailures >=
+              providerFailureCircuitThreshold
+          ) {
+            accountGroup.circuitOpenUntilMs =
+              now() + providerCircuitOpenMs;
+          }
+          accountGroup.halfOpenProbeInFlight = false;
         }
         item.reject(error);
       } finally {
@@ -503,6 +564,34 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
           [...accountGroupState.entries()].map(([groupId, state]) => [groupId, state.dispatchedRequests])
         )
       };
+    },
+    groupSnapshots(): ProviderGroupCapacitySnapshot[] {
+      const snapshotNow = now();
+      return [...accountGroupState.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([groupId, state]) => {
+          const circuitOpen = state.circuitOpenUntilMs > snapshotNow;
+          const cooldown = state.cooldownUntilMs > snapshotNow;
+          const cooldownUntil = circuitOpen
+            ? state.circuitOpenUntilMs
+            : cooldown
+              ? state.cooldownUntilMs
+              : null;
+          return {
+            groupId,
+            state: circuitOpen
+              ? "circuit_open"
+              : cooldown
+                ? "cooldown"
+                : "healthy",
+            concurrencyLimit: Math.min(
+              maxInFlightPerGroup,
+              maxInFlight
+            ),
+            inFlight: state.inFlight,
+            cooldownUntil
+          };
+        });
     }
   };
 }

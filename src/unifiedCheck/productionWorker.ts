@@ -56,6 +56,7 @@ export function createPostgresUnifiedTaskCycleRepository(
   runPurpose?: UnifiedRunPurpose,
   options: {
     readonly manifestMaxBytes?: number;
+    readonly onCheckpointLatencyMs?: (latencyMs: number) => void;
   } = {}
 ): UnifiedTaskCycleRepository {
   if (kinds.length === 0 || kinds.some((kind) => kind.trim().length === 0)) {
@@ -71,11 +72,16 @@ export function createPostgresUnifiedTaskCycleRepository(
   return {
     async claim(input) {
       const row = await claimUnifiedTask(db, {
-        ...input,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        leaseMs: input.leaseMs,
         kinds: claimKinds,
         runPurpose,
         runtimeCommit,
-        providerConfigurationSha256
+        providerConfigurationSha256,
+        runId: input.permit?.runId,
+        priorityLane: input.permit?.lane,
+        fairnessOwnerId: input.permit?.ownerId
       });
       return row ? workerTask(row) : null;
     },
@@ -83,10 +89,22 @@ export function createPostgresUnifiedTaskCycleRepository(
       return Boolean(await heartbeatUnifiedTask(db, input));
     },
     async checkpoint(input) {
-      const checkpointed = await checkpointUnifiedTask(db, {
-        ...input,
-        barrierReservedBytes: options.manifestMaxBytes
-      });
+      const startedAtMs = Date.now();
+      let checkpointed: Awaited<
+        ReturnType<typeof checkpointUnifiedTask>
+      >;
+      try {
+        checkpointed = await checkpointUnifiedTask(db, {
+          ...input,
+          barrierReservedBytes: options.manifestMaxBytes
+        });
+      } finally {
+        try {
+          options.onCheckpointLatencyMs?.(Date.now() - startedAtMs);
+        } catch {
+          // Observability never participates in checkpoint correctness.
+        }
+      }
       return {
         checkpointed: Boolean(checkpointed),
         providerWorkAvailable:

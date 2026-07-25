@@ -550,7 +550,7 @@ postgresDescribe("Unified planner restart resume", () => {
       });
       expect(claimed).not.toBeNull();
       const identity = (
-        claimed?.checkpoint as {
+        claimed?.checkpoint_json as {
           identity: AddressHistoryManifestIdentityV1;
         }
       ).identity;

@@ -104,6 +104,52 @@ export function selectUnifiedStartupSchedule<T>(
     : [];
 }
 
+export function createUnifiedGenerationRuntimeGate(input: {
+  readonly generation: ActiveCheckGeneration;
+  startController(): void;
+  wakeController(): void;
+  activateBarrierFallback(): void;
+  registerBarrierFallback(listener: () => void): void;
+  unregisterBarrierFallback(listener: () => void): void;
+}): {
+  start(): boolean;
+  wakeController(): boolean;
+  requestBarrierFallback(): boolean;
+  stop(): void;
+} {
+  const ownsUnifiedRuntime = ownsWalletDelivery(
+    input.generation,
+    "unified"
+  );
+  let started = false;
+  const requestBarrierFallback = () => {
+    if (!ownsUnifiedRuntime || !started) return false;
+    input.activateBarrierFallback();
+    return true;
+  };
+  return {
+    start() {
+      if (!ownsUnifiedRuntime || started) return false;
+      input.startController();
+      input.registerBarrierFallback(requestBarrierFallback);
+      started = true;
+      input.wakeController();
+      return true;
+    },
+    wakeController() {
+      if (!ownsUnifiedRuntime || !started) return false;
+      input.wakeController();
+      return true;
+    },
+    requestBarrierFallback,
+    stop() {
+      if (!started) return;
+      started = false;
+      input.unregisterBarrierFallback(requestBarrierFallback);
+    }
+  };
+}
+
 export async function activateUnifiedGeneration(
   db: UnifiedTransactionalQueryable,
   input: {

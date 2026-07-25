@@ -1035,4 +1035,155 @@ describe("TronScan scheduler", () => {
     expect(JSON.stringify(scheduler.diagnostics())).not.toContain("key-a");
     expect(JSON.stringify(scheduler.diagnostics())).not.toContain("key-b");
   });
+
+  it("reports independent group capacity and cools down only the rate-limited group", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlightPerGroup: 2,
+      apiKeys: ["key-a-1", "key-a-2", "key-b"],
+      apiKeyGroups: [
+        { groupId: "opaque-a", apiKeys: ["key-a-1", "key-a-2"] },
+        { groupId: "opaque-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+
+    await expect(scheduler.schedule(
+      { requestName: "limited", path: "/limited", slotScope: "single" },
+      async () => {
+        throw error;
+      }
+    )).rejects.toThrow("429");
+
+    expect(scheduler.groupSnapshots()).toEqual([
+      {
+        groupId: "opaque-a",
+        state: "cooldown",
+        concurrencyLimit: 2,
+        inFlight: 0,
+        cooldownUntil: 1_250
+      },
+      {
+        groupId: "opaque-b",
+        state: "healthy",
+        concurrencyLimit: 2,
+        inFlight: 0,
+        cooldownUntil: null
+      }
+    ]);
+  });
+
+  it("opens a group circuit after configured failures and restores it after a successful probe", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      providerFailureCircuitThreshold: 2,
+      providerCircuitOpenMs: 500,
+      apiKeys: ["key-a"],
+      apiKeyGroups: [{ groupId: "opaque-a", apiKeys: ["key-a"] }],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    const failed = () => scheduler.schedule(
+      { requestName: "failed", path: "/failed" },
+      async () => {
+        throw new Error("provider unavailable");
+      }
+    );
+
+    await expect(failed()).rejects.toThrow("provider unavailable");
+    await expect(failed()).rejects.toThrow("provider unavailable");
+    expect(scheduler.groupSnapshots()[0]).toEqual(expect.objectContaining({
+      state: "circuit_open",
+      cooldownUntil: 1_500
+    }));
+
+    now = 1_500;
+    await expect(scheduler.schedule(
+      { requestName: "half-open", path: "/half-open" },
+      async () => "ok"
+    )).resolves.toBe("ok");
+    expect(scheduler.groupSnapshots()[0]).toEqual(expect.objectContaining({
+      state: "healthy",
+      cooldownUntil: null
+    }));
+  });
+
+  it("reports configured group concurrency even when one group has one key", () => {
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      maxInFlight: 5,
+      maxInFlightPerGroup: 3,
+      apiKeys: ["key-a"],
+      apiKeyGroups: [{ groupId: "opaque-a", apiKeys: ["key-a"] }]
+    });
+
+    expect(scheduler.groupSnapshots()).toEqual([
+      expect.objectContaining({
+        groupId: "opaque-a",
+        concurrencyLimit: 3
+      })
+    ]);
+  });
+
+  it("reopens a half-open circuit after 429 and permits exactly one later recovery probe", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      providerFailureCircuitThreshold: 1,
+      providerCircuitOpenMs: 500,
+      apiKeys: ["key-a"],
+      apiKeyGroups: [{ groupId: "opaque-a", apiKeys: ["key-a"] }],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    await expect(scheduler.schedule(
+      { requestName: "open", path: "/open" },
+      async () => {
+        throw new Error("provider unavailable");
+      }
+    )).rejects.toThrow("provider unavailable");
+    now = 1_500;
+    const limited = new Error("429");
+    (limited as Error & { status?: number }).status = 429;
+    await expect(scheduler.schedule(
+      { requestName: "half-open-429", path: "/half-open-429" },
+      async () => {
+        throw limited;
+      }
+    )).rejects.toThrow("429");
+    expect(scheduler.groupSnapshots()[0]).toEqual(expect.objectContaining({
+      state: "circuit_open",
+      cooldownUntil: 1_750
+    }));
+
+    now = 1_750;
+    let probes = 0;
+    await expect(scheduler.schedule(
+      { requestName: "recovery", path: "/recovery" },
+      async () => {
+        probes += 1;
+        return "ok";
+      }
+    )).resolves.toBe("ok");
+    expect(probes).toBe(1);
+    expect(scheduler.groupSnapshots()[0]).toEqual(expect.objectContaining({
+      state: "healthy",
+      cooldownUntil: null
+    }));
+  });
 });

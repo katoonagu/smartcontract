@@ -691,6 +691,7 @@ export async function createUnifiedCanaryBatch(
       };
       candidateRun: {
         id: string;
+        fairnessOwnerId: string;
         analysisKeySha256: string;
         subjectAddress: string;
         runPurpose: UnifiedRunPurpose;
@@ -777,14 +778,15 @@ export async function createUnifiedCanaryBatch(
         await client.query(
           `insert into unified_check_runs (
             id, analysis_key_sha256, subject_address, status, run_purpose,
-            side_effect_policy, analysis_manifest_sha256
-          ) values ($1,$2,$3,'RUNNING','release_canary','isolated',$4)
+            side_effect_policy, analysis_manifest_sha256, fairness_owner_id
+          ) values ($1,$2,$3,'RUNNING','release_canary','isolated',$4,$5)
           returning *`,
           [
             item.candidateRun.id,
             item.candidateRun.analysisKeySha256,
             item.candidateRun.subjectAddress,
-            item.candidateRun.analysisManifestSha256
+            item.candidateRun.analysisManifestSha256,
+            item.candidateRun.fairnessOwnerId
           ]
         ),
         "unified_canary_run_create_failed"
@@ -974,9 +976,27 @@ export async function claimUnifiedTask(
     runPurpose?: UnifiedRunPurpose;
     runtimeCommit?: string;
     providerConfigurationSha256?: string;
+    runId?: string;
+    priorityLane?: "interactive" | "repair" | "background";
+    fairnessOwnerId?: string;
   }
 ) {
   if (input.kinds?.length === 0) return null;
+  if (input.runId !== undefined && input.runId.trim().length === 0) {
+    throw new TypeError("unified_claim_run_id_invalid");
+  }
+  if (
+    input.priorityLane !== undefined &&
+    !["interactive", "repair", "background"].includes(input.priorityLane)
+  ) {
+    throw new TypeError("unified_claim_priority_lane_invalid");
+  }
+  if (
+    input.fairnessOwnerId !== undefined &&
+    input.fairnessOwnerId.trim().length === 0
+  ) {
+    throw new TypeError("unified_claim_owner_id_invalid");
+  }
   const plannerTable = (
     await db.query(
       "select to_regclass('unified_check_planner_entries') as planner_table"
@@ -1026,6 +1046,37 @@ export async function claimUnifiedTask(
              )
            )`
     : "";
+  const providerPermitOrder = plannerTable
+    ? `case
+         when exists (
+           select 1
+             from unified_check_planner_entries permit_head
+            where permit_head.run_id = task.run_id
+              and permit_head.task_id = task.id
+              and permit_head.planner_state = 'planned'
+              and permit_head.admitted_at is not null
+              and permit_head.canonical_sequence = (
+                select min(uncommitted.canonical_sequence)
+                  from unified_check_planner_entries uncommitted
+                 where uncommitted.run_id = task.run_id
+                   and uncommitted.planner_state <> 'committed'
+              )
+         ) then 0
+         when exists (
+           select 1
+             from unified_check_planner_entries permit_tail
+            where permit_tail.run_id = task.run_id
+              and permit_tail.task_id = task.id
+         ) then 1
+         else 2
+       end,
+       (
+         select permit_entry.canonical_sequence
+           from unified_check_planner_entries permit_entry
+          where permit_entry.run_id = task.run_id
+            and permit_entry.task_id = task.id
+       ) nulls last,`
+    : "";
   const result = await db.query(
     `with candidate as (
       select task.id
@@ -1051,6 +1102,9 @@ export async function claimUnifiedTask(
          )
          and ($4::text[] is null or task.kind = any($4::text[]))
          and ($5::text is null or run.run_purpose = $5)
+         and ($8::text is null or task.run_id = $8)
+         and ($9::text is null or task.priority_lane = $9)
+         and ($10::text is null or run.fairness_owner_id = $10)
          and (
            $6::text is null or
            manifest.artifact_json->>'runtimeCommit' = $6
@@ -1124,7 +1178,7 @@ export async function claimUnifiedTask(
                 and direct_evidence.status <> 'COMPLETED'
            )
          )
-       order by case task.priority_lane
+       order by ${providerPermitOrder} case task.priority_lane
          when 'interactive' then 0 when 'repair' then 1 else 2 end,
          (
            select count(*)
@@ -1274,7 +1328,10 @@ export async function claimUnifiedTask(
       input.kinds ? [...input.kinds] : null,
       input.runPurpose ?? null,
       input.runtimeCommit ?? null,
-      input.providerConfigurationSha256 ?? null
+      input.providerConfigurationSha256 ?? null,
+      input.runId ?? null,
+      input.priorityLane ?? null,
+      input.fairnessOwnerId ?? null
     ]
   );
   return result.rows[0] ?? null;
