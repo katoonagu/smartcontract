@@ -67,6 +67,27 @@ describe("loadConfig", () => {
     expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(400);
     expect(config.tronGridRequestMinIntervalMs).toBe(250);
     expect(config.tronscanRateLimitCooldownMs).toBe(30000);
+    expect(config.unifiedProviderConcurrencyLimit).toBe(100);
+    expect(config.unifiedProviderIncreaseStep).toBe(1);
+    expect(config.unifiedProviderIncreaseIntervalMs).toBe(1000);
+    expect(config.unifiedProviderWorkerLimit).toBe(100);
+    expect(config.unifiedAnalysisConcurrencyLimit).toBe(2);
+    expect(config.unifiedFinalizationConcurrencyLimit).toBe(2);
+    expect(config.unifiedLookaheadFactor).toBe(2);
+    expect(config.unifiedPerRunLookaheadMaximum).toBe(100);
+    expect(config.unifiedReadyBufferMaxEntries).toBe(100);
+    expect(config.unifiedReadyBufferMaxBytes).toBe(67_108_864);
+    expect(config.unifiedReservedBufferMaxBytes).toBe(67_108_864);
+    expect(config.unifiedManifestHardLimitBytes).toBe(16_777_216);
+    expect(config.unifiedChunkMaxPages).toBe(2);
+    expect(config.unifiedChunkMaxWallMs).toBe(30_000);
+    expect(config.unifiedChunkMaxResponseBytes).toBe(8_388_608);
+    expect(config.unifiedChunkMaxCheckpointBytes).toBe(1_048_576);
+    expect(config.unifiedRepairShare).toBe(0.1);
+    expect(config.unifiedRepairMaxSlots).toBe(4);
+    expect(config.unifiedRepairMaxWaitChunks).toBe(8);
+    expect(config.unifiedReconciliationIntervalMs).toBe(30_000);
+    expect(config.unifiedAdmissionPolicy).toBe("barrier");
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
     expect(config.forensicWhereJobsPerPoll).toBe(3);
@@ -598,6 +619,69 @@ describe("loadConfig", () => {
 
     expect(loadConfig().runtimeGitSha).toBe("a".repeat(40));
     expect(loadConfig().runtimeInstanceLabel).toBe("Hermes test");
+  });
+
+  it("parses adaptive Unified controller settings", () => {
+    setRequiredEnv({
+      UNIFIED_PROVIDER_CONCURRENCY_LIMIT: "32",
+      UNIFIED_PROVIDER_INCREASE_STEP: "4",
+      UNIFIED_PROVIDER_INCREASE_INTERVAL_MS: "2500",
+      UNIFIED_PROVIDER_WORKER_LIMIT: "24",
+      UNIFIED_ANALYSIS_CONCURRENCY_LIMIT: "3",
+      UNIFIED_FINALIZATION_CONCURRENCY_LIMIT: "1",
+      UNIFIED_LOOKAHEAD_FACTOR: "3",
+      UNIFIED_PER_RUN_LOOKAHEAD_MAXIMUM: "40",
+      UNIFIED_READY_BUFFER_MAX_ENTRIES: "20",
+      UNIFIED_READY_BUFFER_MAX_BYTES: "2000000",
+      UNIFIED_RESERVED_BUFFER_MAX_BYTES: "3000000",
+      UNIFIED_MANIFEST_HARD_LIMIT_BYTES: "1000000",
+      UNIFIED_CHUNK_MAX_PAGES: "4",
+      UNIFIED_CHUNK_MAX_WALL_MS: "5000",
+      UNIFIED_CHUNK_MAX_RESPONSE_BYTES: "600000",
+      UNIFIED_CHUNK_MAX_CHECKPOINT_BYTES: "700000",
+      UNIFIED_REPAIR_SHARE: "0.25",
+      UNIFIED_REPAIR_MAX_SLOTS: "5",
+      UNIFIED_REPAIR_MAX_WAIT_CHUNKS: "6",
+      UNIFIED_RECONCILIATION_INTERVAL_MS: "45000",
+      UNIFIED_ADMISSION_POLICY: "rolling"
+    });
+
+    expect(loadConfig()).toMatchObject({
+      unifiedProviderConcurrencyLimit: 32,
+      unifiedProviderIncreaseStep: 4,
+      unifiedProviderIncreaseIntervalMs: 2500,
+      unifiedProviderWorkerLimit: 24,
+      unifiedAnalysisConcurrencyLimit: 3,
+      unifiedFinalizationConcurrencyLimit: 1,
+      unifiedLookaheadFactor: 3,
+      unifiedPerRunLookaheadMaximum: 40,
+      unifiedReadyBufferMaxEntries: 20,
+      unifiedReadyBufferMaxBytes: 2_000_000,
+      unifiedReservedBufferMaxBytes: 3_000_000,
+      unifiedManifestHardLimitBytes: 1_000_000,
+      unifiedChunkMaxPages: 4,
+      unifiedChunkMaxWallMs: 5_000,
+      unifiedChunkMaxResponseBytes: 600_000,
+      unifiedChunkMaxCheckpointBytes: 700_000,
+      unifiedRepairShare: 0.25,
+      unifiedRepairMaxSlots: 5,
+      unifiedRepairMaxWaitChunks: 6,
+      unifiedReconciliationIntervalMs: 45_000,
+      unifiedAdmissionPolicy: "rolling"
+    });
+  });
+
+  it.each([
+    ["UNIFIED_PROVIDER_CONCURRENCY_LIMIT", "0"],
+    ["UNIFIED_LOOKAHEAD_FACTOR", "1.5"],
+    ["UNIFIED_REPAIR_SHARE", ""],
+    ["UNIFIED_REPAIR_SHARE", "-0.1"],
+    ["UNIFIED_REPAIR_SHARE", "1.1"],
+    ["UNIFIED_ADMISSION_POLICY", "wave"]
+  ])("rejects invalid adaptive Unified setting %s=%s", (name, value) => {
+    setRequiredEnv({ [name]: value });
+
+    expect(() => loadConfig()).toThrow(name);
   });
 
   it("keeps runtime identity optional until verified candidate startup", () => {

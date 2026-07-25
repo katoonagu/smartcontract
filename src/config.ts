@@ -48,6 +48,27 @@ export type AppConfig = {
   tronscanAccountGroupRequestMinIntervalMs: number;
   tronGridRequestMinIntervalMs: number;
   tronscanRateLimitCooldownMs: number;
+  unifiedProviderConcurrencyLimit: number;
+  unifiedProviderIncreaseStep: number;
+  unifiedProviderIncreaseIntervalMs: number;
+  unifiedProviderWorkerLimit: number;
+  unifiedAnalysisConcurrencyLimit: number;
+  unifiedFinalizationConcurrencyLimit: number;
+  unifiedLookaheadFactor: number;
+  unifiedPerRunLookaheadMaximum: number;
+  unifiedReadyBufferMaxEntries: number;
+  unifiedReadyBufferMaxBytes: number;
+  unifiedReservedBufferMaxBytes: number;
+  unifiedManifestHardLimitBytes: number;
+  unifiedChunkMaxPages: number;
+  unifiedChunkMaxWallMs: number;
+  unifiedChunkMaxResponseBytes: number;
+  unifiedChunkMaxCheckpointBytes: number;
+  unifiedRepairShare: number;
+  unifiedRepairMaxSlots: number;
+  unifiedRepairMaxWaitChunks: number;
+  unifiedReconciliationIntervalMs: number;
+  unifiedAdmissionPolicy: "barrier" | "rolling";
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
@@ -145,6 +166,22 @@ function parseIntegerInRange(name: string, rawValue: string, minimum: number, ma
     throw new Error(`${name} must be a safe integer between ${minimum} and ${maximum}`);
   }
   return value;
+}
+
+function parseNumberInRange(name: string, rawValue: string, minimum: number, maximum: number): number {
+  if (rawValue.trim() === "") {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
+  }
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function parseUnifiedAdmissionPolicy(rawValue: string): "barrier" | "rolling" {
+  if (rawValue === "barrier" || rawValue === "rolling") return rawValue;
+  throw new Error("UNIFIED_ADMISSION_POLICY must be barrier or rolling");
 }
 
 function parseHttpsUrl(name: string, rawValue: string): URL {
@@ -372,6 +409,110 @@ export function loadConfig(): AppConfig {
       "TRONSCAN_RATE_LIMIT_COOLDOWN_MS",
       process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "30000",
       0
+    ),
+    unifiedProviderConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_PROVIDER_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_PROVIDER_CONCURRENCY_LIMIT ?? "100",
+      1
+    ),
+    unifiedProviderIncreaseStep: parsePositiveInteger(
+      "UNIFIED_PROVIDER_INCREASE_STEP",
+      process.env.UNIFIED_PROVIDER_INCREASE_STEP ?? "1",
+      1
+    ),
+    unifiedProviderIncreaseIntervalMs: parsePositiveInteger(
+      "UNIFIED_PROVIDER_INCREASE_INTERVAL_MS",
+      process.env.UNIFIED_PROVIDER_INCREASE_INTERVAL_MS ?? "1000",
+      1
+    ),
+    unifiedProviderWorkerLimit: parsePositiveInteger(
+      "UNIFIED_PROVIDER_WORKER_LIMIT",
+      process.env.UNIFIED_PROVIDER_WORKER_LIMIT ?? "100",
+      1
+    ),
+    unifiedAnalysisConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_ANALYSIS_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_ANALYSIS_CONCURRENCY_LIMIT ?? "2",
+      1
+    ),
+    unifiedFinalizationConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_FINALIZATION_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_FINALIZATION_CONCURRENCY_LIMIT ?? "2",
+      1
+    ),
+    unifiedLookaheadFactor: parsePositiveInteger(
+      "UNIFIED_LOOKAHEAD_FACTOR",
+      process.env.UNIFIED_LOOKAHEAD_FACTOR ?? "2",
+      1
+    ),
+    unifiedPerRunLookaheadMaximum: parsePositiveInteger(
+      "UNIFIED_PER_RUN_LOOKAHEAD_MAXIMUM",
+      process.env.UNIFIED_PER_RUN_LOOKAHEAD_MAXIMUM ?? "100",
+      1
+    ),
+    unifiedReadyBufferMaxEntries: parsePositiveInteger(
+      "UNIFIED_READY_BUFFER_MAX_ENTRIES",
+      process.env.UNIFIED_READY_BUFFER_MAX_ENTRIES ?? "100",
+      1
+    ),
+    unifiedReadyBufferMaxBytes: parsePositiveInteger(
+      "UNIFIED_READY_BUFFER_MAX_BYTES",
+      process.env.UNIFIED_READY_BUFFER_MAX_BYTES ?? "67108864",
+      1
+    ),
+    unifiedReservedBufferMaxBytes: parsePositiveInteger(
+      "UNIFIED_RESERVED_BUFFER_MAX_BYTES",
+      process.env.UNIFIED_RESERVED_BUFFER_MAX_BYTES ?? "67108864",
+      1
+    ),
+    unifiedManifestHardLimitBytes: parsePositiveInteger(
+      "UNIFIED_MANIFEST_HARD_LIMIT_BYTES",
+      process.env.UNIFIED_MANIFEST_HARD_LIMIT_BYTES ?? "16777216",
+      1
+    ),
+    unifiedChunkMaxPages: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_PAGES",
+      process.env.UNIFIED_CHUNK_MAX_PAGES ?? "2",
+      1
+    ),
+    unifiedChunkMaxWallMs: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_WALL_MS",
+      process.env.UNIFIED_CHUNK_MAX_WALL_MS ?? "30000",
+      1
+    ),
+    unifiedChunkMaxResponseBytes: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_RESPONSE_BYTES",
+      process.env.UNIFIED_CHUNK_MAX_RESPONSE_BYTES ?? "8388608",
+      1
+    ),
+    unifiedChunkMaxCheckpointBytes: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_CHECKPOINT_BYTES",
+      process.env.UNIFIED_CHUNK_MAX_CHECKPOINT_BYTES ?? "1048576",
+      1
+    ),
+    unifiedRepairShare: parseNumberInRange(
+      "UNIFIED_REPAIR_SHARE",
+      process.env.UNIFIED_REPAIR_SHARE ?? "0.1",
+      0,
+      1
+    ),
+    unifiedRepairMaxSlots: parsePositiveInteger(
+      "UNIFIED_REPAIR_MAX_SLOTS",
+      process.env.UNIFIED_REPAIR_MAX_SLOTS ?? "4",
+      1
+    ),
+    unifiedRepairMaxWaitChunks: parsePositiveInteger(
+      "UNIFIED_REPAIR_MAX_WAIT_CHUNKS",
+      process.env.UNIFIED_REPAIR_MAX_WAIT_CHUNKS ?? "8",
+      1
+    ),
+    unifiedReconciliationIntervalMs: parsePositiveInteger(
+      "UNIFIED_RECONCILIATION_INTERVAL_MS",
+      process.env.UNIFIED_RECONCILIATION_INTERVAL_MS ?? "30000",
+      1
+    ),
+    unifiedAdmissionPolicy: parseUnifiedAdmissionPolicy(
+      process.env.UNIFIED_ADMISSION_POLICY ?? "barrier"
     ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(
       "TRONSCAN_DASHBOARD_CACHE_TTL_MS",
