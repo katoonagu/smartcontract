@@ -29,6 +29,8 @@ const CANDIDATE = "1".repeat(40);
 const GENERATION = "unified-release-20260723";
 const PLAN_A_SHA = "c".repeat(64);
 const CWD_SHA = "d".repeat(64);
+const ISOLATED_TEST_DATABASE_URL =
+  "postgresql://release:redacted@127.0.0.1:55432/tron_watch_plan4";
 
 function commandReceipt(command = UNIFIED_RELEASE_COMMANDS[0]) {
   return {
@@ -176,7 +178,10 @@ describe("Unified release gate receipts", () => {
         id: "migration_startup_rehearsal",
         command: "npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"
       });
-    const invocation = unifiedReleaseCommandInvocation("migration_startup_rehearsal");
+    const invocation = (unifiedReleaseCommandInvocation as any)(
+      "migration_startup_rehearsal",
+      { TEST_DATABASE_URL: ISOLATED_TEST_DATABASE_URL }
+    );
     const commandArgs = process.platform === "win32"
       ? invocation.args.slice(1)
       : invocation.args;
@@ -193,6 +198,25 @@ describe("Unified release gate receipts", () => {
     } else {
       expect(invocation.executable).toBe("npx");
     }
+    expect(invocation.env).toMatchObject({
+      TEST_DATABASE_URL: ISOLATED_TEST_DATABASE_URL,
+      UNIFIED_RELEASE_GATE_MODE: "1"
+    });
+  });
+
+  it("requires an isolated disposable database before constructing the migration rehearsal invocation", () => {
+    expect(() => (unifiedReleaseCommandInvocation as any)(
+      "migration_startup_rehearsal",
+      {}
+    )).toThrow("unified_release_test_database_required");
+    expect(() => (unifiedReleaseCommandInvocation as any)(
+      "migration_startup_rehearsal",
+      { TEST_DATABASE_URL: "postgresql://release:redacted@127.0.0.1:55432/tron_watch" }
+    )).toThrow("unified_release_test_database_unsafe");
+    const source = { TEST_DATABASE_URL: ISOLATED_TEST_DATABASE_URL };
+    const invocation = (unifiedReleaseCommandInvocation as any)("migration_startup_rehearsal", source);
+    expect(invocation.env).not.toBe(source);
+    expect(source).not.toHaveProperty("UNIFIED_RELEASE_GATE_MODE");
   });
 
   it("rejects a self-consistent Golden replacement or incomplete command set", () => {

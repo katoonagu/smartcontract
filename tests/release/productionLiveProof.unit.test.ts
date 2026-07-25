@@ -11,6 +11,7 @@ import {
   productionObservationTimeoutMsV2,
   runWithinProductionObservationBoundV2,
   queryProductionRuntimeInvariantsV2,
+  verifyProtectedProductionSchema034V3,
   verifyProductionDatabaseSnapshotBindingV2,
   validateProductionRuntimeNavigationProbeV1,
   validateProductionRuntimeProofV1,
@@ -66,7 +67,7 @@ function snapshot(overrides: Partial<ProductionLiveProofSnapshotV2> = {}): Produ
 }
 
 describe("production live proof", () => {
-  it("rechecks production identity and schema 032 on the same read-only snapshot queryable", async () => {
+  it("rechecks production identity and historical schema 032 on the same read-only snapshot queryable", async () => {
     const calls: string[] = [];
     const db = {
       async query(text: string): Promise<{ rows: any[] }> {
@@ -111,6 +112,85 @@ describe("production live proof", () => {
       checksumSha256: "f".repeat(64),
       shortChecksum: "f".repeat(12)
     }))).rejects.toThrow(/schema/i);
+    await expect(verifyProductionDatabaseSnapshotBindingV2(db, {
+      databaseName: "tron_watch",
+      connectedServerPort: 55999,
+      serverVersionNum: "170005",
+      databaseOid: "16384",
+      systemIdentifier: "7531667044074094209"
+    }, (async () => {
+      throw new Error("schema_034_receipt_missing");
+    }) as any)).rejects.toThrow("schema_034_receipt_missing");
+  });
+
+  it("binds protected verify_schema output to the accepted schema 034 receipt", async () => {
+    const db = {
+      async query(text: string): Promise<{ rows: any[] }> {
+        if (text.includes("current_database")) return { rows: [{
+          database_name: "tron_watch", server_port: 55999, server_version_num: "170005", database_oid: "16384"
+        }] };
+        if (text.includes("pg_control_system")) return { rows: [{ system_identifier: "7531667044074094209" }] };
+        throw new Error(`unexpected query:${text}`);
+      }
+    };
+    const expectedDatabase = {
+      databaseName: "tron_watch" as const,
+      connectedServerPort: 55999,
+      serverVersionNum: "170005",
+      databaseOid: "16384",
+      systemIdentifier: "7531667044074094209"
+    };
+    const accepted = {
+      migration034BytesChecksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      schema034: {
+        version: 34,
+        migrationFilename: "034_unified_check_adaptive_planner.sql",
+        checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+        catalogSha256: "f6185aac3f43fe1031e10a25fa6f9c0eab6f32907e63ffe15d696982e4b22ea2",
+        verificationReceiptSha256: "a".repeat(64)
+      }
+    };
+    const verifySchema034 = async () => ({
+      verified: true as const,
+      version: 34 as const,
+      filename: "034_unified_check_adaptive_planner.sql" as const,
+      checksumSha256: accepted.schema034.checksumSha256,
+      shortChecksum: accepted.schema034.checksumSha256.slice(0, 12),
+      schema032ChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+      schema033ChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7"
+    });
+    await expect(verifyProtectedProductionSchema034V3({
+      db,
+      expectedDatabase,
+      accepted,
+      approvedIdentityFingerprintSha256: "b".repeat(64),
+      verifySchema: verifySchema034
+    })).resolves.toMatchObject({
+      schemaState: "schema_034_verified",
+      version: 34,
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: accepted.schema034.checksumSha256,
+      shortChecksum: accepted.schema034.checksumSha256.slice(0, 12),
+      catalogSha256: accepted.schema034.catalogSha256
+    });
+    await expect(verifyProtectedProductionSchema034V3({
+      db,
+      expectedDatabase,
+      accepted: { ...accepted, schema034: undefined } as any,
+      approvedIdentityFingerprintSha256: "b".repeat(64),
+      verifySchema: verifySchema034
+    })).rejects.toThrow("production_schema_not_verified");
+    await expect(verifyProtectedProductionSchema034V3({
+      db,
+      expectedDatabase,
+      accepted,
+      approvedIdentityFingerprintSha256: "b".repeat(64),
+      verifySchema: (async () => ({
+        verified: true, version: 32, filename: "032_telegram_runtime_forensics_data_contracts.sql",
+        checksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+        shortChecksum: "41217f64c33c"
+      })) as any
+    })).rejects.toThrow("production_schema_verification_failed");
   });
 
   it("queries every production runtime invariant from one read-only snapshot", async () => {

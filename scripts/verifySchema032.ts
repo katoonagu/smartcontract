@@ -121,7 +121,8 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SAFE_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const SYSTEM_IDENTIFIER_PATTERN = /^[0-9]{10,30}$/;
 const MAX_MIGRATION_OUTCOME_BYTES = 1024 * 1024;
-const MIGRATION_OUTPUT_LINE_PATTERN = /^Migration applied: migrations\/\d{3}_[A-Za-z0-9_.-]+\.sql$/;
+const LEGACY_MIGRATION_OUTPUT_LINE_PATTERN =
+  /^Migration applied: migrations\/((\d{3})_[A-Za-z0-9_.-]+\.sql)$/;
 const OFFLINE_RUNTIME_ENV_PATTERN = /(?:TELEGRAM|BOT_TOKEN|TRONSCAN|TRONGRID|PROVIDER|ADMIN_(?:TOKEN|PASSWORD|SECRET)|OPENAI|ANTHROPIC|LLM_|RUNTIME_GIT_SHA|RUNTIME_INSTANCE_LABEL)/i;
 const MIGRATION_OUTCOME_KEYS = [
   "candidateSha",
@@ -217,23 +218,38 @@ function statusFromMigrationStdout(stdout: unknown, sequence: Schema032Migration
   ) {
     fail("schema_032_migration_outcome_output_invalid");
   }
-  const appliedLine = `Migration applied and verified: migrations/${REQUIRED_SCHEMA_FILENAME} (schema 32 ${APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)})`;
-  const verifiedLine = `Migration already verified: migrations/${REQUIRED_SCHEMA_FILENAME} (schema 32 ${APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)})`;
-  const lines = stdout.split(/\r?\n/).filter((line) => line.length > 0);
-  if (lines.some((line) => !MIGRATION_OUTPUT_LINE_PATTERN.test(line) && line !== appliedLine && line !== verifiedLine)) {
+  if (!stdout.endsWith("\n")) fail("schema_032_migration_outcome_output_invalid");
+  const lines = stdout.slice(0, -1).split(/\r?\n/u);
+  if (lines.length < 3 || lines.some((line) => line.length === 0)) {
     fail("schema_032_migration_outcome_output_invalid");
   }
-  const relatedLines = lines.filter((line) => line.includes(REQUIRED_SCHEMA_FILENAME) || line.includes("schema 32"));
-  if (relatedLines.length !== 1) fail("schema_032_migration_outcome_output_mismatch");
-  const status = relatedLines[0] === appliedLine
-    ? "applied"
-    : relatedLines[0] === verifiedLine
-      ? "already_verified"
-      : fail("schema_032_migration_outcome_output_mismatch");
-  if (sequence === "second" && status !== "already_verified") {
-    fail("schema_032_second_migration_not_already_verified");
+  let previousLegacyFilename = "";
+  for (const line of lines.slice(0, -3)) {
+    const match = LEGACY_MIGRATION_OUTPUT_LINE_PATTERN.exec(line);
+    if (match === null || Number.parseInt(match[2]!, 10) >= REQUIRED_SCHEMA_VERSION
+        || previousLegacyFilename.localeCompare(match[1]!) >= 0) {
+      fail("schema_032_migration_outcome_output_invalid");
+    }
+    previousLegacyFilename = match[1]!;
   }
-  return status;
+  const tracked = [
+    [REQUIRED_SCHEMA_VERSION, REQUIRED_SCHEMA_FILENAME, APPROVED_SCHEMA_032_CHECKSUM],
+    [SCHEMA_033_VERSION, SCHEMA_033_FILENAME, APPROVED_SCHEMA_033_CHECKSUM],
+    [RELEASE_SCHEMA_VERSION, RELEASE_SCHEMA_FILENAME, APPROVED_SCHEMA_034_CHECKSUM]
+  ] as const;
+  const statuses = lines.slice(-3).map((line, index) => {
+    const [version, filename, checksum] = tracked[index]!;
+    const applied =
+      `Migration applied and verified: migrations/${filename} (schema ${version} ${checksum.slice(0, 12)})`;
+    const verified =
+      `Migration already verified: migrations/${filename} (schema ${version} ${checksum.slice(0, 12)})`;
+    if (line === verified) return "already_verified" as const;
+    if (sequence === "first" && line === applied) return "applied" as const;
+    fail(index === 0 && sequence === "second"
+      ? "schema_032_second_migration_not_already_verified"
+      : "schema_032_migration_outcome_output_mismatch");
+  });
+  return statuses[0]!;
 }
 
 function assertMigrationTargetBinding(value: Schema032MigrationTargetBinding): void {

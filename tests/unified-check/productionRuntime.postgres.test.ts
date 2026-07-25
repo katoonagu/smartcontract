@@ -19,6 +19,9 @@ import {
 } from "../../src/unifiedCheck/repository";
 
 const connectionString = process.env.TEST_DATABASE_URL;
+if (process.env.UNIFIED_RELEASE_GATE_MODE === "1" && !connectionString) {
+  throw new Error("unified_production_runtime_release_gate_requires_test_database");
+}
 const postgresDescribe = connectionString ? describe : describe.skip;
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";

@@ -104,7 +104,11 @@ function sha256(value: string): string {
 
 function migrationOutput(status: "applied" | "already_verified"): string {
   const action = status === "applied" ? "applied and verified" : "already verified";
-  return `Migration ${action}: migrations/032_telegram_runtime_forensics_data_contracts.sql (schema 32 41217f64c33c)\n`;
+  return [
+    `Migration ${action}: migrations/032_telegram_runtime_forensics_data_contracts.sql (schema 32 ${APPROVED_CHECKSUM.slice(0, 12)})`,
+    `Migration ${action}: migrations/033_unified_wallet_check.sql (schema 33 ${APPROVED_UNIFIED_CHECKSUM.slice(0, 12)})`,
+    `Migration ${action}: migrations/034_unified_check_adaptive_planner.sql (schema 34 ${APPROVED_PLANNER_CHECKSUM.slice(0, 12)})`
+  ].join("\n") + "\n";
 }
 
 function migrationTarget(overrides: Record<string, unknown> = {}) {
@@ -651,7 +655,52 @@ it("binds migration outcomes to the exact release target and controlled command 
       stderr: "",
       signal: null
     }
-  })).toThrow("schema_032_migration_outcome_output_mismatch");
+  })).toThrow("schema_032_migration_outcome_output_invalid");
+});
+
+it("accepts only the canonical ordered 032/033/034 controlled migration suffix", async () => {
+  const api = await loadApi() as any;
+  const producer = await loadProducer();
+  const target = migrationTarget();
+  const trackedFiles = [
+    "032_telegram_runtime_forensics_data_contracts.sql",
+    "033_unified_wallet_check.sql",
+    "034_unified_check_adaptive_planner.sql"
+  ];
+  const trackedLines = [
+    `Migration applied and verified: migrations/${trackedFiles[0]} (schema 32 ${APPROVED_CHECKSUM.slice(0, 12)})`,
+    `Migration applied and verified: migrations/${trackedFiles[1]} (schema 33 ${APPROVED_UNIFIED_CHECKSUM.slice(0, 12)})`,
+    `Migration applied and verified: migrations/${trackedFiles[2]} (schema 34 ${APPROVED_PLANNER_CHECKSUM.slice(0, 12)})`
+  ];
+  const canonicalStdout = `${trackedLines.join("\n")}\n`;
+  expect(() => producer.validateControlledMigrationOutput(canonicalStdout, trackedFiles, "first")).not.toThrow();
+  const artifact = api.buildSchema032MigrationOutcomeArtifact({
+    ...target,
+    sequence: "first",
+    commandId: "db_migrate",
+    redactedTemplateSha256: api.SCHEMA_032_DB_MIGRATE_TEMPLATE_SHA256,
+    migrationFilename: trackedFiles[0],
+    checksumSha256: APPROVED_CHECKSUM,
+    spawnResult: { status: 0, stdout: canonicalStdout, stderr: "", signal: null }
+  });
+  expect(api.parseSchema032MigrationOutcomeArtifact(artifact, { ...target, sequence: "first" }))
+    .toEqual({ status: "applied", checksumSha256: APPROVED_CHECKSUM });
+
+  for (const mutated of [
+    `${[trackedLines[1], trackedLines[0], trackedLines[2]].join("\n")}\n`,
+    `${trackedLines.slice(0, 2).join("\n")}\n`,
+    `${[...trackedLines.slice(0, 2), trackedLines[2]!.replace("schema 34", "schema 35")].join("\n")}\n`
+  ]) {
+    expect(() => api.buildSchema032MigrationOutcomeArtifact({
+      ...target,
+      sequence: "first",
+      commandId: "db_migrate",
+      redactedTemplateSha256: api.SCHEMA_032_DB_MIGRATE_TEMPLATE_SHA256,
+      migrationFilename: trackedFiles[0],
+      checksumSha256: APPROVED_CHECKSUM,
+      spawnResult: { status: 0, stdout: mutated, stderr: "", signal: null }
+    })).toThrow(/migration.*output/iu);
+  }
 });
 
 it("requires the explicit normalized endpoint and closes a bounded client after partial connect failure", async () => {
@@ -816,7 +865,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and 
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: APPROVED_PLANNER_CHECKSUM,
-      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
+      catalogSha256: "f6185aac3f43fe1031e10a25fa6f9c0eab6f32907e63ffe15d696982e4b22ea2",
       verificationReceiptSha256: "a".repeat(64)
     },
     firstApply: "applied",

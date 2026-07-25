@@ -125,6 +125,9 @@ receipt bind the schema-033 predecessor proof and authoritative schema-034
 proof. The current G13 terminal artifact is
 `schema032-production-execution-receipt-v3.json`; V2 remains historical
 read-only evidence. Unknown migration 035+ fails closed.
+Before rollout can advance, protected `verify_schema` repeats the exact
+schema-034 and predecessor verification in a bounded read-only production
+snapshot; a stale or missing migration-034 receipt fails the step.
 
 ## Frozen Performance Capture
 

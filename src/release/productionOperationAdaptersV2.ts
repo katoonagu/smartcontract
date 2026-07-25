@@ -32,6 +32,7 @@ import {
   validateReleaseFreezeIdentityV2,
   validateCommittedManifestTransitionReceiptV2,
   validateManifestCommittedReceiptBindingV2,
+  type Schema032ProductionExecutionSuccessV3
 } from "./remediationReleaseManifestV2";
 import {
   assertTrustedArtifactRootPathV2,
@@ -71,7 +72,16 @@ import {
   readExternalConfig,
   validateTask0BPreviousRuntimeIdentity
 } from "../../scripts/captureTask0BPreflight";
-import { verifyRequiredSchema032, type Schema032Verification } from "../storage/schemaMigrations";
+import {
+  SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION,
+  UNIFIED_SCHEMA_034_CATALOG_SHA256,
+  UNIFIED_SCHEMA_034_MIGRATION_SHA256,
+  verifyRequiredSchema032,
+  verifyRequiredSchema034,
+  type Schema032Verification,
+  type Schema034Verification
+} from "../storage/schemaMigrations";
 import {
   ProductionOperationStoreV2,
   type SettledRollbackHistoricalProofVerifierV2
@@ -129,6 +139,8 @@ const execFileAsync = promisify(execFile);
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+const APPROVED_SCHEMA_033_CHECKSUM = "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
+const APPROVED_SCHEMA_034_CHECKSUM = UNIFIED_SCHEMA_034_MIGRATION_SHA256;
 const RUNTIME_COMMAND: Readonly<Record<string, "runtime_manager_start_candidate" | "runtime_manager_stop_candidate"
   | "runtime_manager_stop_previous" | "runtime_manager_rollback_previous">> = Object.freeze({
   stop_previous: "runtime_manager_stop_previous",
@@ -1197,12 +1209,10 @@ type ProductionDatabaseSnapshotExpectedV2 = Readonly<{
   systemIdentifier: string;
 }>;
 
-export async function verifyProductionDatabaseSnapshotBindingV2(
+async function verifyProductionDatabaseSnapshotIdentityV2(
   db: ProductionRuntimeQueryableV2,
-  expected: ProductionDatabaseSnapshotExpectedV2,
-  verifySchema: (queryable: ProductionRuntimeQueryableV2) => Promise<Schema032Verification> =
-    (queryable) => verifyRequiredSchema032(queryable, APPROVED_SCHEMA_032_CHECKSUM)
-): Promise<Schema032Verification> {
+  expected: ProductionDatabaseSnapshotExpectedV2
+): Promise<void> {
   const current = await db.query(`select current_database() as database_name,
     inet_server_port() as server_port,
     current_setting('server_version_num') as server_version_num,
@@ -1217,6 +1227,15 @@ export async function verifyProductionDatabaseSnapshotBindingV2(
       || String(controlRow?.system_identifier) !== expected.systemIdentifier) {
     throw new Error("production_database_identity_changed");
   }
+}
+
+export async function verifyProductionDatabaseSnapshotBindingV2(
+  db: ProductionRuntimeQueryableV2,
+  expected: ProductionDatabaseSnapshotExpectedV2,
+  verifySchema: (queryable: ProductionRuntimeQueryableV2) => Promise<Schema032Verification> =
+    (queryable) => verifyRequiredSchema032(queryable, APPROVED_SCHEMA_032_CHECKSUM)
+): Promise<Schema032Verification> {
+  await verifyProductionDatabaseSnapshotIdentityV2(db, expected);
   const schema = await verifySchema(db);
   if (schema.verified !== true || schema.version !== 32
       || schema.filename !== "032_telegram_runtime_forensics_data_contracts.sql"
@@ -1225,6 +1244,133 @@ export async function verifyProductionDatabaseSnapshotBindingV2(
     throw new Error("production_schema_verification_failed");
   }
   return schema;
+}
+
+export async function verifyProtectedProductionSchema034V3(input: Readonly<{
+  db: ProductionRuntimeQueryableV2;
+  expectedDatabase: ProductionDatabaseSnapshotExpectedV2;
+  accepted: {
+    migration034BytesChecksumSha256: unknown;
+    schema034?: {
+      version: unknown;
+      migrationFilename: unknown;
+      checksumSha256: unknown;
+      catalogSha256: unknown;
+      verificationReceiptSha256: unknown;
+    };
+  };
+  approvedIdentityFingerprintSha256: string;
+  verifySchema?: (queryable: ProductionRuntimeQueryableV2) => Promise<Schema034Verification>;
+}>): Promise<Readonly<{
+  schemaState: "schema_034_verified";
+  version: typeof SCHEMA_034_VERSION;
+  filename: typeof SCHEMA_034_FILENAME;
+  checksumSha256: string;
+  shortChecksum: string;
+  schema032ChecksumSha256: string;
+  schema033ChecksumSha256: string;
+  catalogSha256: string;
+  verificationReceiptSha256: string;
+  approvedIdentityFingerprintSha256: string;
+}>> {
+  const accepted = input.accepted.schema034;
+  if (input.accepted.migration034BytesChecksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM
+      || accepted === undefined
+      || accepted.version !== SCHEMA_034_VERSION
+      || accepted.migrationFilename !== SCHEMA_034_FILENAME
+      || accepted.checksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM
+      || accepted.catalogSha256 !== UNIFIED_SCHEMA_034_CATALOG_SHA256
+      || !SHA256_HEX.test(String(accepted.verificationReceiptSha256))
+      || !SHA256_HEX.test(input.approvedIdentityFingerprintSha256)) {
+    throw new Error("production_schema_not_verified");
+  }
+  await verifyProductionDatabaseSnapshotIdentityV2(input.db, input.expectedDatabase);
+  const verification = await (input.verifySchema ?? ((queryable) => verifyRequiredSchema034(
+      queryable,
+      APPROVED_SCHEMA_034_CHECKSUM,
+      APPROVED_SCHEMA_032_CHECKSUM,
+      APPROVED_SCHEMA_033_CHECKSUM
+    )))(input.db);
+  if (verification.verified !== true
+      || verification.version !== SCHEMA_034_VERSION
+      || verification.filename !== SCHEMA_034_FILENAME
+      || verification.checksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM
+      || verification.shortChecksum !== APPROVED_SCHEMA_034_CHECKSUM.slice(0, 12)
+      || verification.schema032ChecksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM
+      || verification.schema033ChecksumSha256 !== APPROVED_SCHEMA_033_CHECKSUM) {
+    throw new Error("production_schema_verification_failed");
+  }
+  return {
+    schemaState: "schema_034_verified",
+    version: verification.version,
+    filename: verification.filename,
+    checksumSha256: verification.checksumSha256,
+    shortChecksum: verification.shortChecksum,
+    schema032ChecksumSha256: verification.schema032ChecksumSha256,
+    schema033ChecksumSha256: verification.schema033ChecksumSha256,
+    catalogSha256: accepted.catalogSha256 as string,
+    verificationReceiptSha256: accepted.verificationReceiptSha256 as string,
+    approvedIdentityFingerprintSha256: input.approvedIdentityFingerprintSha256
+  };
+}
+
+async function verifyCurrentProtectedProductionSchema034V3(
+  root: string,
+  executionReceipt: Schema032ProductionExecutionSuccessV3
+): Promise<Awaited<ReturnType<typeof verifyProtectedProductionSchema034V3>>> {
+  const external = await readExternalConfig(root);
+  const databaseUrl = process.env[external.config.databaseConnectionEnvName];
+  if (!databaseUrl) throw new Error("production_database_binding_missing");
+  const live = await observeTask0BProductionDatabase(external.config);
+  if (process.env[external.config.databaseConnectionEnvName] !== databaseUrl
+      || live.schemaState !== "schema_032_verified"
+      || live.schema032ReceiptPrestate.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
+    throw new Error("production_schema_not_verified");
+  }
+  const hardDeadlineAt = new Date(Date.now() + 15_000).toISOString();
+  return runWithinProductionObservationBoundV2({
+    hardDeadlineAt,
+    configuredTimeoutMs: 15_000,
+    async run(timeoutMs) {
+      const client = new Client({
+        connectionString: databaseUrl,
+        connectionTimeoutMillis: Math.min(5_000, timeoutMs),
+        statement_timeout: timeoutMs,
+        query_timeout: timeoutMs,
+        application_name: "plan5_protected_schema034_verify"
+      });
+      await client.connect();
+      let transactionStarted = false;
+      try {
+        await client.query("begin isolation level repeatable read read only");
+        transactionStarted = true;
+        const expected = external.config.productionDatabaseExpected;
+        const result = await verifyProtectedProductionSchema034V3({
+          db: {
+            query: (text, values) => client.query(text, values)
+              .then((queryResult) => ({ rows: queryResult.rows, rowCount: queryResult.rowCount }))
+          },
+          expectedDatabase: {
+            databaseName: expected.databaseName,
+            connectedServerPort: expected.connectedServerPort,
+            serverVersionNum: expected.serverVersionNum,
+            databaseOid: expected.databaseOid,
+            systemIdentifier: expected.systemIdentifier
+          },
+          accepted: executionReceipt,
+          approvedIdentityFingerprintSha256: live.approvedIdentityFingerprintSha256
+        });
+        await client.query("commit");
+        transactionStarted = false;
+        return result;
+      } catch (error) {
+        if (transactionStarted) await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        await client.end();
+      }
+    }
+  });
 }
 
 async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: string) {
@@ -1306,15 +1452,8 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
     const executionReceipt = readCanonical(root, "schema032-production-execution-receipt-v3.json",
       validateSchema032ProductionExecutionReceiptV3);
     if (executionReceipt.value.result !== "applied_and_verified") throw new Error("production_schema_not_verified");
-    const external = await readExternalConfig(root);
-    const live = await observeTask0BProductionDatabase(external.config);
-    if (live.schemaState !== "schema_032_verified"
-        || live.schema032ReceiptPrestate.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
-      throw new Error("production_schema_not_verified");
-    }
-    return valueCapture(input, { executionReceiptSha256: executionReceipt.sha256,
-      schemaState: live.schemaState, checksumSha256: live.schema032ReceiptPrestate.checksumSha256,
-      approvedIdentityFingerprintSha256: live.approvedIdentityFingerprintSha256 });
+    const live = await verifyCurrentProtectedProductionSchema034V3(root, executionReceipt.value);
+    return valueCapture(input, { executionReceiptSha256: executionReceipt.sha256, ...live });
   }
   if (input.stepId === "verify_previous_runtime_identity") {
     const task0b = loadFrozenTask0B(root);

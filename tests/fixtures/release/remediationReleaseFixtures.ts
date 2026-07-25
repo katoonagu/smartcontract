@@ -1041,7 +1041,7 @@ export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV2 {
       version: 34,
       migrationFilename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-      catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
+      catalogSha256: "f6185aac3f43fe1031e10a25fa6f9c0eab6f32907e63ffe15d696982e4b22ea2",
       verificationReceiptSha256: "f".repeat(64)
     },
     firstApply: "applied",
@@ -1133,7 +1133,7 @@ export function buildUnifiedReleaseGateEvidenceFixture(
       schema034: {
         filename: "034_unified_check_adaptive_planner.sql",
         checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
-        catalogSha256: "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a",
+        catalogSha256: "f6185aac3f43fe1031e10a25fa6f9c0eab6f32907e63ffe15d696982e4b22ea2",
         cleanVerificationReceiptSha256: "f".repeat(64),
         cloneVerificationReceiptSha256: "f".repeat(64)
       },

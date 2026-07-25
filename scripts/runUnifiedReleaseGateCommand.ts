@@ -14,16 +14,39 @@ import {
   unifiedReleaseNpmVersion,
   verifyPlanAApprovedGoldenRoot
 } from "./finalizeUnifiedReleaseGates";
+import {
+  PLAN5_CLEANUP_DATABASES,
+  assertExactDisposableDatabaseUrl
+} from "./verifyRemediationRelease";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
 
 export function unifiedReleaseCommandInvocation(
-  id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"]
+  id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"],
+  sourceEnv: NodeJS.ProcessEnv = process.env
 ): {
   executable: string;
   args: string[];
+  env: NodeJS.ProcessEnv;
 } {
+  const env = { ...sourceEnv };
+  if (id === "migration_startup_rehearsal") {
+    const databaseUrl = sourceEnv.TEST_DATABASE_URL;
+    if (!databaseUrl) throw new Error("unified_release_test_database_required");
+    let databaseName: string;
+    try {
+      const parsed = new URL(databaseUrl);
+      databaseName = decodeURIComponent(parsed.pathname.slice(1));
+      if (!new Set<string>(Object.values(PLAN5_CLEANUP_DATABASES)).has(databaseName)) {
+        throw new Error("unsafe");
+      }
+      assertExactDisposableDatabaseUrl(databaseUrl, "TEST_DATABASE_URL", databaseName);
+    } catch {
+      throw new Error("unified_release_test_database_unsafe");
+    }
+    env.UNIFIED_RELEASE_GATE_MODE = "1";
+  }
   const npm = process.platform === "win32"
     ? {
         executable: process.execPath,
@@ -36,9 +59,9 @@ export function unifiedReleaseCommandInvocation(
         prefix: [resolve(dirname(process.execPath), "node_modules/npm/bin/npx-cli.js")]
       }
     : { executable: "npx", prefix: [] };
-  if (id === "full_test") return { executable: npm.executable, args: [...npm.prefix, "test"] };
+  if (id === "full_test") return { executable: npm.executable, args: [...npm.prefix, "test"], env };
   if (id === "typecheck") {
-    return { executable: npm.executable, args: [...npm.prefix, "run", "typecheck"] };
+    return { executable: npm.executable, args: [...npm.prefix, "run", "typecheck"], env };
   }
   if (id === "golden_verify") {
     return {
@@ -46,7 +69,8 @@ export function unifiedReleaseCommandInvocation(
       args: [
         "--import", "tsx", "scripts/tronUsdtGoldenPilotV2.ts", "verify",
         "--input", "docs/audit/2026-07-system-audit/golden-v2/locked"
-      ]
+      ],
+      env
     };
   }
   if (id === "golden_compare") {
@@ -56,13 +80,15 @@ export function unifiedReleaseCommandInvocation(
         ...npm.prefix, "run", "unified:golden:compare", "--",
         "--golden", "docs/audit/2026-07-system-audit/golden-v2/locked",
         "--candidate", "artifacts/unified-wallet-replay"
-      ]
+      ],
+      env
     };
   }
   if (id === "presentation_acceptance") {
     return {
       executable: npx.executable,
-      args: [...npx.prefix, "vitest", "run", "tests/unified-check/presentation.golden.test.ts"]
+      args: [...npx.prefix, "vitest", "run", "tests/unified-check/presentation.golden.test.ts"],
+      env
     };
   }
   return {
@@ -73,7 +99,8 @@ export function unifiedReleaseCommandInvocation(
       "tests/runtime/startupSchemaGate.test.ts",
       "tests/unified-check/productionRuntime.postgres.test.ts",
       "--maxWorkers=1"
-    ]
+    ],
+    env
   };
 }
 
@@ -122,6 +149,7 @@ export async function runUnifiedReleaseGateCommand(options: {
   }
   verifyPlanAApprovedGoldenRoot(options.authorityCommitSha);
   const expected = UNIFIED_RELEASE_COMMANDS.find(({ id }) => id === options.commandId)!;
+  const command = unifiedReleaseCommandInvocation(expected.id, process.env);
   const logPath = resolve(physicalRoot, `${expected.id}.log`);
   const receiptPath = resolve(physicalRoot, `${expected.id}.command-receipt-v1.json`);
   const receiptHandle = await open(receiptPath, "wx", 0o600);
@@ -137,11 +165,10 @@ export async function runUnifiedReleaseGateCommand(options: {
       await logHandle.write(chunk);
     });
   };
-  const command = unifiedReleaseCommandInvocation(expected.id);
   const exitCode = await new Promise<number>((resolveExit) => {
     const child = spawn(command.executable, command.args, {
       cwd: repositoryRoot,
-      env: process.env,
+      env: command.env,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true

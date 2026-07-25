@@ -16,6 +16,9 @@ import {
 } from "../../src/storage/schemaMigrations";
 
 const connectionString = process.env.TEST_DATABASE_URL;
+if (process.env.UNIFIED_RELEASE_GATE_MODE === "1" && !connectionString) {
+  throw new Error("migration_034_release_gate_requires_test_database");
+}
 const postgresDescribe = connectionString ? describe : describe.skip;
 
 async function installApprovalBaseline(client: pg.PoolClient): Promise<void> {

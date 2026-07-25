@@ -137,6 +137,9 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
   available and do not accept schema-034 fields as optional extensions.
 - The protected migration sequence applies and verifies through schema 034;
   an unknown on-disk migration 035+ or database receipt 035+ fails closed.
+- Protected rollout `verify_schema` re-runs the exact schema-034 checksum,
+  predecessor-receipt, and structural verification in a bounded read-only
+  production snapshot and binds that result to the accepted V3 receipt.
 - Candidate scope uses exact tracked paths for the Golden lock; unknown files
   below the locked root are rejected.
 - Final full suite, typecheck, Golden verify, comparator, RU/EN acceptance, and

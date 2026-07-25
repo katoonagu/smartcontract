@@ -167,6 +167,8 @@ const PLANNER_CONSTRAINTS = [
 function schema034Db(options?: {
   stateShape?: string;
   foreignSchema?: string;
+  catalogSchema?: string;
+  foreignDefinitionSchema?: string | null;
   taskForeignKeyDeleteAction?: string;
   extraConstraint?: boolean;
   extraIndex?: boolean;
@@ -215,7 +217,9 @@ function schema034Db(options?: {
             convalidated: true,
             definition: conname === "unified_check_planner_entries_state_shape_check"
               ? options?.stateShape ?? definition
-              : definition,
+              : contype === "f" && options?.foreignDefinitionSchema
+                ? definition.replace("REFERENCES ", `REFERENCES ${options.foreignDefinitionSchema}.`)
+                : definition,
             columns: conname === "unified_check_tasks_run_id_id_key"
               ? ["run_id", "id"]
               : conname === "unified_check_planner_entries_pkey"
@@ -239,7 +243,7 @@ function schema034Db(options?: {
                 : null,
             foreign_schema_name: conname === "unified_check_planner_entries_run_id_fkey" ||
               conname === "unified_check_planner_entries_run_task_fk"
-              ? options?.foreignSchema ?? "public"
+              ? options?.foreignSchema ?? options?.catalogSchema ?? "public"
               : null,
             foreign_match_type: conname === "unified_check_planner_entries_run_id_fkey" ||
               conname === "unified_check_planner_entries_run_task_fk" ? "s" : null,
@@ -284,7 +288,11 @@ function schema034Db(options?: {
             ...(options?.extraIndex
               ? [["unified_check_planner_entries", "unified_check_planner_entries_unexpected_idx", "CREATE INDEX unified_check_planner_entries_unexpected_idx ON public.unified_check_planner_entries USING btree (task_id)"]]
               : [])
-          ].map(([tablename, indexname, indexdef]) => ({ tablename, indexname, indexdef }))
+          ].map(([tablename, indexname, indexdef]) => ({
+            tablename,
+            indexname,
+            indexdef: indexdef.replace(" ON public.", ` ON ${options?.catalogSchema ?? "public"}.`)
+          }))
             .sort((left, right) => `${left.tablename}.${left.indexname}`
               .localeCompare(`${right.tablename}.${right.indexname}`))
         };
@@ -593,6 +601,21 @@ describe("verified schema 034 metadata", () => {
     await expect(verifySchema034Structure(schema034Db({ extraTrigger: true }))).rejects.toThrow(
       "schema_034_catalog_mismatch"
     );
+  });
+
+  it("canonicalizes same-schema qualified and unqualified planner foreign keys", async () => {
+    await expect(verifySchema034Structure(schema034Db({
+      catalogSchema: "public",
+      foreignDefinitionSchema: "public"
+    }))).resolves.toBeUndefined();
+    await expect(verifySchema034Structure(schema034Db({
+      catalogSchema: "wallet_test",
+      foreignDefinitionSchema: "wallet_test"
+    }), { schemaName: "wallet_test" })).resolves.toBeUndefined();
+    await expect(verifySchema034Structure(schema034Db({
+      catalogSchema: "wallet_test",
+      foreignDefinitionSchema: null
+    }), { schemaName: "wallet_test" })).resolves.toBeUndefined();
   });
 
   it("rejects cross-schema and cascading planner foreign keys", async () => {

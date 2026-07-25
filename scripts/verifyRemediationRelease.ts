@@ -387,7 +387,7 @@ const SUITE_TEST_DATABASES: Partial<Record<RemediationSuiteGroupId, string>> = O
   plan4: "tron_watch_plan4"
 });
 
-function assertExactDisposableDatabaseUrl(value: string, envName: string, expectedDatabase: string): void {
+export function assertExactDisposableDatabaseUrl(value: string, envName: string, expectedDatabase: string): void {
   let parsed: URL;
   try {
     parsed = new URL(value);

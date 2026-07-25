@@ -485,7 +485,7 @@ const SCHEMA_034_NORMALIZED_DELTA_CATALOG = {
       tableName: "unified_check_planner_entries",
       name: "unified_check_planner_entries_run_id_fkey",
       type: "f", validated: true,
-      definition: "FOREIGN KEY (run_id) REFERENCES unified_check_runs(id)",
+      definition: null,
       keyColumns: ["run_id"],
       foreign: {
         schemaName: "<schema>", tableName: "unified_check_runs", columns: ["id"],
@@ -503,7 +503,7 @@ const SCHEMA_034_NORMALIZED_DELTA_CATALOG = {
       tableName: "unified_check_planner_entries",
       name: "unified_check_planner_entries_run_task_fk",
       type: "f", validated: true,
-      definition: "FOREIGN KEY (run_id, task_id) REFERENCES unified_check_tasks(run_id, id)",
+      definition: null,
       keyColumns: ["run_id", "task_id"],
       foreign: {
         schemaName: "<schema>", tableName: "unified_check_tasks", columns: ["run_id", "id"],
@@ -592,9 +592,9 @@ const SCHEMA_034_NORMALIZED_STRUCTURAL_CATALOG = {
 } as const;
 
 export const UNIFIED_SCHEMA_034_CATALOG_SHA256 =
-  "9709b71e13ce8c84140d95b6416f631dafa1dd0ba67da7b2a4d3e4dbedaaeb1a";
-if (unifiedCatalogHash(SCHEMA_034_NORMALIZED_STRUCTURAL_CATALOG)
-    !== UNIFIED_SCHEMA_034_CATALOG_SHA256) {
+  "f6185aac3f43fe1031e10a25fa6f9c0eab6f32907e63ffe15d696982e4b22ea2";
+const expectedSchema034CatalogSha256 = unifiedCatalogHash(SCHEMA_034_NORMALIZED_STRUCTURAL_CATALOG);
+if (expectedSchema034CatalogSha256 !== UNIFIED_SCHEMA_034_CATALOG_SHA256) {
   throw new Error("schema_034_expected_catalog_identity_invalid");
 }
 
@@ -892,7 +892,7 @@ export async function verifySchema034Structure(
       name: row.conname,
       type: row.contype,
       validated: row.convalidated,
-      definition: normalizeSchema(row.definition),
+      definition: row.contype === "f" ? null : normalizeSchema(row.definition),
       keyColumns: row.contype === "p" || row.contype === "u" || row.contype === "f"
         ? row.columns
         : [],
