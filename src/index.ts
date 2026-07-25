@@ -193,6 +193,7 @@ import {
   createUnifiedPoolTransactionHost,
   ensureUnifiedPresentationForCompletedRequest,
   listUnifiedWatchdogRuns,
+  loadUnifiedAdminRunSnapshot,
   loadUnifiedProgressProjection,
   loadUnifiedUnknownDeliveryPresentation,
   persistManualUnifiedResend
@@ -219,6 +220,8 @@ import {
   createUnifiedCheckpointLatencySampler,
   createUnifiedDbLatencySampler,
   createUnifiedRepairServiceTracker,
+  countUnifiedActualLaneSlots,
+  loadUnifiedAdaptiveStorageSnapshot,
   loadUnifiedProviderRunDemand,
   readUnifiedRuntimeResources,
   runUnifiedAdaptiveControllerCycle
@@ -229,6 +232,18 @@ import {
 } from "./unifiedCheck/admissionRuntimeControl";
 import { refillOrderedAdmissions } from "./unifiedCheck/plannerRepository";
 import { createUnifiedReconciliation } from "./unifiedCheck/reconciliation";
+import {
+  createUnifiedAdminRunDecisionStore
+} from "./unifiedCheck/adminRunSnapshot";
+import {
+  createUnifiedAdaptiveEvent,
+  createUnifiedAdaptiveObservability,
+  createUnifiedPacingTracker,
+  createUnifiedAdaptiveSnapshotPublisher,
+  emitBestEffort,
+  runUnifiedAdaptiveSnapshotPublication,
+  type UnifiedAdaptiveEvent
+} from "./unifiedCheck/adaptiveObservability";
 import {
   buildUnifiedCanaryProviderConfiguration
 } from "./unifiedCheck/canary";
@@ -308,6 +323,11 @@ logger.info("unified_generation_fence_loaded", {
   generationId: activeCheckGeneration.generationId
 });
 const runtimeCycleRecorder = createRuntimeCycleRecorder({ runtimeVersion, logger });
+const unifiedAdaptiveObservability =
+  createUnifiedAdaptiveObservability();
+const unifiedAdaptiveSnapshotPublisher =
+  createUnifiedAdaptiveSnapshotPublisher();
+const unifiedPacingTracker = createUnifiedPacingTracker();
 
 async function runRecordedRuntimeCycle<T>(
   cycleName: RuntimeCycleName,
@@ -343,7 +363,21 @@ const tronscanScheduler = createTronscanScheduler({
   // ponytail: fixed first-rollout breaker; calibrate the threshold from Plan 3
   // provider-error evidence before exposing another deployment knob.
   providerFailureCircuitThreshold: 3,
-  providerCircuitOpenMs: config.tronscanRateLimitCooldownMs
+  providerCircuitOpenMs: config.tronscanRateLimitCooldownMs,
+  onDispatchObservation: (observation) => {
+    unifiedAdaptiveObservability.recordProviderDispatch(observation.atMs);
+  },
+  onDispatchOutcome: (observation) => {
+    unifiedAdaptiveObservability.recordProviderOutcome(observation.outcome);
+  },
+  onObserverSettled: (observation) => {
+    unifiedPacingTracker.settled(observation);
+    wakeUnifiedController();
+  },
+  onPacingObservation: (observation) => {
+    unifiedPacingTracker.paced(observation);
+    wakeUnifiedController();
+  }
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
@@ -485,6 +519,9 @@ const unifiedProviderConfiguration =
     }))
   });
 let wakeUnifiedController: () => void = () => undefined;
+const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
+  logger.info("unified_adaptive_event", { ...event });
+};
 const unifiedCheckpointLatencySampler =
   createUnifiedCheckpointLatencySampler();
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
@@ -506,11 +543,13 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   onCheckpointLatencyMs: (latencyMs) => {
     unifiedCheckpointLatencySampler.record(latencyMs);
   },
+  onAdaptiveEvent: emitUnifiedAdaptiveEvent,
   requireProviderClaimPermit: true,
   async loadProviderPage({
     run,
     address = run.subjectAddress,
     cursor,
+    providerSlot,
     onDiagnostic
   }) {
     const start = cursor === null ? 0 : Number(cursor);
@@ -548,7 +587,11 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
                 limit: 50,
                 endTimestamp: Date.parse(
                   run.analysisManifest.confirmedBlockTimestamp
-                )
+                ),
+                observationScope: "unified",
+                observationRunId: run.id,
+                observationSlotId: providerSlot?.slotId,
+                observationSlotEpoch: providerSlot?.epoch
               }
             );
           if (loaded.metadataConsistent !== true) {
@@ -798,7 +841,11 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     }
   }
 });
-const unifiedRepairServiceTracker = createUnifiedRepairServiceTracker();
+const unifiedRepairServiceTracker = createUnifiedRepairServiceTracker({
+  repairMaxWaitChunks: config.unifiedRepairMaxWaitChunks,
+  onWaitViolation: (event) =>
+    emitBestEffort(emitUnifiedAdaptiveEvent, event)
+});
 const unifiedDbLatencySampler = createUnifiedDbLatencySampler();
 const measureUnifiedDb = async <T>(work: () => Promise<T>): Promise<T> => {
   const startedAtMs = performance.now();
@@ -812,11 +859,12 @@ const unifiedProviderPool = createUnifiedProviderPool({
   configuredLimit: config.unifiedProviderConcurrencyLimit,
   requiresPermit: true,
   yieldAfterClaim: true,
-  async runCycle(slotId, assignment) {
+  async runCycle(slotId, assignment, slotIdentity) {
     if (!assignment) return { claimed: false };
     const result = await unifiedProductionRuntime.runProviderCycle(
       slotId,
-      assignment.permit
+      assignment.permit,
+      slotIdentity
     );
     if (result.claimed) {
       unifiedRepairServiceTracker.recordClaim(assignment.permit.lane);
@@ -836,6 +884,10 @@ let unifiedProviderRampState = {
   lastIncreaseAtMs:
     Date.now() - config.unifiedProviderIncreaseIntervalMs
 };
+const unifiedAdminRunDecisionStore =
+  createUnifiedAdminRunDecisionStore();
+let unifiedLastRuntimeResourceState:
+  "normal" | "pressure" | "critical" | null = null;
 const unifiedAdmissionRuntimeControl =
   createPostgresUnifiedAdmissionRuntimeControl({
     db: unifiedTransactionHost,
@@ -897,6 +949,8 @@ const runUnifiedControllerCycle = async (
     resources,
     thresholds: unifiedResourceThresholds,
     providerSlots: unifiedProviderPool.slotSnapshots(),
+    isProviderSlotPaced: (slot) =>
+      unifiedPacingTracker.isSlotPaced(slot),
     config: {
       configuredProviderConcurrencyLimit:
         config.unifiedProviderConcurrencyLimit,
@@ -940,7 +994,100 @@ const runUnifiedControllerCycle = async (
       unifiedProviderPool.assignPermits(assignments),
     setPoolTarget: (target) =>
       unifiedProviderPool.setTargetSlots(target),
-    wakePool: () => unifiedProviderPool.wake()
+    wakePool: () => unifiedProviderPool.wake(),
+    onDecision: (decision) => {
+      unifiedAdminRunDecisionStore.replace(decision.runDecisions);
+      if (
+        unifiedLastRuntimeResourceState !== null &&
+        unifiedLastRuntimeResourceState !== decision.runtimeState
+      ) {
+        emitBestEffort(
+          emitUnifiedAdaptiveEvent,
+          createUnifiedAdaptiveEvent({
+            type: "resource_state_changed",
+            occurredAt: new Date(startedAtMs).toISOString(),
+            reason: decision.limitingReason ?? undefined
+          })
+        );
+      }
+      unifiedLastRuntimeResourceState = decision.runtimeState;
+    }
+  });
+  await runUnifiedAdaptiveSnapshotPublication({
+    load: () => loadUnifiedAdaptiveStorageSnapshot(
+      unifiedTransactionHost,
+      {
+        now: new Date(startedAtMs),
+        runtimeCommit: runtimeVersion.gitCommitSha,
+        providerConfigurationSha256: unifiedProviderConfiguration.sha256
+      }
+    ),
+    build: (storage) => {
+      const repairReady = demand.reduce((sum, item) =>
+        sum + (item.lane === "repair" ? item.eligibleReadyWork : 0), 0);
+      const actualRepairSlots = countUnifiedActualLaneSlots({
+        lane: "repair",
+        slotSnapshots: unifiedProviderPool.slotSnapshots()
+      });
+      const repairMinimum = repairReady === 0
+        ? 0
+        : Math.min(
+            repairReady,
+            config.unifiedRepairMaxSlots,
+            Math.max(
+              1,
+              Math.ceil(
+                result.providerCapacityLimit * config.unifiedRepairShare
+              )
+            )
+          );
+      return unifiedAdaptiveObservability.snapshot({
+        nowMs: startedAtMs,
+        provider: {
+          capacityLimit: result.providerCapacityLimit,
+          readyDemand: result.eligibleReadyProviderWork,
+          targetActiveSlots: result.targetActiveProviderSlots,
+          actualActiveSlots: result.actualActiveProviderSlots,
+          healthyGroups: providerGroups.filter((item) =>
+            item.state === "healthy"
+          ).length,
+          cooldownGroups: providerGroups.filter((item) =>
+            item.state === "cooldown"
+          ).length,
+          circuitOpenGroups: providerGroups.filter((item) =>
+            item.state === "circuit_open"
+          ).length
+        },
+        runtime: {
+          state: result.runtimeState,
+          limitingReason: result.limitingReason
+        },
+        memory: {
+          rssBytes: resources.rssBytes,
+          heapUsedBytes: resources.heapUsedBytes,
+          availableMemoryBytes: resources.availableMemoryBytes
+        },
+        database: {
+          poolWaiting: resources.dbWaitingCount,
+          latencyMs: resources.dbLatencyMs
+        },
+        checkpointLatencyMs: resources.checkpointLatencyMs,
+        ...storage,
+        repair: {
+          minimumSlots: repairMinimum,
+          actualSlots: actualRepairSlots,
+          waitViolations:
+            unifiedRepairServiceTracker.snapshot().waitViolations
+        }
+      });
+    },
+    publish: (snapshot) =>
+      unifiedAdaptiveSnapshotPublisher.publish(snapshot),
+    warn(error) {
+      logger.warn("unified_adaptive_snapshot_publish_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   });
   unifiedProviderRampState = result.rampState;
 
@@ -992,6 +1139,13 @@ const unifiedReconciliation = createUnifiedReconciliation({
     unifiedAdmissionRuntimeControl.runControllerCycle(
       runUnifiedControllerCycle
     ),
+  onResult(result) {
+    unifiedAdaptiveObservability.recordReconciliation(result);
+  },
+  onAdaptiveEvent: emitUnifiedAdaptiveEvent,
+  onWait(reason) {
+    logger.info("unified_adaptive_decision", { reason });
+  },
   onError(error) {
     logger.error("unified_reconciliation_failed", {
       error: error instanceof Error ? error.message : String(error)
@@ -1107,6 +1261,14 @@ const adminDashboard = await maybeStartAdminDashboard({
   startAdminServer: (adminDeps) => startAdminServer({
     ...adminDeps,
     listUnifiedRuns: () => listUnifiedWatchdogRuns(db),
+    getUnifiedRunSnapshot: (runId) =>
+      loadUnifiedAdminRunSnapshot(db, {
+        runId,
+        now: new Date(),
+        decision: unifiedAdminRunDecisionStore.get(runId)
+      }),
+    getUnifiedAdaptiveSnapshot: () =>
+      unifiedAdaptiveSnapshotPublisher.current(),
     getUnifiedProgress: (runId) => {
       const now = new Date();
       const pool = unifiedProviderPool.snapshot();

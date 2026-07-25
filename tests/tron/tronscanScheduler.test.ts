@@ -15,6 +15,160 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("TronScan scheduler", () => {
+  it("accounts only actual tagged dispatches and isolates a failing sink", async () => {
+    const observations: string[] = [];
+    let dispatches = 0;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      onDispatchObservation() {
+        dispatches += 1;
+        throw new Error("metrics sink unavailable");
+      },
+      onDispatchOutcome(observation) {
+        observations.push(observation.outcome);
+        throw new Error("metrics sink unavailable");
+      }
+    });
+    const work = vi.fn(async () => "cached");
+    const input = {
+      requestName: "transfer",
+      path: "/transfer",
+      cacheKey: "same-page",
+      observationScope: "unified" as const
+    };
+
+    await expect(Promise.all([
+      scheduler.schedule(input, work),
+      scheduler.schedule(input, work)
+    ])).resolves.toEqual(["cached", "cached"]);
+
+    const rateLimited = Object.assign(new Error("429"), { status: 429 });
+    await expect(scheduler.schedule({
+      requestName: "transfer",
+      path: "/retry-1",
+      observationScope: "unified"
+    }, async () => {
+      throw rateLimited;
+    })).rejects.toBe(rateLimited);
+    await expect(scheduler.schedule({
+      requestName: "transfer",
+      path: "/retry-2",
+      observationScope: "unified"
+    }, async () => "success")).resolves.toBe("success");
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(dispatches).toBe(3);
+    expect(observations).toEqual([
+      "success",
+      "rate_limited_429",
+      "success"
+    ]);
+  });
+
+  it("reports provider pacing once per tagged queued request", async () => {
+    let now = 1_000;
+    const paced = vi.fn();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 10,
+      rateLimitCooldownMs: 0,
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      },
+      onPacingObservation: paced
+    });
+
+    await scheduler.schedule({
+      requestName: "first",
+      path: "/first",
+      observationScope: "unified"
+    }, async () => "first");
+    await scheduler.schedule({
+      requestName: "second",
+      path: "/second",
+      observationScope: "unified",
+      observationRunId: "run-second",
+      observationSlotId: 4,
+      observationSlotEpoch: 9
+    }, async () => "second");
+
+    expect(paced).toHaveBeenCalledOnce();
+    expect(paced).toHaveBeenCalledWith({
+      requestId: 1,
+      scope: "unified",
+      runId: "run-second",
+      slotId: 4,
+      epoch: 9
+    });
+  });
+
+  it("attaches every coalesced Unified observer to one physical paced request", async () => {
+    let now = 1_000;
+    const gate = deferred<string>();
+    const dispatches: number[] = [];
+    const outcomes: number[] = [];
+    const paced: string[] = [];
+    const settled: string[] = [];
+    const observerKey = (item: {
+      runId: string;
+      slotId: number;
+      epoch: number;
+    }) => `${item.runId}:${item.slotId}:${item.epoch}`;
+    const work = vi.fn(() => gate.promise);
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 10,
+      rateLimitCooldownMs: 0,
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      },
+      onDispatchObservation: (item) => dispatches.push(item.requestId),
+      onDispatchOutcome: (item) => outcomes.push(item.requestId),
+      onPacingObservation: (item) => paced.push(observerKey(item)),
+      onObserverSettled: (item) =>
+        settled.push(observerKey(item))
+    });
+
+    await scheduler.schedule({
+      requestName: "primer",
+      path: "/primer"
+    }, async () => "primer");
+    const untagged = scheduler.schedule({
+      requestName: "transfer",
+      path: "/shared",
+      cacheKey: "shared"
+    }, work);
+    const runA = scheduler.schedule({
+      requestName: "transfer",
+      path: "/shared",
+      cacheKey: "shared",
+      observationScope: "unified",
+      observationRunId: "run-a",
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, work);
+    await flushMicrotasks();
+    expect(paced).toEqual(["run-a:0:1"]);
+    const runB = scheduler.schedule({
+      requestName: "transfer",
+      path: "/shared",
+      cacheKey: "shared",
+      observationScope: "unified",
+      observationRunId: "run-b",
+      observationSlotId: 1,
+      observationSlotEpoch: 3
+    }, work);
+    expect(paced.sort()).toEqual(["run-a:0:1", "run-b:1:3"]);
+    expect(work).toHaveBeenCalledOnce();
+    gate.resolve("ok");
+    await expect(Promise.all([untagged, runA, runB])).resolves
+      .toEqual(["ok", "ok", "ok"]);
+    expect(dispatches).toHaveLength(1);
+    expect(outcomes).toHaveLength(1);
+    expect(new Set(dispatches)).toEqual(new Set(outcomes));
+    expect(settled.sort()).toEqual(["run-a:0:1", "run-b:1:3"]);
+  });
   it("serializes requests and honors the configured minimum interval", async () => {
     const delays: number[] = [];
     let now = 1_000;

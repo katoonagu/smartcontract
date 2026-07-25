@@ -19,9 +19,11 @@ describe("Unified reconciliation", () => {
         wokenSlots: 1
       };
     });
+    const onWait = vi.fn();
     const reconciliation = createUnifiedReconciliation({
       intervalMs: 30_000,
-      runCycle
+      runCycle,
+      onWait
     });
 
     reconciliation.wake();
@@ -35,6 +37,10 @@ describe("Unified reconciliation", () => {
     expect(runCycle).toHaveBeenCalledTimes(2);
     releases.shift()?.();
     await reconciliation.waitForIdle();
+    expect(onWait).toHaveBeenCalledWith({
+      scope: "pool",
+      code: "reconciliation_wait"
+    });
   });
 
   it("keeps an empty tick mutation-free and ignores observability failures", async () => {
@@ -57,5 +63,30 @@ describe("Unified reconciliation", () => {
       wokenSlots: 0
     });
     expect(runCycle).toHaveBeenCalledOnce();
+  });
+
+  it("keeps recovered durable work successful when its event sink throws", async () => {
+    const onAdaptiveEvent = vi.fn(() => {
+      throw new Error("logger unavailable");
+    });
+    const reconciliation = createUnifiedReconciliation({
+      intervalMs: 60_000,
+      runCycle: async () => ({
+        actionableWorkFound: true,
+        admitted: 1,
+        wokenSlots: 1
+      }),
+      onAdaptiveEvent,
+      now: () => new Date("2026-07-25T00:00:00.000Z")
+    });
+
+    await expect(reconciliation.tick()).resolves.toEqual({
+      actionableWorkFound: true,
+      admitted: 1,
+      wokenSlots: 1
+    });
+    expect(onAdaptiveEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "reconciliation_recovered_work"
+    }));
   });
 });

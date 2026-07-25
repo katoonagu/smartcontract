@@ -16,6 +16,11 @@ export type UnifiedProviderSlotSnapshot = {
   readonly activePermit: UnifiedProviderClaimPermit | null;
 };
 
+export type UnifiedProviderSlotIdentity = {
+  readonly slotId: number;
+  readonly epoch: number;
+};
+
 export type UnifiedProviderSlotAssignment = {
   readonly slotId: number;
   readonly expectedEpoch: number;
@@ -38,7 +43,8 @@ export function createUnifiedProviderPool(input: {
   configuredLimit: number;
   runCycle(
     slotId: number,
-    assignment?: UnifiedProviderSlotAssignment
+    assignment: UnifiedProviderSlotAssignment | undefined,
+    slotIdentity: UnifiedProviderSlotIdentity
   ): Promise<{ claimed: boolean }>;
   requiresPermit?: boolean;
   yieldAfterClaim?: boolean;
@@ -86,7 +92,10 @@ export function createUnifiedProviderPool(input: {
     assignment: UnifiedProviderSlotAssignment | undefined
   ): Promise<"idle" | "retired" | "drained"> => {
     while (!draining) {
-      const result = await input.runCycle(slotId, assignment);
+      const result = await input.runCycle(slotId, assignment, {
+        slotId,
+        epoch: epochs[slotId]!
+      });
       if (!result.claimed) return "idle";
       if (input.yieldAfterClaim === true) return "idle";
       if (slotId >= targetSlots || activeCount() > targetSlots) {

@@ -14,6 +14,9 @@ import type {
   UnifiedTaskCycleRepository,
   UnifiedWorkerTask
 } from "./worker";
+import type {
+  UnifiedAdaptiveEvent
+} from "./adaptiveObservability";
 
 function text(value: unknown, code: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(code);
@@ -57,6 +60,7 @@ export function createPostgresUnifiedTaskCycleRepository(
   options: {
     readonly manifestMaxBytes?: number;
     readonly onCheckpointLatencyMs?: (latencyMs: number) => void;
+    readonly onAdaptiveEvent?: (event: UnifiedAdaptiveEvent) => void;
   } = {}
 ): UnifiedTaskCycleRepository {
   if (kinds.length === 0 || kinds.some((kind) => kind.trim().length === 0)) {
@@ -114,7 +118,8 @@ export function createPostgresUnifiedTaskCycleRepository(
     async complete(input) {
       return Boolean(await completeUnifiedTaskAttempt(db, {
         ...input,
-        manifestMaxBytes: options.manifestMaxBytes
+        manifestMaxBytes: options.manifestMaxBytes,
+        onAdaptiveEvent: options.onAdaptiveEvent
       }));
     },
     async settle(input) {

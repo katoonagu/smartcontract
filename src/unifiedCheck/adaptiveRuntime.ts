@@ -2,6 +2,15 @@ import { readFile } from "node:fs/promises";
 import { freemem } from "node:os";
 import type { ProviderGroupCapacitySnapshot } from "../tron/tronscanScheduler";
 import {
+  createUnifiedAdaptiveEvent,
+  createUnifiedDecisionReason,
+  type UnifiedAdaptiveEvent,
+  type UnifiedDecisionReason
+} from "./adaptiveObservability";
+import type {
+  UnifiedAdminRunDecision
+} from "./adminRunSnapshot";
+import {
   allocateProviderSlots,
   type ProviderRunDemand,
   type ProviderSlotAllocation
@@ -48,19 +57,60 @@ export type UnifiedRuntimeResourceThresholds = {
   readonly criticalCheckpointLatencyMs: number;
 };
 
-export function createUnifiedRepairServiceTracker(): {
+export function attributeUnifiedPacedDemand(
+  demand: readonly ProviderRunDemand[],
+  isPaced: (runId: string) => boolean
+): ProviderRunDemand[] {
+  return demand.map((item) => ({
+    ...item,
+    providerPaced: isPaced(item.runId)
+  }));
+}
+
+export function countUnifiedActualLaneSlots(input: {
+  readonly lane: ProviderRunDemand["lane"];
+  readonly slotSnapshots: readonly UnifiedProviderSlotSnapshot[];
+}): number {
+  return input.slotSnapshots.filter((slot) =>
+    slot.active && slot.activePermit?.lane === input.lane
+  ).length;
+}
+
+export function createUnifiedRepairServiceTracker(input: {
+  readonly repairMaxWaitChunks?: number;
+  readonly onWaitViolation?: (event: UnifiedAdaptiveEvent) => void;
+  readonly now?: () => Date;
+} = {}): {
   updateRepairReady(ready: boolean): void;
   recordWake(): void;
   recordAllocation(lane: ProviderRunDemand["lane"]): void;
   recordClaim(lane: ProviderRunDemand["lane"]): void;
-  snapshot(): { readonly chunksSinceLastRepair: number };
+  snapshot(): {
+    readonly chunksSinceLastRepair: number;
+    readonly waitViolations: number;
+  };
 } {
+  const repairMaxWaitChunks =
+    input.repairMaxWaitChunks ?? Number.MAX_SAFE_INTEGER;
+  if (
+    !Number.isSafeInteger(repairMaxWaitChunks) ||
+    repairMaxWaitChunks < 0
+  ) {
+    throw new TypeError("unified_repair_max_wait_chunks_invalid");
+  }
+  const now = input.now ?? (() => new Date());
   let repairReady = false;
   let chunksSinceLastRepair = 0;
+  let waitViolations = 0;
+  let violationRecordedForEpisode = false;
+  const resetEpisode = () => {
+    chunksSinceLastRepair = 0;
+    violationRecordedForEpisode = false;
+  };
   return {
     updateRepairReady(ready) {
       repairReady = ready;
-      if (!ready) chunksSinceLastRepair = 0;
+      if (!ready) resetEpisode();
     },
     recordWake() {
       // Only an actual claimed chunk is service evidence.
@@ -71,12 +121,31 @@ export function createUnifiedRepairServiceTracker(): {
     recordClaim(lane) {
       if (!repairReady) return;
       if (lane === "repair") {
-        chunksSinceLastRepair = 0;
+        resetEpisode();
       } else {
         chunksSinceLastRepair += 1;
+        if (
+          chunksSinceLastRepair > repairMaxWaitChunks &&
+          !violationRecordedForEpisode
+        ) {
+          violationRecordedForEpisode = true;
+          waitViolations += 1;
+          try {
+            input.onWaitViolation?.(createUnifiedAdaptiveEvent({
+              type: "repair_wait_violated",
+              occurredAt: now().toISOString(),
+              reason: createUnifiedDecisionReason(
+                "pool",
+                "repair_reserve_reclaim"
+              )
+            }));
+          } catch {
+            // ponytail: anomaly export cannot alter the actual claim boundary.
+          }
+        }
       }
     },
-    snapshot: () => ({ chunksSinceLastRepair })
+    snapshot: () => ({ chunksSinceLastRepair, waitViolations })
   };
 }
 
@@ -386,6 +455,133 @@ export async function loadUnifiedProviderRunDemand(
   });
 }
 
+export async function loadUnifiedAdaptiveStorageSnapshot(
+  db: UnifiedQueryable,
+  input: Date | {
+    readonly now: Date;
+    readonly runtimeCommit?: string;
+    readonly providerConfigurationSha256?: string;
+  }
+): Promise<{
+  planner: {
+    durableBacklog: number;
+    admitted: number;
+    leased: number;
+    ready: number;
+    committed: number;
+  };
+  buffer: {
+    readyCount: number;
+    readyBytes: number;
+    reservedBytes: number;
+  };
+  canonicalHeadAgeMs: number | null;
+}> {
+  const snapshot = input instanceof Date ? { now: input } : input;
+  const row = (await db.query(
+    `with active_runs as materialized (
+       select run.id
+         from unified_check_runs run
+        where run.status = 'RUNNING'
+          and (
+            $2::text is null or exists (
+              select 1
+                from unified_check_artifacts manifest
+               where manifest.sha256 = run.analysis_manifest_sha256
+                 and manifest.kind = 'analysis_manifest'
+                 and manifest.artifact_json->>'runtimeCommit' = $2
+            )
+          )
+          and (
+            run.run_purpose <> 'release_canary' or (
+              $3::text is not null and exists (
+                select 1
+                  from unified_check_requests request
+                  join unified_check_artifacts batch_identity
+                    on batch_identity.sha256 = substring(request.chat_id from 8)
+                   and batch_identity.kind = 'canary_batch_identity'
+                 where request.run_id = run.id
+                   and request.run_purpose = 'release_canary'
+                   and batch_identity.artifact_json#>>
+                     '{providerConfiguration,sha256}' = $3
+              )
+            )
+          )
+     )
+     select
+       count(*) filter (
+         where entry.planner_state = 'planned'
+           and entry.admitted_at is null
+       )::bigint
+         as durable_backlog,
+       count(*) filter (
+         where entry.planner_state = 'planned'
+           and entry.admitted_at is not null
+       )::bigint
+         as admitted,
+       count(*) filter (where task.status = 'LEASED')::bigint as leased,
+       count(*) filter (where entry.planner_state = 'ready')::bigint as ready,
+       count(*) filter (where entry.planner_state = 'committed')::bigint
+         as committed,
+       coalesce(sum(entry.result_bytes) filter (
+         where entry.planner_state = 'ready'
+       ), 0)::bigint as ready_bytes,
+       coalesce(sum(entry.reserved_bytes) filter (
+         where entry.planner_state = 'planned'
+       ), 0)::bigint as reserved_bytes,
+       extract(epoch from ($1::timestamptz - min(entry.planned_at) filter (
+         where entry.planner_state <> 'committed'
+       ))) * 1000 as canonical_head_age_ms
+     from active_runs run
+     join unified_check_planner_entries entry on entry.run_id = run.id
+    join unified_check_tasks task
+       on task.run_id = entry.run_id and task.id = entry.task_id
+    where task.cancellation_requested_at is null`,
+    [
+      snapshot.now,
+      snapshot.runtimeCommit ?? null,
+      snapshot.providerConfigurationSha256 ?? null
+    ]
+  )).rows[0] ?? {};
+  const count = (value: unknown, code: string): number => {
+    const parsed = Number(value ?? 0);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(code);
+    return parsed;
+  };
+  const age = row.canonical_head_age_ms === null ||
+    row.canonical_head_age_ms === undefined
+    ? null
+    : Math.max(0, Number(row.canonical_head_age_ms));
+  if (age !== null && !Number.isFinite(age)) {
+    throw new Error("unified_canonical_head_age_invalid");
+  }
+  const ready = count(row.ready, "unified_planner_ready_invalid");
+  return {
+    planner: {
+      durableBacklog: count(
+        row.durable_backlog,
+        "unified_planner_backlog_invalid"
+      ),
+      admitted: count(row.admitted, "unified_planner_admitted_invalid"),
+      leased: count(row.leased, "unified_planner_leased_invalid"),
+      ready,
+      committed: count(row.committed, "unified_planner_committed_invalid")
+    },
+    buffer: {
+      readyCount: ready,
+      readyBytes: count(
+        row.ready_bytes,
+        "unified_planner_ready_bytes_invalid"
+      ),
+      reservedBytes: count(
+        row.reserved_bytes,
+        "unified_planner_reserved_bytes_invalid"
+      )
+    },
+    canonicalHeadAgeMs: age
+  };
+}
+
 export async function countUnifiedActionableProviderWork(
   db: UnifiedQueryable,
   input: {
@@ -476,6 +672,59 @@ export type UnifiedActionableProviderScope = {
   readonly count: number;
 };
 
+export type UnifiedAdaptiveControllerDecision = {
+  readonly runtimeState: RuntimeResourceState;
+  readonly limitingReason: UnifiedDecisionReason | null;
+  readonly providerCapacityLimit: number;
+  readonly eligibleReadyProviderWork: number;
+  readonly targetActiveProviderSlots: number;
+  readonly actualActiveProviderSlots: number;
+  readonly actionableProviderSlots: number;
+  readonly claimPermits: readonly UnifiedProviderClaimPermit[];
+  readonly claimAssignments: readonly UnifiedProviderSlotAssignment[];
+  readonly analysisConcurrencyLimit: number;
+  readonly finalizationConcurrencyLimit: number;
+  readonly allocations: ProviderSlotAllocation[];
+  readonly runDecisions: readonly UnifiedAdminRunDecision[];
+  readonly rampState: ProviderCapacityRampState;
+  readonly admitted: number;
+  readonly deAdmitted: number;
+};
+
+function resourceLimitingReason(
+  snapshot: UnifiedRuntimeResourceSnapshot,
+  thresholds: UnifiedRuntimeResourceThresholds,
+  state: RuntimeResourceState
+): UnifiedDecisionReason | null {
+  if (state === "normal") return null;
+  const critical = state === "critical";
+  const availableMemoryThreshold = critical
+    ? thresholds.criticalAvailableMemoryBytes
+    : thresholds.pressureAvailableMemoryBytes;
+  const rssThreshold = critical
+    ? thresholds.criticalRssBytes
+    : thresholds.pressureRssBytes;
+  if (
+    snapshot.availableMemoryBytes <= availableMemoryThreshold ||
+    snapshot.rssBytes >= rssThreshold
+  ) {
+    return createUnifiedDecisionReason("pool", "memory_pressure");
+  }
+  const dbWaitingThreshold = critical
+    ? thresholds.criticalDbWaitingCount
+    : thresholds.pressureDbWaitingCount;
+  const dbLatencyThreshold = critical
+    ? thresholds.criticalDbLatencyMs
+    : thresholds.pressureDbLatencyMs;
+  if (
+    snapshot.dbWaitingCount >= dbWaitingThreshold ||
+    snapshot.dbLatencyMs >= dbLatencyThreshold
+  ) {
+    return createUnifiedDecisionReason("pool", "db_pressure");
+  }
+  return createUnifiedDecisionReason("pool", "class_capacity_limit");
+}
+
 export async function runUnifiedAdaptiveControllerCycle(input: {
   readonly nowMs: number;
   readonly rampState: ProviderCapacityRampState;
@@ -485,6 +734,11 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
   readonly config: UnifiedAdaptiveControllerConfig;
   readonly demand: readonly ProviderRunDemand[];
   readonly providerSlots?: readonly UnifiedProviderSlotSnapshot[];
+  isProviderSlotPaced?(slot: {
+    readonly runId: string;
+    readonly slotId: number;
+    readonly epoch: number;
+  }): boolean;
   refill(input: {
     readonly runId: string;
     readonly policy: "barrier" | "rolling";
@@ -506,21 +760,8 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
   ): void;
   setPoolTarget(target: number): void;
   wakePool(): void;
-}): Promise<{
-  readonly runtimeState: RuntimeResourceState;
-  readonly providerCapacityLimit: number;
-  readonly eligibleReadyProviderWork: number;
-  readonly targetActiveProviderSlots: number;
-  readonly actionableProviderSlots: number;
-  readonly claimPermits: readonly UnifiedProviderClaimPermit[];
-  readonly claimAssignments: readonly UnifiedProviderSlotAssignment[];
-  readonly analysisConcurrencyLimit: number;
-  readonly finalizationConcurrencyLimit: number;
-  readonly allocations: ProviderSlotAllocation[];
-  readonly rampState: ProviderCapacityRampState;
-  readonly admitted: number;
-  readonly deAdmitted: number;
-}> {
+  onDecision?(decision: UnifiedAdaptiveControllerDecision): void;
+}): Promise<UnifiedAdaptiveControllerDecision> {
   const runtimeState = classifyUnifiedRuntimeResources(
     input.resources,
     input.thresholds
@@ -586,8 +827,16 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
   let admitted = 0;
   let deAdmitted = 0;
   const providerShareByRun = new Map<string, number>();
+  const activeSlotsByRun = new Map<string, number>();
+  const activeSlotIdentitiesByRun =
+    new Map<string, UnifiedProviderSlotSnapshot[]>();
   for (const slot of activeProviderSlots) {
     const runId = slot.activePermit!.runId;
+    activeSlotsByRun.set(runId, (activeSlotsByRun.get(runId) ?? 0) + 1);
+    activeSlotIdentitiesByRun.set(runId, [
+      ...(activeSlotIdentitiesByRun.get(runId) ?? []),
+      slot
+    ]);
     providerShareByRun.set(
       runId,
       (providerShareByRun.get(runId) ?? 0) + 1
@@ -600,9 +849,23 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
     );
   }
   const firstDemandByRun = new Map<string, ProviderRunDemand>();
+  const decisionIdentityByRun = new Map<string, {
+    readonly runId: string;
+    readonly ownerId: string;
+    readonly lane: ProviderRunDemand["lane"];
+  }>();
+  const lookaheadByRun = new Map<string, number>();
+  const refillByRun = new Map<string, RefillResult>();
   for (const run of input.demand) {
     if (!firstDemandByRun.has(run.runId)) {
       firstDemandByRun.set(run.runId, run);
+      decisionIdentityByRun.set(run.runId, run);
+    }
+  }
+  for (const slot of activeProviderSlots) {
+    const permit = slot.activePermit!;
+    if (!decisionIdentityByRun.has(permit.runId)) {
+      decisionIdentityByRun.set(permit.runId, permit);
     }
   }
   for (const run of firstDemandByRun.values()) {
@@ -625,6 +888,8 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
       reservationBytesPerTask: input.config.reservationBytesPerTask,
       now: new Date(input.nowMs)
     });
+    lookaheadByRun.set(run.runId, lookaheadTarget);
+    refillByRun.set(run.runId, result);
     admitted += result.admittedTaskIds.length;
     deAdmitted += result.deAdmittedTaskIds.length;
   }
@@ -700,19 +965,137 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
       // ponytail: wake is an optimization; durable admission is the authority.
     }
   }
-  return {
+  const resourceReason = resourceLimitingReason(
+    input.resources,
+    input.thresholds,
+    runtimeState
+  );
+  const limitingReason = resourceReason ??
+    (
+      healthyIndependentGroupConcurrency === 0
+        ? createUnifiedDecisionReason(
+            "pool",
+            input.providerGroups.some((group) => group.state === "cooldown")
+              ? "provider_cooldown"
+              : input.providerGroups.some((group) =>
+                  group.state === "circuit_open"
+                )
+                ? "provider_circuit_open"
+                : "class_capacity_limit"
+          )
+        : eligibleReadyProviderWork === 0
+          ? createUnifiedDecisionReason("pool", "no_eligible_work")
+          : actionableProviderSlots < targetActiveProviderSlots
+            ? createUnifiedDecisionReason("pool", "admission_closed")
+            : rampState.target < providerCapacityLimit
+              ? createUnifiedDecisionReason("pool", "class_capacity_limit")
+              : null
+    );
+  const lanePriority: Record<ProviderRunDemand["lane"], number> = {
+    interactive: 0,
+    repair: 1,
+    background: 2
+  };
+  const runDecisions = [...decisionIdentityByRun.values()].map((first) => {
+    const candidates = input.demand
+      .filter((item) => item.runId === first.runId)
+      .sort((left, right) => lanePriority[left.lane] - lanePriority[right.lane]);
+    const allocation = allocations
+      .filter((item) => item.runId === first.runId)
+      .sort((left, right) =>
+        Number(right.slots > 0) - Number(left.slots > 0) ||
+        lanePriority[left.lane] - lanePriority[right.lane]
+      )[0];
+    const lane = allocation?.lane ?? candidates[0]?.lane ?? first.lane;
+    const activeSlots = activeSlotsByRun.get(first.runId) ?? 0;
+    const assignedSlots = claimAssignments.filter((item) =>
+      item.permit.runId === first.runId
+    ).length;
+    const allocationReason = allocation?.reason ?? "no_eligible_work";
+    const refillBlocker = refillByRun.get(first.runId)?.blocker ?? null;
+    const refillReason = refillBlocker === "reservation_full"
+      ? "admission_closed"
+      : refillBlocker === "no_provider_capacity"
+        ? "class_capacity_limit"
+        : refillBlocker === "no_ready_work"
+          ? "no_eligible_work"
+        : refillBlocker;
+    const repairReclaimPending =
+      lane === "repair" &&
+      input.config.chunksSinceLastRepair >=
+        input.config.repairMaxWaitChunks &&
+      candidates.some((item) =>
+        item.lane === "repair" && item.eligibleReadyWork > 0
+      ) &&
+      activeSlots + assignedSlots === 0 &&
+      actionableProviderSlots >= targetActiveProviderSlots;
+    const providerPacingStopped =
+      (activeSlotIdentitiesByRun.get(first.runId) ?? []).length > 0 &&
+      input.isProviderSlotPaced !== undefined &&
+      (activeSlotIdentitiesByRun.get(first.runId) ?? []).every((slot) =>
+        input.isProviderSlotPaced!({
+          runId: first.runId,
+          slotId: slot.slotId,
+          epoch: slot.epoch
+        })
+      );
+    const blocker = providerPacingStopped
+      ? createUnifiedDecisionReason("run", "provider_rate_paced")
+      : activeSlots + assignedSlots > 0
+        ? null
+      : createUnifiedDecisionReason(
+          "run",
+          repairReclaimPending
+            ? "repair_reserve_reclaim"
+            : refillReason === "canonical_head_wait" ||
+              refillReason === "merge_buffer_full"
+            ? refillReason
+            : allocationReason === "allocated"
+              ? refillReason ?? "admission_closed"
+              : allocationReason
+        );
+    const lastServedAtMs = candidates.reduce(
+      (maximum, item) => Math.max(maximum, item.lastServedAtMs),
+      0
+    );
+    return Object.freeze({
+      runId: first.runId,
+      ownerId: first.ownerId,
+      lane,
+      fairShare: firstDemandByRun.has(first.runId)
+        ? providerShareByRun.get(first.runId) ?? 0
+        : 0,
+      activeSlots,
+      lastServedAt: lastServedAtMs > 0
+        ? new Date(lastServedAtMs).toISOString()
+        : null,
+      lookaheadTarget: lookaheadByRun.get(first.runId) ?? 0,
+      blocker
+    });
+  });
+  const decision: UnifiedAdaptiveControllerDecision = {
     runtimeState,
+    limitingReason,
     providerCapacityLimit,
     eligibleReadyProviderWork,
     targetActiveProviderSlots,
+    actualActiveProviderSlots: activeProviderSlots.length,
     actionableProviderSlots,
     claimPermits,
     claimAssignments,
     analysisConcurrencyLimit: guarded.analysisConcurrencyLimit,
     finalizationConcurrencyLimit: guarded.finalizationConcurrencyLimit,
     allocations,
+    runDecisions,
     rampState,
     admitted,
     deAdmitted
   };
+  try {
+    input.onDecision?.(decision);
+  } catch {
+    // ponytail: a current-snapshot observer is best-effort and replaced on the
+    // next cycle; an out-of-process channel is the upgrade path.
+  }
+  return decision;
 }

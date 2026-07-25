@@ -655,7 +655,8 @@ export type UnifiedOrderedAdmissionBlocker =
   | "merge_buffer_full"
   | "reservation_full"
   | "no_provider_capacity"
-  | "no_ready_work";
+  | "no_ready_work"
+  | "canonical_head_wait";
 
 type OrderedAdmissionRow = {
   canonicalSequence: number;
@@ -987,7 +988,9 @@ export async function refillOrderedAdmissions(
     } else if (mergeBufferBlocked) {
       blocker = "merge_buffer_full";
     } else if (activeAdmissions === 0) {
-      blocker = "no_ready_work";
+      blocker = head !== null && !head.taskClaimEligible
+        ? "canonical_head_wait"
+        : "no_ready_work";
     }
     return {
       admittedTaskIds,

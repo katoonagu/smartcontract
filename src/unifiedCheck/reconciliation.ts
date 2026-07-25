@@ -23,6 +23,9 @@ export function createUnifiedReconciliation(input: {
   runCycle(): Promise<UnifiedReconciliationResult>;
   onResult?(result: UnifiedReconciliationResult): void;
   onError?(error: unknown): void;
+  onAdaptiveEvent?(event: UnifiedAdaptiveEvent): void;
+  onWait?(reason: UnifiedDecisionReason): void;
+  now?(): Date;
 }): UnifiedReconciliation {
   if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 1) {
     throw new TypeError("unified_reconciliation_interval_invalid");
@@ -32,6 +35,7 @@ export function createUnifiedReconciliation(input: {
   let interval: NodeJS.Timeout | null = null;
   let stopped = false;
   let lastResult = EMPTY_RECONCILIATION_RESULT;
+  const now = input.now ?? (() => new Date());
   const idleWaiters = new Set<() => void>();
 
   const notifyIdle = () => {
@@ -53,6 +57,15 @@ export function createUnifiedReconciliation(input: {
       try {
         lastResult = await input.runCycle();
         observe(lastResult);
+        if (lastResult.actionableWorkFound) {
+          emitBestEffort(
+            input.onAdaptiveEvent,
+            createUnifiedAdaptiveEvent({
+              type: "reconciliation_recovered_work",
+              occurredAt: now().toISOString()
+            })
+          );
+        }
       } catch (error) {
         try {
           input.onError?.(error);
@@ -71,6 +84,15 @@ export function createUnifiedReconciliation(input: {
   };
   const wake = () => {
     if (stopped) return;
+    if (running !== null || pending) {
+      try {
+        input.onWait?.(
+          createUnifiedDecisionReason("pool", "reconciliation_wait")
+        );
+      } catch {
+        // ponytail: a wait observer cannot affect the coalesced durable retry.
+      }
+    }
     pending = true;
     queueMicrotask(startPending);
   };
@@ -103,3 +125,10 @@ export function createUnifiedReconciliation(input: {
     waitForIdle
   };
 }
+import {
+  createUnifiedAdaptiveEvent,
+  createUnifiedDecisionReason,
+  emitBestEffort,
+  type UnifiedAdaptiveEvent,
+  type UnifiedDecisionReason
+} from "./adaptiveObservability";

@@ -15,6 +15,32 @@ export type TronscanScheduleInput = {
   slotScope?: "pool" | "single";
   endpointBucket?: TronscanEndpointBucket;
   rateLimitScope?: TronscanRateLimitScope;
+  observationScope?: "unified";
+  observationRunId?: string;
+  observationSlotId?: number;
+  observationSlotEpoch?: number;
+};
+
+export type TronscanDispatchObservation = {
+  readonly requestId: number;
+  readonly scope: "unified";
+  readonly atMs: number;
+  readonly runId?: string;
+};
+
+export type TronscanDispatchOutcomeObservation = {
+  readonly requestId: number;
+  readonly scope: "unified";
+  readonly outcome: "success" | "error" | "rate_limited_429";
+  readonly runId?: string;
+};
+
+export type TronscanObserverObservation = {
+  readonly requestId: number;
+  readonly scope: "unified";
+  readonly runId: string;
+  readonly slotId: number;
+  readonly epoch: number;
 };
 
 export type TronscanScheduleContext = {
@@ -77,13 +103,32 @@ export type TronscanSchedulerOptions = {
   apiKeys?: readonly string[];
   now?: () => number;
   delay?: (ms: number) => Promise<void>;
+  onDispatchObservation?(observation: TronscanDispatchObservation): void;
+  onDispatchOutcome?(observation: TronscanDispatchOutcomeObservation): void;
+  onPacingObservation?(input: TronscanObserverObservation): void;
+  onObserverSettled?(input: TronscanObserverObservation): void;
 };
 
+type UnifiedObserver = Omit<
+  TronscanObserverObservation,
+  "requestId" | "scope"
+>;
+
 type QueueItem<T> = {
+  requestId: number;
   input: TronscanScheduleInput;
   work: (context: TronscanScheduleContext) => Promise<T>;
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
+  unifiedObserved: boolean;
+  observers: Map<string, UnifiedObserver>;
+  pacedObservers: Set<string>;
+  settledObservers: Set<string>;
+  pacingActive: boolean;
+  dispatchedAtMs: number | null;
+  dispatchObserved: boolean;
+  outcome: TronscanDispatchOutcomeObservation["outcome"] | null;
+  outcomeObserved: boolean;
 };
 
 type ApiKeySlot = {
@@ -120,6 +165,7 @@ type AccountGroupState = {
 };
 
 const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
+const MAX_COALESCED_UNIFIED_RUN_OBSERVERS = 128;
 const DEFAULT_ACCOUNT_GROUP_ID = "default";
 const endpointBuckets: TronscanEndpointBucket[] = ["transfer", "approval", "contract", "fullnode", "trongrid", "default"];
 const rateLimitScopes: TronscanRateLimitScope[] = ["tronscan", "fullnode", "trongrid"];
@@ -255,7 +301,10 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   const scopeState: Record<TronscanRateLimitScope, RateLimitScopeState> = Object.fromEntries(
     rateLimitScopes.map((scope) => [scope, { nextRequestAtMs: 0, cooldownUntilMs: 0 }])
   ) as Record<TronscanRateLimitScope, RateLimitScopeState>;
-  const inFlightByCacheKey = new Map<string, Promise<unknown>>();
+  const inFlightByCacheKey = new Map<string, {
+    readonly promise: Promise<unknown>;
+    readonly item: QueueItem<unknown>;
+  }>();
   const queue: Array<QueueItem<unknown>> = [];
   let inFlight = 0;
   let dispatchedRequests = 0;
@@ -266,6 +315,132 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   let drainScheduled = false;
   let wakeDeadlineMs: number | null = null;
   let wakeToken = 0;
+  let nextRequestId = 0;
+
+  function observeDispatch(item: QueueItem<unknown>): void {
+    if (
+      !item.unifiedObserved ||
+      item.dispatchObserved ||
+      item.dispatchedAtMs === null
+    ) {
+      return;
+    }
+    item.dispatchObserved = true;
+    try {
+      options.onDispatchObservation?.({
+        requestId: item.requestId,
+        scope: "unified",
+        atMs: item.dispatchedAtMs
+      });
+    } catch {
+      // ponytail: telemetry cannot participate in provider requests.
+    }
+  }
+
+  function observeOutcome(item: QueueItem<unknown>): void {
+    if (
+      !item.unifiedObserved ||
+      item.outcomeObserved ||
+      item.outcome === null
+    ) {
+      return;
+    }
+    item.outcomeObserved = true;
+    try {
+      options.onDispatchOutcome?.({
+        requestId: item.requestId,
+        scope: "unified",
+        outcome: item.outcome
+      });
+    } catch {
+      // ponytail: telemetry cannot participate in provider requests.
+    }
+  }
+
+  function observePacing(
+    item: QueueItem<unknown>,
+    key: string,
+    observer: UnifiedObserver
+  ): void {
+    if (
+      !item.pacingActive ||
+      item.pacedObservers.has(key)
+    ) {
+      return;
+    }
+    item.pacedObservers.add(key);
+    try {
+      options.onPacingObservation?.({
+        requestId: item.requestId,
+        scope: "unified",
+        ...observer
+      });
+    } catch {
+      // ponytail: telemetry cannot participate in provider scheduling.
+    }
+  }
+
+  function observeSettled(
+    item: QueueItem<unknown>,
+    key: string,
+    observer: UnifiedObserver
+  ): void {
+    if (
+      item.outcome === null ||
+      item.settledObservers.has(key)
+    ) {
+      return;
+    }
+    item.settledObservers.add(key);
+    try {
+      options.onObserverSettled?.({
+        requestId: item.requestId,
+        scope: "unified",
+        ...observer
+      });
+    } catch {
+      // ponytail: telemetry cannot participate in provider requests.
+    }
+  }
+
+  function attachObserver(
+    item: QueueItem<unknown>,
+    input: TronscanScheduleInput
+  ): void {
+    if (input.observationScope !== "unified") return;
+    item.unifiedObserved = true;
+    const runId = input.observationRunId?.trim();
+    const slotId = input.observationSlotId;
+    const epoch = input.observationSlotEpoch;
+    if (
+      runId &&
+      Number.isSafeInteger(slotId) &&
+      Number(slotId) >= 0 &&
+      Number.isSafeInteger(epoch) &&
+      Number(epoch) >= 0
+    ) {
+      const observer = {
+        runId,
+        slotId: Number(slotId),
+        epoch: Number(epoch)
+      };
+      const key = JSON.stringify([
+        observer.runId,
+        observer.slotId,
+        observer.epoch
+      ]);
+      if (
+        item.observers.has(key) ||
+        item.observers.size < MAX_COALESCED_UNIFIED_RUN_OBSERVERS
+      ) {
+        item.observers.set(key, observer);
+        observePacing(item, key, observer);
+        observeSettled(item, key, observer);
+      }
+    }
+    observeDispatch(item);
+    observeOutcome(item);
+  }
 
   function scheduleDrain(): void {
     if (drainScheduled) return;
@@ -388,7 +563,18 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     for (const item of queue) {
       const slot = earliestSlotFrom(item, availableSlots(item));
       if (!slot) continue;
-      earliestReadyAtMs = Math.min(earliestReadyAtMs, slotReadyAtMs(slot, item));
+      const itemReadyAtMs = slotReadyAtMs(slot, item);
+      if (
+        itemReadyAtMs > wakeNow &&
+        item.unifiedObserved &&
+        !item.pacingActive
+      ) {
+        item.pacingActive = true;
+        for (const [key, observer] of item.observers) {
+          observePacing(item, key, observer);
+        }
+      }
+      earliestReadyAtMs = Math.min(earliestReadyAtMs, itemReadyAtMs);
     }
     if (earliestReadyAtMs === Number.POSITIVE_INFINITY) return undefined;
     return Math.max(0, earliestReadyAtMs - wakeNow);
@@ -424,6 +610,8 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     }
     accountGroup.dispatchedRequests += 1;
     dispatchedRequests += 1;
+    item.dispatchedAtMs = dispatchNow;
+    observeDispatch(item);
     void (async () => {
       try {
         const value = await item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex });
@@ -432,10 +620,20 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         accountGroup.circuitOpenUntilMs = 0;
         accountGroup.halfOpenProbeInFlight = false;
         completedRequests += 1;
+        item.outcome = "success";
+        observeOutcome(item);
+        for (const [key, observer] of item.observers) {
+          observeSettled(item, key, observer);
+        }
         item.resolve(value);
       } catch (error) {
         failedRequests += 1;
         const rateLimited = isRateLimitError(error);
+        item.outcome = rateLimited ? "rate_limited_429" : "error";
+        observeOutcome(item);
+        for (const [key, observer] of item.observers) {
+          observeSettled(item, key, observer);
+        }
         if (rateLimited && rateLimitCooldownMs > 0) {
           rateLimitedRequests += 1;
           slot.consecutive429CountByScope[scope] += 1;
@@ -504,30 +702,53 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     if (waitMs !== undefined) scheduleWake(waitMs);
   }
 
-  function enqueue<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T> {
+  function enqueue<T>(
+    input: TronscanScheduleInput,
+    work: (context: TronscanScheduleContext) => Promise<T>
+  ): { readonly promise: Promise<T>; readonly item: QueueItem<T> } {
+    let item!: QueueItem<T>;
     const promise = new Promise<T>((resolve, reject) => {
-      queue.push({
+      item = {
+        requestId: nextRequestId++,
         input,
         work: work as (context: TronscanScheduleContext) => Promise<unknown>,
         resolve: resolve as (value: unknown) => void,
-        reject
-      });
+        reject,
+        unifiedObserved: false,
+        observers: new Map(),
+        pacedObservers: new Set(),
+        settledObservers: new Set(),
+        pacingActive: false,
+        dispatchedAtMs: null,
+        dispatchObserved: false,
+        outcome: null,
+        outcomeObserved: false
+      } as QueueItem<T>;
+      attachObserver(item as QueueItem<unknown>, input);
+      queue.push(item as QueueItem<unknown>);
       scheduleDrain();
     });
-    return promise;
+    return { promise, item };
   }
 
   return {
     schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T> {
       if (!input.cacheKey) {
-        return enqueue(input, work);
+        return enqueue(input, work).promise;
       }
       const existing = inFlightByCacheKey.get(input.cacheKey);
-      if (existing) return existing as Promise<T>;
-      const pending = enqueue(input, work).finally(() => {
+      if (existing) {
+        attachObserver(existing.item, input);
+        return existing.promise as Promise<T>;
+      }
+      const enqueued = enqueue(input, work);
+      const pending = enqueued.promise.finally(() => {
         inFlightByCacheKey.delete(input.cacheKey as string);
       });
-      inFlightByCacheKey.set(input.cacheKey, pending);
+      inFlightByCacheKey.set(input.cacheKey, {
+        promise: pending,
+        item: enqueued.item as QueueItem<unknown>
+      });
       return pending;
     },
     diagnostics(): TronscanSchedulerDiagnostics {

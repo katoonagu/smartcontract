@@ -120,6 +120,10 @@ type FetchJsonOptions = {
   shouldRetry?: (error: unknown) => boolean;
   timeoutMs?: number;
   retryAttempts?: number;
+  observationScope?: "unified";
+  observationRunId?: string;
+  observationSlotId?: number;
+  observationSlotEpoch?: number;
 };
 
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
@@ -165,6 +169,10 @@ export type ListRelatedTrc20TransfersOptions = {
   startTimestamp?: number;
   minTimestamp?: number;
   endTimestamp?: number;
+  observationScope?: "unified";
+  observationRunId?: string;
+  observationSlotId?: number;
+  observationSlotEpoch?: number;
 };
 
 export type TronscanTrc20TransferPage = {
@@ -923,7 +931,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       const pageOptions = { ...options, start: pageStart, limit: pageLimit };
       const url = this.buildTronscanTransferHistoryUrl(address, "related", pageOptions);
       // Poisoning evidence must remain pinned to one provider; this intentionally bypasses fallback.
-      const page = await this.fetchTronscanTransferPage(url);
+      const page = await this.fetchTronscanTransferPage(
+        url,
+        options.observationScope,
+        options.observationRunId,
+        options.observationSlotId,
+        options.observationSlotEpoch
+      );
       const consumedTransfers = page.transfers.slice(0, pageLimit);
       if (total === undefined) total = page.total;
       else if (total !== page.total) metadataConsistent = false;
@@ -1471,10 +1485,20 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return (await this.fetchTronscanTransferPage(url)).transfers;
   }
 
-  private async fetchTronscanTransferPage(url: URL): Promise<TronscanTrc20TransferPage> {
+  private async fetchTronscanTransferPage(
+    url: URL,
+    observationScope?: "unified",
+    observationRunId?: string,
+    observationSlotId?: number,
+    observationSlotEpoch?: number
+  ): Promise<TronscanTrc20TransferPage> {
     const json = await this.fetchJson(url, "transfer", {}, undefined, {
       logFinalError: (error) => !this.shouldFallbackToTronGridTransferHistory(error),
-      shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error)
+      shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error),
+      observationScope,
+      observationRunId,
+      observationSlotId,
+      observationSlotEpoch
     });
     return this.parseTronscanTransferPage(json);
   }
@@ -1787,7 +1811,18 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const retryAttempts = options.retryAttempts ?? this.retryAttempts;
     for (let attempt = 0; attempt <= retryAttempts; attempt++) {
       try {
-        const json = await this.fetchJsonOnce(url, requestName, init, apiKey, attempt, options.timeoutMs);
+        const json = await this.fetchJsonOnce(
+          url,
+          requestName,
+          init,
+          apiKey,
+          attempt,
+          options.timeoutMs,
+          options.observationScope,
+          options.observationRunId,
+          options.observationSlotId,
+          options.observationSlotEpoch
+        );
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
           attempt,
@@ -1827,7 +1862,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     init: RequestInit = {},
     apiKey?: string | null,
     attempt = 0,
-    timeoutMs = this.timeoutMs
+    timeoutMs = this.timeoutMs,
+    observationScope?: "unified",
+    observationRunId?: string,
+    observationSlotId?: number,
+    observationSlotEpoch?: number
   ): Promise<unknown> {
     const endpointBucket = this.endpointBucketForRequest(requestName);
     const logPath = this.safeRequestLogPath(requestName, url);
@@ -1879,7 +1918,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           ? `${this.schedulerDedupeNamespace}:${url.toString()}`
           : undefined,
         slotScope: apiKey === undefined ? "pool" : "single",
-        endpointBucket
+        endpointBucket,
+        observationScope,
+        observationRunId,
+        observationSlotId,
+        observationSlotEpoch
       },
       work
     );

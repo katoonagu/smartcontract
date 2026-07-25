@@ -57,6 +57,12 @@ import {
   type UnifiedWatchdogRunV1
 } from "../unifiedCheck/watchdog";
 import type { UnifiedProgressProjectionV1 } from "../unifiedCheck/progressProjection";
+import type {
+  UnifiedAdminRunSnapshot
+} from "../unifiedCheck/adminRunSnapshot";
+import type {
+  UnifiedAdaptiveAggregateSnapshot
+} from "../unifiedCheck/adaptiveObservability";
 
 export type AdminServerConfig = {
   host: string;
@@ -84,6 +90,10 @@ export type AdminServerDeps = {
   runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
   listUnifiedRuns?(): Promise<UnifiedWatchdogRunV1[]>;
   getUnifiedProgress?(runId: string): Promise<UnifiedProgressProjectionV1>;
+  getUnifiedRunSnapshot?(
+    runId: string
+  ): Promise<UnifiedAdminRunSnapshot | null>;
+  getUnifiedAdaptiveSnapshot?(): UnifiedAdaptiveAggregateSnapshot | null;
   applyUnifiedRecoveryAction?(input: {
     runId: string;
     action:
@@ -1465,6 +1475,60 @@ async function handleApiRequest(
       staleHeartbeatMs: 120_000
     });
     writeJson(response, 200, { runs });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/unified-checks/adaptive-snapshot") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.getUnifiedAdaptiveSnapshot) {
+      writeJson(response, 501, {
+        error: "Unified adaptive snapshot is not configured."
+      });
+      return;
+    }
+    const snapshot = deps.getUnifiedAdaptiveSnapshot();
+    if (snapshot === null) {
+      writeJson(response, 503, {
+        error: "Unified adaptive snapshot is not available yet."
+      });
+      return;
+    }
+    writeJson(response, 200, { snapshot });
+    return;
+  }
+
+  const unifiedSnapshotMatch =
+    /^\/admin\/api\/unified-checks\/([^/]+)\/snapshot$/u.exec(
+      url.pathname
+    );
+  if (unifiedSnapshotMatch) {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.getUnifiedRunSnapshot) {
+      writeJson(response, 501, {
+        error: "Unified run snapshot is not configured."
+      });
+      return;
+    }
+    const runId = safeDecodeUriComponent(
+      unifiedSnapshotMatch[1]!,
+      "Invalid Unified run id."
+    );
+    if (!runId.ok) {
+      writeJson(response, 400, { error: runId.message });
+      return;
+    }
+    const snapshot = await deps.getUnifiedRunSnapshot(runId.value);
+    if (snapshot === null) {
+      writeJson(response, 404, { error: "Unified run not found." });
+      return;
+    }
+    writeJson(response, 200, { snapshot });
     return;
   }
 

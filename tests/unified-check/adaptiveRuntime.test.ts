@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  attributeUnifiedPacedDemand,
   classifyUnifiedRuntimeResources,
+  countUnifiedActualLaneSlots,
   createUnifiedCheckpointLatencySampler,
   createUnifiedDbLatencySampler,
   createUnifiedRepairServiceTracker,
+  loadUnifiedAdaptiveStorageSnapshot,
   runUnifiedAdaptiveControllerCycle
 } from "../../src/unifiedCheck/adaptiveRuntime";
+import {
+  createUnifiedAdminRunDecisionStore
+} from "../../src/unifiedCheck/adminRunSnapshot";
 
 const normalResources = {
   rssBytes: 100,
@@ -49,6 +55,298 @@ function demand(
 }
 
 describe("adaptive Unified runtime", () => {
+  it("attributes pacing without reducing healthy provider eligibility", async () => {
+    const attributed = attributeUnifiedPacedDemand([
+      demand("run-paced", "owner-paced", 1),
+      demand("run-independent", "owner-independent", 1)
+    ], (runId) => runId === "run-paced");
+    expect(attributed[0]).toMatchObject({
+      providerAvailable: true,
+      providerPaced: true
+    });
+
+    const result = await runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 2, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "group-a",
+        state: "healthy",
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }, {
+        groupId: "group-b",
+        state: "healthy",
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 2,
+        providerWorkerLimit: 2,
+        providerIncreaseStep: 2,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling",
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 2,
+        readyBufferMaxEntries: 2,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: attributed,
+      refill: async ({ runId }) => ({
+        admittedTaskIds: [`${runId}-task`],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      countActionableProviderWork: async (scopes) =>
+        scopes.map((scope) => ({ ...scope, count: 1 })),
+      providerSlots: [{
+        slotId: 0,
+        epoch: 0,
+        active: false,
+        activePermit: null
+      }, {
+        slotId: 1,
+        epoch: 0,
+        active: false,
+        activePermit: null
+      }],
+      setPoolTarget: vi.fn(),
+      wakePool: vi.fn()
+    });
+
+    expect(result.claimAssignments.map((item) => item.permit.runId).sort())
+      .toEqual(["run-independent", "run-paced"]);
+    expect(result.limitingReason).toBeNull();
+    expect(result.runDecisions.find((item) =>
+      item.runId === "run-paced"
+    )?.blocker).toBeNull();
+  });
+
+  it("counts a newly assigned repair slot once from the post-assignment boundary", () => {
+    expect(countUnifiedActualLaneSlots({
+      lane: "repair",
+      slotSnapshots: [{
+        slotId: 0,
+        epoch: 1,
+        active: true,
+        activePermit: {
+          runId: "repair-run",
+          ownerId: "repair-owner",
+          lane: "repair",
+          canonicalHeadPreferred: false
+        }
+      }]
+    })).toBe(1);
+  });
+  it("loads one bounded global planner snapshot for production publication", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{
+      durable_backlog: "7",
+      admitted: "3",
+      leased: "2",
+      ready: "4",
+      committed: "11",
+      ready_bytes: "500",
+      reserved_bytes: "700",
+      canonical_head_age_ms: "12000"
+    }] }));
+
+    await expect(loadUnifiedAdaptiveStorageSnapshot(
+      { query },
+      {
+        now: new Date("2026-07-25T00:01:00.000Z"),
+        runtimeCommit: "candidate",
+        providerConfigurationSha256: "f".repeat(64)
+      }
+    )).resolves.toEqual({
+      planner: {
+        durableBacklog: 7,
+        admitted: 3,
+        leased: 2,
+        ready: 4,
+        committed: 11
+      },
+      buffer: {
+        readyCount: 4,
+        readyBytes: 500,
+        reservedBytes: 700
+      },
+      canonicalHeadAgeMs: 12_000
+    });
+    expect(query).toHaveBeenCalledOnce();
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toMatch(
+      /entry\.planner_state = 'planned'\s+and entry\.admitted_at is null/u
+    );
+    expect(sql).toMatch(
+      /entry\.planner_state = 'planned'\s+and entry\.admitted_at is not null/u
+    );
+    expect(sql).toMatch(/run\.status = 'RUNNING'/u);
+    expect(sql).toMatch(/task\.cancellation_requested_at is null/u);
+    expect(sql).toMatch(/manifest\.artifact_json->>'runtimeCommit'/u);
+    expect(query.mock.calls[0]?.[1]).toEqual([
+      new Date("2026-07-25T00:01:00.000Z"),
+      "candidate",
+      "f".repeat(64)
+    ]);
+  });
+
+  it("uses the actual refill blocker when theoretical allocation cannot assign a permit", async () => {
+    const result = await runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 1, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "group-a",
+        state: "healthy",
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 1,
+        providerWorkerLimit: 1,
+        providerIncreaseStep: 1,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling",
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 2,
+        readyBufferMaxEntries: 2,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [demand("run-head", "owner-head", 1)],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: "canonical_head_wait"
+      }),
+      countActionableProviderWork: async () => [{
+        runId: "run-head",
+        lane: "interactive",
+        count: 0
+      }],
+      setPoolTarget: vi.fn(),
+      wakePool: vi.fn()
+    });
+
+    expect(result.allocations[0]?.slots).toBe(1);
+    expect(result.claimAssignments).toHaveLength(0);
+    expect(result.runDecisions[0]?.blocker).toEqual({
+      scope: "run",
+      code: "canonical_head_wait"
+    });
+  });
+
+  it("retains an active-only run until its slot reaches the boundary", async () => {
+    const decisionStore = createUnifiedAdminRunDecisionStore();
+    const activePermit = {
+      runId: "run-active",
+      ownerId: "opaque-owner",
+      lane: "interactive" as const,
+      canonicalHeadPreferred: false
+    };
+    const common = {
+      nowMs: 2_000,
+      rampState: { target: 1, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "group-a",
+        state: "healthy" as const,
+        concurrencyLimit: 1,
+        inFlight: 1,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 1,
+        providerWorkerLimit: 1,
+        providerIncreaseStep: 1,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling" as const,
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 2,
+        readyBufferMaxEntries: 2,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [],
+      refill: vi.fn(async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      })),
+      setPoolTarget: vi.fn(),
+      wakePool: vi.fn(),
+      onDecision: (decision: {
+        runDecisions: Parameters<typeof decisionStore.replace>[0];
+      }) => decisionStore.replace(decision.runDecisions)
+    };
+
+    const active = await runUnifiedAdaptiveControllerCycle({
+      ...common,
+      providerSlots: [{
+        slotId: 0,
+        epoch: 1,
+        active: true,
+        activePermit
+      }]
+    });
+    expect(active.runDecisions).toEqual([{
+      runId: "run-active",
+      ownerId: "opaque-owner",
+      lane: "interactive",
+      fairShare: 0,
+      activeSlots: 1,
+      lastServedAt: null,
+      lookaheadTarget: 0,
+      blocker: null
+    }]);
+    expect(common.refill).not.toHaveBeenCalled();
+    expect(decisionStore.get("run-active")).toMatchObject({
+      ownerId: "opaque-owner",
+      activeSlots: 1,
+      fairShare: 0
+    });
+
+    const afterBoundary = await runUnifiedAdaptiveControllerCycle({
+      ...common,
+      providerSlots: [{
+        slotId: 0,
+        epoch: 2,
+        active: false,
+        activePermit: null
+      }]
+    });
+    expect(afterBoundary.runDecisions).toEqual([]);
+    expect(decisionStore.get("run-active")).toBeNull();
+  });
+
   it("classifies resource pressure independently from provider health", () => {
     expect(classifyUnifiedRuntimeResources(normalResources, thresholds))
       .toBe("normal");
@@ -341,23 +639,93 @@ describe("adaptive Unified runtime", () => {
     expect(setPoolTarget).toHaveBeenCalledWith(0);
   });
 
-  it("counts repair wait only from actual claimed chunks, not wakes or allocations", () => {
-    const tracker = createUnifiedRepairServiceTracker();
+  it("counts one repair violation per waiting episode only after the boundary", () => {
+    const onWaitViolation = vi.fn();
+    const tracker = createUnifiedRepairServiceTracker({
+      repairMaxWaitChunks: 2,
+      onWaitViolation
+    });
     tracker.updateRepairReady(true);
     tracker.recordWake();
     tracker.recordAllocation("repair");
     tracker.recordAllocation("interactive");
-    expect(tracker.snapshot().chunksSinceLastRepair).toBe(0);
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 0,
+      waitViolations: 0
+    });
 
     tracker.recordClaim("interactive");
     tracker.recordClaim("interactive");
-    expect(tracker.snapshot().chunksSinceLastRepair).toBe(2);
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 2,
+      waitViolations: 0
+    });
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 4,
+      waitViolations: 1
+    });
+    expect(onWaitViolation).toHaveBeenCalledOnce();
+    expect(onWaitViolation).toHaveBeenCalledWith(expect.objectContaining({
+      type: "repair_wait_violated"
+    }));
+
     tracker.recordClaim("repair");
-    expect(tracker.snapshot().chunksSinceLastRepair).toBe(0);
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 3,
+      waitViolations: 2
+    });
+    expect(onWaitViolation).toHaveBeenCalledTimes(2);
 
     tracker.updateRepairReady(false);
     tracker.recordClaim("interactive");
-    expect(tracker.snapshot().chunksSinceLastRepair).toBe(0);
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 0,
+      waitViolations: 2
+    });
+    tracker.updateRepairReady(true);
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 3,
+      waitViolations: 3
+    });
+  });
+
+  it("does not report a violation when repair is claimed at the wait boundary", () => {
+    const onWaitViolation = vi.fn();
+    const tracker = createUnifiedRepairServiceTracker({
+      repairMaxWaitChunks: 2,
+      onWaitViolation
+    });
+    tracker.updateRepairReady(true);
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("interactive");
+    tracker.recordClaim("repair");
+
+    expect(tracker.snapshot()).toMatchObject({
+      chunksSinceLastRepair: 0,
+      waitViolations: 0
+    });
+    expect(onWaitViolation).not.toHaveBeenCalled();
+  });
+
+  it("keeps a repair claim successful when the anomaly event sink throws", () => {
+    const tracker = createUnifiedRepairServiceTracker({
+      repairMaxWaitChunks: 0,
+      onWaitViolation() {
+        throw new Error("event sink unavailable");
+      }
+    });
+    tracker.updateRepairReady(true);
+
+    expect(() => tracker.recordClaim("interactive")).not.toThrow();
+    expect(tracker.snapshot().waitViolations).toBe(1);
   });
 
   it("samples actual DB operation latency separately from controller wall time", () => {
@@ -366,5 +734,67 @@ describe("adaptive Unified runtime", () => {
     sampler.record(20);
     expect(sampler.sampleAndReset()).toBe(20);
     expect(sampler.sampleAndReset()).toBe(0);
+  });
+
+  it("returns the decision-time limiting reason and ignores a throwing observer", async () => {
+    const setPoolTarget = vi.fn();
+    const result = await runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 1, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "a",
+        state: "healthy",
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 1,
+        providerWorkerLimit: 1,
+        providerIncreaseStep: 1,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling",
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 2,
+        readyBufferMaxEntries: 2,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [demand("run-idle", "owner-idle", 0)],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      setPoolTarget,
+      wakePool: vi.fn(),
+      onDecision() {
+        throw new Error("metrics exporter unavailable");
+      }
+    });
+
+    expect(result.limitingReason).toEqual({
+      scope: "pool",
+      code: "no_eligible_work"
+    });
+    expect(result.actualActiveProviderSlots).toBe(0);
+    expect(result.runDecisions).toEqual([expect.objectContaining({
+      runId: "run-idle",
+      fairShare: 0,
+      blocker: {
+        scope: "run",
+        code: "no_eligible_work"
+      }
+    })]);
+    expect(setPoolTarget).toHaveBeenCalledWith(0);
   });
 });

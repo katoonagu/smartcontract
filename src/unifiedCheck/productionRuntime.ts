@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type { IndexedTronUsdtTransfer } from "../types";
 import type { AnalysisManifestV1 } from "./contracts";
@@ -66,6 +67,12 @@ import {
   type UnifiedProviderClaimPermit,
   type UnifiedProviderChunkBudget
 } from "./worker";
+import {
+  type UnifiedAdaptiveEvent
+} from "./adaptiveObservability";
+import type {
+  UnifiedProviderSlotIdentity
+} from "./providerPool";
 
 type LoadedRun = {
   readonly id: string;
@@ -276,11 +283,13 @@ export function createUnifiedProductionRuntime(input: {
   commitMaxBytes?: number;
   onProviderWorkAvailable?(): void;
   onCheckpointLatencyMs?(latencyMs: number): void;
+  onAdaptiveEvent?(event: UnifiedAdaptiveEvent): void;
   requireProviderClaimPermit?: boolean;
   loadProviderPage(input: {
     run: LoadedRun;
     address?: string;
     cursor: string | null;
+    providerSlot: UnifiedProviderSlotIdentity | null;
     onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
   loadCounterpartyLabels(input: {
@@ -318,6 +327,8 @@ export function createUnifiedProductionRuntime(input: {
     maxResponseBytes: Number.MAX_SAFE_INTEGER,
     maxCheckpointBytes: Number.MAX_SAFE_INTEGER
   };
+  const providerSlotContext =
+    new AsyncLocalStorage<UnifiedProviderSlotIdentity>();
   for (const [value, code] of [
     [manifestMaxBytes, "unified_production_manifest_max_bytes_invalid"],
     [commitMaxEntries, "unified_production_commit_max_entries_invalid"],
@@ -397,6 +408,7 @@ export function createUnifiedProductionRuntime(input: {
         run,
         address: run.subjectAddress,
         cursor,
+        providerSlot: providerSlotContext.getStore() ?? null,
         onDiagnostic
       })
     ),
@@ -437,6 +449,7 @@ export function createUnifiedProductionRuntime(input: {
         },
         address,
         cursor,
+        providerSlot: providerSlotContext.getStore() ?? null,
         onDiagnostic
       })
     ),
@@ -647,38 +660,46 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   return {
-    runProviderCycle: (
+    runProviderCycle(
       slotId = 0,
-      claimPermit?: UnifiedProviderClaimPermit
-    ) => input.requireProviderClaimPermit === true && !claimPermit
-      ? Promise.resolve({
+      claimPermit?: UnifiedProviderClaimPermit,
+      providerSlot?: UnifiedProviderSlotIdentity
+    ) {
+      if (input.requireProviderClaimPermit === true && !claimPermit) {
+        return Promise.resolve({
           claimed: false as const,
           taskId: null,
           outcome: "idle" as const
-        })
-      : runUnifiedTaskCycle({
-      workerId: `unified-provider-${slotId}`,
-      now,
-      leaseMs,
-      repository: createPostgresUnifiedTaskCycleRepository(
-        input.db,
-        ["direct_history", "address_history", "deep_direct"],
-        input.runtimeCommit,
-        input.providerConfigurationSha256,
-        input.runPurpose,
-        {
-          manifestMaxBytes,
-          onCheckpointLatencyMs: input.onCheckpointLatencyMs
-        }
-      ),
-      handlers: {
-        direct_history: directHistory,
-        address_history: addressHistory,
-        deep_direct: directEvidence
-      },
-      claimPermit,
-      createId
-    }),
+        });
+      }
+      const runCycle = () => runUnifiedTaskCycle({
+        workerId: `unified-provider-${slotId}`,
+        now,
+        leaseMs,
+        repository: createPostgresUnifiedTaskCycleRepository(
+          input.db,
+          ["direct_history", "address_history", "deep_direct"],
+          input.runtimeCommit,
+          input.providerConfigurationSha256,
+          input.runPurpose,
+          {
+            manifestMaxBytes,
+            onCheckpointLatencyMs: input.onCheckpointLatencyMs,
+            onAdaptiveEvent: input.onAdaptiveEvent
+          }
+        ),
+        handlers: {
+          direct_history: directHistory,
+          address_history: addressHistory,
+          deep_direct: directEvidence
+        },
+        claimPermit,
+        createId
+      });
+      return providerSlot
+        ? providerSlotContext.run(providerSlot, runCycle)
+        : runCycle();
+    },
     runAnalysisCycle: () => runUnifiedTaskCycle({
       workerId: "unified-analysis",
       now,
@@ -691,7 +712,8 @@ export function createUnifiedProductionRuntime(input: {
         input.runPurpose,
         {
           manifestMaxBytes,
-          onCheckpointLatencyMs: input.onCheckpointLatencyMs
+          onCheckpointLatencyMs: input.onCheckpointLatencyMs,
+          onAdaptiveEvent: input.onAdaptiveEvent
         }
       ),
       handlers: { traversal, ...branches },

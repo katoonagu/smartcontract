@@ -11,6 +11,9 @@ import {
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository";
+import {
+  createPostgresUnifiedTaskCycleRepository
+} from "../../src/unifiedCheck/productionWorker";
 
 describe("Unified ordered checkpoint commit", () => {
   it("commits, appends parent-ordered discoveries and admits the next head in one transaction", async () => {
@@ -162,7 +165,20 @@ describe("Unified ordered checkpoint commit", () => {
       }
     };
 
-    await expect(checkpointUnifiedTask(db, {
+    const repository = createPostgresUnifiedTaskCycleRepository(
+      db,
+      ["traversal"],
+      "candidate",
+      "e".repeat(64),
+      undefined,
+      {
+        manifestMaxBytes: 1_048_576,
+        onCheckpointLatencyMs() {
+          throw new Error("ordered commit observer unavailable");
+        }
+      }
+    );
+    await expect(repository.checkpoint({
       taskId: "task-traversal",
       leaseToken: "lease-1",
       attempt: 2,
@@ -170,7 +186,6 @@ describe("Unified ordered checkpoint commit", () => {
         version: "unified-production-traversal-checkpoint-v2",
         deltaHeadSha256: nextHead
       },
-      barrierReservedBytes: 1_048_576,
       orderedCommit: {
         runId: "run-1",
         expectedDeltaHeadSha256: priorHead,
@@ -195,9 +210,9 @@ describe("Unified ordered checkpoint commit", () => {
           }
         }]
       }
-    })).resolves.toMatchObject({
-      status: "QUEUED",
-      next_head_newly_admitted: true
+    })).resolves.toEqual({
+      checkpointed: true,
+      providerWorkAvailable: true
     });
 
     expect(transactions).toBe(1);

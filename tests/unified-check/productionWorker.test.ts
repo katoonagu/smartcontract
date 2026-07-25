@@ -100,4 +100,45 @@ describe("Unified production worker adapter", () => {
       String(sql).includes("with candidate as")
     )).toHaveLength(1);
   });
+
+  it("does not let a throwing checkpoint observer change durable success", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("update unified_check_tasks")) {
+        return {
+          rows: [{
+            id: "task-1",
+            status: "QUEUED",
+            next_head_newly_admitted: false
+          }]
+        };
+      }
+      throw new Error(`unexpected_sql:${sql}`);
+    });
+    const db = {
+      query,
+      transaction: (work) => work({ query })
+    } as UnifiedTransactionalQueryable;
+    const repository = createPostgresUnifiedTaskCycleRepository(
+      db,
+      ["direct_history"],
+      "candidate",
+      "e".repeat(64),
+      undefined,
+      {
+        onCheckpointLatencyMs() {
+          throw new Error("snapshot exporter unavailable");
+        }
+      }
+    );
+
+    await expect(repository.checkpoint({
+      taskId: "task-1",
+      leaseToken: "lease-1",
+      attempt: 1,
+      checkpoint: { cursor: "50" }
+    })).resolves.toEqual({
+      checkpointed: true,
+      providerWorkAvailable: false
+    });
+  });
 });

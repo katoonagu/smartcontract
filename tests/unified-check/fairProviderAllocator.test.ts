@@ -119,10 +119,10 @@ describe("Unified fair provider allocator", () => {
 
     expect(slotCounts(allocations)).toEqual({ ready: 4 });
     expect(Object.fromEntries(allocations.map((allocation) => [allocation.runId, allocation.reason]))).toEqual({
-      none: "no_ready_work",
+      none: "no_eligible_work",
       buffer: "merge_buffer_full",
-      provider: "provider_unavailable",
-      guard: "resource_guard",
+      provider: "provider_cooldown",
+      guard: "class_capacity_limit",
       ready: "allocated"
     });
   });
@@ -280,7 +280,7 @@ describe("Unified fair provider allocator", () => {
   });
 
   it("uses background only after interactive and required repair cannot fill capacity", () => {
-    expect(slotCounts(allocateProviderSlots({
+    const allocations = allocateProviderSlots({
       capacity: 5,
       runs: [
         readyRun("interactive", "owner-i", 1),
@@ -288,6 +288,39 @@ describe("Unified fair provider allocator", () => {
         readyRun("background", "owner-b", 5, { lane: "background" })
       ],
       repair: { ...noRepair(), repairShare: 0.2 }
-    }))).toEqual({ interactive: 1, repair: 1, background: 3 });
+    });
+    expect(slotCounts(allocations)).toEqual({
+      interactive: 1,
+      repair: 1,
+      background: 3
+    });
+  });
+
+  it("uses the stable background-preempted reason at the run decision boundary", () => {
+    const allocations = allocateProviderSlots({
+      capacity: 1,
+      runs: [
+        readyRun("interactive", "owner-i", 1),
+        readyRun("background", "owner-b", 1, { lane: "background" })
+      ],
+      repair: noRepair()
+    });
+
+    expect(allocations.find((allocation) =>
+      allocation.runId === "background"
+    )?.reason).toBe("background_preempted");
+  });
+
+  it("retains the scheduler pacing reason at the allocation boundary", () => {
+    const [allocation] = allocateProviderSlots({
+      capacity: 1,
+      runs: [readyRun("paced", "owner", 1, {
+        providerAvailable: false,
+        providerBlocker: "provider_rate_paced"
+      })],
+      repair: noRepair()
+    });
+
+    expect(allocation?.reason).toBe("provider_rate_paced");
   });
 });

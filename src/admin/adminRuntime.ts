@@ -11,6 +11,12 @@ import type {
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer } from "../types";
 import type { RuntimeNavigationProbeV1, RuntimeProofV1 } from "../runtime/runtimeLiveProof";
+import type {
+  UnifiedAdminRunSnapshot
+} from "../unifiedCheck/adminRunSnapshot";
+import type {
+  UnifiedAdaptiveAggregateSnapshot
+} from "../unifiedCheck/adaptiveObservability";
 
 export type AdminRuntimeDeps = {
   config: Pick<AppConfig, "adminDashboardEnabled" | "adminDashboardHost" | "adminDashboardPort" | "adminDashboardToken">;
@@ -32,6 +38,10 @@ export type AdminRuntimeDeps = {
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
   getRuntimeProof?(): RuntimeProofV1;
   runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
+  getUnifiedRunSnapshot?(
+    runId: string
+  ): Promise<UnifiedAdminRunSnapshot | null>;
+  getUnifiedAdaptiveSnapshot?(): UnifiedAdaptiveAggregateSnapshot | null;
 };
 
 export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<RunningAdminServer | null> {
@@ -54,6 +64,8 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
     listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
     findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses,
     getRuntimeProof: deps.getRuntimeProof,
-    runRuntimeNavigationProbe: deps.runRuntimeNavigationProbe
+    runRuntimeNavigationProbe: deps.runRuntimeNavigationProbe,
+    getUnifiedRunSnapshot: deps.getUnifiedRunSnapshot,
+    getUnifiedAdaptiveSnapshot: deps.getUnifiedAdaptiveSnapshot
   });
 }

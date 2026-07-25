@@ -1,12 +1,12 @@
+import type {
+  UnifiedReasonCode
+} from "./adaptiveObservability";
+
 export type ProviderWorkLane = "interactive" | "repair" | "background";
 
 export type AllocationReason =
   | "allocated"
-  | "fairness_wait"
-  | "no_ready_work"
-  | "merge_buffer_full"
-  | "provider_unavailable"
-  | "resource_guard";
+  | UnifiedReasonCode;
 
 export interface ProviderRunDemand {
   runId: string;
@@ -17,7 +17,16 @@ export interface ProviderRunDemand {
   lastServedAtMs: number;
   mergeBufferFull: boolean;
   providerAvailable: boolean;
+  providerPaced?: boolean;
   resourceGuarded: boolean;
+  providerBlocker?: Extract<
+    UnifiedReasonCode,
+    "provider_rate_paced" | "provider_cooldown" | "provider_circuit_open"
+  >;
+  resourceGuardReason?: Extract<
+    UnifiedReasonCode,
+    "db_pressure" | "memory_pressure" | "class_capacity_limit"
+  >;
   canonicalHeadEligible: boolean;
 }
 
@@ -59,10 +68,12 @@ type AllocationState = {
 };
 
 function initialReason(run: ProviderRunDemand): AllocationReason | null {
-  if (run.eligibleReadyWork <= 0) return "no_ready_work";
+  if (run.eligibleReadyWork <= 0) return "no_eligible_work";
   if (run.mergeBufferFull && !run.canonicalHeadEligible) return "merge_buffer_full";
-  if (!run.providerAvailable) return "provider_unavailable";
-  if (run.resourceGuarded) return "resource_guard";
+  if (!run.providerAvailable) return run.providerBlocker ?? "provider_cooldown";
+  if (run.resourceGuarded) {
+    return run.resourceGuardReason ?? "class_capacity_limit";
+  }
   return null;
 }
 
@@ -197,6 +208,9 @@ export function allocateProviderSlots(input: {
     canonicalHeadPreferred: state.slots > 0 && state.run.canonicalHeadEligible,
     reason: state.slots > 0
       ? "allocated"
-      : blockedReasons.get(allocationIdentity(state.run)) ?? "fairness_wait"
+      : blockedReasons.get(allocationIdentity(state.run)) ??
+        (state.run.lane === "background"
+          ? "background_preempted"
+          : "fairness_wait")
   }));
 }

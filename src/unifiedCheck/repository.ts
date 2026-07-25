@@ -35,6 +35,11 @@ import {
   type UnifiedProgressPhaseV1,
   type UnifiedProgressProjectionV1
 } from "./progressProjection";
+import {
+  projectUnifiedAdminRunSnapshot,
+  type UnifiedAdminRunDecision,
+  type UnifiedAdminRunSnapshot
+} from "./adminRunSnapshot";
 import type {
   UnifiedAcceptedArtifact,
   UnifiedOrderedCommitExpectation
@@ -46,6 +51,11 @@ import {
 import {
   markUnifiedPlannerResultReady
 } from "./planner";
+import {
+  createUnifiedAdaptiveEvent,
+  emitBestEffort,
+  type UnifiedAdaptiveEvent
+} from "./adaptiveObservability";
 
 export type { UnifiedOrderedCommitExpectation } from "./worker";
 
@@ -302,6 +312,167 @@ export async function loadUnifiedProgressProjection(
       replayAvoided: avoided
     }
   });
+}
+
+function adminTimestamp(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const date = new Date(String(value));
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error("unified_admin_snapshot_timestamp_invalid");
+  }
+  return date.toISOString();
+}
+
+export async function loadUnifiedAdminRunSnapshot(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly now: Date;
+    readonly decision: UnifiedAdminRunDecision | null;
+  }
+): Promise<UnifiedAdminRunSnapshot | null> {
+  if (!input.runId.trim()) {
+    throw new TypeError("unified_admin_snapshot_run_id_invalid");
+  }
+  if (!Number.isFinite(input.now.getTime())) {
+    throw new TypeError("unified_admin_snapshot_clock_invalid");
+  }
+  const row = (
+    await db.query(
+      `with selected_run as (
+         select id, fairness_owner_id, created_at
+           from unified_check_runs
+          where id = $1
+       ),
+       planner_rollup as (
+         select
+           count(*) filter (
+             where entry.planner_state = 'planned'
+               and entry.admitted_at is null
+           )::bigint as durable_backlog,
+           count(*) filter (
+             where entry.planner_state = 'planned'
+               and entry.admitted_at is not null
+           )::bigint as admitted,
+           count(*) filter (
+             where task.status = 'LEASED'
+           )::bigint as leased,
+           count(*) filter (
+             where entry.planner_state = 'ready'
+           )::bigint as ready,
+           count(*) filter (
+             where entry.planner_state = 'committed'
+           )::bigint as committed,
+           coalesce(sum(entry.result_bytes) filter (
+             where entry.planner_state = 'ready'
+           ), 0)::bigint as ready_bytes,
+           coalesce(sum(entry.reserved_bytes) filter (
+             where entry.planner_state = 'planned'
+           ), 0)::bigint as reserved_bytes,
+           max(entry.committed_at) as last_commit_at
+         from unified_check_planner_entries entry
+         left join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+        where entry.run_id = $1
+       ),
+       task_rollup as (
+         select
+           coalesce(sum(coalesce(
+             (checkpoint_json->'performanceCounters'->>'logicalChunks')::bigint,
+             0
+           )), 0)::bigint as completed_chunks,
+           min(case priority_lane
+             when 'interactive' then 1
+             when 'repair' then 2
+             else 3
+           end) as lane_order
+         from unified_check_tasks
+        where run_id = $1
+       ),
+       canonical_head as (
+         select entry.task_id, task.status as task_state,
+                task.priority_lane,
+                greatest(0, floor(extract(epoch from (
+                  $2::timestamptz - coalesce(
+                    entry.ready_at,
+                    entry.admitted_at,
+                    entry.planned_at
+                  )
+                )) * 1000))::bigint as age_ms
+           from unified_check_planner_entries entry
+           join unified_check_tasks task
+             on task.run_id = entry.run_id and task.id = entry.task_id
+          where entry.run_id = $1
+            and entry.planner_state <> 'committed'
+          order by entry.canonical_sequence
+          limit 1
+       )
+       select run.fairness_owner_id, run.created_at,
+              case coalesce(
+                case head.priority_lane
+                  when 'interactive' then 1
+                  when 'repair' then 2
+                  when 'background' then 3
+                end,
+                tasks.lane_order,
+                1
+              )
+                when 2 then 'repair'
+                when 3 then 'background'
+                else 'interactive'
+              end as lane,
+              planner.durable_backlog, planner.admitted,
+              planner.leased, planner.ready, planner.committed,
+              planner.ready as ready_count,
+              planner.ready_bytes, planner.reserved_bytes,
+              planner.last_commit_at,
+              head.task_id as head_task_id,
+              head.task_state as head_state,
+              head.age_ms as head_age_ms,
+              tasks.completed_chunks
+         from selected_run run
+         cross join planner_rollup planner
+         cross join task_rollup tasks
+         left join canonical_head head on true`,
+      [input.runId, input.now.toISOString()]
+    )
+  ).rows[0];
+  if (!row) return null;
+  const lane = String(row.lane);
+  if (!["interactive", "repair", "background"].includes(lane)) {
+    throw new Error("unified_admin_snapshot_lane_invalid");
+  }
+  const createdAt = adminTimestamp(row.created_at);
+  if (createdAt === null) {
+    throw new Error("unified_admin_snapshot_created_at_missing");
+  }
+  return projectUnifiedAdminRunSnapshot({
+    ownerId: String(row.fairness_owner_id),
+    lane: lane as "interactive" | "repair" | "background",
+    planner: {
+      durableBacklog: progressNumber(row.durable_backlog),
+      admitted: progressNumber(row.admitted),
+      leased: progressNumber(row.leased),
+      ready: progressNumber(row.ready),
+      committed: progressNumber(row.committed)
+    },
+    canonicalHead: row.head_task_id === null ||
+      row.head_task_id === undefined
+      ? null
+      : {
+          taskId: String(row.head_task_id),
+          state: String(row.head_state),
+          ageMs: progressNumber(row.head_age_ms)
+        },
+    buffer: {
+      readyCount: progressNumber(row.ready_count),
+      readyBytes: progressNumber(row.ready_bytes),
+      reservedBytes: progressNumber(row.reserved_bytes)
+    },
+    lastCommitAt: adminTimestamp(row.last_commit_at),
+    createdAt,
+    completedChunks: progressNumber(row.completed_chunks)
+  }, input.decision, input.now);
 }
 
 export function createUnifiedPoolTransactionHost(pool: UnifiedQueryable & {
@@ -1946,9 +2117,12 @@ export async function completeUnifiedTaskAttempt(
     artifactSha256: string;
     acceptedArtifact?: UnifiedAcceptedArtifact;
     manifestMaxBytes?: number;
+    onAdaptiveEvent?: (event: UnifiedAdaptiveEvent) => void;
   }
 ) {
-  return db.transaction(async (client) => {
+  let hardLimitError: Error | null = null;
+  try {
+    const outcome = await db.transaction(async (client) => {
     const discoveredTask = (
       await client.query(
         "select run_id from unified_check_tasks where id = $1",
@@ -2067,7 +2241,10 @@ export async function completeUnifiedTaskAttempt(
         canary_deadline_reached: _canaryDeadlineReached,
         ...completedTask
       } = task;
-      return completedTask;
+      return {
+        value: completedTask,
+        eventType: "idempotent_acceptance_replayed" as const
+      };
     }
 
     if (
@@ -2137,7 +2314,7 @@ export async function completeUnifiedTaskAttempt(
             and attempt = $3`,
         [input.taskId, input.leaseToken, input.attempt]
       );
-      return null;
+      return { value: null, eventType: null };
     }
 
     let resultBytes: number | null = null;
@@ -2164,7 +2341,8 @@ export async function completeUnifiedTaskAttempt(
         planner &&
         prepared.bytes > orderedManifestMaxBytes(input.manifestMaxBytes)
       ) {
-        throw new Error("unified_ordered_manifest_hard_limit");
+        hardLimitError = new Error("unified_ordered_manifest_hard_limit");
+        throw hardLimitError;
       }
       await insertUnifiedArtifact(client, {
         sha256: input.artifactSha256,
@@ -2267,8 +2445,30 @@ export async function completeUnifiedTaskAttempt(
         throw new Error("unified_ordered_planner_transition_conflict");
       }
     }
-    return completed;
-  });
+      return { value: completed, eventType: null };
+    });
+    if (outcome.eventType !== null) {
+      emitBestEffort(
+        input.onAdaptiveEvent,
+        createUnifiedAdaptiveEvent({
+          type: outcome.eventType,
+          occurredAt: new Date().toISOString()
+        })
+      );
+    }
+    return outcome.value;
+  } catch (error) {
+    if (error === hardLimitError) {
+      emitBestEffort(
+        input.onAdaptiveEvent,
+        createUnifiedAdaptiveEvent({
+          type: "manifest_hard_limit_rejected",
+          occurredAt: new Date().toISOString()
+        })
+      );
+    }
+    throw error;
+  }
 }
 
 export async function settleUnifiedTaskLease(
