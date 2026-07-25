@@ -589,19 +589,26 @@ export async function admitBarrierHeadInTransaction(
   }
   if (
     head.planner_state !== "planned" ||
-    !["QUEUED", "WAITING_RETRY"].includes(String(head.task_status)) ||
     head.accepted_attempt_id !== null ||
     head.result_bytes !== null
   ) {
     throw new Error("unified_ordered_next_head_not_admissible");
   }
   if (head.admitted_at !== null) {
-    if (Number(head.reserved_bytes) !== reservedBytes) {
+    if (
+      !["QUEUED", "WAITING_RETRY", "LEASED"].includes(
+        String(head.task_status)
+      ) ||
+      Number(head.reserved_bytes) !== reservedBytes
+    ) {
       throw new Error("unified_ordered_next_head_not_admissible");
     }
     return { newlyAdmitted: false };
   }
-  if (head.reserved_bytes !== null) {
+  if (
+    !["QUEUED", "WAITING_RETRY"].includes(String(head.task_status)) ||
+    head.reserved_bytes !== null
+  ) {
     throw new Error("unified_ordered_next_head_not_admissible");
   }
   const admitted = await db.query(

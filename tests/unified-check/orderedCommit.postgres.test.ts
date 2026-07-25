@@ -731,6 +731,48 @@ postgresDescribe("Unified ordered commit", () => {
     });
   });
 
+  it("commits while rolling refill already leased the next admitted head", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await db.query(
+        `update unified_check_planner_entries
+            set admitted_at = statement_timestamp(), reserved_bytes = 1048576
+          where task_id = 'history-2'`
+      );
+      await db.query(
+        `update unified_check_tasks
+            set status = 'LEASED', lease_owner = 'provider-1',
+                lease_token = 'provider-lease',
+                lease_expires_at = statement_timestamp() + interval '1 minute',
+                heartbeat_at = statement_timestamp()
+          where id = 'history-2'`
+      );
+
+      const result = await checkpointUnifiedTask(host, commitInput(entry));
+
+      expect(result?.next_head_newly_admitted).toBe(false);
+      expect((await db.query(
+        `select entry.planner_state, entry.admitted_at is not null as admitted,
+                entry.reserved_bytes, task.status, task.lease_token
+           from unified_check_planner_entries entry
+           join unified_check_tasks task
+             on task.run_id = entry.run_id and task.id = entry.task_id
+          where entry.task_id = 'history-2'`
+      )).rows[0]).toMatchObject({
+        planner_state: "planned",
+        admitted: true,
+        reserved_bytes: "1048576",
+        status: "LEASED",
+        lease_token: "provider-lease"
+      });
+      expect((await db.query(
+        `select planner_state
+           from unified_check_planner_entries
+          where task_id = 'history-1'`
+      )).rows[0]?.planner_state).toBe("committed");
+    });
+  });
+
   it("rolls back when a ready next head retains a reservation", async () => {
     await withScenario(async ({ db, host }) => {
       const entry = await setupCommit(db);

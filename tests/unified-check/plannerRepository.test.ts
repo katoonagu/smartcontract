@@ -412,6 +412,36 @@ describe("Unified ordered head admission", () => {
     })).rejects.toThrow("unified_ordered_next_head_not_admissible");
   });
 
+  it("treats an already admitted leased head as actionable", async () => {
+    let mutated = false;
+    const db: UnifiedQueryable = {
+      async query(sql) {
+        if (sql.includes("for update of entry, task")) {
+          return {
+            rows: [{
+              canonical_sequence: 1,
+              planner_state: "planned",
+              admitted_at: new Date("2026-07-25T00:00:00.000Z"),
+              reserved_bytes: 1_048_576,
+              result_bytes: null,
+              task_id: "task-1",
+              task_status: "LEASED",
+              accepted_attempt_id: null
+            }]
+          };
+        }
+        mutated = true;
+        return { rows: [] };
+      }
+    };
+
+    await expect(admitBarrierHeadInTransaction(db, {
+      runId: "run-1",
+      reservedBytes: 1_048_576
+    })).resolves.toEqual({ newlyAdmitted: false });
+    expect(mutated).toBe(false);
+  });
+
   it("rejects an invalid next-task lifecycle before admission", async () => {
     let mutated = false;
     const db: UnifiedQueryable = {
