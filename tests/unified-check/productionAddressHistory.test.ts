@@ -94,6 +94,76 @@ function initialCheckpoint() {
 }
 
 describe("Unified production address history", () => {
+  it.each([
+    "work_units",
+    "wall_time",
+    "response_bytes",
+    "checkpoint_bytes"
+  ] as const)("checkpoints after the current provider operation reaches %s", async (limit) => {
+    const artifacts = new Map<string, unknown>();
+    const page = {
+      kind: "page" as const,
+      cursor: null,
+      nextCursor: "1",
+      transfers: [transfer("9".repeat(64), 80, 1_753_276_500_000)],
+      reachedAccountCreation: false,
+      provider: "tronscan" as const
+    };
+    const loaded = {
+      ...page,
+      pageHash: fingerprintCanonicalArtifact(page)
+    };
+    let clock = 0;
+    const loadPage = vi.fn(async () => {
+      if (limit === "wall_time") clock = 10;
+      return loaded;
+    });
+    const handler = createUnifiedAddressHistoryHandler({
+      chunkBudget: {
+        maxWorkUnits: limit === "work_units" ? 1 : 100,
+        maxWallMs: limit === "wall_time" ? 1 : 1_000_000,
+        maxResponseBytes: limit === "response_bytes" ? 1 : 1_000_000,
+        maxCheckpointBytes: limit === "checkpoint_bytes" ? 1 : 1_000_000
+      },
+      now: () => clock,
+      loadRun: async () => ({
+        id: "run-1",
+        analysisManifestSha256: fingerprintCanonicalArtifact(manifest),
+        analysisManifest: manifest
+      }),
+      loadPage,
+      loadPageArtifact: async ({ sha256 }) => artifacts.get(sha256) as never,
+      loadChunkArtifact: async ({ sha256 }) => artifacts.get(sha256) as never,
+      persistArtifact: async (input) => {
+        artifacts.set(input.sha256, input.artifact);
+      }
+    });
+
+    const result = await handler({
+      task: {
+        id: "task-address-history",
+        runId: "run-1",
+        kind: "address_history",
+        logicalKey: manifestKey,
+        attempt: 1,
+        checkpoint: initialCheckpoint(),
+        cancellationRequestedAt: null
+      },
+      leaseToken: "lease-1",
+      heartbeat: vi.fn(async () => undefined)
+    });
+
+    expect(loadPage).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      kind: "checkpoint",
+      checkpoint: {
+        version: "unified-address-history-checkpoint-v2",
+        pageCount: 1,
+        rawRowCount: 1
+      }
+    });
+  });
+
   it("completes several physical pages in one logical chunk", async () => {
     const artifacts = new Map<string, unknown>();
     const persisted: Array<{
@@ -314,6 +384,7 @@ describe("Unified production address history", () => {
     });
     expect(compact.chunkHeadSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(compact).not.toHaveProperty("pageArtifactHashes");
+    expect(compact.history).toMatchObject({ pageHashes: [] });
     expect(JSON.stringify(compact).length).toBeLessThan(1_000);
   });
 });

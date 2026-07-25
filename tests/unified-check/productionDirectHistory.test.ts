@@ -164,6 +164,9 @@ describe("Unified production direct history", () => {
       pageCount: 2
     });
     expect(first.checkpoint).not.toHaveProperty("pageArtifactHashes");
+    expect(first.checkpoint).toMatchObject({
+      history: { pageHashes: [] }
+    });
     expect(JSON.stringify(first.checkpoint).length).toBeLessThan(4_096);
     const second = await handler({
       task: {

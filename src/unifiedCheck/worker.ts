@@ -17,6 +17,50 @@ export type UnifiedAcceptedArtifact = {
   readonly value: unknown;
 };
 
+export interface UnifiedProviderChunkBudget {
+  readonly maxWorkUnits: number;
+  readonly maxWallMs: number;
+  readonly maxResponseBytes: number;
+  readonly maxCheckpointBytes: number;
+}
+
+export function shouldCheckpointUnifiedProviderChunk(
+  budget: UnifiedProviderChunkBudget,
+  progress: {
+    readonly workUnits: number;
+    readonly elapsedMs: number;
+    readonly responseBytes: number;
+    readonly checkpointBytes: number;
+  }
+): boolean {
+  for (const value of [
+    budget.maxWorkUnits,
+    budget.maxWallMs,
+    budget.maxResponseBytes,
+    budget.maxCheckpointBytes
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError("unified_provider_chunk_budget_invalid");
+    }
+  }
+  if (
+    !Number.isSafeInteger(progress.workUnits) ||
+    progress.workUnits < 0 ||
+    !Number.isFinite(progress.elapsedMs) ||
+    progress.elapsedMs < 0 ||
+    !Number.isSafeInteger(progress.responseBytes) ||
+    progress.responseBytes < 0 ||
+    !Number.isSafeInteger(progress.checkpointBytes) ||
+    progress.checkpointBytes < 0
+  ) {
+    throw new TypeError("unified_provider_chunk_progress_invalid");
+  }
+  return progress.workUnits >= budget.maxWorkUnits ||
+    progress.elapsedMs >= budget.maxWallMs ||
+    progress.responseBytes >= budget.maxResponseBytes ||
+    progress.checkpointBytes >= budget.maxCheckpointBytes;
+}
+
 export type UnifiedCompletedChunkOutcome = {
   readonly kind: "completed";
   readonly attemptId?: string;

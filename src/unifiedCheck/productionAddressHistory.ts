@@ -1,4 +1,7 @@
-import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
 import { canonicalTronUsdtEventKey } from "../forensics/tronAddressAllTimeIndex";
 import type { IndexedTronUsdtTransfer } from "../types";
 import {
@@ -15,7 +18,11 @@ import {
   type DirectHistoryPage,
   type DirectHistoryProviderWait
 } from "./directHistory";
-import type { UnifiedChunkHandler } from "./worker";
+import {
+  shouldCheckpointUnifiedProviderChunk,
+  type UnifiedChunkHandler,
+  type UnifiedProviderChunkBudget
+} from "./worker";
 
 const HASH = /^[0-9a-f]{64}$/u;
 
@@ -186,7 +193,9 @@ async function pageArtifactHashesFromChain(input: {
 }
 
 export function createUnifiedAddressHistoryHandler(input: {
-  maxPagesThisChunk: number;
+  maxPagesThisChunk?: number;
+  chunkBudget?: UnifiedProviderChunkBudget;
+  now?: () => number;
   loadRun(runId: string): Promise<LoadedRun>;
   loadPage(input: {
     run: LoadedRun;
@@ -215,13 +224,25 @@ export function createUnifiedAddressHistoryHandler(input: {
     artifact: unknown;
   }): Promise<void>;
 }): UnifiedChunkHandler {
-  if (
-    !Number.isSafeInteger(input.maxPagesThisChunk) ||
-    input.maxPagesThisChunk < 1
-  ) {
+  const chunkBudget = input.chunkBudget ?? {
+    maxWorkUnits: input.maxPagesThisChunk ?? 1,
+    maxWallMs: Number.MAX_SAFE_INTEGER,
+    maxResponseBytes: Number.MAX_SAFE_INTEGER,
+    maxCheckpointBytes: Number.MAX_SAFE_INTEGER
+  };
+  try {
+    shouldCheckpointUnifiedProviderChunk(chunkBudget, {
+      workUnits: 0,
+      elapsedMs: 0,
+      responseBytes: 0,
+      checkpointBytes: 0
+    });
+  } catch {
     throw new TypeError("unified_address_history_chunk_invalid");
   }
+  const now = input.now ?? Date.now;
   return async ({ task, heartbeat, leaseToken }) => {
+    const chunkStartedAt = now();
     if (task.kind !== "address_history") {
       return { kind: "blocked", reason: "unified_address_history_kind_invalid" };
     }
@@ -242,6 +263,8 @@ export function createUnifiedAddressHistoryHandler(input: {
     let completed = history.reachedAccountCreation;
     const chunkPageArtifactHashes: string[] = [];
     let chunkRawRowCount = 0;
+    let workUnits = 0;
+    let responseBytes = 0;
 
     const flushChunk = async () => {
       if (chunkPageArtifactHashes.length === 0) return;
@@ -273,11 +296,7 @@ export function createUnifiedAddressHistoryHandler(input: {
       chunkRawRowCount = 0;
     };
 
-    for (
-      let pageIndex = 0;
-      pageIndex < input.maxPagesThisChunk && !completed;
-      pageIndex += 1
-    ) {
+    while (!completed) {
       let loadedPage: DirectHistoryPage | null = null;
       const result = await runDirectHistoryChunk({
         address: state.identity.address,
@@ -321,6 +340,10 @@ export function createUnifiedAddressHistoryHandler(input: {
         };
       }
       const physicalPage = loadedPage as DirectHistoryPage;
+      responseBytes += Buffer.byteLength(
+        canonicalizeArtifactJson(physicalPage),
+        "utf8"
+      );
       const pageArtifact: UnifiedAddressHistoryPageArtifactV1 = {
         version: "unified-address-history-page-v1",
         schemaVersion: 1,
@@ -337,11 +360,39 @@ export function createUnifiedAddressHistoryHandler(input: {
         sha256: pageArtifactHash,
         artifact: pageArtifact
       });
-      history = result.checkpoint;
+      history = {
+        ...result.checkpoint,
+        // Page identities are already durable in the immutable chunk chain.
+        pageHashes: []
+      };
       chunkPageArtifactHashes.push(pageArtifactHash);
       chunkRawRowCount += physicalPage.transfers.length;
       completed = result.outcome === "complete";
+      workUnits += 1;
       await heartbeat();
+      const projectedCheckpoint: AddressHistoryCheckpointV2 = {
+        ...state,
+        history,
+        chunkHeadSha256: "0".repeat(64),
+        chunkCount: state.chunkCount + 1,
+        pageCount: state.pageCount + chunkPageArtifactHashes.length,
+        rawRowCount: state.rawRowCount + chunkRawRowCount
+      };
+      if (
+        !completed &&
+        shouldCheckpointUnifiedProviderChunk(chunkBudget, {
+          workUnits,
+          elapsedMs: Math.max(0, now() - chunkStartedAt),
+          responseBytes,
+          checkpointBytes: Buffer.byteLength(
+            canonicalizeArtifactJson(projectedCheckpoint),
+            "utf8"
+          )
+        })
+      ) {
+        await flushChunk();
+        return { kind: "checkpoint", checkpoint: state };
+      }
     }
 
     await flushChunk();

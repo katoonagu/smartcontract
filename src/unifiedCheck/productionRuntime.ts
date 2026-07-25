@@ -61,7 +61,10 @@ import {
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
 } from "./repository";
-import { runUnifiedTaskCycle } from "./worker";
+import {
+  runUnifiedTaskCycle,
+  type UnifiedProviderChunkBudget
+} from "./worker";
 
 type LoadedRun = {
   readonly id: string;
@@ -266,6 +269,7 @@ export function createUnifiedProductionRuntime(input: {
   createId?: () => string;
   leaseMs?: number;
   addressHistoryPagesPerChunk?: number;
+  providerChunkBudget?: UnifiedProviderChunkBudget;
   manifestMaxBytes?: number;
   commitMaxEntries?: number;
   commitMaxBytes?: number;
@@ -305,6 +309,12 @@ export function createUnifiedProductionRuntime(input: {
     DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES;
   const commitMaxEntries = input.commitMaxEntries ?? 32;
   const commitMaxBytes = input.commitMaxBytes ?? 8_388_608;
+  const providerChunkBudget = input.providerChunkBudget ?? {
+    maxWorkUnits: input.addressHistoryPagesPerChunk ?? 4,
+    maxWallMs: Number.MAX_SAFE_INTEGER,
+    maxResponseBytes: Number.MAX_SAFE_INTEGER,
+    maxCheckpointBytes: Number.MAX_SAFE_INTEGER
+  };
   for (const [value, code] of [
     [manifestMaxBytes, "unified_production_manifest_max_bytes_invalid"],
     [commitMaxEntries, "unified_production_commit_max_entries_invalid"],
@@ -368,7 +378,7 @@ export function createUnifiedProductionRuntime(input: {
     });
   };
   const directHistory = createUnifiedDirectHistoryHandler({
-    maxPagesThisChunk: input.addressHistoryPagesPerChunk ?? 4,
+    chunkBudget: providerChunkBudget,
     loadRun: (runId) => loadRun(input.db, runId),
     loadPage: ({
       run,
@@ -404,7 +414,7 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   const addressHistory = createUnifiedAddressHistoryHandler({
-    maxPagesThisChunk: input.addressHistoryPagesPerChunk ?? 4,
+    chunkBudget: providerChunkBudget,
     loadRun: (runId) => loadRun(input.db, runId),
     loadPage: ({
       run,

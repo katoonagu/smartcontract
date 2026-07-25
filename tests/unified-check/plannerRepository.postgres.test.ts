@@ -64,8 +64,9 @@ postgresDescribe("Unified ordered planner repository", () => {
         `insert into unified_check_runs (
           id, analysis_key_sha256, subject_address, status, run_purpose,
           side_effect_policy, analysis_manifest_sha256, fairness_owner_id
-        ) values ('run-1','analysis-1','TSubject','RUNNING','synthetic_test',
-          'isolated','manifest-1','run-1')`
+        ) values ('run-1',$1,'TSubject','RUNNING','synthetic_test',
+          'isolated',$2,'run-1')`,
+        ["a".repeat(64), "b".repeat(64)]
       );
 
       const first = await planUnifiedOrderedTasks(transactionHost(), {
@@ -146,8 +147,12 @@ postgresDescribe("Unified ordered planner repository", () => {
       })).resolves.toBe(true);
       await expect(admitBarrierHead(transactionHost(), {
         runId: "run-1",
-        reservedBytes: 200
+        reservedBytes: 100
       })).resolves.toBe(false);
+      await expect(admitBarrierHead(transactionHost(), {
+        runId: "run-1",
+        reservedBytes: 200
+      })).rejects.toThrow("unified_ordered_next_head_not_admissible");
       await admin.query(
         `update unified_check_planner_entries
             set admitted_at = statement_timestamp(), reserved_bytes = 50
@@ -190,8 +195,9 @@ postgresDescribe("Unified ordered planner repository", () => {
         `insert into unified_check_runs (
           id, analysis_key_sha256, subject_address, status, run_purpose,
           side_effect_policy, analysis_manifest_sha256, fairness_owner_id
-        ) values ('run-2','analysis-2','TOther','RUNNING','synthetic_test',
-          'isolated','manifest-2','run-2')`
+        ) values ('run-2',$1,'TOther','RUNNING','synthetic_test',
+          'isolated',$2,'run-2')`,
+        ["c".repeat(64), "d".repeat(64)]
       );
       await admin.query(
         `insert into unified_check_tasks (

@@ -469,6 +469,12 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
   runtimeCommit: runtimeVersion.gitCommitSha,
   providerConfigurationSha256: unifiedProviderConfiguration.sha256,
+  providerChunkBudget: {
+    maxWorkUnits: config.unifiedChunkMaxPages,
+    maxWallMs: config.unifiedChunkMaxWallMs,
+    maxResponseBytes: config.unifiedChunkMaxResponseBytes,
+    maxCheckpointBytes: config.unifiedChunkMaxCheckpointBytes
+  },
   now: () => new Date(),
   createId: randomUUID,
   onProviderWorkAvailable: () => wakeUnifiedProviderPool(),
@@ -763,8 +769,15 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     }
   }
 });
+// ponytail: preserve the barrier rollout's current live target until the
+// adaptive controller owns setTargetSlots in the next Plan 2 batch.
+const initialUnifiedProviderSlots = Math.min(
+  4,
+  config.unifiedProviderConcurrencyLimit,
+  Math.max(1, config.tronscanApiKeys.length)
+);
 const unifiedProviderPool = createUnifiedProviderPool({
-  slots: Math.min(4, Math.max(1, config.tronscanApiKeys.length)),
+  configuredLimit: config.unifiedProviderConcurrencyLimit,
   runCycle: (slotId) =>
     unifiedProductionRuntime.runProviderCycle(slotId),
   onError(error, slotId) {
@@ -774,6 +787,7 @@ const unifiedProviderPool = createUnifiedProviderPool({
     });
   }
 });
+unifiedProviderPool.setTargetSlots(initialUnifiedProviderSlots);
 wakeUnifiedProviderPool = () => unifiedProviderPool.wake();
 const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
@@ -869,7 +883,7 @@ const adminDashboard = await maybeStartAdminDashboard({
       return loadUnifiedProgressProjection(db, {
         runId,
         now,
-        configuredSlots: pool.slots,
+        configuredSlots: pool.targetSlots,
         keyGroups: [...groupIds].map((id) => {
           const inFlight = scheduler.inFlightByAccountGroup[id] ?? 0;
           const coolingDown =

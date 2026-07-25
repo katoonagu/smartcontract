@@ -1,4 +1,7 @@
-import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
 import { canonicalTronUsdtEventKey } from "../forensics/tronAddressAllTimeIndex";
 import type { IndexedTronUsdtTransfer } from "../types";
 import type { AnalysisManifestV1 } from "./contracts";
@@ -9,7 +12,11 @@ import {
   type DirectHistoryPage,
   type DirectHistoryProviderWait
 } from "./directHistory";
-import type { UnifiedChunkHandler } from "./worker";
+import {
+  shouldCheckpointUnifiedProviderChunk,
+  type UnifiedChunkHandler,
+  type UnifiedProviderChunkBudget
+} from "./worker";
 
 const HASH = /^[0-9a-f]{64}$/u;
 
@@ -233,6 +240,8 @@ async function pageHashesFromChunks(input: {
 
 export function createUnifiedDirectHistoryHandler(input: {
   maxPagesThisChunk?: number;
+  chunkBudget?: UnifiedProviderChunkBudget;
+  now?: () => number;
   loadRun(runId: string): Promise<LoadedRun>;
   loadPage(input: {
     run: LoadedRun;
@@ -263,14 +272,25 @@ export function createUnifiedDirectHistoryHandler(input: {
       | UnifiedDirectHistoryArtifactV1;
   }): Promise<void>;
 }): UnifiedChunkHandler {
-  const maxPagesThisChunk = input.maxPagesThisChunk ?? 1;
-  if (
-    !Number.isSafeInteger(maxPagesThisChunk) ||
-    maxPagesThisChunk < 1
-  ) {
+  const chunkBudget = input.chunkBudget ?? {
+    maxWorkUnits: input.maxPagesThisChunk ?? 1,
+    maxWallMs: Number.MAX_SAFE_INTEGER,
+    maxResponseBytes: Number.MAX_SAFE_INTEGER,
+    maxCheckpointBytes: Number.MAX_SAFE_INTEGER
+  };
+  try {
+    shouldCheckpointUnifiedProviderChunk(chunkBudget, {
+      workUnits: 0,
+      elapsedMs: 0,
+      responseBytes: 0,
+      checkpointBytes: 0
+    });
+  } catch {
     throw new TypeError("unified_direct_history_chunk_invalid");
   }
+  const now = input.now ?? Date.now;
   return async ({ task, heartbeat, leaseToken }) => {
+    const chunkStartedAt = now();
     if (task.kind !== "direct_history") {
       return { kind: "blocked", reason: "unified_direct_history_kind_invalid" };
     }
@@ -291,6 +311,8 @@ export function createUnifiedDirectHistoryHandler(input: {
     const chunkPageArtifactHashes = [
       ...parsed.legacyPageArtifactHashes
     ];
+    let workUnits = 0;
+    let responseBytes = 0;
 
     const flushChunk = async () => {
       if (chunkPageArtifactHashes.length === 0) return;
@@ -318,11 +340,7 @@ export function createUnifiedDirectHistoryHandler(input: {
       chunkPageArtifactHashes.length = 0;
     };
 
-    for (
-      let pageIndex = 0;
-      pageIndex < maxPagesThisChunk && !completed;
-      pageIndex += 1
-    ) {
+    while (!completed) {
       let loadedPage: DirectHistoryPage | null = null;
       const result = await runDirectHistoryChunk({
         address: run.subjectAddress,
@@ -380,6 +398,10 @@ export function createUnifiedDirectHistoryHandler(input: {
             blockTimestamp: event.blockTimestamp.toISOString()
           }))
       };
+      responseBytes += Buffer.byteLength(
+        canonicalizeArtifactJson(loadedPage),
+        "utf8"
+      );
       const pageArtifactHash = fingerprintCanonicalArtifact(pageArtifact);
       await input.persistArtifact({
         runId: run.id,
@@ -388,9 +410,36 @@ export function createUnifiedDirectHistoryHandler(input: {
         artifact: pageArtifact
       });
       chunkPageArtifactHashes.push(pageArtifactHash);
-      history = result.checkpoint;
+      history = {
+        ...result.checkpoint,
+        // Page identities are already durable in the immutable chunk chain.
+        pageHashes: []
+      };
       completed = result.outcome === "complete";
+      workUnits += 1;
       await heartbeat();
+      const projectedCheckpoint: RuntimeCheckpointV2 = {
+        ...state,
+        history,
+        chunkHeadSha256: "0".repeat(64),
+        chunkCount: state.chunkCount + 1,
+        pageCount: state.pageCount + chunkPageArtifactHashes.length
+      };
+      if (
+        !completed &&
+        shouldCheckpointUnifiedProviderChunk(chunkBudget, {
+          workUnits,
+          elapsedMs: Math.max(0, now() - chunkStartedAt),
+          responseBytes,
+          checkpointBytes: Buffer.byteLength(
+            canonicalizeArtifactJson(projectedCheckpoint),
+            "utf8"
+          )
+        })
+      ) {
+        await flushChunk();
+        return { kind: "checkpoint", checkpoint: state };
+      }
     }
 
     await flushChunk();

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   runUnifiedTaskCycle,
+  shouldCheckpointUnifiedProviderChunk,
   type UnifiedTaskCycleRepository,
   type UnifiedWorkerTask
 } from "../../src/unifiedCheck/worker";
@@ -153,6 +154,31 @@ function cycle(
 }
 
 describe("Unified resumable worker", () => {
+  it("uses one shared predicate for every provider chunk limit", () => {
+    const budget = {
+      maxWorkUnits: 2,
+      maxWallMs: 100,
+      maxResponseBytes: 1_000,
+      maxCheckpointBytes: 500
+    };
+    const below = {
+      workUnits: 1,
+      elapsedMs: 99,
+      responseBytes: 999,
+      checkpointBytes: 499
+    };
+
+    expect(shouldCheckpointUnifiedProviderChunk(budget, below)).toBe(false);
+    for (const reached of [
+      { ...below, workUnits: 2 },
+      { ...below, elapsedMs: 100 },
+      { ...below, responseBytes: 1_000 },
+      { ...below, checkpointBytes: 500 }
+    ]) {
+      expect(shouldCheckpointUnifiedProviderChunk(budget, reached)).toBe(true);
+    }
+  });
+
   it("runs one bounded checkpoint per cycle and prevents a second claim", async () => {
     const repository = new MemoryWorkerRepository();
     let release!: () => void;

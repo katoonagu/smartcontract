@@ -650,3 +650,349 @@ export async function deAdmitUnleasedPlannerTail(
     return cleared.rows.length;
   });
 }
+
+export type UnifiedOrderedAdmissionBlocker =
+  | "merge_buffer_full"
+  | "reservation_full"
+  | "no_provider_capacity"
+  | "no_ready_work";
+
+type OrderedAdmissionRow = {
+  canonicalSequence: number;
+  taskId: string;
+  plannerState: "planned" | "ready" | "committed";
+  admitted: boolean;
+  reservedBytes: bigint;
+  taskStatus: string;
+  taskLeaseActive: boolean;
+  taskClaimEligible: boolean;
+  readyAt: Date;
+  acceptedAttemptId: string | null;
+};
+
+function admissionRow(row: Record<string, unknown>): OrderedAdmissionRow {
+  const plannerState = String(row.planner_state);
+  if (!["planned", "ready", "committed"].includes(plannerState)) {
+    throw new Error("unified_planner_admission_state_invalid");
+  }
+  const readyAt = new Date(String(row.task_ready_at));
+  if (Number.isNaN(readyAt.getTime())) {
+    throw new Error("unified_planner_admission_ready_at_invalid");
+  }
+  let reservedBytes = 0n;
+  if (row.reserved_bytes !== null && row.reserved_bytes !== undefined) {
+    try {
+      reservedBytes = BigInt(String(row.reserved_bytes));
+    } catch {
+      throw new Error("unified_planner_reserved_bytes_invalid");
+    }
+    if (reservedBytes < 0n) {
+      throw new Error("unified_planner_reserved_bytes_invalid");
+    }
+  }
+  return {
+    canonicalSequence: sequence(row.canonical_sequence),
+    taskId: requiredText(row.task_id, "unified_planner_task_id_invalid"),
+    plannerState: plannerState as OrderedAdmissionRow["plannerState"],
+    admitted: row.admitted_at !== null && row.admitted_at !== undefined,
+    reservedBytes,
+    taskStatus: String(row.task_status),
+    taskLeaseActive: row.task_lease_active === true,
+    taskClaimEligible: row.task_claim_eligible === true,
+    readyAt,
+    acceptedAttemptId: row.accepted_attempt_id === null ||
+      row.accepted_attempt_id === undefined
+      ? null
+      : String(row.accepted_attempt_id)
+  };
+}
+
+function nonNegativeBigint(value: unknown, code: string): bigint {
+  try {
+    const parsed = BigInt(String(value ?? 0));
+    if (parsed < 0n) throw new Error(code);
+    return parsed;
+  } catch {
+    throw new Error(code);
+  }
+}
+
+export async function refillOrderedAdmissions(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    readonly runId: string;
+    readonly policy: "barrier" | "rolling";
+    readonly lookaheadTarget: number;
+    readonly readyBufferMaxEntries: number;
+    readonly readyBufferMaxBytes: number;
+    readonly reservedBufferMaxBytes: number;
+    readonly reservationBytesPerTask: number;
+    readonly now: Date;
+  }
+): Promise<{
+  readonly admittedTaskIds: string[];
+  readonly deAdmittedTaskIds: string[];
+  readonly blocker: UnifiedOrderedAdmissionBlocker | null;
+}> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  if (!["barrier", "rolling"].includes(input.policy)) {
+    throw new TypeError("unified_planner_admission_policy_invalid");
+  }
+  for (const [value, code] of [
+    [input.lookaheadTarget, "unified_planner_lookahead_invalid"],
+    [input.readyBufferMaxEntries, "unified_planner_ready_entries_invalid"],
+    [input.readyBufferMaxBytes, "unified_planner_ready_bytes_invalid"],
+    [input.reservedBufferMaxBytes, "unified_planner_reserved_limit_invalid"],
+    [input.reservationBytesPerTask, "unified_planner_reservation_invalid"]
+  ] as const) {
+    safeNonNegativeInteger(value, code);
+  }
+  if (
+    !(input.now instanceof Date) ||
+    Number.isNaN(input.now.getTime())
+  ) {
+    throw new TypeError("unified_planner_admission_now_invalid");
+  }
+  const target = input.lookaheadTarget === 0
+    ? 0
+    : input.policy === "barrier"
+      ? 1
+      : input.lookaheadTarget;
+  const reservationBytes = BigInt(input.reservationBytesPerTask);
+  const reservationLimit = BigInt(input.reservedBufferMaxBytes);
+
+  return db.transaction(async (client) => {
+    await lockRun(client, runId);
+    const usage = (
+      await client.query(
+        `select
+           count(*) filter (
+             where planner_state = 'ready'
+           )::bigint as ready_count,
+           coalesce(sum(result_bytes) filter (
+             where planner_state = 'ready'
+           ), 0)::bigint as ready_bytes
+         from unified_check_planner_entries
+        where run_id = $1 and planner_state <> 'committed'`,
+        [runId]
+      )
+    ).rows[0] ?? {};
+    const readyCount = nonNegativeBigint(
+      usage.ready_count,
+      "unified_planner_ready_entries_invalid"
+    );
+    const readyBytes = nonNegativeBigint(
+      usage.ready_bytes,
+      "unified_planner_ready_bytes_invalid"
+    );
+    const readyBufferFull =
+      readyCount >= BigInt(input.readyBufferMaxEntries) ||
+      readyBytes >= BigInt(input.readyBufferMaxBytes);
+
+    const headResult = await client.query(
+      `select true as canonical_head,
+              entry.canonical_sequence, entry.planner_state,
+              entry.task_id, entry.admitted_at, entry.reserved_bytes,
+              task.status as task_status, task.ready_at as task_ready_at,
+              task.status = 'LEASED'
+                and task.lease_expires_at > statement_timestamp()
+                as task_lease_active,
+              (
+                task.status in ('QUEUED', 'WAITING_RETRY')
+                and task.ready_at <= least($2::timestamptz, statement_timestamp())
+              ) or (
+                task.status = 'LEASED'
+                and task.lease_expires_at <= statement_timestamp()
+              ) as task_claim_eligible,
+              task.accepted_attempt_id
+         from unified_check_planner_entries entry
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+        where entry.run_id = $1
+          and entry.planner_state <> 'committed'
+        order by entry.canonical_sequence
+        limit 1
+        for update of entry, task`,
+      [runId, input.now]
+    );
+    const head = headResult.rows[0]
+      ? admissionRow(headResult.rows[0])
+      : null;
+
+    const admittedResult = await client.query(
+      `select entry.canonical_sequence, entry.planner_state,
+              entry.task_id, entry.admitted_at, entry.reserved_bytes,
+              task.status as task_status, task.ready_at as task_ready_at,
+              task.status = 'LEASED'
+                and task.lease_expires_at > statement_timestamp()
+                as task_lease_active,
+              (
+                task.status in ('QUEUED', 'WAITING_RETRY')
+                and task.ready_at <= least($2::timestamptz, statement_timestamp())
+              ) or (
+                task.status = 'LEASED'
+                and task.lease_expires_at <= statement_timestamp()
+              ) as task_claim_eligible,
+              task.accepted_attempt_id
+         from unified_check_planner_entries entry
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+        where entry.run_id = $1
+          and entry.planner_state = 'planned'
+          and entry.admitted_at is not null
+        order by entry.canonical_sequence
+        for update of entry, task`,
+      [runId, input.now]
+    );
+    const admitted = admittedResult.rows.map(admissionRow);
+    const headTaskId = head?.plannerState === "planned"
+      ? head.taskId
+      : null;
+    const keep = new Set<string>();
+    for (const row of admitted) {
+      if (row.taskLeaseActive) keep.add(row.taskId);
+    }
+    if (
+      target > 0 &&
+      headTaskId !== null &&
+      admitted.some((row) =>
+        row.taskId === headTaskId && row.taskClaimEligible
+      )
+    ) {
+      keep.add(headTaskId);
+    }
+    if (input.policy === "rolling" && !readyBufferFull) {
+      for (const row of admitted) {
+        if (keep.size >= target) break;
+        if (row.taskClaimEligible) keep.add(row.taskId);
+      }
+    }
+
+    const deAdmittedTaskIds: string[] = [];
+    for (const row of [...admitted].reverse()) {
+      if (keep.has(row.taskId) || row.taskLeaseActive) continue;
+      const cleared = await client.query(
+        `update unified_check_planner_entries entry
+            set admitted_at = null, reserved_bytes = null
+           from unified_check_tasks task
+          where entry.run_id = $1
+            and entry.task_id = $2
+            and entry.planner_state = 'planned'
+            and entry.admitted_at is not null
+            and task.run_id = entry.run_id
+            and task.id = entry.task_id
+            and (
+              task.status <> 'LEASED'
+              or task.lease_expires_at <= statement_timestamp()
+            )
+          returning entry.task_id`,
+        [runId, row.taskId]
+      );
+      if (cleared.rows.length !== 1) {
+        throw new Error("unified_planner_de_admission_conflict");
+      }
+      deAdmittedTaskIds.push(row.taskId);
+    }
+
+    const keptAdmissions = admitted.filter((row) => keep.has(row.taskId));
+    let reservedBytes = keptAdmissions.reduce(
+      (total, row) => total + row.reservedBytes,
+      0n
+    );
+    let activeAdmissions = keptAdmissions.length;
+    const candidateResult = target === 0
+      ? { rows: [] as Array<Record<string, unknown>> }
+      : await client.query(
+          `select entry.canonical_sequence, entry.planner_state,
+                  entry.task_id, entry.admitted_at, entry.reserved_bytes,
+                  task.status as task_status, task.ready_at as task_ready_at,
+                  task.status = 'LEASED'
+                    and task.lease_expires_at > statement_timestamp()
+                    as task_lease_active,
+                  (
+                    task.status in ('QUEUED', 'WAITING_RETRY')
+                    and task.ready_at <= least($2::timestamptz, statement_timestamp())
+                  ) or (
+                    task.status = 'LEASED'
+                    and task.lease_expires_at <= statement_timestamp()
+                  ) as task_claim_eligible,
+                  task.accepted_attempt_id
+             from unified_check_planner_entries entry
+             join unified_check_tasks task
+               on task.run_id = entry.run_id and task.id = entry.task_id
+            where entry.run_id = $1
+              and entry.planner_state = 'planned'
+              and entry.admitted_at is null
+              and task.accepted_attempt_id is null
+              and (
+                (
+                  task.status in ('QUEUED', 'WAITING_RETRY')
+                  and task.ready_at <= least($2::timestamptz, statement_timestamp())
+                ) or (
+                  task.status = 'LEASED'
+                  and task.lease_expires_at <= statement_timestamp()
+                )
+              )
+            order by entry.canonical_sequence
+            limit $3
+            for update of entry, task`,
+          [runId, input.now, Math.max(1, target)]
+        );
+    const candidates = candidateResult.rows.map(admissionRow);
+    const admittedTaskIds: string[] = [];
+    let mergeBufferBlocked = false;
+    let reservationBlocked = false;
+
+    for (const candidate of candidates) {
+      if (activeAdmissions >= target) break;
+      const isHead = candidate.taskId === headTaskId;
+      if (input.policy === "barrier" && !isHead) continue;
+      if (readyBufferFull && !isHead) {
+        mergeBufferBlocked = true;
+        continue;
+      }
+      if (reservedBytes + reservationBytes > reservationLimit) {
+        reservationBlocked = true;
+        continue;
+      }
+      const changed = await client.query(
+        `update unified_check_planner_entries
+            set admitted_at = statement_timestamp(), reserved_bytes = $3
+          where run_id = $1
+            and task_id = $2
+            and planner_state = 'planned'
+            and admitted_at is null
+          returning task_id`,
+        [runId, candidate.taskId, input.reservationBytesPerTask]
+      );
+      if (changed.rows.length !== 1) {
+        throw new Error("unified_planner_admission_conflict");
+      }
+      admittedTaskIds.push(candidate.taskId);
+      activeAdmissions += 1;
+      reservedBytes += reservationBytes;
+    }
+    if (
+      readyBufferFull &&
+      candidates.some((candidate) => candidate.taskId !== headTaskId)
+    ) {
+      mergeBufferBlocked = true;
+    }
+
+    let blocker: UnifiedOrderedAdmissionBlocker | null = null;
+    if (target === 0) {
+      blocker = "no_provider_capacity";
+    } else if (reservationBlocked) {
+      blocker = "reservation_full";
+    } else if (mergeBufferBlocked) {
+      blocker = "merge_buffer_full";
+    } else if (activeAdmissions === 0) {
+      blocker = "no_ready_work";
+    }
+    return {
+      admittedTaskIds,
+      deAdmittedTaskIds,
+      blocker
+    };
+  });
+}
