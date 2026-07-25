@@ -1249,6 +1249,7 @@ export async function runProductionBackupCommand(
     attestProductionPostgresTools?: typeof attestProductionPostgresTools;
     verifyProductionManifestAuthorityV2?: typeof verifyProductionBackupManifestAuthorityV2;
     readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
+    removeContainer?(containerName: string): Promise<void>;
     stdout?(value: string): void;
   } = {}
 ): Promise<void> {
@@ -1267,6 +1268,9 @@ export async function runProductionBackupCommand(
     ?? verifyProductionBackupManifestAuthorityV2;
   const readCurrentTask0B = dependencies.readCurrentTask0BReleaseRevalidation
     ?? readCurrentTask0BReleaseRevalidation;
+  const operationDependencies = dependencies.removeContainer
+    ? { removeContainer: dependencies.removeContainer }
+    : {};
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
   const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
   const rootFingerprint = hash(canonicalPathKey(artifactRoot));
@@ -1435,8 +1439,10 @@ export async function runProductionBackupCommand(
     const completedBinding = { ...expectedConsumption, claimSha256: hash(claim) };
     await validateProductionBackupProgress(artifactRoot, completedBinding, completedAt);
     await revalidateExactBindings(false);
-    await settleCompletedProductionBackupOperation(artifactRoot, completedBinding, now());
-    const acquired = await acquireProductionBackupOperationLease(artifactRoot, completedBinding, now());
+    await settleCompletedProductionBackupOperation(artifactRoot, completedBinding, now(), operationDependencies);
+    const acquired = await acquireProductionBackupOperationLease(
+      artifactRoot, completedBinding, now(), operationDependencies
+    );
     try {
       await revalidateExactBindings(true);
       await attestTools(preflight.task0b.postgresTools);
@@ -1524,7 +1530,9 @@ export async function runProductionBackupCommand(
         await materializeDerivedAuthority();
       },
       acquireOperation: async () => {
-        const acquired = await acquireProductionBackupOperationLease(artifactRoot, await readProgressBinding(), now());
+        const acquired = await acquireProductionBackupOperationLease(
+          artifactRoot, await readProgressBinding(), now(), operationDependencies
+        );
         activeLease = acquired.lease;
         return {
           operationId: acquired.operationId,
@@ -1536,7 +1544,9 @@ export async function runProductionBackupCommand(
         await validateProductionBackupProgress(artifactRoot, await readProgressBinding(), now());
       },
       settleCompletedOperation: async () => {
-        await settleCompletedProductionBackupOperation(artifactRoot, await readProgressBinding(), now());
+        await settleCompletedProductionBackupOperation(
+          artifactRoot, await readProgressBinding(), now(), operationDependencies
+        );
       },
       revalidateBeforeDump: async () => {
         if (!activeLease) throw new Error("production_backup_operation_lease_missing");

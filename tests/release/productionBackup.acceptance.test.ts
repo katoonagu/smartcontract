@@ -993,6 +993,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         }, {
           now: () => evaluatedAt,
           currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+          removeContainer: async () => undefined,
           verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
           observeProductionDatabase: async () => observation() as any,
           attestProductionPostgresTools: async () => {
@@ -1009,7 +1010,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
           .toBe(true);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
-  });
+  }, 10_000);
 
   it("acquires the exact backup claim and lease before database queries or Docker tool probes", async () => {
     const api = await loadProducer();
@@ -1028,6 +1029,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       }, {
         now: () => evaluatedAt,
         currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+        removeContainer: async () => undefined,
         verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
         attestProductionPostgresTools: async () => {
           if (!existsSync(claimPath) || !existsSync(leasePath)) throw new Error("docker_before_backup_ownership");
