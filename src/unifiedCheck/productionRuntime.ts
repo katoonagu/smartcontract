@@ -289,6 +289,9 @@ export function createUnifiedProductionRuntime(input: {
     run: LoadedRun;
     address?: string;
     cursor: string | null;
+    taskId: string;
+    canonicalSequence: number | null;
+    attempt: number;
     providerSlot: UnifiedProviderSlotIdentity | null;
     onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
@@ -398,6 +401,7 @@ export function createUnifiedProductionRuntime(input: {
       run,
       cursor,
       taskId,
+      canonicalSequence,
       leaseToken,
       attempt,
       heartbeat
@@ -408,6 +412,9 @@ export function createUnifiedProductionRuntime(input: {
         run,
         address: run.subjectAddress,
         cursor,
+        taskId,
+        canonicalSequence,
+        attempt,
         providerSlot: providerSlotContext.getStore() ?? null,
         onDiagnostic
       })
@@ -436,6 +443,7 @@ export function createUnifiedProductionRuntime(input: {
       address,
       cursor,
       taskId,
+      canonicalSequence,
       leaseToken,
       attempt,
       heartbeat
@@ -449,6 +457,9 @@ export function createUnifiedProductionRuntime(input: {
         },
         address,
         cursor,
+        taskId,
+        canonicalSequence,
+        attempt,
         providerSlot: providerSlotContext.getStore() ?? null,
         onDiagnostic
       })
@@ -684,6 +695,8 @@ export function createUnifiedProductionRuntime(input: {
           input.runPurpose,
           {
             manifestMaxBytes,
+            benchmarkReadyBufferMaxEntries: commitMaxEntries,
+            benchmarkReadyBufferMaxBytes: commitMaxBytes,
             onCheckpointLatencyMs: input.onCheckpointLatencyMs,
             onAdaptiveEvent: input.onAdaptiveEvent
           }

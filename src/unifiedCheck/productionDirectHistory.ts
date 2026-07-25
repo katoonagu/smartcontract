@@ -247,6 +247,7 @@ export function createUnifiedDirectHistoryHandler(input: {
     run: LoadedRun;
     cursor: string | null;
     taskId: string;
+    canonicalSequence: number | null;
     leaseToken: string;
     attempt: number;
     heartbeat(): Promise<void>;
@@ -352,6 +353,7 @@ export function createUnifiedDirectHistoryHandler(input: {
             run,
             cursor,
             taskId: task.id,
+            canonicalSequence: task.canonicalSequence ?? null,
             leaseToken,
             attempt: task.attempt,
             heartbeat

@@ -108,17 +108,20 @@ export type UnifiedCanarySelectionManifestV1 = {
   readonly schemaVersion: 1;
   readonly cutoffAt: string;
   readonly source: {
-    readonly table: "unified_check_requests";
-    readonly provenLegacyTable: "forensic_check_jobs";
+    readonly table:
+      | "unified_check_requests"
+      | "adaptive_benchmark_cli";
+    readonly provenLegacyTable: "forensic_check_jobs" | null;
     readonly provenLegacyRule:
-      "address_fast_check+chat_id+telegram_user_requested_by";
+      | "address_fast_check+chat_id+telegram_user_requested_by"
+      | null;
     readonly databaseSchemaVersion: number;
     readonly databaseSchemaChecksumSha256: string;
     readonly schema032ChecksumSha256: string;
     readonly candidateCommit: string;
     readonly activeGenerationId: string;
     readonly activeGenerationActivatedAt: string;
-    readonly queryVersion: typeof UNIFIED_CANARY_SELECTION_QUERY_VERSION;
+    readonly queryVersion: string;
     readonly querySha256: string;
   };
   readonly selected: readonly {
@@ -128,8 +131,119 @@ export type UnifiedCanarySelectionManifestV1 = {
     readonly sourceTable:
       "unified_check_requests" | "forensic_check_jobs";
     readonly sourceRowId: string;
+    readonly scenarioId?: string;
   }[];
 };
+
+export function buildUnifiedAdaptiveBenchmarkSelection(input: {
+  readonly scenarios: readonly {
+    readonly scenarioId: string;
+    readonly subjectAddress: string;
+    readonly locale: "ru" | "en";
+  }[];
+  readonly cutoffAt: string;
+  readonly candidateCommit: string;
+  readonly activeGeneration: {
+    readonly generationId: string;
+    readonly activatedAt: string;
+    readonly runtimeCommit: string;
+  };
+  readonly databaseSchema: {
+    readonly version: number;
+    readonly checksumSha256: string;
+    readonly schema032ChecksumSha256: string;
+  };
+}): UnifiedCanarySelectionManifestV1 {
+  const cutoffAt = timestamp(
+    input.cutoffAt,
+    "unified_canary_cutoff_invalid"
+  );
+  if (
+    input.scenarios.length < 1 ||
+    input.scenarios.length > 100 ||
+    new Set(input.scenarios.map((item) => item.scenarioId)).size !==
+      input.scenarios.length ||
+    input.scenarios.some((item) =>
+      !item.scenarioId.trim() ||
+      !TronWeb.isAddress(item.subjectAddress) ||
+      !["ru", "en"].includes(item.locale)
+    )
+  ) {
+    throw new TypeError("unified_benchmark_canary_selection_invalid");
+  }
+  const base = buildUnifiedCanarySelectionProvenance(input);
+  const selected = input.scenarios.map((item) => ({
+    subjectAddress: item.subjectAddress,
+    locale: item.locale,
+    latestAt: cutoffAt,
+    sourceTable: "unified_check_requests" as const,
+    sourceRowId: `adaptive-benchmark:${item.scenarioId}`,
+    scenarioId: item.scenarioId
+  }));
+  const planSha256 = fingerprintCanonicalArtifact({
+    version: "unified-adaptive-benchmark-canary-plan-v1",
+    selected
+  });
+  return {
+    version: "unified-canary-selection-manifest-v1",
+    schemaVersion: 1,
+    cutoffAt,
+    source: {
+      ...base,
+      table: "adaptive_benchmark_cli",
+      provenLegacyTable: null,
+      provenLegacyRule: null,
+      queryVersion: "adaptive-benchmark-explicit-v1",
+      querySha256: planSha256
+    },
+    selected
+  };
+}
+
+function buildUnifiedCanarySelectionProvenance(input: {
+  readonly candidateCommit: string;
+  readonly activeGeneration: {
+    readonly generationId: string;
+    readonly activatedAt: string;
+    readonly runtimeCommit: string;
+  };
+  readonly databaseSchema: {
+    readonly version: number;
+    readonly checksumSha256: string;
+    readonly schema032ChecksumSha256: string;
+  };
+}) {
+  if (
+    !Number.isSafeInteger(input.databaseSchema.version) ||
+    input.databaseSchema.version < 33 ||
+    !/^[0-9a-f]{64}$/u.test(input.databaseSchema.checksumSha256) ||
+    !/^[0-9a-f]{64}$/u.test(input.databaseSchema.schema032ChecksumSha256)
+  ) {
+    throw new TypeError("unified_canary_schema_version_invalid");
+  }
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.candidateCommit)) {
+    throw new TypeError("unified_canary_candidate_invalid");
+  }
+  if (
+    !input.activeGeneration.generationId.trim() ||
+    timestamp(
+      input.activeGeneration.activatedAt,
+      "unified_canary_generation_activated_at_invalid"
+    ) !== input.activeGeneration.activatedAt ||
+    input.activeGeneration.runtimeCommit !== input.candidateCommit
+  ) {
+    throw new TypeError("unified_canary_active_generation_invalid");
+  }
+  return {
+    databaseSchemaVersion: input.databaseSchema.version,
+    databaseSchemaChecksumSha256: input.databaseSchema.checksumSha256,
+    schema032ChecksumSha256:
+      input.databaseSchema.schema032ChecksumSha256,
+    candidateCommit: input.candidateCommit,
+    activeGenerationId: input.activeGeneration.generationId,
+    activeGenerationActivatedAt: input.activeGeneration.activatedAt
+  };
+}
 
 function timestamp(value: string, code: string): string {
   const parsed = Date.parse(value);
@@ -173,27 +287,7 @@ export function buildUnifiedCanarySelection(input: {
     input.cutoffAt,
     "unified_canary_cutoff_invalid"
   );
-  if (
-    !Number.isSafeInteger(input.databaseSchema.version) ||
-    input.databaseSchema.version < 33 ||
-    !/^[0-9a-f]{64}$/u.test(input.databaseSchema.checksumSha256) ||
-    !/^[0-9a-f]{64}$/u.test(input.databaseSchema.schema032ChecksumSha256)
-  ) {
-    throw new TypeError("unified_canary_schema_version_invalid");
-  }
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.candidateCommit)) {
-    throw new TypeError("unified_canary_candidate_invalid");
-  }
-  if (
-    !input.activeGeneration.generationId.trim() ||
-    timestamp(
-      input.activeGeneration.activatedAt,
-      "unified_canary_generation_activated_at_invalid"
-    ) !== input.activeGeneration.activatedAt ||
-    input.activeGeneration.runtimeCommit !== input.candidateCommit
-  ) {
-    throw new TypeError("unified_canary_active_generation_invalid");
-  }
+  const provenance = buildUnifiedCanarySelectionProvenance(input);
   const cutoff = Date.parse(cutoffAt);
   const newestByAddress = new Map<string, {
     row: UnifiedCanarySelectionRowV1;
@@ -249,12 +343,7 @@ export function buildUnifiedCanarySelection(input: {
       provenLegacyTable: "forensic_check_jobs",
       provenLegacyRule:
         "address_fast_check+chat_id+telegram_user_requested_by",
-      databaseSchemaVersion: input.databaseSchema.version,
-      databaseSchemaChecksumSha256: input.databaseSchema.checksumSha256,
-      schema032ChecksumSha256: input.databaseSchema.schema032ChecksumSha256,
-      candidateCommit: input.candidateCommit,
-      activeGenerationId: input.activeGeneration.generationId,
-      activeGenerationActivatedAt: input.activeGeneration.activatedAt,
+      ...provenance,
       queryVersion: UNIFIED_CANARY_SELECTION_QUERY_VERSION,
       querySha256: fingerprintCanonicalArtifact(
         UNIFIED_CANARY_SELECTION_QUERY
@@ -536,7 +625,16 @@ export async function prepareUnifiedCanaryBatch(input: {
   readonly analysisReuse: "forbid";
   readonly sideEffectPolicy: "isolated";
 }> {
-  if (input.selectionManifest.selected.length !== CANARY_SIZE) {
+  const benchmarkSelection =
+    input.selectionManifest.source.table === "adaptive_benchmark_cli";
+  const expectedRunCount = benchmarkSelection
+    ? input.selectionManifest.selected.length
+    : CANARY_SIZE;
+  if (
+    expectedRunCount < 1 ||
+    expectedRunCount > 100 ||
+    (!benchmarkSelection && expectedRunCount !== CANARY_SIZE)
+  ) {
     throw new Error("unified_canary_requires_exactly_eight_wallets");
   }
   if (
@@ -656,11 +754,15 @@ export async function prepareUnifiedCanaryBatch(input: {
     }
   }
   if (
-    staged.length !== CANARY_SIZE ||
-    new Set(staged.map((item) => item.candidateRun.id)).size !== CANARY_SIZE ||
-    new Set(staged.map((item) =>
-      item.candidateRun.analysisKeySha256
-    )).size !== CANARY_SIZE
+    staged.length !== expectedRunCount ||
+    new Set(staged.map((item) => item.candidateRun.id)).size !==
+      expectedRunCount ||
+    (
+      !benchmarkSelection &&
+      new Set(staged.map((item) =>
+        item.candidateRun.analysisKeySha256
+      )).size !== expectedRunCount
+    )
   ) {
     throw new Error("unified_canary_batch_identity_invalid");
   }
@@ -714,7 +816,7 @@ export async function prepareUnifiedCanaryBatch(input: {
   if (
     persisted.selectionManifestSha256 !== selectionManifestSha256 ||
     persisted.batchIdentitySha256 !== batchHash ||
-    persisted.runs.length !== CANARY_SIZE
+    persisted.runs.length !== expectedRunCount
   ) {
     throw new Error("unified_canary_batch_persistence_mismatch");
   }
@@ -743,8 +845,8 @@ export type UnifiedCanaryExecutionBlockedV1 = {
 export type UnifiedCanaryIsolationAuditV1 = {
   readonly version: "unified-canary-isolation-audit-v1";
   readonly writerPolicyVersion: "unified-write-policy-v1";
-  readonly auditedRunCount: 8;
-  readonly auditedRequestCount: 8;
+  readonly auditedRunCount: number;
+  readonly auditedRequestCount: number;
   readonly policyViolationCount: number;
   readonly authoritativeNamespaceWriteCount: number;
   readonly deliveryIntentWriteCount: number;
@@ -897,10 +999,15 @@ export async function runUnifiedCanaryHarness(input: {
     runId: string;
     locale: "ru" | "en";
   }) => Promise<CompletedPresentation>;
+  readonly expectedRunCount?: number;
 }): Promise<UnifiedCanaryBatchReportV1> {
+  const expectedRunCount = input.expectedRunCount ?? CANARY_SIZE;
   if (
-    input.runs.length !== CANARY_SIZE ||
-    new Set(input.runs.map((run) => run.id)).size !== CANARY_SIZE
+    !Number.isSafeInteger(expectedRunCount) ||
+    expectedRunCount < 1 ||
+    expectedRunCount > 100 ||
+    input.runs.length !== expectedRunCount ||
+    new Set(input.runs.map((run) => run.id)).size !== expectedRunCount
   ) {
     throw new Error("unified_canary_harness_requires_eight_fresh_runs");
   }
@@ -911,7 +1018,7 @@ export async function runUnifiedCanaryHarness(input: {
     const inspected = await input.inspect();
     finalStates = inspected.filter((run) => expected.has(run.id));
     if (
-      finalStates.length !== CANARY_SIZE ||
+      finalStates.length !== expectedRunCount ||
       finalStates.some((run) =>
         run.runPurpose !== "release_canary" ||
         run.sideEffectPolicy !== "isolated" ||

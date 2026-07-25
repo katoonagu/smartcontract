@@ -6,6 +6,7 @@ import {
   createUnifiedCheckpointLatencySampler,
   createUnifiedDbLatencySampler,
   createUnifiedRepairServiceTracker,
+  hasHealthyCapableProviderGroup,
   loadUnifiedAdaptiveStorageSnapshot,
   runUnifiedAdaptiveControllerCycle
 } from "../../src/unifiedCheck/adaptiveRuntime";
@@ -55,6 +56,32 @@ function demand(
 }
 
 describe("adaptive Unified runtime", () => {
+  it("requires a healthy positive-capacity group without pinning ordered work to a group", () => {
+    expect(hasHealthyCapableProviderGroup([{
+      groupId: "healthy-but-incapable",
+      state: "healthy",
+      concurrencyLimit: 0,
+      inFlight: 0,
+      cooldownUntil: null
+    }, {
+      groupId: "capable-but-cooling",
+      state: "cooldown",
+      concurrencyLimit: 4,
+      inFlight: 0,
+      cooldownUntil: 2_000
+    }])).toBe(false);
+    expect(hasHealthyCapableProviderGroup([{
+      groupId: "capable",
+      state: "healthy",
+      concurrencyLimit: 1,
+      inFlight: 0,
+      cooldownUntil: null
+    }])).toBe(true);
+    expect(Object.keys(demand("run", "owner", 1))).not.toContain(
+      "providerGroupId"
+    );
+  });
+
   it("attributes pacing without reducing healthy provider eligibility", async () => {
     const attributed = attributeUnifiedPacedDemand([
       demand("run-paced", "owner-paced", 1),

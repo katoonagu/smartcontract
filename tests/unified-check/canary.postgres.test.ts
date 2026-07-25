@@ -4,6 +4,7 @@ import pg from "pg";
 import { describe, expect, it } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
+  buildUnifiedAdaptiveBenchmarkSelection,
   buildUnifiedCanaryProviderConfiguration,
   buildUnifiedCanarySelection,
   prepareUnifiedCanaryBatch
@@ -61,6 +62,93 @@ const PROVIDER_CONFIGURATION =
   });
 
 postgresDescribe("Unified canary PostgreSQL contracts", () => {
+  it("creates and resumes a variable-size adaptive batch with repeated wallet subjects", async () => {
+    const pool = new pg.Pool({ connectionString, max: 1 });
+    const schema = `unifiedadaptive_${randomUUID().replaceAll("-", "")}`;
+    try {
+      await pool.query(`create schema "${schema}"`);
+      await pool.query(`set search_path to "${schema}"`);
+      await pool.query(
+        await readFile("migrations/033_unified_wallet_check.sql", "utf8")
+      );
+      await pool.query(
+        await readFile(
+          "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
+      const selection = buildUnifiedAdaptiveBenchmarkSelection({
+        scenarios: ["one", "two", "three"].map((scenarioId) => ({
+          scenarioId,
+          subjectAddress: ADDRESSES[7],
+          locale: "ru" as const
+        })),
+        cutoffAt: "2026-07-23T12:00:00.000Z",
+        candidateCommit: "a".repeat(40),
+        activeGeneration: {
+          generationId: "generation-adaptive",
+          activatedAt: "2026-07-23T10:00:00.000Z",
+          runtimeCommit: "a".repeat(40)
+        },
+        databaseSchema: {
+          version: 34,
+          checksumSha256: "b".repeat(64),
+          schema032ChecksumSha256: "c".repeat(64)
+        }
+      });
+      let id = 0;
+      const batch = await prepareUnifiedCanaryBatch({
+        selectionManifest: selection,
+        snapshotSource: {
+          latestConfirmedBlock: async () => ({
+            number: "100",
+            hash: "a".repeat(64),
+            timestamp: "2026-07-23T12:00:00.000Z"
+          }),
+          snapshotBalances: async () => ({
+            usdtRaw: null,
+            trxSun: null,
+            source: "fixture",
+            consistency: "unavailable"
+          })
+        },
+        versions: {
+          labelDatasetSha256: "b".repeat(64),
+          scoringPolicyVersion: "scoring-signal-matrix-v4",
+          attributionPolicyVersion: "selected-attribution-policy-v1",
+          runtimeCommit: "a".repeat(40),
+          schemaVersion: 34
+        },
+        providerConfiguration: PROVIDER_CONFIGURATION,
+        repository: {
+          createBatch: (input) =>
+            createUnifiedCanaryBatch(
+              createUnifiedPoolTransactionHost(pool),
+              input
+            )
+        },
+        createId: () => `adaptive-${++id}`,
+        now: () => new Date("2026-07-23T12:01:00.000Z")
+      });
+
+      expect(batch.runs).toHaveLength(3);
+      expect(Number((await pool.query(
+        `select count(distinct analysis_key_sha256)::int as count
+           from unified_check_runs`
+      )).rows[0]!.count)).toBe(3);
+      const resumed = await loadUnifiedCanaryBatchByIdentity(pool, {
+        batchIdentitySha256: batch.batchIdentitySha256
+      });
+      expect(resumed.runs).toHaveLength(3);
+      expect(new Set(resumed.runs.map((run) => run.subjectAddress)))
+        .toEqual(new Set([ADDRESSES[7]]));
+    } finally {
+      await pool.query("set search_path to public");
+      await pool.query(`drop schema if exists "${schema}" cascade`);
+      await pool.end();
+    }
+  });
+
   it("atomically creates eight isolated runs and rejects a result after cancellation", async () => {
     const pool = new pg.Pool({ connectionString, max: 1 });
     const schema = `unifiedcanary_${randomUUID().replaceAll("-", "")}`;

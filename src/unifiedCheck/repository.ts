@@ -809,6 +809,9 @@ export async function createUnifiedCanaryBatch(
     selectionManifest: {
       version: "unified-canary-selection-manifest-v1";
       schemaVersion: 1;
+      source: {
+        table: "unified_check_requests" | "adaptive_benchmark_cli";
+      };
       selected: readonly {
         subjectAddress: string;
         sourceRowId: string;
@@ -882,9 +885,16 @@ export async function createUnifiedCanaryBatch(
     }[];
   }
 ) {
+  const adaptiveBenchmark =
+    input.selectionManifest.source.table === "adaptive_benchmark_cli";
+  const expectedRunCount = adaptiveBenchmark
+    ? input.selectionManifest.selected.length
+    : 8;
   if (
-    input.runs.length !== 8 ||
-    input.selectionManifest.selected.length !== 8 ||
+    expectedRunCount < 1 ||
+    expectedRunCount > 100 ||
+    (!adaptiveBenchmark && expectedRunCount !== 8) ||
+    input.runs.length !== expectedRunCount ||
     input.runs.some((item, index) =>
       item.reuseAllowed !== false ||
       item.request.runPurpose !== "release_canary" ||
@@ -896,11 +906,16 @@ export async function createUnifiedCanaryBatch(
         input.selectionManifest.selected[index]?.subjectAddress ||
       item.initialTasks.length !== 6
     ) ||
-    new Set(input.runs.map((item) => item.request.id)).size !== 8 ||
-    new Set(input.runs.map((item) => item.candidateRun.id)).size !== 8 ||
-    new Set(input.runs.map((item) =>
-      item.candidateRun.analysisKeySha256
-    )).size !== 8
+    new Set(input.runs.map((item) => item.request.id)).size !==
+      expectedRunCount ||
+    new Set(input.runs.map((item) => item.candidateRun.id)).size !==
+      expectedRunCount ||
+    (
+      !adaptiveBenchmark &&
+      new Set(input.runs.map((item) =>
+        item.candidateRun.analysisKeySha256
+      )).size !== expectedRunCount
+    )
   ) {
     throw new Error("unified_canary_batch_contract_invalid");
   }
@@ -916,7 +931,7 @@ export async function createUnifiedCanaryBatch(
         version: "unified-canary-selected-source-set-v1",
         selected: input.selectionManifest.selected
       }) ||
-    input.batchIdentity.snapshots.length !== 8 ||
+    input.batchIdentity.snapshots.length !== expectedRunCount ||
     input.batchIdentity.snapshots.some((snapshot) =>
       !input.runs.some((item) =>
         item.candidateRun.subjectAddress === snapshot.subjectAddress &&
@@ -1087,7 +1102,8 @@ export async function loadUnifiedCanaryBatchByIdentity(
     String(row.message_thread_id)
   ));
   if (
-    runRows.length !== 8 ||
+    runRows.length < 1 ||
+    runRows.length > 100 ||
     selectionManifestHashes.size !== 1
   ) {
     throw new Error("unified_canary_resume_batch_invalid");
@@ -1109,6 +1125,11 @@ export async function loadUnifiedCanaryBatchByIdentity(
   }
   const selectionManifest =
     selectionRow.artifact_json as UnifiedCanarySelectionManifestV1;
+  const adaptiveBenchmark =
+    selectionManifest.source.table === "adaptive_benchmark_cli";
+  const expectedRunCount = adaptiveBenchmark
+    ? selectionManifest.selected.length
+    : 8;
   const runs = runRows.map((row) => ({
     id: String(row.id),
     createdAt: new Date(String(row.created_at)).toISOString(),
@@ -1116,9 +1137,16 @@ export async function loadUnifiedCanaryBatchByIdentity(
     locale: row.locale as "ru" | "en"
   }));
   if (
-    runs.length !== 8 ||
-    new Set(runs.map((run) => run.id)).size !== 8 ||
-    new Set(runs.map((run) => run.subjectAddress)).size !== 8 ||
+    expectedRunCount < 1 ||
+    expectedRunCount > 100 ||
+    (!adaptiveBenchmark && expectedRunCount !== 8) ||
+    runs.length !== expectedRunCount ||
+    new Set(runs.map((run) => run.id)).size !== expectedRunCount ||
+    (
+      !adaptiveBenchmark &&
+      new Set(runs.map((run) => run.subjectAddress)).size !==
+        expectedRunCount
+    ) ||
     selectionManifest.selected.some((selected) =>
       !runs.some((run) =>
         run.subjectAddress === selected.subjectAddress &&
@@ -1150,6 +1178,8 @@ export async function claimUnifiedTask(
     runId?: string;
     priorityLane?: "interactive" | "repair" | "background";
     fairnessOwnerId?: string;
+    benchmarkReadyBufferMaxEntries?: number;
+    benchmarkReadyBufferMaxBytes?: number;
   }
 ) {
   if (input.kinds?.length === 0) return null;
@@ -1248,9 +1278,18 @@ export async function claimUnifiedTask(
             and permit_entry.task_id = task.id
        ) nulls last,`
     : "";
+  const candidateCanonicalSequence = plannerTable
+    ? `(
+         select planner.canonical_sequence
+           from unified_check_planner_entries planner
+          where planner.run_id = task.run_id
+            and planner.task_id = task.id
+       )`
+    : "null::bigint";
   const result = await db.query(
     `with candidate as (
-      select task.id
+      select task.id,
+             ${candidateCanonicalSequence} as canonical_sequence
         from unified_check_tasks task
         join unified_check_runs run on run.id = task.run_id
         join unified_check_artifacts manifest
@@ -1276,6 +1315,92 @@ export async function claimUnifiedTask(
          and ($8::text is null or task.run_id = $8)
          and ($9::text is null or task.priority_lane = $9)
          and ($10::text is null or run.fairness_owner_id = $10)
+         and not (
+           $11::int is not null
+           and $12::bigint is not null
+           and exists (
+             select 1
+               from unified_check_planner_entries benchmark_head
+              where benchmark_head.run_id = task.run_id
+                and benchmark_head.task_id = task.id
+                and benchmark_head.planner_state = 'planned'
+                and benchmark_head.canonical_sequence = (
+                  select min(uncommitted.canonical_sequence)
+                    from unified_check_planner_entries uncommitted
+                   where uncommitted.run_id = task.run_id
+                     and uncommitted.planner_state <> 'committed'
+                )
+           )
+           and exists (
+             select 1
+               from unified_check_planner_entries benchmark_tail
+              where benchmark_tail.run_id = task.run_id
+                and benchmark_tail.planner_state = 'planned'
+                and benchmark_tail.admitted_at is not null
+                and benchmark_tail.canonical_sequence > (
+                  select min(uncommitted.canonical_sequence)
+                    from unified_check_planner_entries uncommitted
+                   where uncommitted.run_id = task.run_id
+                     and uncommitted.planner_state <> 'committed'
+                )
+           )
+           and exists (
+             select 1
+               from unified_check_artifacts benchmark_control
+               cross join lateral jsonb_array_elements(
+                 case
+                   when jsonb_typeof(
+                     benchmark_control.artifact_json->'runPlans'
+                   ) = 'array'
+                   then benchmark_control.artifact_json->'runPlans'
+                   else '[]'::jsonb
+                 end
+               ) benchmark_plan(value)
+              where benchmark_control.kind =
+                'adaptive_benchmark_control'
+                and benchmark_plan.value->>'runId' = task.run_id
+                and benchmark_plan.value->>'fault' =
+                  'merge_buffer_full'
+                and benchmark_control.artifact_json->>'runtimeCommit' =
+                  $6
+                and benchmark_control.artifact_json->>
+                  'providerConfigurationSha256' = $7
+                and case
+                  when benchmark_control.artifact_json->>'expiresAt' ~
+                    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                  then (
+                    benchmark_control.artifact_json->>'expiresAt'
+                  )::timestamptz
+                  else '-infinity'::timestamptz
+                end > statement_timestamp()
+                and not exists (
+                  select 1
+                    from unified_check_artifacts released
+                   where released.kind =
+                     'adaptive_benchmark_control_release'
+                     and released.artifact_json->>'controlSha256' =
+                       benchmark_control.sha256
+                )
+                and not exists (
+                  select 1
+                    from unified_check_artifacts symptom
+                   where symptom.kind =
+                     'adaptive_benchmark_scenario_symptom'
+                     and symptom.artifact_json->>'controlSha256' =
+                       benchmark_control.sha256
+                     and symptom.artifact_json->>'runId' = task.run_id
+                     and symptom.artifact_json->>'phase' =
+                       'merge_buffer_full_observed'
+                )
+           )
+           and (
+             select count(*) < $11::int
+                    and coalesce(sum(result_bytes), 0) < $12::bigint
+               from unified_check_planner_entries buffered
+              where buffered.run_id = task.run_id
+                and buffered.planner_state = 'ready'
+           )
+         )
          and (
            $6::text is null or
            manifest.artifact_json->>'runtimeCommit' = $6
@@ -1491,7 +1616,7 @@ export async function claimUnifiedTask(
            updated_at = statement_timestamp()
       from candidate
      where task.id = candidate.id
-    returning task.*`,
+    returning task.*, candidate.canonical_sequence`,
     [
       input.workerId,
       input.leaseToken,
@@ -1502,7 +1627,9 @@ export async function claimUnifiedTask(
       input.providerConfigurationSha256 ?? null,
       input.runId ?? null,
       input.priorityLane ?? null,
-      input.fairnessOwnerId ?? null
+      input.fairnessOwnerId ?? null,
+      input.benchmarkReadyBufferMaxEntries ?? null,
+      input.benchmarkReadyBufferMaxBytes ?? null
     ]
   );
   return result.rows[0] ?? null;
@@ -3477,7 +3604,8 @@ export async function auditUnifiedCanaryIsolation(
   input: { runIds: readonly string[] }
 ): Promise<UnifiedCanaryIsolationAuditV1> {
   if (
-    input.runIds.length !== 8 ||
+    input.runIds.length < 1 ||
+    input.runIds.length > 100 ||
     new Set(input.runIds).size !== input.runIds.length
   ) {
     throw new TypeError("unified_canary_isolation_audit_scope_invalid");
@@ -3536,7 +3664,10 @@ export async function auditUnifiedCanaryIsolation(
     ),
     "unified_canary_isolation_audit_failed"
   );
-  if (Number(row.run_count) !== 8 || Number(row.request_count) !== 8) {
+  if (
+    Number(row.run_count) !== input.runIds.length ||
+    Number(row.request_count) !== input.runIds.length
+  ) {
     throw new Error("unified_canary_isolation_audit_scope_mismatch");
   }
   const deliveryOwnershipWriteCount =
@@ -3546,8 +3677,8 @@ export async function auditUnifiedCanaryIsolation(
   return {
     version: "unified-canary-isolation-audit-v1",
     writerPolicyVersion: "unified-write-policy-v1",
-    auditedRunCount: 8,
-    auditedRequestCount: 8,
+    auditedRunCount: input.runIds.length,
+    auditedRequestCount: input.runIds.length,
     policyViolationCount: Number(row.policy_violation_count),
     authoritativeNamespaceWriteCount:
       deliveryOwnershipWriteCount +

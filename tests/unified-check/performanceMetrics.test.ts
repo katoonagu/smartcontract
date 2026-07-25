@@ -75,4 +75,27 @@ describe("Unified P0 performance identity", () => {
       providerCalls: -1
     })).toThrow("unified_performance_counter_invalid");
   });
+
+  it("keeps provider failure, recovery, and delivery counters in the shared execution metrics", () => {
+    const counters = patchUnifiedPerformanceCounters(
+      createUnifiedPerformanceCounters(),
+      {
+        providerErrors: 2,
+        rateLimited429: 1,
+        restartRecoveries: 1,
+        reconciliationRecoveries: 1,
+        deliveryIntents: 3,
+        externalTelegramSends: 0
+      }
+    );
+
+    expect(counters).toMatchObject({
+      providerErrors: 2,
+      rateLimited429: 1,
+      restartRecoveries: 1,
+      reconciliationRecoveries: 1,
+      deliveryIntents: 3,
+      externalTelegramSends: 0
+    });
+  });
 });

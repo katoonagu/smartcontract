@@ -140,7 +140,9 @@ describe("Unified address-history tasks", () => {
       workerId: "provider-1",
       leaseToken: "lease-1",
       leaseMs: 30_000,
-      kinds: ["address_history", "traversal"]
+      kinds: ["address_history", "traversal"],
+      benchmarkReadyBufferMaxEntries: 4,
+      benchmarkReadyBufferMaxBytes: 4_096
     });
 
     expect(claimSql)
@@ -159,5 +161,7 @@ describe("Unified address-history tasks", () => {
     expect(claimSql).toContain("direct_evidence.status <> 'COMPLETED'");
     expect(claimSql).toContain("active_task.run_id = task.run_id");
     expect(claimSql).toContain("served_task.run_id = task.run_id");
+    expect(claimSql).toContain("benchmark_plan.value->>'fault'");
+    expect(claimSql).toContain("buffered.planner_state = 'ready'");
   });
 });

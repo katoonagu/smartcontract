@@ -57,6 +57,16 @@ export type UnifiedRuntimeResourceThresholds = {
   readonly criticalCheckpointLatencyMs: number;
 };
 
+export function hasHealthyCapableProviderGroup(
+  groups: readonly ProviderGroupCapacitySnapshot[]
+): boolean {
+  return groups.some((group) =>
+    group.state === "healthy" &&
+    Number.isSafeInteger(group.concurrencyLimit) &&
+    group.concurrencyLimit > 0
+  );
+}
+
 export function attributeUnifiedPacedDemand(
   demand: readonly ProviderRunDemand[],
   isPaced: (runId: string) => boolean

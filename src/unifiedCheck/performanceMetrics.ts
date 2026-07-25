@@ -6,6 +6,8 @@ const COMMIT = /^[0-9a-f]{40}$/u;
 export type UnifiedPerformanceCountersV1 = {
   readonly providerCalls: number;
   readonly networkFetches: number;
+  readonly providerErrors: number;
+  readonly rateLimited429: number;
   readonly providerCacheHits: number;
   readonly addressManifestReuses: number;
   readonly addressHistoryReplaysAvoided: number;
@@ -17,6 +19,10 @@ export type UnifiedPerformanceCountersV1 = {
   readonly maxCheckpointBytes: number;
   readonly currentInFlight: number;
   readonly maxInFlight: number;
+  readonly restartRecoveries: number;
+  readonly reconciliationRecoveries: number;
+  readonly deliveryIntents: number;
+  readonly externalTelegramSends: number;
 };
 
 export type UnifiedPerformanceBenchmarkInputV1 = {
@@ -81,6 +87,8 @@ export function createUnifiedPerformanceCounters(): UnifiedPerformanceCountersV1
   return {
     providerCalls: 0,
     networkFetches: 0,
+    providerErrors: 0,
+    rateLimited429: 0,
     providerCacheHits: 0,
     addressManifestReuses: 0,
     addressHistoryReplaysAvoided: 0,
@@ -91,7 +99,11 @@ export function createUnifiedPerformanceCounters(): UnifiedPerformanceCountersV1
     checkpointBytes: 0,
     maxCheckpointBytes: 0,
     currentInFlight: 0,
-    maxInFlight: 0
+    maxInFlight: 0,
+    restartRecoveries: 0,
+    reconciliationRecoveries: 0,
+    deliveryIntents: 0,
+    externalTelegramSends: 0
   };
 }
 

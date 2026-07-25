@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { freemem } from "node:os";
 import { readFile } from "node:fs/promises";
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
@@ -192,6 +193,7 @@ import {
   applyUnifiedRecoveryAction,
   createUnifiedPoolTransactionHost,
   ensureUnifiedPresentationForCompletedRequest,
+  insertUnifiedArtifact,
   listUnifiedWatchdogRuns,
   loadUnifiedAdminRunSnapshot,
   loadUnifiedProgressProjection,
@@ -223,6 +225,7 @@ import {
   countUnifiedActualLaneSlots,
   loadUnifiedAdaptiveStorageSnapshot,
   loadUnifiedProviderRunDemand,
+  hasHealthyCapableProviderGroup,
   readUnifiedRuntimeResources,
   runUnifiedAdaptiveControllerCycle
 } from "./unifiedCheck/adaptiveRuntime";
@@ -244,6 +247,19 @@ import {
   runUnifiedAdaptiveSnapshotPublication,
   type UnifiedAdaptiveEvent
 } from "./unifiedCheck/adaptiveObservability";
+import {
+  applyUnifiedAdaptiveBenchmarkControl,
+  acknowledgeUnifiedAdaptiveBenchmarkRestartHandoffs,
+  captureUnifiedAdaptiveBenchmarkObservationBestEffort,
+  createUnifiedAdaptiveBenchmarkProviderTelemetry,
+  isUnifiedBenchmarkCooldownSymptomReady,
+  isUnifiedBenchmarkSlowHeadSymptomReady,
+  loadUnifiedAdaptiveBenchmarkControl,
+  persistUnifiedAdaptiveBenchmarkObservation,
+  persistUnifiedAdaptiveBenchmarkScenarioSymptom,
+  UNIFIED_BENCHMARK_RESTART_MAX_WAIT_MS,
+  type UnifiedAdaptiveBenchmarkRuntimeObservationV1
+} from "./unifiedCheck/adaptiveBenchmarkControl";
 import {
   buildUnifiedCanaryProviderConfiguration
 } from "./unifiedCheck/canary";
@@ -328,6 +344,17 @@ const unifiedAdaptiveObservability =
 const unifiedAdaptiveSnapshotPublisher =
   createUnifiedAdaptiveSnapshotPublisher();
 const unifiedPacingTracker = createUnifiedPacingTracker();
+const unifiedBenchmarkProviderTelemetry =
+  createUnifiedAdaptiveBenchmarkProviderTelemetry();
+let activeUnifiedBenchmarkControlSha256: string | null = null;
+const teardownUnifiedBenchmarkControl = (
+  controlSha256: string
+): void => {
+  unifiedBenchmarkProviderTelemetry.teardownBenchmarkControl(
+    controlSha256
+  );
+  tronscanScheduler.teardownBenchmarkControl(controlSha256);
+};
 
 async function runRecordedRuntimeCycle<T>(
   cycleName: RuntimeCycleName,
@@ -369,6 +396,12 @@ const tronscanScheduler = createTronscanScheduler({
   },
   onDispatchOutcome: (observation) => {
     unifiedAdaptiveObservability.recordProviderOutcome(observation.outcome);
+  },
+  onRunDispatchObservation: (observation) => {
+    unifiedBenchmarkProviderTelemetry.recordDispatch(observation);
+  },
+  onRunDispatchOutcome: (observation) => {
+    unifiedBenchmarkProviderTelemetry.recordOutcome(observation);
   },
   onObserverSettled: (observation) => {
     unifiedPacingTracker.settled(observation);
@@ -549,6 +582,9 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     run,
     address = run.subjectAddress,
     cursor,
+    taskId,
+    canonicalSequence,
+    attempt,
     providerSlot,
     onDiagnostic
   }) {
@@ -590,6 +626,10 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
                 ),
                 observationScope: "unified",
                 observationRunId: run.id,
+                observationTaskId: taskId,
+                observationCanonicalSequence:
+                  canonicalSequence ?? undefined,
+                observationAttempt: attempt,
                 observationSlotId: providerSlot?.slotId,
                 observationSlotEpoch: providerSlot?.epoch
               }
@@ -855,6 +895,10 @@ const measureUnifiedDb = async <T>(work: () => Promise<T>): Promise<T> => {
     unifiedDbLatencySampler.record(performance.now() - startedAtMs);
   }
 };
+const unifiedBenchmarkRuntimeInstanceId = randomUUID();
+const unifiedBenchmarkProcessStartedAt = new Date(
+  Date.now() - Math.floor(process.uptime() * 1_000)
+).toISOString();
 const unifiedProviderPool = createUnifiedProviderPool({
   configuredLimit: config.unifiedProviderConcurrencyLimit,
   requiresPermit: true,
@@ -919,10 +963,9 @@ const runUnifiedControllerCycle = async (
 ) => {
   const startedAtMs = Date.now();
   const providerGroups = tronscanScheduler.groupSnapshots();
-  const providerAvailable = providerGroups.some((group) =>
-    group.state === "healthy"
-  );
-  const demand = await measureUnifiedDb(() =>
+  const providerAvailable =
+    hasHealthyCapableProviderGroup(providerGroups);
+  const loadedDemand = await measureUnifiedDb(() =>
     loadUnifiedProviderRunDemand(unifiedTransactionHost, {
       now: new Date(startedAtMs),
       providerAvailable,
@@ -930,8 +973,112 @@ const runUnifiedControllerCycle = async (
       readyBufferMaxBytes: config.unifiedReadyBufferMaxBytes,
       runtimeCommit: runtimeVersion.gitCommitSha,
       providerConfigurationSha256: unifiedProviderConfiguration.sha256
-    })
+      })
   );
+  let benchmarkControl:
+    Awaited<ReturnType<typeof loadUnifiedAdaptiveBenchmarkControl>> =
+      null;
+  let demand = [...loadedDemand];
+  try {
+    benchmarkControl = await measureUnifiedDb(() =>
+      loadUnifiedAdaptiveBenchmarkControl(unifiedTransactionHost, {
+        now: new Date(startedAtMs),
+        runtimeCommit: runtimeVersion.gitCommitSha,
+        providerConfigurationSha256:
+          unifiedProviderConfiguration.sha256
+      })
+    );
+    const nextControlSha256 = benchmarkControl?.sha256 ?? null;
+    if (
+      activeUnifiedBenchmarkControlSha256 !== null &&
+      activeUnifiedBenchmarkControlSha256 !== nextControlSha256
+    ) {
+      teardownUnifiedBenchmarkControl(
+        activeUnifiedBenchmarkControlSha256
+      );
+    }
+    activeUnifiedBenchmarkControlSha256 = nextControlSha256;
+    if (
+      benchmarkControl !== null &&
+      (
+        benchmarkControl.control.auditedGroupIds.length <
+          benchmarkControl.control.capacity ||
+        benchmarkControl.control.auditedGroupIds.some((groupId) =>
+          !providerGroups.some((group) => group.groupId === groupId)
+        )
+      )
+    ) {
+      throw new Error(
+        "unified_benchmark_control_group_binding_invalid"
+      );
+    }
+    if (benchmarkControl !== null) {
+      unifiedBenchmarkProviderTelemetry.bindControl(
+        benchmarkControl.sha256,
+        benchmarkControl.control.runPlans.map((plan) => plan.runId)
+      );
+      for (const plan of benchmarkControl.control.runPlans) {
+        if (
+          plan.fault === "slow_canonical_head" &&
+          !benchmarkControl.acknowledgedRunIds.includes(plan.runId) &&
+          plan.faultUntil !== null
+        ) {
+          const existing =
+            tronscanScheduler.benchmarkRunDelay(plan.runId);
+          if (existing === null) {
+            const head = (await unifiedTransactionHost.query(
+              `select task_id, canonical_sequence
+                 from unified_check_planner_entries
+                where run_id = $1
+                  and planner_state <> 'committed'
+                order by canonical_sequence
+                limit 1`,
+              [plan.runId]
+            )).rows[0];
+            if (head) {
+              tronscanScheduler.installBenchmarkRunDelay({
+                controlSha256: benchmarkControl.sha256,
+                runId: plan.runId,
+                taskId: String(head.task_id),
+                canonicalSequence: Number(head.canonical_sequence),
+                startsAtMs: Date.parse(
+                  benchmarkControl.control.createdAt
+                ),
+                endsAtMs: Date.parse(plan.faultUntil)
+              });
+            }
+          }
+        }
+        if (
+          plan.fault !== "provider_cooldown" ||
+          benchmarkControl.acknowledgedRunIds.includes(plan.runId) ||
+          plan.faultUntil === null
+        ) {
+          continue;
+        }
+        tronscanScheduler.installBenchmarkGroupCooldown({
+          controlSha256: benchmarkControl.sha256,
+          runId: plan.runId,
+          groupId: benchmarkControl.control.auditedGroupIds[0]!,
+          startsAtMs: Date.parse(benchmarkControl.control.createdAt),
+          endsAtMs: Date.parse(plan.faultUntil)
+        });
+      }
+    }
+    demand = applyUnifiedAdaptiveBenchmarkControl({
+      demand: loadedDemand,
+      providerSlots: unifiedProviderPool.slotSnapshots(),
+      control: benchmarkControl?.control ?? null,
+      acknowledgedRunIds:
+        benchmarkControl?.acknowledgedRunIds ?? [],
+      now: new Date(startedAtMs)
+    });
+  } catch (error) {
+    benchmarkControl = null;
+    logger.warn("unified_benchmark_control_disabled", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
   unifiedRepairServiceTracker.updateRepairReady(demand.some((run) =>
     run.lane === "repair" && run.eligibleReadyWork > 0
   ));
@@ -1127,18 +1274,473 @@ const runUnifiedControllerCycle = async (
       runId: finalized.runId
     });
   }
+  if (benchmarkControl !== null) {
+    await captureUnifiedAdaptiveBenchmarkObservationBestEffort({
+      capture: async () => {
+        const poolWaitStartedAtMs = performance.now();
+        const benchmarkPoolClient = await db.connect();
+        const poolWaitMs = performance.now() - poolWaitStartedAtMs;
+        benchmarkPoolClient.release();
+        const snapshotStartedAtMs = performance.now();
+        const plans = benchmarkControl.control.runPlans;
+        const snapshots = await Promise.all(plans.map(async (plan) => ({
+          plan,
+          snapshot: await loadUnifiedAdminRunSnapshot(
+            unifiedTransactionHost,
+            {
+              runId: plan.runId,
+              now: new Date(),
+              decision: result.runDecisions.find((decision) =>
+                decision.runId === plan.runId
+              ) ?? null
+            }
+          ),
+          progress: await loadUnifiedProgressProjection(
+            unifiedTransactionHost,
+            {
+              runId: plan.runId,
+              now: new Date(),
+              configuredSlots: Math.max(
+                1,
+                benchmarkControl.control.capacity
+              )
+            }
+          )
+        })));
+        const databaseLatencyMs = performance.now() - snapshotStartedAtMs;
+        if (snapshots.some((item) => item.snapshot === null)) {
+          throw new Error("unified_benchmark_observation_run_missing");
+        }
+        const lifecycle: UnifiedAdaptiveBenchmarkRuntimeObservationV1["lifecycle"] = {
+          restartRunId: null,
+          checkpointObservationSha256: null,
+          restartCount: 0,
+          recoveryMs: 0,
+          reconciliationRecoveries: 0
+        };
+        const processMemory = process.memoryUsage();
+        const runObservations = snapshots.map(({ plan, snapshot }) => {
+          const value = snapshot!;
+          const decision = result.runDecisions.find((item) =>
+            item.runId === plan.runId
+          );
+          return {
+            runId: plan.runId,
+            scenarioId: plan.scenarioId,
+            planner: value.planner,
+            buffer: value.buffer,
+            canonicalHeadAgeMs: value.canonicalHead?.ageMs ?? null,
+            capacity: {
+              eligibleDemand: loadedDemand
+                .filter((item) => item.runId === plan.runId)
+                .reduce((sum, item) =>
+                  sum + item.eligibleReadyWork, 0),
+              targetSlots: result.allocations
+                .filter((item) => item.runId === plan.runId)
+                .reduce((sum, item) => sum + item.slots, 0),
+              actualSlots: (decision?.activeSlots ?? 0) +
+                result.claimAssignments.filter((assignment) =>
+                  assignment.permit.runId === plan.runId
+                ).length
+            },
+            limitingReason: decision?.blocker ?? null
+          };
+        });
+        const observationByRunId = new Map<string, {
+          observation: UnifiedAdaptiveBenchmarkRuntimeObservationV1;
+          sha256: string;
+        }>();
+        const scenarioIds = [...new Set(plans.map((plan) =>
+          plan.scenarioId
+        ))];
+        for (const scenarioId of scenarioIds) {
+          const scopedSnapshots = snapshots.filter((item) =>
+            item.plan.scenarioId === scenarioId
+          );
+          const scopedRunIds = scopedSnapshots.map((item) =>
+            item.plan.runId
+          );
+          const integrity = (await unifiedTransactionHost.query(
+            `select
+               (
+                 count(*) filter (
+                   where planner.planner_state = 'committed'
+                 ) -
+                 count(distinct planner.task_id) filter (
+                   where planner.planner_state = 'committed'
+                 )
+               )::int as duplicate_commits,
+               (
+                 count(*) filter (
+                   where planner.planner_state = 'committed'
+                 ) -
+                 count(distinct (
+                   planner.run_id, planner.canonical_sequence
+                 )) filter (
+                   where planner.planner_state = 'committed'
+                 )
+               )::int as duplicate_sequences,
+               (
+                 select count(*)::int
+                   from unified_check_deliveries delivery
+                   join unified_check_requests request
+                     on request.id = delivery.request_id
+                  where request.run_id = any($1::text[])
+               ) as delivery_intents
+             from unified_check_planner_entries planner
+            where planner.run_id = any($1::text[])`,
+            [scopedRunIds]
+          )).rows[0]!;
+          const observation: UnifiedAdaptiveBenchmarkRuntimeObservationV1 = {
+            version: "unified-adaptive-benchmark-runtime-observation-v1",
+            controlSha256: benchmarkControl.sha256,
+            observedAt: new Date().toISOString(),
+            runtime: {
+              rssHeapScope: "process",
+              availableMemoryScope: "container_or_host",
+              instanceId: unifiedBenchmarkRuntimeInstanceId,
+              processStartedAt: unifiedBenchmarkProcessStartedAt,
+              processId: process.pid,
+              rssBytes: processMemory.rss,
+              heapUsedBytes: processMemory.heapUsed,
+              availableContainerBytes: resources.availableMemoryBytes,
+              availableHostBytes: freemem()
+            },
+            provider: unifiedBenchmarkProviderTelemetry.snapshot(
+              benchmarkControl.sha256,
+              Date.now(),
+              scopedRunIds
+            ),
+            reuse: {
+              providerCacheHits: scopedSnapshots.reduce((sum, item) =>
+                sum + item.progress.reuse.providerCacheHits, 0),
+              networkFetches: scopedSnapshots.reduce((sum, item) =>
+                sum + item.progress.reuse.networkFetches, 0),
+              addressManifestReuses: scopedSnapshots.reduce((sum, item) =>
+                sum + item.progress.reuse.manifestReuses, 0),
+              addressHistoryReplaysAvoided: scopedSnapshots.reduce(
+                (sum, item) => sum + item.progress.reuse.replayAvoided,
+                0
+              )
+            },
+            integrity: {
+              duplicateCommits: Number(integrity.duplicate_commits),
+              duplicateSequences: Number(integrity.duplicate_sequences),
+              deliveryIntents: Number(integrity.delivery_intents)
+            },
+            database: {
+              scope: "benchmark_runtime_connection_pool",
+              latencyMs: databaseLatencyMs,
+              checkpointLatencyMs: resources.checkpointLatencyMs,
+              poolWaitMs
+            },
+            lifecycle:
+              lifecycle.restartRunId !== null &&
+              scopedRunIds.includes(lifecycle.restartRunId)
+                ? lifecycle
+                : {
+                    restartRunId: null,
+                    checkpointObservationSha256: null,
+                    restartCount: 0,
+                    recoveryMs: 0,
+                    reconciliationRecoveries: 0
+                  },
+            runs: runObservations.filter((run) =>
+              scopedRunIds.includes(run.runId)
+            )
+          };
+          const observationSha256 =
+            await persistUnifiedAdaptiveBenchmarkObservation({
+              db: unifiedTransactionHost,
+              createdByRunId: scopedRunIds[0]!,
+              observation
+            });
+          for (const runId of scopedRunIds) {
+            observationByRunId.set(runId, {
+              observation,
+              sha256: observationSha256
+            });
+          }
+        }
+        for (const plan of plans) {
+          if (
+            benchmarkControl.acknowledgedRunIds.includes(plan.runId)
+          ) {
+            continue;
+          }
+          const scoped = observationByRunId.get(plan.runId)!;
+          const observation = scoped.observation;
+          const observationSha256 = scoped.sha256;
+          const run = observation.runs.find((item) =>
+            item.runId === plan.runId
+          )!;
+          const peerCommitted = runObservations.some((item) =>
+            item.runId !== plan.runId && item.planner.committed > 0
+          );
+          const syntheticCooldown =
+            tronscanScheduler.benchmarkGroupCooldown(plan.runId);
+          const slowHeadDelay =
+            tronscanScheduler.benchmarkRunDelay(plan.runId);
+          const slowHeadAccepted = slowHeadDelay === null ||
+              plan.faultUntil === null
+            ? undefined
+            : (await unifiedTransactionHost.query(
+                `select attempt.id as attempt_id,
+                        attempt.attempt,
+                        attempt.artifact_sha256,
+                        attempt.completed_at,
+                        planner.committed_at
+                   from unified_check_planner_entries planner
+                   join unified_check_tasks task
+                     on task.run_id = planner.run_id
+                    and task.id = planner.task_id
+                   join unified_check_attempts attempt
+                     on attempt.id = task.accepted_attempt_id
+                    and attempt.task_id = task.id
+                  where planner.run_id = $1
+                    and planner.task_id = $2
+                    and planner.canonical_sequence = $3
+                    and planner.planner_state = 'committed'
+                    and planner.committed_at is not null
+                    and task.status = 'COMPLETED'
+                    and attempt.completed_at >= $4::timestamptz
+                  limit 1`,
+                [
+                  plan.runId,
+                  slowHeadDelay.taskId,
+                  slowHeadDelay.canonicalSequence,
+                  plan.faultUntil
+                ]
+              )).rows[0] as {
+                attempt_id?: string;
+                attempt?: number | string;
+                artifact_sha256?: string;
+                completed_at?: Date | string;
+                committed_at?: Date | string;
+              } | undefined;
+          const slowHeadAcceptedAttempt = slowHeadAccepted === undefined
+            ? null
+            : {
+                taskId: slowHeadDelay!.taskId,
+                canonicalSequence:
+                  slowHeadDelay!.canonicalSequence,
+                attempt: Number(slowHeadAccepted.attempt),
+                completedAtMs: new Date(
+                  slowHeadAccepted.completed_at!
+                ).getTime()
+              };
+          const cooldownObserved =
+            isUnifiedBenchmarkCooldownSymptomReady({
+              capacity: benchmarkControl.control.capacity,
+              controlSha256: benchmarkControl.sha256,
+              auditedGroupIds:
+                benchmarkControl.control.auditedGroupIds,
+              nowMs: Date.now(),
+              cooldown: syntheticCooldown
+            });
+          const phase = plan.fault === "provider_cooldown" &&
+              syntheticCooldown !== null &&
+              cooldownObserved
+            ? "audited_group_cooldown_observed" as const
+            : plan.fault === "slow_canonical_head" &&
+                isUnifiedBenchmarkSlowHeadSymptomReady({
+                  controlSha256: benchmarkControl.sha256,
+                  committed: slowHeadAccepted?.committed_at != null,
+                  faultUntilMs: Date.parse(plan.faultUntil ?? ""),
+                  acceptedAttempt: slowHeadAcceptedAttempt,
+                  delay: slowHeadDelay
+                })
+              ? "canonical_head_delay_observed" as const
+              : plan.fault === "merge_buffer_full" &&
+                  run.limitingReason?.code === "merge_buffer_full"
+                ? "merge_buffer_full_observed" as const
+                : plan.scenarioId === "late_interactive" &&
+                    peerCommitted
+                  ? "late_after_peer_checkpoint" as const
+                  : plan.fault === "none" &&
+                      run.planner.committed > 0 &&
+                      run.planner.durableBacklog === 0 &&
+                      run.planner.admitted === 0 &&
+                      run.planner.leased === 0 &&
+                      run.planner.ready === 0
+                    ? "run_completed" as const
+                    : null;
+          if (phase !== null) {
+            await persistUnifiedAdaptiveBenchmarkScenarioSymptom({
+              db: unifiedTransactionHost,
+              createdByRunId: plan.runId,
+              symptom: {
+                version:
+                  "unified-adaptive-benchmark-scenario-symptom-v1",
+                controlSha256: benchmarkControl.sha256,
+                runId: plan.runId,
+                scenarioId: plan.scenarioId,
+                phase,
+                observedAt: new Date().toISOString(),
+                observationArtifactSha256: observationSha256,
+                runtimeInstanceId: unifiedBenchmarkRuntimeInstanceId,
+                runtimeProcessStartedAt: unifiedBenchmarkProcessStartedAt,
+                runtimeProcessId: process.pid,
+                ...(phase === "canonical_head_delay_observed" &&
+                  slowHeadAccepted !== undefined &&
+                  slowHeadDelay !== null
+                  ? {
+                      slowHeadAcceptance: {
+                        taskId: slowHeadDelay.taskId,
+                        canonicalSequence:
+                          slowHeadDelay.canonicalSequence,
+                        attemptId: String(
+                          slowHeadAccepted.attempt_id
+                        ),
+                        artifactSha256: String(
+                          slowHeadAccepted.artifact_sha256
+                        ),
+                        completedAt: new Date(
+                          slowHeadAccepted.completed_at!
+                        ).toISOString()
+                      }
+                    }
+                  : {}),
+                ...(phase === "audited_group_cooldown_observed" &&
+                  syntheticCooldown !== null
+                  ? {
+                      providerCooldown: {
+                        groupId: syntheticCooldown.groupId,
+                        startsAt: new Date(
+                          syntheticCooldown.startsAtMs
+                        ).toISOString(),
+                        endsAt: new Date(
+                          syntheticCooldown.endsAtMs
+                        ).toISOString(),
+                        fallbackDispatches:
+                          syntheticCooldown.fallbackDispatches,
+                        resumedDispatches:
+                          syntheticCooldown.resumedDispatches,
+                        activeObserved: true as const,
+                        synthetic: true as const,
+                        provider429Observed: false as const
+                      }
+                    }
+                  : {})
+              }
+            });
+          }
+          if (plan.fault !== "restart_recovery") continue;
+          const handoff = (await unifiedTransactionHost.query(
+            `select artifact_json
+               from unified_check_artifacts
+              where kind = 'adaptive_benchmark_restart_handoff'
+                and artifact_json->>'controlSha256' = $1
+                and artifact_json->>'runId' = $2
+              order by created_at desc, sha256
+              limit 1`,
+            [benchmarkControl.sha256, plan.runId]
+          )).rows[0]?.artifact_json as {
+            requestedAt?: string;
+            runtimeInstanceId?: string;
+            runtimeProcessStartedAt?: string;
+            runtimeProcessId?: number;
+            checkpointObservationSha256?: string;
+          } | undefined;
+          if (!handoff) {
+            const checkpointedHead = (
+              await unifiedTransactionHost.query(
+                `select entry.task_id, entry.canonical_sequence,
+                        task.attempt
+                   from unified_check_planner_entries entry
+                   join unified_check_tasks task
+                     on task.run_id = entry.run_id
+                    and task.id = entry.task_id
+                   join unified_check_runs run
+                     on run.id = entry.run_id
+                  where entry.run_id = $1
+                    and entry.planner_state <> 'committed'
+                    and entry.canonical_sequence = (
+                      select min(head.canonical_sequence)
+                        from unified_check_planner_entries head
+                       where head.run_id = entry.run_id
+                         and head.planner_state <> 'committed'
+                    )
+                    and run.status = 'RUNNING'
+                    and task.status = 'QUEUED'
+                    and task.checkpoint_json->'recentAttempts'
+                          ->-1->>'outcome' = 'CHECKPOINTED'
+                  limit 1`,
+                [plan.runId]
+              )
+            ).rows[0];
+            if (!checkpointedHead) continue;
+            const requestedAt = new Date();
+            const request = {
+              version: "unified-adaptive-benchmark-restart-handoff-v1",
+              controlSha256: benchmarkControl.sha256,
+              runId: plan.runId,
+              scenarioId: plan.scenarioId,
+              requestedAt: requestedAt.toISOString(),
+              resumeDeadline: new Date(
+                requestedAt.getTime() +
+                  UNIFIED_BENCHMARK_RESTART_MAX_WAIT_MS
+              ).toISOString(),
+              runtimeInstanceId: unifiedBenchmarkRuntimeInstanceId,
+              runtimeProcessStartedAt: unifiedBenchmarkProcessStartedAt,
+              runtimeProcessId: process.pid,
+              checkpointObservationSha256: observationSha256,
+              checkpointTaskId: String(checkpointedHead.task_id),
+              checkpointCanonicalSequence: Number(
+                checkpointedHead.canonical_sequence
+              ),
+              checkpointAttempt: Number(checkpointedHead.attempt)
+            };
+            await insertUnifiedArtifact(unifiedTransactionHost, {
+              sha256: fingerprintCanonicalArtifact(request),
+              createdByRunId: plan.runId,
+              kind: "adaptive_benchmark_restart_handoff",
+              schemaVersion: "1",
+              artifact: request
+            });
+          }
+        }
+      },
+      onError(error) {
+        logger.error("unified_benchmark_observation_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    });
+  }
   return {
     actionableWorkFound: result.eligibleReadyProviderWork > 0,
     admitted: result.admitted,
     wokenSlots: result.actionableProviderSlots
   };
 };
-const unifiedReconciliation = createUnifiedReconciliation({
+const createRuntimeUnifiedReconciliation = () =>
+  createUnifiedReconciliation({
   intervalMs: config.unifiedReconciliationIntervalMs,
-  runCycle: () =>
-    unifiedAdmissionRuntimeControl.runControllerCycle(
-      runUnifiedControllerCycle
-    ),
+  async runCycle() {
+    const result =
+      await unifiedAdmissionRuntimeControl.runControllerCycle(
+        runUnifiedControllerCycle
+      );
+    try {
+      await acknowledgeUnifiedAdaptiveBenchmarkRestartHandoffs({
+        db: unifiedTransactionHost,
+        now: new Date(),
+        runtime: {
+          instanceId: unifiedBenchmarkRuntimeInstanceId,
+          processStartedAt: unifiedBenchmarkProcessStartedAt,
+          processId: process.pid
+        },
+        reconciliationResult: result,
+        tickObservedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.warn("unified_benchmark_restart_ack_disabled", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return result;
+  },
   onResult(result) {
     unifiedAdaptiveObservability.recordReconciliation(result);
   },
@@ -1152,6 +1754,7 @@ const unifiedReconciliation = createUnifiedReconciliation({
     });
   }
 });
+let unifiedReconciliation = createRuntimeUnifiedReconciliation();
 const requestUnifiedBarrierFallback = () => {
   void unifiedAdmissionRuntimeControl.switchToBarrier().then((result) => {
     logger.warn("unified_admission_barrier_fallback", result);

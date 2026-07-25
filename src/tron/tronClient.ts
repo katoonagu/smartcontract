@@ -122,6 +122,9 @@ type FetchJsonOptions = {
   retryAttempts?: number;
   observationScope?: "unified";
   observationRunId?: string;
+  observationTaskId?: string;
+  observationCanonicalSequence?: number;
+  observationAttempt?: number;
   observationSlotId?: number;
   observationSlotEpoch?: number;
 };
@@ -171,6 +174,9 @@ export type ListRelatedTrc20TransfersOptions = {
   endTimestamp?: number;
   observationScope?: "unified";
   observationRunId?: string;
+  observationTaskId?: string;
+  observationCanonicalSequence?: number;
+  observationAttempt?: number;
   observationSlotId?: number;
   observationSlotEpoch?: number;
 };
@@ -935,6 +941,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         url,
         options.observationScope,
         options.observationRunId,
+        options.observationTaskId,
+        options.observationCanonicalSequence,
+        options.observationAttempt,
         options.observationSlotId,
         options.observationSlotEpoch
       );
@@ -1489,6 +1498,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     observationScope?: "unified",
     observationRunId?: string,
+    observationTaskId?: string,
+    observationCanonicalSequence?: number,
+    observationAttempt?: number,
     observationSlotId?: number,
     observationSlotEpoch?: number
   ): Promise<TronscanTrc20TransferPage> {
@@ -1497,6 +1509,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error),
       observationScope,
       observationRunId,
+      observationTaskId,
+      observationCanonicalSequence,
+      observationAttempt,
       observationSlotId,
       observationSlotEpoch
     });
@@ -1820,6 +1835,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           options.timeoutMs,
           options.observationScope,
           options.observationRunId,
+          options.observationTaskId,
+          options.observationCanonicalSequence,
+          options.observationAttempt,
           options.observationSlotId,
           options.observationSlotEpoch
         );
@@ -1865,6 +1883,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     timeoutMs = this.timeoutMs,
     observationScope?: "unified",
     observationRunId?: string,
+    observationTaskId?: string,
+    observationCanonicalSequence?: number,
+    observationAttempt?: number,
     observationSlotId?: number,
     observationSlotEpoch?: number
   ): Promise<unknown> {
@@ -1921,6 +1942,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         endpointBucket,
         observationScope,
         observationRunId,
+        observationTaskId,
+        observationCanonicalSequence,
+        observationAttempt,
         observationSlotId,
         observationSlotEpoch
       },

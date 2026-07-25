@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config";
 import {
   canonicalizeArtifactJson,
@@ -17,6 +18,7 @@ import {
   verifyRequiredSchema034
 } from "../src/storage/schemaMigrations";
 import {
+  buildUnifiedAdaptiveBenchmarkSelection,
   buildUnifiedCanaryProviderConfiguration,
   buildUnifiedCanarySelection,
   parseUnifiedCanaryCli,
@@ -45,6 +47,13 @@ import { getActiveCheckGeneration } from "../src/unifiedCheck/rolloutFence";
 import { SELECTED_ATTRIBUTION_POLICY } from "../src/unifiedCheck/selectedAttributionPolicy.generated";
 import { createTronConfirmedSnapshotSource } from "../src/unifiedCheck/snapshot";
 import type { UnifiedWatchdogRunV1 } from "../src/unifiedCheck/watchdog";
+import {
+  captureUnifiedAdaptiveBenchmarkObservationBestEffort,
+  listUnifiedAdaptiveBenchmarkObservationArtifacts,
+  listUnifiedAdaptiveBenchmarkScenarioSymptoms,
+  type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1,
+  type UnifiedAdaptiveBenchmarkScenarioSymptomArtifactV1
+} from "../src/unifiedCheck/adaptiveBenchmarkControl";
 
 async function writeImmutable(path: string, content: string): Promise<void> {
   try {
@@ -57,8 +66,68 @@ async function writeImmutable(path: string, content: string): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const options = parseUnifiedCanaryCli(process.argv.slice(2), new Date());
+export async function runUnifiedWalletCanaryCli(
+  args: readonly string[],
+  runtime: {
+    readonly emitResult?: boolean;
+    readonly explicitBenchmarkScenarios?: readonly {
+      readonly scenarioId: string;
+      readonly subjectAddress: string;
+      readonly locale: "ru" | "en";
+    }[];
+    readonly beforeBatchCreate?: (input: {
+      readonly db: ReturnType<typeof createDb>;
+      readonly providerConfigurationSha256: string;
+    }) => Promise<void>;
+    readonly onBatchReady?: (input: {
+      readonly db: ReturnType<typeof createDb>;
+      readonly runIds: readonly string[];
+      readonly batchIdentitySha256: string;
+      readonly selectionManifestSha256: string;
+      readonly providerConfigurationSha256: string;
+    }) => Promise<{
+      readonly benchmarkControlSha256: string;
+      release(): Promise<void>;
+    }>;
+    readonly onProgress?: (input: {
+      readonly db: ReturnType<typeof createDb>;
+      readonly runs: readonly UnifiedWatchdogRunV1[];
+      readonly batchIdentitySha256: string;
+      readonly benchmarkControlSha256: string | null;
+    }) => Promise<void>;
+  } = {}
+): Promise<{
+  readonly selectionManifestSha256: string;
+  readonly batchIdentitySha256: string;
+  readonly reportSha256: string;
+  readonly candidateCommit: string;
+  readonly outputDirectory: string;
+  readonly benchmarkObservationArtifacts:
+    readonly UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1[];
+  readonly benchmarkScenarioSymptoms:
+    readonly UnifiedAdaptiveBenchmarkScenarioSymptomArtifactV1[];
+  readonly outcomes: readonly {
+    readonly address: string;
+    readonly outcome: string;
+    readonly runId: string;
+    readonly score: number | null;
+    readonly decision: "ACCEPTABLE" | "REVIEW" | "DECLINE" | null;
+    readonly evidenceBundleSha256: string | null;
+    readonly traversalClosureSha256: string | null;
+    readonly scoringBundleSha256: string | null;
+    readonly reportSha256: string | null;
+    readonly snapshot: {
+      readonly blockNumber: string;
+      readonly blockHash: string;
+      readonly timestamp: string;
+    };
+    readonly labelDatasetSha256: string;
+    readonly providerConfigurationSha256: string;
+  }[];
+  readonly report: import("../src/unifiedCheck/canary")
+    .UnifiedCanaryBatchReportV1;
+}> {
+  const options = parseUnifiedCanaryCli(args, new Date());
   const outputDirectory = resolve(options.outputDirectory);
   const diagnosticHypothesis = options.diagnosticHypothesisPath === null
     ? null
@@ -107,12 +176,14 @@ async function main(): Promise<void> {
   process.stderr.write(`${JSON.stringify({
     event: "unified_canary_started",
     candidateCommit: options.candidateCommit,
-    expectedWallets: 8,
+    expectedWallets: runtime.explicitBenchmarkScenarios?.length ?? 8,
     perWalletDeadlineMinutes: 35,
     resume: options.resumeBatchIdentitySha256 !== null
   })}\n`);
   const db = createDb(config.databaseUrl);
   const transactionHost = createUnifiedPoolTransactionHost(db);
+  let releaseBenchmarkControl: (() => Promise<void>) | null = null;
+  let benchmarkControlSha256: string | null = null;
   try {
     const schema032Bytes = await readFile(
       new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
@@ -138,11 +209,7 @@ async function main(): Promise<void> {
     }
     const canary = options.resumeBatchIdentitySha256 === null
       ? await (async () => {
-          const rows = await loadUnifiedCanarySelectionRows(db, {
-            cutoffAt: options.cutoffAt
-          });
-          const selectionManifest = buildUnifiedCanarySelection({
-            rows,
+          const commonSelection = {
             cutoffAt: options.cutoffAt,
             candidateCommit: options.candidateCommit,
             activeGeneration: {
@@ -151,7 +218,19 @@ async function main(): Promise<void> {
               runtimeCommit: options.candidateCommit
             },
             databaseSchema: schemaVerification
-          });
+          };
+          const selectionManifest =
+            runtime.explicitBenchmarkScenarios === undefined
+              ? buildUnifiedCanarySelection({
+                  rows: await loadUnifiedCanarySelectionRows(db, {
+                    cutoffAt: options.cutoffAt
+                  }),
+                  ...commonSelection
+                })
+              : buildUnifiedAdaptiveBenchmarkSelection({
+                  scenarios: runtime.explicitBenchmarkScenarios,
+                  ...commonSelection
+                });
           const labelRows = (
             await db.query(
               `select address, label, label as category, source as provider,
@@ -182,6 +261,10 @@ async function main(): Promise<void> {
              on conflict (sha256) do nothing`,
             [labelDatasetSha256, JSON.stringify(labelDataset)]
           );
+          await runtime.beforeBatchCreate?.({
+            db,
+            providerConfigurationSha256: providerConfiguration.sha256
+          });
           const prepared = await prepareUnifiedCanaryBatch({
             selectionManifest,
             snapshotSource: createTronConfirmedSnapshotSource({
@@ -239,13 +322,25 @@ async function main(): Promise<void> {
       selectionManifestSha256: canary.selectionManifestSha256,
       wallets: canary.runs.length
     })}\n`);
+    if (runtime.onBatchReady) {
+      const benchmarkControl = await runtime.onBatchReady({
+        db,
+        runIds: canary.runs.map((run) => run.id),
+        batchIdentitySha256: canary.batchIdentitySha256,
+        selectionManifestSha256: canary.selectionManifestSha256,
+        providerConfigurationSha256: providerConfiguration.sha256
+      });
+      benchmarkControlSha256 =
+        benchmarkControl.benchmarkControlSha256;
+      releaseBenchmarkControl = benchmarkControl.release;
+    }
     let lastProgressAt = 0;
     let lastProgressSignature = "";
     const inspectWithProgress = async (): Promise<
       readonly UnifiedWatchdogRunV1[]
     > => {
       const runs = await listUnifiedWatchdogRuns(db, {
-        limit: 8,
+        limit: canary.runs.length,
         runIds: canary.runs.map((run) => run.id)
       });
       const statusCounts = Object.fromEntries(
@@ -297,6 +392,12 @@ async function main(): Promise<void> {
         lastProgressAt = observedAt;
         lastProgressSignature = signature;
       }
+      await runtime.onProgress?.({
+        db,
+        runs,
+        batchIdentitySha256: canary.batchIdentitySha256,
+        benchmarkControlSha256
+      });
       return runs;
     };
     const report = await runUnifiedCanaryHarness({
@@ -368,7 +469,8 @@ async function main(): Promise<void> {
           ].includes(section.kind)),
           scoreReasons: scoreDrivers?.rows.map((row) => row.code) ?? []
         };
-      }
+      },
+      expectedRunCount: canary.runs.length
     });
     const reportSha256 = fingerprintCanonicalArtifact(report);
     await insertUnifiedArtifact(db, {
@@ -394,20 +496,111 @@ async function main(): Promise<void> {
         report
       })}\n`
     );
-    process.stdout.write(`${JSON.stringify({
+    const outputBindings = new Map((await db.query(
+      `select run.id, run.evidence_bundle_sha256,
+              run.traversal_closure_sha256,
+              run.scoring_bundle_sha256, run.report_sha256,
+              manifest.artifact_json as analysis_manifest
+         from unified_check_runs run
+         join unified_check_artifacts manifest
+           on manifest.sha256 = run.analysis_manifest_sha256
+          and manifest.kind = 'analysis_manifest'
+        where run.id = any($1::text[])`,
+      [canary.runs.map((run) => run.id)]
+    )).rows.map((row) => [String(row.id), row]));
+    const observationControlSha256 = benchmarkControlSha256;
+    const benchmarkObservationArtifacts = observationControlSha256 === null
+      ? []
+      : (await captureUnifiedAdaptiveBenchmarkObservationBestEffort({
+          capture: () => listUnifiedAdaptiveBenchmarkObservationArtifacts({
+            db,
+            controlSha256: observationControlSha256,
+            runIds: canary.runs.map((run) => run.id)
+          }),
+          onError(error) {
+            process.stderr.write(`${JSON.stringify({
+              event: "unified_canary_benchmark_observation_export_failed",
+              error: error instanceof Error ? error.message : String(error)
+            })}\n`);
+          }
+        })) ?? [];
+    const benchmarkScenarioSymptoms = observationControlSha256 === null
+      ? []
+      : (await captureUnifiedAdaptiveBenchmarkObservationBestEffort({
+          capture: () => listUnifiedAdaptiveBenchmarkScenarioSymptoms({
+            db,
+            controlSha256: observationControlSha256,
+            runIds: canary.runs.map((run) => run.id)
+          }),
+          onError(error) {
+            process.stderr.write(`${JSON.stringify({
+              event: "unified_canary_benchmark_symptom_export_failed",
+              error: error instanceof Error ? error.message : String(error)
+            })}\n`);
+          }
+        })) ?? [];
+    const result = {
       selectionManifestSha256: canary.selectionManifestSha256,
       batchIdentitySha256: canary.batchIdentitySha256,
       reportSha256,
       candidateCommit: options.candidateCommit,
       outputDirectory,
+      benchmarkObservationArtifacts,
+      benchmarkScenarioSymptoms,
       outcomes: report.results.map((item) => ({
         address: item.subjectAddress,
-        outcome: item.outcome
+        outcome: item.outcome,
+        runId: item.runId,
+        score: item.score,
+        decision: item.decision,
+        evidenceBundleSha256:
+          outputBindings.get(item.runId)?.evidence_bundle_sha256 ?? null,
+        traversalClosureSha256:
+          outputBindings.get(item.runId)?.traversal_closure_sha256 ?? null,
+        scoringBundleSha256:
+          outputBindings.get(item.runId)?.scoring_bundle_sha256 ?? null,
+        reportSha256:
+          outputBindings.get(item.runId)?.report_sha256 ?? null,
+        snapshot: {
+          blockNumber: String(
+            outputBindings.get(item.runId)?.analysis_manifest
+              ?.confirmedBlockNumber
+          ),
+          blockHash: String(
+            outputBindings.get(item.runId)?.analysis_manifest
+              ?.confirmedBlockHash
+          ),
+          timestamp: String(
+            outputBindings.get(item.runId)?.analysis_manifest
+              ?.confirmedBlockTimestamp
+          )
+        },
+        labelDatasetSha256: String(
+          outputBindings.get(item.runId)?.analysis_manifest
+            ?.labelDatasetSha256
+        ),
+        providerConfigurationSha256: providerConfiguration.sha256
       }))
-    })}\n`);
+    };
+    if (runtime.emitResult !== false) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    }
+    return {
+      ...result,
+      report
+    };
   } finally {
-    await closeDb(db);
+    try {
+      await releaseBenchmarkControl?.();
+    } finally {
+      await closeDb(db);
+    }
   }
 }
 
-await main();
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  await runUnifiedWalletCanaryCli(process.argv.slice(2));
+}

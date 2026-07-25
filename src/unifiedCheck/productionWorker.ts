@@ -29,7 +29,17 @@ function integer(value: unknown, code: string): number {
   return parsed;
 }
 
+function canonicalSequence(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("unified_worker_canonical_sequence_invalid");
+  }
+  return parsed;
+}
+
 function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
+  const sequence = canonicalSequence(row.canonical_sequence);
   return {
     id: text(row.id, "unified_worker_task_id_invalid"),
     runId: text(row.run_id, "unified_worker_run_id_invalid"),
@@ -43,6 +53,7 @@ function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
       "unified_worker_task_priority_lane_invalid"
     ) as UnifiedWorkerTask["priorityLane"],
     attempt: integer(row.attempt, "unified_worker_attempt_invalid"),
+    ...(sequence === null ? {} : { canonicalSequence: sequence }),
     checkpoint: row.checkpoint_json ?? {},
     cancellationRequestedAt: row.cancellation_requested_at === null ||
       row.cancellation_requested_at === undefined
@@ -59,6 +70,8 @@ export function createPostgresUnifiedTaskCycleRepository(
   runPurpose?: UnifiedRunPurpose,
   options: {
     readonly manifestMaxBytes?: number;
+    readonly benchmarkReadyBufferMaxEntries?: number;
+    readonly benchmarkReadyBufferMaxBytes?: number;
     readonly onCheckpointLatencyMs?: (latencyMs: number) => void;
     readonly onAdaptiveEvent?: (event: UnifiedAdaptiveEvent) => void;
   } = {}
@@ -85,7 +98,11 @@ export function createPostgresUnifiedTaskCycleRepository(
         providerConfigurationSha256,
         runId: input.permit?.runId,
         priorityLane: input.permit?.lane,
-        fairnessOwnerId: input.permit?.ownerId
+        fairnessOwnerId: input.permit?.ownerId,
+        benchmarkReadyBufferMaxEntries:
+          options.benchmarkReadyBufferMaxEntries,
+        benchmarkReadyBufferMaxBytes:
+          options.benchmarkReadyBufferMaxBytes
       });
       return row ? workerTask(row) : null;
     },

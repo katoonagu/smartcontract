@@ -169,6 +169,346 @@ describe("TronScan scheduler", () => {
     expect(new Set(dispatches)).toEqual(new Set(outcomes));
     expect(settled.sort()).toEqual(["run-a:0:1", "run-b:1:3"]);
   });
+
+  it("attributes dispatch, outcome, and provider group to each run observer without including unrelated traffic", async () => {
+    const runDispatches: Array<{
+      runId: string;
+      groupId: string;
+      requestId: number;
+    }> = [];
+    const runOutcomes: Array<{
+      runId: string;
+      groupId: string;
+      requestId: number;
+      outcome: string;
+    }> = [];
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeyGroups: [
+        { groupId: "audited-a", apiKeys: ["key-a"] },
+        { groupId: "unrelated-b", apiKeys: ["key-b"] }
+      ],
+      apiKeys: ["key-a", "key-b"],
+      maxInFlight: 1,
+      onRunDispatchObservation: (item) => runDispatches.push(item),
+      onRunDispatchOutcome: (item) => runOutcomes.push(item)
+    });
+
+    await scheduler.schedule({
+      requestName: "unrelated",
+      path: "/unrelated",
+      observationScope: "unified",
+      observationRunId: "run-unrelated",
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, async () => "unrelated");
+    await scheduler.schedule({
+      requestName: "controlled",
+      path: "/controlled",
+      observationScope: "unified",
+      observationRunId: "run-controlled",
+      observationSlotId: 1,
+      observationSlotEpoch: 1
+    }, async () => "controlled");
+
+    expect(runDispatches.map((item) => item.runId)).toEqual([
+      "run-unrelated",
+      "run-controlled"
+    ]);
+    expect(runOutcomes.map((item) => item.runId)).toEqual([
+      "run-unrelated",
+      "run-controlled"
+    ]);
+    expect(runOutcomes.every((item) => item.outcome === "success"))
+      .toBe(true);
+    expect(runDispatches.every((item) => item.groupId.length > 0))
+      .toBe(true);
+  });
+
+  it("applies one bounded synthetic group cooldown only to its controlled run and records fallback progress", async () => {
+    let now = 1_000;
+    const groups: Array<{ runId: string; groupId: string }> = [];
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeyGroups: [
+        { groupId: "audited-a", apiKeys: ["key-a"] },
+        { groupId: "audited-b", apiKeys: ["key-b"] }
+      ],
+      apiKeys: ["key-a", "key-b"],
+      maxInFlight: 1,
+      now: () => now,
+      delay: async () => undefined,
+      onRunDispatchObservation: ({ runId, groupId }) => {
+        groups.push({ runId, groupId });
+      }
+    });
+    scheduler.installBenchmarkGroupCooldown({
+      controlSha256: "a".repeat(64),
+      runId: "controlled",
+      groupId: "audited-a",
+      startsAtMs: 1_000,
+      endsAtMs: 1_100
+    });
+
+    await scheduler.schedule({
+      requestName: "unrelated",
+      path: "/unrelated",
+      observationScope: "unified",
+      observationRunId: "unrelated",
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, async () => "ok");
+    await scheduler.schedule({
+      requestName: "controlled",
+      path: "/controlled",
+      observationScope: "unified",
+      observationRunId: "controlled",
+      observationSlotId: 1,
+      observationSlotEpoch: 1
+    }, async () => "ok");
+
+    expect(groups).toEqual([
+      { runId: "unrelated", groupId: "audited-a" },
+      { runId: "controlled", groupId: "audited-b" }
+    ]);
+    expect(scheduler.benchmarkGroupCooldown("controlled")).toMatchObject({
+      controlSha256: "a".repeat(64),
+      groupId: "audited-a",
+      startsAtMs: 1_000,
+      endsAtMs: 1_100,
+      fallbackDispatches: 1,
+      activeObserved: true,
+      synthetic: true
+    });
+    expect(scheduler.diagnostics().rateLimitedRequests).toBe(0);
+
+    now = 1_101;
+    await scheduler.schedule({
+      requestName: "controlled-resumed",
+      path: "/controlled-resumed",
+      observationScope: "unified",
+      observationRunId: "controlled",
+      observationSlotId: 1,
+      observationSlotEpoch: 2
+    }, async () => "ok");
+    expect(groups.at(-1)).toEqual({
+      runId: "controlled",
+      groupId: "audited-a"
+    });
+    expect(scheduler.benchmarkGroupCooldown("controlled"))
+      .toMatchObject({ resumedDispatches: 1 });
+  });
+
+  it("delays physical dispatch only for the controlled run until the bounded gate ends", async () => {
+    let now = 1_000;
+    const dispatched: string[] = [];
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeys: ["key-a"],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      },
+      onRunDispatchObservation: ({ runId }) => dispatched.push(runId)
+    });
+    scheduler.installBenchmarkRunDelay({
+      controlSha256: "a".repeat(64),
+      runId: "slow-head",
+      taskId: "canonical-head-task",
+      canonicalSequence: 7,
+      startsAtMs: 1_000,
+      endsAtMs: 1_100
+    });
+    now = 1_000;
+
+    await scheduler.schedule({
+      requestName: "unrelated",
+      path: "/unrelated",
+      observationScope: "unified",
+      observationRunId: "unrelated",
+      observationTaskId: "other-task",
+      observationCanonicalSequence: 9,
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, async () => "ok");
+    await scheduler.schedule({
+      requestName: "slow",
+      path: "/slow",
+      observationScope: "unified",
+      observationRunId: "slow-head",
+      observationTaskId: "canonical-head-task",
+      observationCanonicalSequence: 7,
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, async () => "ok");
+
+    expect(dispatched).toEqual(["unrelated", "slow-head"]);
+    expect(now).toBe(1_100);
+    expect(scheduler.benchmarkRunDelay("slow-head")).toMatchObject({
+      activeObserved: true,
+      resumedDispatches: 1,
+      resumedSuccessfulOutcomes: 1,
+      taskId: "canonical-head-task",
+      canonicalSequence: 7
+    });
+  });
+
+  it("does not delay another task from the same run as the exact canonical head", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeys: ["key-a"],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    scheduler.installBenchmarkRunDelay({
+      controlSha256: "b".repeat(64),
+      runId: "slow-head",
+      taskId: "canonical-head-task",
+      canonicalSequence: 1,
+      startsAtMs: 1_000,
+      endsAtMs: 1_100
+    });
+    now = 1_000;
+
+    await scheduler.schedule({
+      requestName: "tail",
+      path: "/tail",
+      observationScope: "unified",
+      observationRunId: "slow-head",
+      observationTaskId: "tail-task",
+      observationCanonicalSequence: 2,
+      observationSlotId: 0,
+      observationSlotEpoch: 1
+    }, async () => "ok");
+
+    expect(now).toBe(1_000);
+    expect(scheduler.benchmarkRunDelay("slow-head")).toMatchObject({
+      activeObserved: false,
+      resumedDispatches: 0,
+      resumedSuccessfulOutcomes: 0
+    });
+  });
+
+  it("coalesces one physical request while settling the delayed exact head after the unrelated observer", async () => {
+    let now = 1_000;
+    const work = vi.fn(async () => "ok");
+    const gateWaiters: Array<() => void> = [];
+    const dispatches: Array<{
+      requestId: number;
+      runId: string;
+      attempt?: number;
+    }> = [];
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeys: ["key-a"],
+      maxInFlight: 2,
+      now: () => now,
+      delay: () => new Promise<void>((resolve) => {
+        gateWaiters.push(resolve);
+      }),
+      onRunDispatchObservation: (item) => dispatches.push(item)
+    });
+    scheduler.installBenchmarkRunDelay({
+      controlSha256: "c".repeat(64),
+      runId: "controlled",
+      taskId: "head-task",
+      canonicalSequence: 1,
+      startsAtMs: 1_000,
+      endsAtMs: 1_100
+    });
+    let controlledSettledAt: number | null = null;
+    let unrelatedSettledAt: number | null = null;
+    const controlled = scheduler.schedule({
+        requestName: "shared",
+        path: "/shared",
+        cacheKey: "same-provider-page",
+        observationScope: "unified",
+        observationRunId: "controlled",
+        observationTaskId: "head-task",
+        observationCanonicalSequence: 1,
+        observationAttempt: 4,
+        observationSlotId: 0,
+        observationSlotEpoch: 1
+      }, work).then((value) => {
+        controlledSettledAt = now;
+        return value;
+      });
+    const unrelated = scheduler.schedule({
+        requestName: "shared",
+        path: "/shared",
+        cacheKey: "same-provider-page",
+        observationScope: "unified",
+        observationRunId: "unrelated",
+        observationTaskId: "other-task",
+        observationCanonicalSequence: 2,
+        observationAttempt: 1,
+        observationSlotId: 1,
+        observationSlotEpoch: 1
+      }, work).then((value) => {
+        unrelatedSettledAt = now;
+        return value;
+      });
+
+    await expect(unrelated).resolves.toBe("ok");
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(new Set(dispatches.map((item) => item.requestId)).size).toBe(1);
+    expect(unrelatedSettledAt).toBe(1_000);
+    expect(controlledSettledAt).toBeNull();
+    now = 1_100;
+    for (const release of gateWaiters) release();
+    await expect(controlled).resolves.toBe("ok");
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(controlledSettledAt).toBe(1_100);
+    expect(dispatches.find((item) => item.runId === "controlled"))
+      .toMatchObject({ attempt: 4 });
+    expect(scheduler.benchmarkRunDelay("controlled"))
+      .toMatchObject({ successfulAttemptNumbers: [4] });
+  });
+
+  it("tears down only exact benchmark fault state across repeated controls", () => {
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeyGroups: [
+        { groupId: "group-a", apiKeys: ["key-a"] }
+      ],
+      apiKeys: ["key-a"]
+    });
+    const unrelated = "f".repeat(64);
+    scheduler.installBenchmarkGroupCooldown({
+      controlSha256: unrelated,
+      runId: "unrelated",
+      groupId: "group-a",
+      startsAtMs: 1,
+      endsAtMs: 2
+    });
+    for (let index = 0; index < 100; index += 1) {
+      const control = index.toString(16).padStart(64, "0");
+      const runId = `run-${index}`;
+      scheduler.installBenchmarkRunDelay({
+        controlSha256: control,
+        runId,
+        taskId: `task-${index}`,
+        canonicalSequence: index,
+        startsAtMs: 1,
+        endsAtMs: 2
+      });
+      scheduler.teardownBenchmarkControl(control);
+      expect(scheduler.benchmarkRunDelay(runId)).toBeNull();
+    }
+    expect(scheduler.benchmarkGroupCooldown("unrelated")).not.toBeNull();
+    scheduler.teardownBenchmarkControl(unrelated);
+    scheduler.teardownBenchmarkControl(unrelated);
+    expect(scheduler.benchmarkGroupCooldown("unrelated")).toBeNull();
+  });
   it("serializes requests and honors the configured minimum interval", async () => {
     const delays: number[] = [];
     let now = 1_000;

@@ -17,6 +17,9 @@ export type TronscanScheduleInput = {
   rateLimitScope?: TronscanRateLimitScope;
   observationScope?: "unified";
   observationRunId?: string;
+  observationTaskId?: string;
+  observationCanonicalSequence?: number;
+  observationAttempt?: number;
   observationSlotId?: number;
   observationSlotEpoch?: number;
 };
@@ -33,6 +36,28 @@ export type TronscanDispatchOutcomeObservation = {
   readonly scope: "unified";
   readonly outcome: "success" | "error" | "rate_limited_429";
   readonly runId?: string;
+};
+
+export type TronscanRunDispatchObservation = {
+  readonly requestId: number;
+  readonly scope: "unified";
+  readonly atMs: number;
+  readonly runId: string;
+  readonly groupId: string;
+  readonly taskId?: string;
+  readonly canonicalSequence?: number;
+  readonly attempt?: number;
+};
+
+export type TronscanRunDispatchOutcomeObservation = {
+  readonly requestId: number;
+  readonly scope: "unified";
+  readonly runId: string;
+  readonly groupId: string;
+  readonly taskId?: string;
+  readonly canonicalSequence?: number;
+  readonly attempt?: number;
+  readonly outcome: "success" | "error" | "rate_limited_429";
 };
 
 export type TronscanObserverObservation = {
@@ -86,6 +111,45 @@ export type TronscanScheduler = {
   schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T>;
   diagnostics(): TronscanSchedulerDiagnostics;
   groupSnapshots(): ProviderGroupCapacitySnapshot[];
+  teardownBenchmarkControl(controlSha256: string): void;
+  installBenchmarkGroupCooldown(input: {
+    readonly controlSha256: string;
+    readonly runId: string;
+    readonly groupId: string;
+    readonly startsAtMs: number;
+    readonly endsAtMs: number;
+  }): void;
+  benchmarkGroupCooldown(runId: string): {
+    readonly controlSha256: string;
+    readonly runId: string;
+    readonly groupId: string;
+    readonly startsAtMs: number;
+    readonly endsAtMs: number;
+    readonly fallbackDispatches: number;
+    readonly resumedDispatches: number;
+    readonly activeObserved: boolean;
+    readonly synthetic: true;
+  } | null;
+  installBenchmarkRunDelay(input: {
+    readonly controlSha256: string;
+    readonly runId: string;
+    readonly taskId: string;
+    readonly canonicalSequence: number;
+    readonly startsAtMs: number;
+    readonly endsAtMs: number;
+  }): void;
+  benchmarkRunDelay(runId: string): {
+    readonly controlSha256: string;
+    readonly runId: string;
+    readonly taskId: string;
+    readonly canonicalSequence: number;
+    readonly startsAtMs: number;
+    readonly endsAtMs: number;
+    readonly activeObserved: boolean;
+    readonly resumedDispatches: number;
+    readonly resumedSuccessfulOutcomes: number;
+    readonly successfulAttemptNumbers: readonly number[];
+  } | null;
 };
 
 export type TronscanSchedulerOptions = {
@@ -105,6 +169,12 @@ export type TronscanSchedulerOptions = {
   delay?: (ms: number) => Promise<void>;
   onDispatchObservation?(observation: TronscanDispatchObservation): void;
   onDispatchOutcome?(observation: TronscanDispatchOutcomeObservation): void;
+  onRunDispatchObservation?(
+    observation: TronscanRunDispatchObservation
+  ): void;
+  onRunDispatchOutcome?(
+    observation: TronscanRunDispatchOutcomeObservation
+  ): void;
   onPacingObservation?(input: TronscanObserverObservation): void;
   onObserverSettled?(input: TronscanObserverObservation): void;
 };
@@ -112,7 +182,11 @@ export type TronscanSchedulerOptions = {
 type UnifiedObserver = Omit<
   TronscanObserverObservation,
   "requestId" | "scope"
->;
+> & {
+  readonly taskId?: string;
+  readonly canonicalSequence?: number;
+  readonly attempt?: number;
+};
 
 type QueueItem<T> = {
   requestId: number;
@@ -126,9 +200,12 @@ type QueueItem<T> = {
   settledObservers: Set<string>;
   pacingActive: boolean;
   dispatchedAtMs: number | null;
+  dispatchedGroupId: string | null;
   dispatchObserved: boolean;
+  dispatchObservedRunIds: Set<string>;
   outcome: TronscanDispatchOutcomeObservation["outcome"] | null;
   outcomeObserved: boolean;
+  outcomeObservedRunIds: Set<string>;
 };
 
 type ApiKeySlot = {
@@ -162,6 +239,31 @@ type AccountGroupState = {
   nextRequestAtMsByScope: Record<TronscanRateLimitScope, number>;
   endpointNextRequestAtMs: Record<TronscanEndpointBucket, number>;
   endpointCooldownUntilMs: Record<TronscanEndpointBucket, number>;
+};
+
+type BenchmarkGroupCooldown = {
+  controlSha256: string;
+  runId: string;
+  groupId: string;
+  startsAtMs: number;
+  endsAtMs: number;
+  fallbackDispatches: number;
+  resumedDispatches: number;
+  activeObserved: boolean;
+  synthetic: true;
+};
+
+type BenchmarkRunDelay = {
+  controlSha256: string;
+  runId: string;
+  taskId: string;
+  canonicalSequence: number;
+  startsAtMs: number;
+  endsAtMs: number;
+  activeObserved: boolean;
+  resumedDispatches: number;
+  resumedSuccessfulOutcomes: number;
+  successfulAttemptNumbers: Set<number>;
 };
 
 const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
@@ -305,6 +407,9 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     readonly promise: Promise<unknown>;
     readonly item: QueueItem<unknown>;
   }>();
+  const benchmarkGroupCooldownByRunId =
+    new Map<string, BenchmarkGroupCooldown>();
+  const benchmarkRunDelayByRunId = new Map<string, BenchmarkRunDelay>();
   const queue: Array<QueueItem<unknown>> = [];
   let inFlight = 0;
   let dispatchedRequests = 0;
@@ -335,6 +440,34 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     } catch {
       // ponytail: telemetry cannot participate in provider requests.
     }
+    observeRunDispatches(item);
+  }
+
+  function observeRunDispatches(item: QueueItem<unknown>): void {
+    if (
+      item.dispatchedAtMs === null ||
+      item.dispatchedGroupId === null
+    ) {
+      return;
+    }
+    for (const observer of item.observers.values()) {
+      if (item.dispatchObservedRunIds.has(observer.runId)) continue;
+      item.dispatchObservedRunIds.add(observer.runId);
+      try {
+        options.onRunDispatchObservation?.({
+          requestId: item.requestId,
+          scope: "unified",
+          atMs: item.dispatchedAtMs,
+          runId: observer.runId,
+          groupId: item.dispatchedGroupId,
+          taskId: observer.taskId,
+          canonicalSequence: observer.canonicalSequence,
+          attempt: observer.attempt
+        });
+      } catch {
+        // ponytail: benchmark telemetry never affects provider work.
+      }
+    }
   }
 
   function observeOutcome(item: QueueItem<unknown>): void {
@@ -354,6 +487,29 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       });
     } catch {
       // ponytail: telemetry cannot participate in provider requests.
+    }
+    observeRunOutcomes(item);
+  }
+
+  function observeRunOutcomes(item: QueueItem<unknown>): void {
+    if (item.outcome === null || item.dispatchedGroupId === null) return;
+    for (const observer of item.observers.values()) {
+      if (item.outcomeObservedRunIds.has(observer.runId)) continue;
+      item.outcomeObservedRunIds.add(observer.runId);
+      try {
+        options.onRunDispatchOutcome?.({
+          requestId: item.requestId,
+          scope: "unified",
+          runId: observer.runId,
+          groupId: item.dispatchedGroupId,
+          taskId: observer.taskId,
+          canonicalSequence: observer.canonicalSequence,
+          attempt: observer.attempt,
+          outcome: item.outcome
+        });
+      } catch {
+        // ponytail: benchmark telemetry never affects provider work.
+      }
     }
   }
 
@@ -412,6 +568,9 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     const runId = input.observationRunId?.trim();
     const slotId = input.observationSlotId;
     const epoch = input.observationSlotEpoch;
+    const taskId = input.observationTaskId?.trim();
+    const canonicalSequence = input.observationCanonicalSequence;
+    const attempt = input.observationAttempt;
     if (
       runId &&
       Number.isSafeInteger(slotId) &&
@@ -422,12 +581,26 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       const observer = {
         runId,
         slotId: Number(slotId),
-        epoch: Number(epoch)
+        epoch: Number(epoch),
+        ...(taskId &&
+          Number.isSafeInteger(canonicalSequence) &&
+          Number(canonicalSequence) >= 0
+          ? {
+              taskId,
+              canonicalSequence: Number(canonicalSequence),
+              ...(Number.isSafeInteger(attempt) && Number(attempt) > 0
+                ? { attempt: Number(attempt) }
+                : {})
+            }
+          : {})
       };
       const key = JSON.stringify([
         observer.runId,
         observer.slotId,
-        observer.epoch
+        observer.epoch,
+        observer.taskId ?? null,
+        observer.canonicalSequence ?? null,
+        observer.attempt ?? null
       ]);
       if (
         item.observers.has(key) ||
@@ -438,6 +611,8 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         observeSettled(item, key, observer);
       }
     }
+    observeRunDispatches(item);
+    observeRunOutcomes(item);
     observeDispatch(item);
     observeOutcome(item);
   }
@@ -521,7 +696,44 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
 
   function availableSlots(item: QueueItem<unknown>): ApiKeySlot[] {
     const scopedSlots = item.input.slotScope === "single" ? [slots[0]] : slots;
+    const observations = [...item.observers.values()];
+    let activeDelayedObservers = 0;
+    for (const observer of observations) {
+      const gate = benchmarkRunDelayByRunId.get(observer.runId);
+      if (
+        gate &&
+        gate.taskId === observer.taskId &&
+        gate.canonicalSequence === observer.canonicalSequence &&
+        gate.startsAtMs <= now() &&
+        gate.endsAtMs > now()
+      ) {
+        gate.activeObserved = true;
+        activeDelayedObservers += 1;
+        scheduleWake(Math.max(0, gate.endsAtMs - now()));
+      }
+    }
+    if (
+      activeDelayedObservers > 0 &&
+      activeDelayedObservers === observations.length
+    ) return [];
+    const itemRunIds = new Set(observations.map((item) => item.runId));
+    const excludedGroupIds = new Set([...itemRunIds].flatMap((runId) => {
+      const fault = benchmarkGroupCooldownByRunId.get(runId);
+      if (
+        fault &&
+        fault.startsAtMs <= now() &&
+        fault.endsAtMs > now()
+      ) {
+        fault.activeObserved = true;
+      }
+      return fault &&
+        fault.startsAtMs <= now() &&
+        fault.endsAtMs > now()
+        ? [fault.groupId]
+        : [];
+    }));
     return scopedSlots.filter((slot) => {
+      if (excludedGroupIds.has(slot.groupId)) return false;
       const group = accountGroupForSlot(slot);
       if (accountGroupPacingEnabled && group.inFlight >= maxInFlightPerGroup) {
         return false;
@@ -610,6 +822,29 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     }
     accountGroup.dispatchedRequests += 1;
     dispatchedRequests += 1;
+    item.dispatchedGroupId = slot.groupId;
+    for (const runId of new Set([
+      ...(item.input.observationRunId
+        ? [item.input.observationRunId]
+        : []),
+      ...[...item.observers.values()].map((observer) => observer.runId)
+    ])) {
+      const fault = benchmarkGroupCooldownByRunId.get(runId);
+      if (
+        fault &&
+        fault.startsAtMs <= dispatchNow &&
+        fault.endsAtMs > dispatchNow &&
+        fault.groupId !== slot.groupId
+      ) {
+        fault.fallbackDispatches += 1;
+      } else if (
+        fault &&
+        fault.endsAtMs <= dispatchNow &&
+        fault.groupId === slot.groupId
+      ) {
+        fault.resumedDispatches += 1;
+      }
+    }
     item.dispatchedAtMs = dispatchNow;
     observeDispatch(item);
     void (async () => {
@@ -720,9 +955,12 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         settledObservers: new Set(),
         pacingActive: false,
         dispatchedAtMs: null,
+        dispatchedGroupId: null,
         dispatchObserved: false,
+        dispatchObservedRunIds: new Set(),
         outcome: null,
-        outcomeObserved: false
+        outcomeObserved: false,
+        outcomeObservedRunIds: new Set()
       } as QueueItem<T>;
       attachObserver(item as QueueItem<unknown>, input);
       queue.push(item as QueueItem<unknown>);
@@ -731,15 +969,82 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     return { promise, item };
   }
 
+  function settleScheduledObserver<T>(
+    promise: Promise<T>,
+    input: TronscanScheduleInput
+  ): Promise<T> {
+    const gate = input.observationRunId === undefined
+      ? null
+      : benchmarkRunDelayByRunId.get(input.observationRunId);
+    if (
+      gate === null ||
+      gate === undefined ||
+      gate.taskId !== input.observationTaskId ||
+      gate.canonicalSequence !== input.observationCanonicalSequence
+    ) {
+      return promise;
+    }
+    if (gate.startsAtMs <= now() && now() < gate.endsAtMs) {
+      gate.activeObserved = true;
+    }
+    return (async () => {
+      let value: T;
+      try {
+        value = await promise;
+      } catch (error) {
+        if (now() < gate.endsAtMs) {
+          await delay(gate.endsAtMs - now());
+        }
+        gate.resumedDispatches += 1;
+        throw error;
+      }
+      if (now() < gate.endsAtMs) {
+        await delay(gate.endsAtMs - now());
+      }
+      gate.resumedDispatches += 1;
+      gate.resumedSuccessfulOutcomes += 1;
+      if (
+        Number.isSafeInteger(input.observationAttempt) &&
+        Number(input.observationAttempt) > 0
+      ) {
+        gate.successfulAttemptNumbers.add(
+          Number(input.observationAttempt)
+        );
+      }
+      return value;
+    })();
+  }
+
   return {
+    teardownBenchmarkControl(controlSha256): void {
+      if (!/^[0-9a-f]{64}$/u.test(controlSha256)) {
+        throw new TypeError("tronscan_benchmark_control_invalid");
+      }
+      for (const [runId, value] of benchmarkGroupCooldownByRunId) {
+        if (value.controlSha256 === controlSha256) {
+          benchmarkGroupCooldownByRunId.delete(runId);
+        }
+      }
+      for (const [runId, value] of benchmarkRunDelayByRunId) {
+        if (value.controlSha256 === controlSha256) {
+          benchmarkRunDelayByRunId.delete(runId);
+        }
+      }
+    },
     schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T> {
       if (!input.cacheKey) {
-        return enqueue(input, work).promise;
+        return settleScheduledObserver(
+          enqueue(input, work).promise,
+          input
+        );
       }
       const existing = inFlightByCacheKey.get(input.cacheKey);
       if (existing) {
         attachObserver(existing.item, input);
-        return existing.promise as Promise<T>;
+        return settleScheduledObserver(
+          existing.promise as Promise<T>,
+          input
+        );
       }
       const enqueued = enqueue(input, work);
       const pending = enqueued.promise.finally(() => {
@@ -749,7 +1054,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         promise: pending,
         item: enqueued.item as QueueItem<unknown>
       });
-      return pending;
+      return settleScheduledObserver(pending, input);
     },
     diagnostics(): TronscanSchedulerDiagnostics {
       return {
@@ -813,6 +1118,93 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
             cooldownUntil
           };
         });
+    },
+    installBenchmarkGroupCooldown(input): void {
+      if (
+        !/^[0-9a-f]{64}$/u.test(input.controlSha256) ||
+        !input.runId.trim() ||
+        !accountGroupState.has(input.groupId) ||
+        !Number.isSafeInteger(input.startsAtMs) ||
+        !Number.isSafeInteger(input.endsAtMs) ||
+        input.endsAtMs <= input.startsAtMs ||
+        input.endsAtMs - input.startsAtMs >
+          MAX_RATE_LIMIT_COOLDOWN_MS
+      ) {
+        throw new TypeError("tronscan_benchmark_cooldown_invalid");
+      }
+      const existing = benchmarkGroupCooldownByRunId.get(input.runId);
+      if (
+        existing &&
+        (
+          existing.controlSha256 !== input.controlSha256 ||
+          existing.groupId !== input.groupId ||
+          existing.startsAtMs !== input.startsAtMs ||
+          existing.endsAtMs !== input.endsAtMs
+        )
+      ) {
+        throw new Error("tronscan_benchmark_cooldown_conflict");
+      }
+      if (!existing) {
+        benchmarkGroupCooldownByRunId.set(input.runId, {
+          ...input,
+          fallbackDispatches: 0,
+          resumedDispatches: 0,
+          activeObserved:
+            input.startsAtMs <= now() && input.endsAtMs > now(),
+          synthetic: true
+        });
+      }
+      scheduleWake(Math.max(0, input.endsAtMs - now()));
+    },
+    benchmarkGroupCooldown(runId) {
+      const value = benchmarkGroupCooldownByRunId.get(runId);
+      return value ? { ...value } : null;
+    },
+    installBenchmarkRunDelay(input): void {
+      if (
+        !/^[0-9a-f]{64}$/u.test(input.controlSha256) ||
+        !input.runId.trim() ||
+        !input.taskId.trim() ||
+        !Number.isSafeInteger(input.canonicalSequence) ||
+        input.canonicalSequence < 0 ||
+        !Number.isSafeInteger(input.startsAtMs) ||
+        !Number.isSafeInteger(input.endsAtMs) ||
+        input.endsAtMs <= input.startsAtMs ||
+        input.endsAtMs - input.startsAtMs >
+          MAX_RATE_LIMIT_COOLDOWN_MS
+      ) {
+        throw new TypeError("tronscan_benchmark_run_delay_invalid");
+      }
+      const existing = benchmarkRunDelayByRunId.get(input.runId);
+      if (existing && (
+          existing.controlSha256 !== input.controlSha256 ||
+          existing.taskId !== input.taskId ||
+          existing.canonicalSequence !== input.canonicalSequence ||
+          existing.startsAtMs !== input.startsAtMs ||
+        existing.endsAtMs !== input.endsAtMs
+      )) {
+        throw new Error("tronscan_benchmark_run_delay_conflict");
+      }
+      if (!existing) {
+        benchmarkRunDelayByRunId.set(input.runId, {
+          ...input,
+          activeObserved: false,
+          resumedDispatches: 0,
+          resumedSuccessfulOutcomes: 0,
+          successfulAttemptNumbers: new Set()
+        });
+      }
+    },
+    benchmarkRunDelay(runId) {
+      const value = benchmarkRunDelayByRunId.get(runId);
+      return value
+        ? {
+            ...value,
+            successfulAttemptNumbers: [
+              ...value.successfulAttemptNumbers
+            ].sort((left, right) => left - right)
+          }
+        : null;
     }
   };
 }

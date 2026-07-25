@@ -25,6 +25,7 @@
     "unified:generate-golden-bindings": "node --import tsx scripts/generateUnifiedGoldenBindings.ts",
     "unified:golden:compare": "node --import tsx scripts/compareUnifiedWalletGolden.ts",
     "unified:canary": "node --import tsx scripts/runUnifiedWalletCanary.ts",
+    "benchmark:unified-adaptive": "tsx scripts/runUnifiedAdaptiveBenchmark.ts",
     "release:unified:gate:run": "node --import tsx scripts/runUnifiedReleaseGateCommand.ts",
     "release:unified:gates:finalize": "node --import tsx scripts/finalizeUnifiedReleaseGates.ts",
     "admin:snapshot": "node --import tsx scripts/exportAdminSnapshot.ts",
