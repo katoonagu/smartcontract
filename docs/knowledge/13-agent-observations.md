@@ -405,3 +405,15 @@ Correct rule: cast catalog identities to stable transport types such as
 command twice on the same disposable database. Any fixture exercising current
 runtime writes must install the current additive schema; historical schema
 gates remain separate and fail closed on newer drift.
+
+## 2026-07-26: Benchmark Markers Must Not Become Canary Ceilings
+
+Agent mistake: the live runner retained a hard 35-minute lifecycle deadline
+while the accepted benchmark contract required dense checks to continue to a
+terminal result or a real provider/resource blocker. Two healthy rolling runs
+were cancelled by the harness despite ongoing bounded progress.
+
+Correct rule: keep a generous abandoned-run safety guard separate from the
+ten-minute comparison marker, log the guard explicitly, and treat a reached
+guard as a blocked benchmark result rather than evidence about scheduler
+correctness or provider capacity.

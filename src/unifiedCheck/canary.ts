@@ -1,6 +1,9 @@
 import { TronWeb } from "tronweb";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
-import type { UnifiedRunPurpose } from "./contracts";
+import {
+  UNIFIED_CANARY_DEADLINE_MINUTES,
+  type UnifiedRunPurpose
+} from "./contracts";
 import {
   intakeUnifiedCheck,
   type AnalysisRunRecord,
@@ -24,7 +27,7 @@ const EXCLUDED_REGRESSION_ADDRESSES = new Set([
   "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"
 ]);
 const CANARY_SIZE = 8;
-const DEADLINE_MS = 35 * 60 * 1_000;
+const DEADLINE_MS = UNIFIED_CANARY_DEADLINE_MINUTES * 60 * 1_000;
 const TASK_KINDS = [
   "direct_history",
   "deep_direct",

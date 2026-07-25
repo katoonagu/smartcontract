@@ -132,6 +132,10 @@ For the three-wallet operational check:
 
 The canary does not require all four slots to remain busy when the graph lacks
 independent ready work. Any idle slot must have an observable reason.
+The default isolated-canary safety deadline is 120 minutes. It protects against
+abandoned work and is not an SLO; do not shorten it to the ten-minute benchmark
+marker. A run that reaches this guard is a blocked result, not a completed
+wallet report.
 
 ## WSL And Linux Memory Capture
 

@@ -8,6 +8,8 @@ import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../src/forensics/canonicalJson";
+import { UNIFIED_CANARY_DEADLINE_MINUTES } from
+  "../src/unifiedCheck/contracts";
 import { SCORING_POLICY_V4 } from "../src/risk/scoringPolicyV4.generated";
 import { closeDb, createDb } from "../src/storage/db";
 import {
@@ -178,7 +180,7 @@ export async function runUnifiedWalletCanaryCli(
     event: "unified_canary_started",
     candidateCommit: options.candidateCommit,
     expectedWallets: runtime.explicitBenchmarkScenarios?.length ?? 8,
-    perWalletDeadlineMinutes: 35,
+    perWalletDeadlineMinutes: UNIFIED_CANARY_DEADLINE_MINUTES,
     resume: options.resumeBatchIdentitySha256 !== null
   })}\n`);
   const db = createDb(config.databaseUrl);

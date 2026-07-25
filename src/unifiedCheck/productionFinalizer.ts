@@ -15,7 +15,10 @@ import type {
   AnalysisManifestV1,
   ChildAttemptArtifactV1
 } from "./contracts";
-import { assertUnifiedWriteAllowed } from "./contracts";
+import {
+  assertUnifiedWriteAllowed,
+  UNIFIED_CANARY_DEADLINE_MINUTES
+} from "./contracts";
 import type { UnifiedBranchArtifactV1 } from "./branchAdapters";
 import {
   canonicalizeUnifiedDirectHistoryPages,
@@ -143,7 +146,8 @@ export async function runUnifiedProductionFinalizationCycle(input: {
             and (
               run.run_purpose <> 'release_canary' or
               clock_timestamp() <
-                run.created_at + interval '35 minutes'
+                run.created_at +
+                  interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
             )
             and ($1::text is null or run.run_purpose = $1)
             and manifest.artifact_json->>'runtimeCommit' = $2

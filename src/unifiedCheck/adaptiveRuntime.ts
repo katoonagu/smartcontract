@@ -31,7 +31,10 @@ import type {
   UnifiedProviderSlotAssignment,
   UnifiedProviderSlotSnapshot
 } from "./providerPool";
-import type { UnifiedRunPurpose } from "./contracts";
+import {
+  UNIFIED_CANARY_DEADLINE_MINUTES,
+  type UnifiedRunPurpose
+} from "./contracts";
 import type { UnifiedQueryable } from "./repository";
 import type { UnifiedProviderClaimPermit } from "./worker";
 
@@ -310,7 +313,8 @@ function providerEligibilitySql(requireAdmission: boolean): string {
     )
     and (
       run.run_purpose <> 'release_canary' or
-      clock_timestamp() < run.created_at + interval '35 minutes'
+      clock_timestamp() < run.created_at +
+        interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
     )
     and ($3::text is null or run.run_purpose = $3)
     and (

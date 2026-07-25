@@ -14,7 +14,10 @@ import {
 } from "./repository";
 import type { AnalysisRunRecord } from "./requestService";
 import type { UnifiedWalletDossierV1 } from "./report";
-import { assertUnifiedWriteAllowed } from "./contracts";
+import {
+  assertUnifiedWriteAllowed,
+  UNIFIED_CANARY_DEADLINE_MINUTES
+} from "./contracts";
 
 function one(
   result: { rows: Array<Record<string, unknown>> },
@@ -324,7 +327,8 @@ export async function commitUnifiedIsolatedCanaryCompletion(input: {
     const deadline = one(
       await client.query(
         `select clock_timestamp() <
-                  created_at + interval '35 minutes' as before_deadline
+                  created_at + interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
+                    as before_deadline
            from unified_check_runs where id = $1`,
         [input.runId]
       ),

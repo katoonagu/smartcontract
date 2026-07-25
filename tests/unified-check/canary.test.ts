@@ -389,6 +389,46 @@ describe("Unified eight-wallet release canary", () => {
     expect(result.isolationReceipt).toEqual(isolationAudit());
   });
 
+  it("does not treat 35 minutes as the default canary execution ceiling", async () => {
+    const createdAt = "2026-07-23T12:00:00.000Z";
+    let now = new Date("2026-07-23T12:35:00.000Z");
+    const state = ADDRESSES.slice(0, 8).map((address, index) => ({
+      ...watchdogRun(`run-${index}`, address, createdAt),
+      canaryDeadlineAt: null
+    }));
+    let advances = 0;
+    const persistBlocker = vi.fn(async (input: {
+      runId: string;
+      sha256: string;
+      artifact: UnifiedCanaryExecutionBlockedV1;
+    }) => ({ state: "blocked" as const, artifact: input.artifact }));
+
+    await runUnifiedCanaryHarness({
+      runs: state.map((run) => ({
+        id: run.id,
+        subjectAddress: run.subjectAddress,
+        locale: "ru"
+      })),
+      candidateCommit: CANDIDATE,
+      selectionManifestSha256: "c".repeat(64),
+      batchIdentitySha256: "d".repeat(64),
+      now: () => now,
+      inspect: async () => state,
+      advance: async () => {
+        advances += 1;
+        now = new Date("2026-07-23T14:00:00.000Z");
+      },
+      persistBlocker,
+      isolationAudit,
+      loadCompletedPresentation: async () => {
+        throw new Error("completed_presentation_must_not_load");
+      }
+    });
+
+    expect(advances).toBe(1);
+    expect(persistBlocker).toHaveBeenCalledTimes(8);
+  });
+
   it("records the active waiting phase and provider error in a blocker", async () => {
     const createdAt = "2026-07-23T12:00:00.000Z";
     const state = ADDRESSES.slice(0, 8).map((address, index) =>

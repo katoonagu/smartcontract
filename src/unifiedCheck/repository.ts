@@ -16,7 +16,10 @@ import type {
   UnifiedRunPurpose,
   UnifiedSideEffectPolicy
 } from "./contracts";
-import { assertUnifiedWriteAllowed } from "./contracts";
+import {
+  assertUnifiedWriteAllowed,
+  UNIFIED_CANARY_DEADLINE_MINUTES
+} from "./contracts";
 import {
   buildPresentationManifest,
   renderUnifiedWalletPresentation,
@@ -554,7 +557,8 @@ export async function createOrReuseUnifiedRun(
       await db.query(
         `select *,
                 clock_timestamp() <
-                  created_at + interval '35 minutes' as before_deadline
+                  created_at + interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
+                    as before_deadline
            from unified_check_runs
           where analysis_key_sha256 = $1 and status <> 'FAILED_TECHNICAL'
           order by created_at asc limit 1`,
@@ -1326,7 +1330,8 @@ export async function claimUnifiedTask(
          and task.cancellation_requested_at is null
          and (
            run.run_purpose <> 'release_canary' or
-           clock_timestamp() < run.created_at + interval '35 minutes'
+           clock_timestamp() < run.created_at +
+             interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
          )
          and ($4::text[] is null or task.kind = any($4::text[]))
          and ($5::text is null or run.run_purpose = $5)
@@ -1816,7 +1821,8 @@ async function checkpointUnifiedTaskRow(
                          where run.id = unified_check_tasks.run_id
                            and run.run_purpose = 'release_canary'
                            and clock_timestamp() >=
-                             run.created_at + interval '35 minutes'
+                             run.created_at +
+                               interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                       )
                     then 'CHECKPOINTED'
                     else 'CANCELLED'
@@ -1834,7 +1840,8 @@ async function checkpointUnifiedTaskRow(
                    where run.id = unified_check_tasks.run_id
                      and run.run_purpose = 'release_canary'
                      and clock_timestamp() >=
-                       run.created_at + interval '35 minutes'
+                       run.created_at +
+                         interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                 )
               then 'QUEUED'
               else 'CANCELLED'
@@ -2053,7 +2060,8 @@ async function checkpointUnifiedOrderedTask(
               (
                 $3::text = 'release_canary' and
                 clock_timestamp() >=
-                  $4::timestamptz + interval '35 minutes'
+                  $4::timestamptz +
+                    interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
               ) as canary_deadline_reached
          from unified_check_tasks task
         where task.id = $1 and task.run_id = $2
@@ -2294,7 +2302,8 @@ export async function completeUnifiedTaskAttempt(
                 (
                   $3::text = 'release_canary' and
                   clock_timestamp() >=
-                    $4::timestamptz + interval '35 minutes'
+                    $4::timestamptz +
+                      interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                 ) as canary_deadline_reached
            from unified_check_tasks task
           where task.id = $1 and task.run_id = $2
@@ -2637,7 +2646,8 @@ export async function settleUnifiedTaskLease(
                    where run.id = unified_check_tasks.run_id
                      and run.run_purpose = 'release_canary'
                      and clock_timestamp() >=
-                       run.created_at + interval '35 minutes'
+                       run.created_at +
+                         interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                 )
               then $4
               else 'CANCELLED'
@@ -2709,7 +2719,8 @@ export async function settleUnifiedTaskLease(
                            where run.id = unified_check_tasks.run_id
                              and run.run_purpose = 'release_canary'
                              and clock_timestamp() >=
-                               run.created_at + interval '35 minutes'
+                               run.created_at +
+                                 interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                         )
                       then $4
                       else 'CANCELLED'
@@ -2778,7 +2789,8 @@ export async function recordUnifiedTaskAttemptAndWait(
                        where run.id = unified_check_tasks.run_id
                          and run.run_purpose = 'release_canary'
                          and clock_timestamp() >=
-                           run.created_at + interval '35 minutes'
+                           run.created_at +
+                             interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                     )
                   then 'WAITING_RETRY'
                   else 'CANCELLED'
@@ -2850,7 +2862,8 @@ export async function recordUnifiedTaskAttemptAndWait(
                              where run.id = unified_check_tasks.run_id
                                and run.run_purpose = 'release_canary'
                                and clock_timestamp() >=
-                                 run.created_at + interval '35 minutes'
+                                 run.created_at +
+                                   interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
                           )
                         then 'WAITING_RETRY'
                         else 'CANCELLED'
@@ -3785,7 +3798,8 @@ export async function persistUnifiedCanaryBlocker(
       await client.query(
         `select *,
                 clock_timestamp() <
-                  created_at + interval '35 minutes' as before_deadline
+                  created_at + interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
+                    as before_deadline
            from unified_check_runs
           where id = $1 and run_purpose = 'release_canary'
             and side_effect_policy = 'isolated'
@@ -3887,7 +3901,8 @@ export async function cooperateUnifiedCanaryRun(
       await client.query(
         `select id, status, run_purpose, side_effect_policy,
                 clock_timestamp() <
-                  created_at + interval '35 minutes' as before_deadline
+                  created_at + interval '${UNIFIED_CANARY_DEADLINE_MINUTES} minutes'
+                    as before_deadline
            from unified_check_runs
           where id = $1
           for update`,
@@ -4121,7 +4136,10 @@ export async function listUnifiedWatchdogRuns(
       updatedAt: iso(run.updated_at),
       completedAt: nullableIso(run.completed_at),
       canaryDeadlineAt: run.run_purpose === "release_canary"
-        ? new Date(Date.parse(createdAt) + 35 * 60_000).toISOString()
+        ? new Date(
+            Date.parse(createdAt) +
+              UNIFIED_CANARY_DEADLINE_MINUTES * 60_000
+          ).toISOString()
         : null,
       finalScore: run.final_score === null ? null : Number(run.final_score),
       finalDecision: run.final_decision as

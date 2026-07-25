@@ -23,6 +23,10 @@ export type UnifiedRunPurpose =
 
 export type UnifiedSideEffectPolicy = "authoritative" | "isolated";
 
+// ponytail: this is a safety guard for abandoned isolated canaries, not a
+// performance SLO. Keep every SQL/runtime deadline derived from this value.
+export const UNIFIED_CANARY_DEADLINE_MINUTES = 120;
+
 export type UnifiedWriteNamespace =
   | "run_scoped_artifact"
   | "authoritative_derived"
