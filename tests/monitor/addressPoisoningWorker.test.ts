@@ -80,11 +80,7 @@ function testRawProviderRowIds(
   transfers: RawTronscanTrc20Transfer[],
   provider: PinnedTronscanTransferPage["provider"] = "tronscan"
 ): string[] {
-  return transfers.map((transfer) => {
-    const row = transfer as RawTronscanTrc20Transfer & { event_index?: number; log_index?: number };
-    const eventIndex = row.event_index ?? row.log_index;
-    return `${provider}:tx:${transfer.transaction_id.toLowerCase()}${eventIndex === undefined ? "" : `:event:${eventIndex}`}`;
-  });
+  return transfers.map((transfer) => rawProviderRowPaginationId(provider, transfer));
 }
 
 function accumulatedLookupAtLimits() {
@@ -272,7 +268,7 @@ function finalCoveragePage(): PinnedTronscanTransferPage {
   return {
     provider: "tronscan",
     transfers,
-    rawProviderRowIds: transfers.map((row) => `tronscan:tx:${row.transaction_id}`),
+    rawProviderRowIds: testRawProviderRowIds(transfers),
     start: 200,
     requestedLimit: 100,
     nextOffset: 300,
@@ -1044,10 +1040,14 @@ describe("address poisoning worker", () => {
       });
       return true;
     });
+    const firstTransfers = Array.from(
+      { length: 100 },
+      (_, index) => rawTransfer({ transaction_id: `range-first-${index}` })
+    );
     const first: PinnedTronscanTransferPage = {
       provider: "tronscan",
-      transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `range-first-${index}` })),
-      rawProviderRowIds: Array.from({ length: 100 }, (_, index) => `tronscan:tx:range-first-${index}`),
+      transfers: firstTransfers,
+      rawProviderRowIds: testRawProviderRowIds(firstTransfers),
       start: 0,
       requestedLimit: 100,
       nextOffset: 100,
@@ -1196,7 +1196,7 @@ describe("address poisoning worker", () => {
       .mockResolvedValueOnce({
         provider: "tronscan",
         transfers: firstTransfers,
-        rawProviderRowIds: [repeatedRawId, ...firstTransfers.slice(1).map((row) => `tronscan:tx:${row.transaction_id}`)],
+        rawProviderRowIds: testRawProviderRowIds(firstTransfers),
         start: 0,
         requestedLimit: 100,
         nextOffset: 100,
@@ -1210,7 +1210,7 @@ describe("address poisoning worker", () => {
       .mockResolvedValueOnce({
         provider: "tronscan",
         transfers: secondTransfers,
-        rawProviderRowIds: [repeatedRawId, ...secondTransfers.slice(1).map((row) => `tronscan:tx:${row.transaction_id}`)],
+        rawProviderRowIds: testRawProviderRowIds(secondTransfers),
         start: 100,
         requestedLimit: 100,
         nextOffset: 200,
@@ -1407,7 +1407,7 @@ describe("address poisoning worker", () => {
     const finalPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [finalTransfer],
-      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      rawProviderRowIds: testRawProviderRowIds([finalTransfer]),
       start: 2,
       requestedLimit: 100,
       nextOffset: 3,
@@ -1468,7 +1468,7 @@ describe("address poisoning worker", () => {
     const finalPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [finalTransfer],
-      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      rawProviderRowIds: testRawProviderRowIds([finalTransfer]),
       start: 200,
       requestedLimit: 100,
       nextOffset: 201,
@@ -1882,7 +1882,7 @@ describe("address poisoning worker", () => {
     const finalPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: finalTransfers,
-      rawProviderRowIds: finalTransfers.map((row) => `tronscan:tx:${row.transaction_id}`),
+      rawProviderRowIds: testRawProviderRowIds(finalTransfers),
       start: 50,
       requestedLimit: 100,
       nextOffset: 100,
@@ -1987,10 +1987,11 @@ describe("address poisoning worker", () => {
 
   it("clears a short page only when pinned metadata proves the range exhausted", async () => {
     const repo = repository([workItem()]);
+    const transfer = rawTransfer({ transaction_id: "short-complete" });
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
-      transfers: [rawTransfer({ transaction_id: "short-complete" })],
-      rawProviderRowIds: ["tronscan:tx:short-complete"],
+      transfers: [transfer],
+      rawProviderRowIds: testRawProviderRowIds([transfer]),
       start: 0,
       requestedLimit: 100,
       nextOffset: 1,
@@ -2260,7 +2261,7 @@ describe("address poisoning worker", () => {
     const finalPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [finalTransfer],
-      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      rawProviderRowIds: testRawProviderRowIds([finalTransfer]),
       start: 100,
       requestedLimit: 100,
       nextOffset: 101,
