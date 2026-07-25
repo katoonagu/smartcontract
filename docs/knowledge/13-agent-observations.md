@@ -417,3 +417,14 @@ Correct rule: keep a generous abandoned-run safety guard separate from the
 ten-minute comparison marker, log the guard explicitly, and treat a reached
 guard as a blocked benchmark result rather than evidence about scheduler
 correctness or provider capacity.
+
+## 2026-07-26: Wall Clock Is Not A Monotonic Planner Clock
+
+Live admission exposed a timestamp-order constraint failure when PostgreSQL's
+wall clock moved backward between planning and admission statements. Durable
+state was correct, but `statement_timestamp()` alone could be earlier than the
+persisted predecessor timestamp.
+
+Correct rule: planner lifecycle timestamps use the later of database wall time
+and the preceding durable timestamp. Timestamp constraints remain strict, but
+clock adjustment cannot turn a valid state transition into a technical failure.

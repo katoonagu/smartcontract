@@ -2173,7 +2173,7 @@ async function checkpointUnifiedOrderedTask(
     const committed = await client.query(
       `update unified_check_planner_entries
           set planner_state = 'committed',
-              committed_at = statement_timestamp()
+              committed_at = greatest(statement_timestamp(), ready_at)
         where run_id = $1
           and canonical_sequence = any($2::bigint[])
           and planner_state = 'ready'
@@ -2584,7 +2584,7 @@ export async function completeUnifiedTaskAttempt(
             set planner_state = $3,
                 result_bytes = $4,
                 reserved_bytes = null,
-                ready_at = statement_timestamp()
+                ready_at = greatest(statement_timestamp(), admitted_at)
           where run_id = $1 and task_id = $2
             and planner_state = 'planned'
             and admitted_at is not null

@@ -141,10 +141,20 @@ postgresDescribe("Unified ordered planner repository", () => {
         }))
       });
 
+      await admin.query(
+        `update unified_check_planner_entries
+            set planned_at = statement_timestamp() + interval '1 hour'
+          where run_id = 'run-1' and canonical_sequence = 0`
+      );
       await expect(admitBarrierHead(transactionHost(), {
         runId: "run-1",
         reservedBytes: 100
       })).resolves.toBe(true);
+      await expect(admin.query(
+        `select admitted_at = planned_at as monotonic
+           from unified_check_planner_entries
+          where run_id = 'run-1' and canonical_sequence = 0`
+      )).resolves.toMatchObject({ rows: [{ monotonic: true }] });
       await expect(admitBarrierHead(transactionHost(), {
         runId: "run-1",
         reservedBytes: 100

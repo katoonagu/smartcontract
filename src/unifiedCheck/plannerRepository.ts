@@ -613,7 +613,8 @@ export async function admitBarrierHeadInTransaction(
   }
   const admitted = await db.query(
     `update unified_check_planner_entries
-        set admitted_at = statement_timestamp(), reserved_bytes = $3
+        set admitted_at = greatest(statement_timestamp(), planned_at),
+            reserved_bytes = $3
       where run_id = $1
         and canonical_sequence = $2
         and planner_state = 'planned'
@@ -965,7 +966,8 @@ export async function refillOrderedAdmissions(
       }
       const changed = await client.query(
         `update unified_check_planner_entries
-            set admitted_at = statement_timestamp(), reserved_bytes = $3
+            set admitted_at = greatest(statement_timestamp(), planned_at),
+                reserved_bytes = $3
           where run_id = $1
             and task_id = $2
             and planner_state = 'planned'

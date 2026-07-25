@@ -83,7 +83,7 @@ describe("Unified durable rolling admission", () => {
       if (sql.includes("as canonical_head")) return [head];
       if (sql.includes("entry.admitted_at is not null")) return [];
       if (sql.includes("entry.admitted_at is null")) return [head];
-      if (sql.includes("set admitted_at = statement_timestamp()")) {
+      if (sql.includes("set admitted_at = greatest(statement_timestamp(), planned_at)")) {
         return [{ task_id: "task-0" }];
       }
       throw new Error(`unexpected_sql:${sql}`);
@@ -111,7 +111,7 @@ describe("Unified durable rolling admission", () => {
       if (sql.includes("as canonical_head")) return [head];
       if (sql.includes("entry.admitted_at is not null")) return [];
       if (sql.includes("entry.admitted_at is null")) return [head, tail];
-      if (sql.includes("set admitted_at = statement_timestamp()")) {
+      if (sql.includes("set admitted_at = greatest(statement_timestamp(), planned_at)")) {
         return [{ task_id: "head" }];
       }
       throw new Error(`unexpected_sql:${sql}`);
@@ -139,7 +139,7 @@ describe("Unified durable rolling admission", () => {
       if (sql.includes("as canonical_head")) return [candidates[0]!];
       if (sql.includes("entry.admitted_at is not null")) return [];
       if (sql.includes("entry.admitted_at is null")) return candidates;
-      if (sql.includes("set admitted_at = statement_timestamp()")) {
+      if (sql.includes("set admitted_at = greatest(statement_timestamp(), planned_at)")) {
         admitted.push(String(values[1]));
         return [{ task_id: String(values[1]) }];
       }
@@ -239,7 +239,7 @@ describe("Unified durable rolling admission", () => {
         return [delayedHead];
       }
       if (sql.includes("entry.admitted_at is null")) return [readyTail];
-      if (sql.includes("set admitted_at = statement_timestamp()")) {
+      if (sql.includes("set admitted_at = greatest(statement_timestamp(), planned_at)")) {
         return [{ task_id: String(values[1]) }];
       }
       throw new Error(`unexpected_sql:${sql}`);
