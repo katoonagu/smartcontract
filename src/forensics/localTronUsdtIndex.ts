@@ -120,6 +120,16 @@ function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
+export function forensicRouteEdgeIdentity(edge: ForensicRouteEdge): string {
+  if (edge.transferId) return `transfer:${edge.transferId}`;
+  if (edge.eventIndex !== null && edge.eventIndex !== undefined) return `event:${edge.txHash}:${edge.eventIndex}`;
+  if (edge.provider && edge.providerRowOrdinalInTx !== null && edge.providerRowOrdinalInTx !== undefined) {
+    return `provider:${edge.provider}:${edge.txHash}:${edge.providerRowOrdinalInTx}`;
+  }
+  // ponytail: legacy rows cannot prove exactly one emitted movement; use provider event identity when available.
+  return `legacy:${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+}
+
 export function indexedTransferToRouteEdge(transfer: IndexedTronUsdtTransfer): ForensicRouteEdge {
   return {
     id: stableId([
@@ -136,7 +146,17 @@ export function indexedTransferToRouteEdge(transfer: IndexedTronUsdtTransfer): F
     amountRaw: transfer.amountRaw,
     timestamp: transfer.blockTimestamp,
     method: transfer.method,
-    edgeType: transfer.method === "transferFrom" ? "transfer_from" : "normal_transfer"
+    edgeType: transfer.method === "transferFrom" ? "transfer_from" : "normal_transfer",
+    transferId: transfer.transferId ?? null,
+    eventIndex: transfer.eventIndex,
+    provider: transfer.provider ?? null,
+    providerRowOrdinalInTx: transfer.providerRowOrdinalInTx ?? null,
+    callerAddress: transfer.callerAddress,
+    contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+    contractRet: transfer.contractRet,
+    finalResult: transfer.finalResult ?? null,
+    confirmed: transfer.confirmed,
+    reverted: transfer.reverted ?? null
   };
 }
 
@@ -149,6 +169,8 @@ export function indexedTransferToRawTronscanTransfer(transfer: IndexedTronUsdtTr
     contract_address: TRON_USDT_CONTRACT_ADDRESS,
     confirmed: transfer.confirmed,
     contractRet: transfer.contractRet ?? "SUCCESS",
+    finalResult: transfer.finalResult ?? undefined,
+    revert: transfer.reverted ?? undefined,
     tokenInfo: {
       tokenId: TRON_USDT_CONTRACT_ADDRESS,
       tokenAbbr: "USDT",
@@ -159,8 +181,12 @@ export function indexedTransferToRawTronscanTransfer(transfer: IndexedTronUsdtTr
       methodName: transfer.method,
       callerAddress: transfer.callerAddress
     },
-    block_ts: transfer.blockTimestamp.getTime()
-  };
+    block_ts: transfer.blockTimestamp.getTime(),
+    transferId: transfer.transferId,
+    eventIndex: transfer.eventIndex,
+    provider: transfer.provider,
+    providerRowOrdinalInTx: transfer.providerRowOrdinalInTx
+  } as RawTronscanTrc20Transfer;
 }
 
 export function createIndexedTronUsdtTransferClient(

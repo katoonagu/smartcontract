@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { runForensicAddressExposureSearch, runForensicRouteSearch } from "../../src/forensics/routeSearch";
+import { createIndexedTronUsdtTransferClient } from "../../src/forensics/localTronUsdtIndex";
+import { normalizeTransfer, runForensicAddressExposureSearch, runForensicRouteSearch } from "../../src/forensics/routeSearch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
+import type { IndexedTronUsdtTransfer } from "../../src/types";
 
 const source = "TSource111111111111111111111111111111";
 const hop = "THop1111111111111111111111111111111";
@@ -25,6 +27,51 @@ function transfer(overrides: Partial<RawTronscanTrc20Transfer> = {}): RawTronsca
 }
 
 describe("forensic route search", () => {
+  it("keeps same-tuple indexed events distinct while deduplicating repeated provider branches", async () => {
+    const indexedEvents: IndexedTronUsdtTransfer[] = [7, 8].map((eventIndex) => ({
+      transferId: `tronscan:same-tuple:${eventIndex}`,
+      txHash: "same-tuple",
+      blockNumber: 100,
+      blockTimestamp: new Date("2026-05-05T10:00:00.000Z"),
+      eventIndex,
+      provider: "tronscan",
+      providerRowOrdinalInTx: eventIndex,
+      fromAddress: source,
+      toAddress: target,
+      amountRaw: "320000000000",
+      method: "transfer",
+      callerAddress: source,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      reverted: false,
+      confirmed: true
+    }));
+    const client = createIndexedTronUsdtTransferClient(async () => [...indexedEvents, indexedEvents[0]]);
+
+    const report = await runForensicRouteSearch({
+      sourceAddress: source,
+      targetAddress: target,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5
+    });
+
+    expect(report.paths).toHaveLength(2);
+    expect(report.paths.map((path) => path.edges[0]?.eventIndex).sort()).toEqual([7, 8]);
+  });
+
+  it("keeps a valid live edge without raw movement identity", () => {
+    const edge = normalizeTransfer(transfer({ transaction_id: "live-no-event-identity" }));
+
+    expect(edge).toMatchObject({ txHash: "live-no-event-identity", contractAddress: TRON_USDT_CONTRACT_ADDRESS });
+    expect(edge?.transferId).toBeUndefined();
+    expect(edge?.eventIndex).toBeUndefined();
+  });
+
   it("builds direct and hop candidate paths while filtering failed and non-USDT transfers", async () => {
     const client = {
       listRelatedTrc20Transfers: vi.fn(async (address: string) => {

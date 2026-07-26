@@ -13,7 +13,7 @@ import {
   upsertContractIntelligenceProfile,
   upsertContractLlmVerdictCache
 } from "../src/storage/repositories";
-import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
+import { forensicRouteEdgeIdentity, indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import {
@@ -162,7 +162,7 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const byKey = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    byKey.set(forensicRouteEdgeIdentity(edge), edge);
   }
   return [...byKey.values()];
 }

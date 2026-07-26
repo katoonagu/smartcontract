@@ -1732,6 +1732,43 @@ describe("runWhereIsMoneyCheck", () => {
     }
   });
 
+  it("keeps same-tuple indexed movements distinct but deduplicates the same indexed movement", async () => {
+    const indexedSubject = "TIndexedSubject11111111111111111111111";
+    const indexedSender = "TIndexedSender111111111111111111111111";
+    const sharedTxHash = "same-tuple-indexed-transaction";
+    const indexedMovement = (eventIndex: number): ForensicRouteEdge => ({
+      ...edge(`indexed-event-${eventIndex}`, indexedSender, indexedSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      txHash: sharedTxHash,
+      transferId: `tronscan:${sharedTxHash}:${eventIndex}`,
+      eventIndex,
+      provider: "tronscan",
+      providerRowOrdinalInTx: eventIndex
+    });
+    const run = (sourceEdges: ForensicRouteEdge[]) => runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000",
+      fetchEdgesForAddress: async (address) => address === indexedSubject ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("cex", "Binance"),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: indexedSubject,
+      requestedAmountRaw: "2000000",
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    const distinctReport = await run([indexedMovement(1), indexedMovement(2)]);
+    expect(distinctReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId).sort()).toEqual([
+      "indexed-event-1",
+      "indexed-event-2"
+    ]);
+
+    const duplicate = indexedMovement(1);
+    const duplicateReport = await run([duplicate, { ...duplicate }]);
+    expect(duplicateReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId)).toEqual(["indexed-event-1"]);
+  });
+
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {
     const lowBalanceSubject = "TSubjectAnchorNoFunding111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

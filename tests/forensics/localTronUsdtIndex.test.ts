@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createIndexedTronUsdtTransferClient,
+  forensicRouteEdgeIdentity,
   indexedTransferToRouteEdge,
   materializeIndexedTransferWindow
 } from "../../src/forensics/localTronUsdtIndex";
@@ -8,16 +9,21 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
 
 const transfer: IndexedTronUsdtTransfer = {
+  transferId: "tronscan:tx-1:3",
   txHash: "tx-1",
   blockNumber: 100,
   blockTimestamp: new Date("2026-05-20T10:00:00.000Z"),
   eventIndex: 3,
+  provider: "tronscan",
+  providerRowOrdinalInTx: 4,
   fromAddress: "TFrom1111111111111111111111111111111",
   toAddress: "TTo111111111111111111111111111111111",
   amountRaw: "100000000",
   method: "transferFrom",
   callerAddress: "TCaller11111111111111111111111111111",
   contractRet: "SUCCESS",
+  finalResult: "SUCCESS",
+  reverted: false,
   confirmed: true
 };
 
@@ -31,8 +37,32 @@ describe("local TRON USDT index adapter", () => {
       txHash: transfer.txHash,
       amountRaw: transfer.amountRaw,
       method: "transferFrom",
-      edgeType: "transfer_from"
+      edgeType: "transfer_from",
+      transferId: "tronscan:tx-1:3",
+      eventIndex: 3,
+      provider: "tronscan",
+      providerRowOrdinalInTx: 4,
+      callerAddress: "TCaller11111111111111111111111111111",
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      confirmed: true,
+      reverted: false
     });
+  });
+
+  it("uses event identity before the legacy tuple fallback", () => {
+    const indexedEdge = indexedTransferToRouteEdge(transfer);
+    const liveEdge = {
+      ...indexedEdge,
+      transferId: undefined,
+      eventIndex: undefined,
+      provider: undefined,
+      providerRowOrdinalInTx: undefined
+    };
+
+    expect(forensicRouteEdgeIdentity(indexedEdge)).toBe("transfer:tronscan:tx-1:3");
+    expect(forensicRouteEdgeIdentity(liveEdge)).toBe("legacy:tx-1:TFrom1111111111111111111111111111111:TTo111111111111111111111111111111111:100000000");
   });
 
   it("exposes indexed transfers through the existing route client shape", async () => {

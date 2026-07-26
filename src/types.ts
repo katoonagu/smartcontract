@@ -327,6 +327,16 @@ export type ForensicRouteEdge = {
   timestamp: Date;
   method: string;
   edgeType: ForensicRouteEdgeType;
+  transferId?: string | null;
+  eventIndex?: number | null;
+  provider?: string | null;
+  providerRowOrdinalInTx?: number | null;
+  callerAddress?: string | null;
+  contractAddress?: string | null;
+  contractRet?: string | null;
+  finalResult?: string | null;
+  confirmed?: boolean | null;
+  reverted?: boolean | null;
   economicRole?: ForensicEconomicRole;
   economicProtocol?: ForensicEconomicProtocol;
 };

@@ -27,6 +27,7 @@ import { buildBoundaryExposureProfile } from "./boundaryExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 import { buildFastCounterpartyTopsProfile } from "./flowCounterpartyProfile";
 import { createTrc20TransferCache, type Trc20TransferCache } from "./transferCache";
+import { forensicRouteEdgeIdentity } from "./localTronUsdtIndex";
 import { FORENSIC_ROUTE_POLICY_VERSION, scoreRouteCandidate, type RouteAddressMetadata } from "./routeScorer";
 
 export type RouteSearchTronClient = {
@@ -82,6 +83,17 @@ function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+type RawRouteIdentityTransfer = RawTronscanTrc20Transfer & {
+  transferId?: unknown;
+  eventIndex?: unknown;
+  provider?: unknown;
+  providerRowOrdinalInTx?: unknown;
+};
+
+function optionalEventIndex(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function isOfficialSuccessfulTransfer(transfer: RawTronscanTrc20Transfer): boolean {
   const tokenId = transfer.contract_address ?? transfer.tokenInfo?.tokenId;
   if (tokenId !== TRON_USDT_CONTRACT_ADDRESS) return false;
@@ -115,16 +127,30 @@ export function normalizeTransfer(transfer: RawTronscanTrc20Transfer): ForensicR
   const timestamp = new Date(transfer.block_ts);
   if (Number.isNaN(timestamp.getTime())) return null;
   const method = transferMethod(transfer);
-  return {
-    id: stableId(["forensic_route_edge", transfer.transaction_id, transfer.from_address, transfer.to_address, transfer.quant]),
+  const indexedTransfer = transfer as RawRouteIdentityTransfer;
+  const trigger = isObjectRecord(transfer.trigger_info) ? transfer.trigger_info : {};
+  const edge: ForensicRouteEdge = {
+    id: "",
     fromAddress: transfer.from_address,
     toAddress: transfer.to_address,
     txHash: transfer.transaction_id,
     amountRaw: transfer.quant,
     timestamp,
     method: method.method,
-    edgeType: method.edgeType
+    edgeType: method.edgeType,
+    transferId: stringField(indexedTransfer.transferId) ?? undefined,
+    eventIndex: optionalEventIndex(indexedTransfer.eventIndex),
+    provider: stringField(indexedTransfer.provider) ?? undefined,
+    providerRowOrdinalInTx: optionalEventIndex(indexedTransfer.providerRowOrdinalInTx),
+    callerAddress: stringField(trigger.callerAddress) ?? undefined,
+    contractAddress: stringField(transfer.contract_address) ?? stringField(transfer.tokenInfo?.tokenId) ?? undefined,
+    contractRet: stringField(transfer.contractRet) ?? undefined,
+    finalResult: stringField(transfer.finalResult) ?? undefined,
+    confirmed: transfer.confirmed,
+    reverted: typeof transfer.revert === "boolean" ? transfer.revert : undefined
   };
+  edge.id = stableId(["forensic_route_edge", forensicRouteEdgeIdentity(edge)]);
+  return edge;
 }
 
 function amountUsdtToRaw(value: string | null | undefined): string | null {
@@ -146,7 +172,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function mergeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const byKey = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    byKey.set(forensicRouteEdgeIdentity(edge), edge);
   }
   return [...byKey.values()];
 }
@@ -305,7 +331,7 @@ async function collectGraph(
     });
     state.missingChecks.push(...fetchResult.missingChecks);
     for (const edge of fetchResult.edges) {
-      byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+      byKey.set(forensicRouteEdgeIdentity(edge), edge);
       const nextAddress = item.direction === "forward" ? edge.toAddress : edge.fromAddress;
       if (nextAddress !== item.address && item.depth + 1 < input.maxDepth) {
         queue.push({ address: nextAddress, depth: item.depth + 1, direction: item.direction });

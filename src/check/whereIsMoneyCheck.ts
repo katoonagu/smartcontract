@@ -1,5 +1,6 @@
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { forensicRouteEdgeIdentity } from "../forensics/localTronUsdtIndex";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
 import { buildForensicCoverageV2 } from "../forensics/forensicCoverageV2";
@@ -834,7 +835,7 @@ function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInpu
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const byKey = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    const key = `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+    const key = forensicRouteEdgeIdentity(edge);
     byKey.set(key, betterDedupeEdge(byKey.get(key), edge));
   }
   return [...byKey.values()];
@@ -1084,9 +1085,11 @@ function selectApprovalEnrichmentEdges(input: {
   mode: "off" | "triggered" | "always";
 }): ForensicRouteEdge[] {
   if (input.mode === "off" || input.maxCandidates <= 0) return [];
-  const edgesByTxHash = new Map<string, ForensicRouteEdge>();
+  const edgesByTxHash = new Map<string, ForensicRouteEdge[]>();
   for (const edge of input.edges) {
-    if (!edgesByTxHash.has(edge.txHash)) edgesByTxHash.set(edge.txHash, edge);
+    const sameTransaction = edgesByTxHash.get(edge.txHash) ?? [];
+    sameTransaction.push(edge);
+    edgesByTxHash.set(edge.txHash, sameTransaction);
   }
   const importantTxHashes = new Set<string>();
   const allPathAddresses = new Set<string>();
@@ -1113,13 +1116,12 @@ function selectApprovalEnrichmentEdges(input: {
     for (const txHash of path.txHashes) importantTxHashes.add(txHash);
   }
   const important = [...importantTxHashes]
-    .map((txHash) => edgesByTxHash.get(txHash))
-    .filter((edge): edge is ForensicRouteEdge => Boolean(edge));
+    .flatMap((txHash) => edgesByTxHash.get(txHash) ?? []);
   const importantWithTriggeredEdges = dedupeEdges([...triggeredContractEdges, ...important]);
-  const importantKeys = new Set(importantWithTriggeredEdges.map((edge) => `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`));
+  const importantKeys = new Set(importantWithTriggeredEdges.map(forensicRouteEdgeIdentity));
   const fallback = input.mode === "always"
     ? input.edges
-        .filter((edge) => !importantKeys.has(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`))
+        .filter((edge) => !importantKeys.has(forensicRouteEdgeIdentity(edge)))
         .sort(compareApprovalDrainCandidateAmountDesc)
     : [];
   return dedupeEdges([...importantWithTriggeredEdges, ...fallback]).slice(0, input.maxCandidates);
