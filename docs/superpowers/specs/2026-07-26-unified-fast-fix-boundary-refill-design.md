@@ -192,7 +192,17 @@ share the same v1/v2 evaluator and commit behavior.
 Change the controller callback from a fire-and-forget shape to:
 
 ```ts
-assignProviderPermits(assignments): AcceptedAssignment[]
+assignProviderPermits(assignments): {
+  accepted: AcceptedAssignment[];
+  rejected: Array<{
+    assignment: ProposedAssignment;
+    reason:
+      | "draining"
+      | "slot_active"
+      | "pending_assignment"
+      | "stale_epoch";
+  }>;
+}
 ```
 
 The provider pool remains the slot-epoch authority. The controller distinguishes:
