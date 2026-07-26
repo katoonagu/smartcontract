@@ -16,6 +16,11 @@ code_refs:
 - Capture canonical provider request identities and response pages for TPCP,
   TFWG, and TXc, then freeze the bundles. Existing request-only logs do not
   contain enough response data for a truthful before/after replay.
+- The TXc legacy `where_is_money_check` replay capture is blocked: the configured
+  database has no completed job for `TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd` to
+  freeze. Do not create a synthetic replacement. Stage B release and concurrency
+  2 remain blocked until the capture is made from the pre-Stage-B commit with its
+  full provider/DB dependency tape and supplemental raw/full transaction facts.
 - Exact barrier-versus-rolling hash comparison remains tied to one frozen
   provider snapshot. Separate live runs cannot substitute for it.
 

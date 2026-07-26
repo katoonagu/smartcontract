@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  listActiveAddressLabelAssertionsForRoute,
   listActiveRiskLabelsForAddress,
   upsertAddressLabelAssertion
 } from "../../src/storage/repositories";
@@ -46,6 +47,18 @@ function createMockDb(rows: Record<string, unknown>[] = []): { db: Db; queries: 
 }
 
 describe("address label assertions", () => {
+  it("reads only active route assertions and safely handles scalar, array, malformed, and empty hash filters", async () => {
+    const { db, queries } = createMockDb([]);
+    await expect(listActiveAddressLabelAssertionsForRoute(db, {
+      chain: "tron",
+      addresses: ["TSubject111111111111111111111111111111"],
+      txHashes: ["a".repeat(64)]
+    })).resolves.toEqual([]);
+    expect(queries[0].sql).toContain("assertions.status = 'active'");
+    expect(queries[0].sql).toContain("jsonb_typeof(assertions.evidence_json) = 'object'");
+    expect(queries[0].sql).toContain("jsonb_array_elements_text(assertions.evidence_json -> 'txHashes')");
+    expect(queries[0].params).toEqual(["tron", ["TSubject111111111111111111111111111111"], ["a".repeat(64)]]);
+  });
   it("upserts a confirmed darknet exchange assertion and derives an active flat label", async () => {
     const tx = createMockTransactionalDb([
       {

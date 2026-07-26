@@ -104,6 +104,32 @@ function blacklistContractEvent(
 }
 
 describe("TronscanClient", () => {
+  it("gets raw fullnode transactions with hash-bound scheduler dedupe", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined;
+    const fetchFn = vi.fn((input: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((resolve) => {
+      if (!resolveFirst) resolveFirst = resolve;
+      else resolve(jsonResponse({ txID: JSON.parse(String(init?.body)).value }));
+    }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fullNodeApiKey: "fullnode-secret",
+      fetchFn
+    });
+
+    const first = client.getRawTransaction("a".repeat(64));
+    const same = client.getRawTransaction("a".repeat(64));
+    const different = client.getRawTransaction("b".repeat(64));
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/wallet/gettransactionbyid");
+    expect(JSON.parse(String(init.body))).toEqual({ value: "a".repeat(64) });
+    resolveFirst!(jsonResponse({ txID: "a".repeat(64) }));
+    await expect(first).resolves.toEqual({ txID: "a".repeat(64) });
+    await expect(same).resolves.toEqual({ txID: "a".repeat(64) });
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
+    await expect(different).resolves.toEqual({ txID: "b".repeat(64) });
+  });
   it("requests incoming confirmed official USDT transfers", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ token_transfers: [] }));
     const client = new TronscanClient({

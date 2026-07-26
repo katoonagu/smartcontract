@@ -116,6 +116,7 @@ export type TronContractEventClient = {
 type FetchLike = typeof fetch;
 type TronGridTransferDirection = "incoming" | "related";
 type FetchJsonOptions = {
+  schedulerCacheKey?: string;
   logFinalError?: (error: unknown) => boolean;
   shouldRetry?: (error: unknown) => boolean;
   timeoutMs?: number;
@@ -883,6 +884,21 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       refBlockBytes: this.stringField(rawData.ref_block_bytes),
       refBlockHash: this.stringField(rawData.ref_block_hash)
     };
+  }
+
+  async getRawTransaction(txHash: string): Promise<unknown> {
+    const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl ?? this.baseUrl);
+    return this.fetchJson(
+      url,
+      "raw_transaction",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: txHash })
+      },
+      this.fullNodeApiKey ?? null,
+      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:raw_transaction:v1:${txHash}` }
+    );
   }
 
   async listRelatedTrc20Transfers(
@@ -1839,7 +1855,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           options.observationCanonicalSequence,
           options.observationAttempt,
           options.observationSlotId,
-          options.observationSlotEpoch
+          options.observationSlotEpoch,
+          options.schedulerCacheKey
         );
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
@@ -1887,7 +1904,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     observationCanonicalSequence?: number,
     observationAttempt?: number,
     observationSlotId?: number,
-    observationSlotEpoch?: number
+    observationSlotEpoch?: number,
+    schedulerCacheKey?: string
   ): Promise<unknown> {
     const endpointBucket = this.endpointBucketForRequest(requestName);
     const logPath = this.safeRequestLogPath(requestName, url);
@@ -1935,9 +1953,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         requestName,
         path: logPath,
         priority: this.priorityForRequest(requestName),
-        cacheKey: requestName === "transfer"
+        cacheKey: schedulerCacheKey ?? (requestName === "transfer"
           ? `${this.schedulerDedupeNamespace}:${url.toString()}`
-          : undefined,
+          : undefined),
         slotScope: apiKey === undefined ? "pool" : "single",
         endpointBucket,
         observationScope,

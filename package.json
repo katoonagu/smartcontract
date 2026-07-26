@@ -16,6 +16,7 @@
     "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts",
     "forensic:operational": "node --import tsx scripts/forensicOperationalReport.ts",
     "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
+    "forensic:where-latency:capture": "node --import tsx scripts/captureWhereLatencyReplay.ts",
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
     "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts",
     "golden:v2": "node --import tsx scripts/tronUsdtGoldenPilotV2.ts",

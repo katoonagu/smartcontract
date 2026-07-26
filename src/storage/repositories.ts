@@ -5541,6 +5541,44 @@ export async function listActiveRiskLabelsForAddress(db: Db, address: string, ch
   return result.rows.map(mapAddressLabelRow);
 }
 
+export async function listActiveAddressLabelAssertionsForRoute(
+  db: Db,
+  input: { chain: string; addresses: string[]; txHashes: string[] }
+): Promise<AddressLabelAssertion[]> {
+  const addresses = [...new Set(input.addresses.filter((address) => address.length > 0))];
+  const txHashes = [...new Set(input.txHashes.filter((hash) => hash.length > 0))];
+  if (addresses.length === 0) return [];
+  const result = await db.query(
+    `select id, chain, address, label, entity_name, category, confidence, severity,
+       status, source_name, source_url, notes, evidence_json,
+       created_by_telegram_id, first_seen_at, last_seen_at, created_at, updated_at
+     from address_label_assertions assertions
+     where assertions.chain = $1
+       and assertions.address = any($2)
+       and assertions.status = 'active'
+       and (
+         cardinality($3::text[]) = 0
+         or (
+           jsonb_typeof(assertions.evidence_json) = 'object'
+           and (
+             assertions.evidence_json ->> 'txHash' = any($3)
+             or (
+               jsonb_typeof(assertions.evidence_json -> 'txHashes') = 'array'
+               and exists (
+                 select 1
+                 from jsonb_array_elements_text(assertions.evidence_json -> 'txHashes') as route_hash(value)
+                 where route_hash.value = any($3)
+               )
+             )
+           )
+         )
+       )
+     order by assertions.created_at asc, assertions.id asc`,
+    [input.chain, addresses, txHashes]
+  );
+  return result.rows.map(mapAddressLabelAssertionRow);
+}
+
 export async function upsertAddressLabelAssertion(
   db: Db,
   input: AddressLabelAssertionInput
