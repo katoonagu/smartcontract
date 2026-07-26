@@ -376,6 +376,12 @@ function validateEnvelope(value: unknown): UnifiedProviderReplayV1 {
   return validated;
 }
 
+export function canonicalJsonFilePayload(fileBytes: string): string {
+  if (fileBytes.endsWith("\r\n")) return fileBytes.slice(0, -2);
+  if (fileBytes.endsWith("\n")) return fileBytes.slice(0, -1);
+  return fileBytes;
+}
+
 export function parseUnifiedProviderReplayV1(
   rawCanonicalJson: string
 ): UnifiedProviderReplayV1 {

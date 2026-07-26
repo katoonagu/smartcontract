@@ -64,6 +64,7 @@ import {
   buildUnifiedPerformanceBenchmarkManifest
 } from "../src/unifiedCheck/performanceMetrics";
 import {
+  canonicalJsonFilePayload,
   createUnifiedProviderReplayerV1,
   parseUnifiedRollingOracleReceiptV1,
   parseUnifiedProviderReplayV1,
@@ -1972,7 +1973,7 @@ async function loadReplayFixture(policy: TraversalPolicy): Promise<{
     import.meta.url
   ));
   const file = await readFile(path, "utf8");
-  const canonicalJson = file.endsWith("\n") ? file.slice(0, -1) : file;
+  const canonicalJson = canonicalJsonFilePayload(file);
   return {
     canonicalJson,
     envelope: parseUnifiedProviderReplayV1(canonicalJson)

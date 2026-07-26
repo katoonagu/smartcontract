@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createUnifiedProviderReplayRecorderV1,
   createUnifiedProviderReplayerV1,
+  canonicalJsonFilePayload,
   compareUnifiedReplayOracleFacts,
   parseUnifiedRollingOracleReceiptV1,
   parseUnifiedProviderReplayV1,
@@ -262,15 +263,24 @@ describe("Unified frozen provider replay V1", () => {
     })).toThrow("unified_provider_replay_response_conflict");
   });
 
+  it.each([
+    ["{}", "{}"],
+    ["{}\n", "{}"],
+    ["{}\r\n", "{}"],
+    ["{}\n\n", "{}\n"]
+  ] as const)("removes one file line ending from %j", (bytes, expected) => {
+    expect(canonicalJsonFilePayload(bytes)).toBe(expected);
+  });
+
   it("ships a canonical, non-empty multi-page and multi-branch replay fixture", async () => {
     const fileBytes = await readFile(
       "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
       "utf8"
     );
-    const raw = fileBytes.endsWith("\n")
-      ? fileBytes.slice(0, -1)
-      : fileBytes;
-    expect(fileBytes).toBe(`${raw}\n`);
+    const raw = canonicalJsonFilePayload(fileBytes);
+    expect(
+      fileBytes === `${raw}\n` || fileBytes === `${raw}\r\n`
+    ).toBe(true);
     expect(canonicalizeArtifactJson(JSON.parse(raw))).toBe(raw);
     const parsed = parseUnifiedProviderReplayV1(raw);
     expect(parsed.requests.length).toBeGreaterThanOrEqual(6);

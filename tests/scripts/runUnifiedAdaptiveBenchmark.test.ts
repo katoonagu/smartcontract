@@ -37,6 +37,7 @@ import {
   sealUnifiedProviderGroupAuditV1
 } from "../../src/unifiedCheck/adaptiveBenchmarkEvidence";
 import {
+  canonicalJsonFilePayload,
   parseUnifiedProviderReplayV1,
   sealUnifiedRollingOracleReceiptV1
 } from "../../src/unifiedCheck/providerReplay";
@@ -1657,9 +1658,7 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       "utf8"
     );
     const replay = parseUnifiedProviderReplayV1(
-      fixtureBytes.endsWith("\n")
-        ? fixtureBytes.slice(0, -1)
-        : fixtureBytes
+      canonicalJsonFilePayload(fixtureBytes)
     );
     const facts = oracleFacts();
     const receipt = sealUnifiedRollingOracleReceiptV1({
@@ -1763,10 +1762,10 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       "--output", output
     ], v1Runtime);
     const v1Fixture = parseUnifiedProviderReplayV1(
-      (await readFile(
+      canonicalJsonFilePayload(await readFile(
         "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
         "utf8"
-      )).trimEnd()
+      ))
     );
     expect(v1Runtime.resolveReplayOracleReceipt)
       .toHaveBeenCalledWith(expect.objectContaining({
@@ -1789,10 +1788,10 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       "unified_benchmark_existing_artifact_mismatch"
     );
     const v2Fixture = parseUnifiedProviderReplayV1(
-      (await readFile(
+      canonicalJsonFilePayload(await readFile(
         "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
         "utf8"
-      )).trimEnd()
+      ))
     );
     expect(v2Runtime.resolveReplayOracleReceipt)
       .toHaveBeenCalledWith(expect.objectContaining({

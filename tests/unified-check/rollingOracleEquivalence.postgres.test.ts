@@ -28,6 +28,7 @@ import {
   refillOrderedAdmissions
 } from "../../src/unifiedCheck/plannerRepository";
 import {
+  canonicalJsonFilePayload,
   compareUnifiedReplayOracleFacts,
   parseUnifiedProviderReplayV1,
   sealUnifiedRollingOracleReceiptV1,
@@ -1461,7 +1462,7 @@ describe("Unified rolling oracle comparison harness", () => {
       )
     ]);
     const parse = (bytes: string) => parseUnifiedProviderReplayV1(
-      bytes.endsWith("\n") ? bytes.slice(0, -1) : bytes
+      canonicalJsonFilePayload(bytes)
     );
     const v1 = parse(v1Bytes);
     const v2 = parse(v2Bytes);
@@ -1544,9 +1545,7 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       "utf8"
     );
     const replay = parseUnifiedProviderReplayV1(
-      fixtureBytes.endsWith("\n")
-        ? fixtureBytes.slice(0, -1)
-        : fixtureBytes
+      canonicalJsonFilePayload(fixtureBytes)
     );
     const barrier = await runScenario({
       replay,
