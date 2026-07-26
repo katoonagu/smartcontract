@@ -199,6 +199,10 @@ expanding frontier has no percent or ETA.
   phase, drop discontinuities, and export no run/task/provider identities.
   They do not mutate the historical adaptive benchmark observation V1 shape;
   a release evidence artifact that consumes them remains later work.
+- `checkpoint_or_commit` is a stable pool/run/task reason code but is not
+  emitted by diagnostic V1. Existing state cannot prove that the transition
+  holds the last otherwise-fillable slot; emission remains pending a direct
+  causal signal and is never reconstructed after the fact.
 
 ## Separate Decisions
 

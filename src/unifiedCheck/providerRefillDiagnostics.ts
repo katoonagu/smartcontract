@@ -292,3 +292,26 @@ export function createUnifiedProviderRefillDiagnostics() {
 export type UnifiedProviderRefillDiagnostics = ReturnType<
   typeof createUnifiedProviderRefillDiagnostics
 >;
+
+export function assignUnifiedProviderPermitsWithDiagnostics(input: {
+  readonly assignments: readonly UnifiedProviderSlotAssignment[];
+  readonly diagnostics: Pick<
+    UnifiedProviderRefillDiagnostics,
+    "recordControllerDecisionFinished"
+  >;
+  now(): number;
+  assignPermits(
+    assignments: readonly UnifiedProviderSlotAssignment[]
+  ): UnifiedProviderAssignmentResult;
+}): UnifiedProviderAssignmentResult {
+  try {
+    input.diagnostics.recordControllerDecisionFinished({
+      assignments: input.assignments,
+      atMs: input.now()
+    });
+  } catch {
+    // ponytail: timing is best-effort; assignment classification remains the
+    // authoritative transition when a clock or observer fails.
+  }
+  return input.assignPermits(input.assignments);
+}

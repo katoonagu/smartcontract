@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignUnifiedProviderPermitsWithDiagnostics,
   createUnifiedProviderRefillDiagnostics
 } from "../../src/unifiedCheck/providerRefillDiagnostics";
+import {
+  createUnifiedProviderPool
+} from "../../src/unifiedCheck/providerPool";
 
 const permit = {
   lane: "interactive" as const,
@@ -42,6 +46,47 @@ function completeSample(input: {
 }
 
 describe("Unified provider refill diagnostics", () => {
+  it("records the controller decision before pool classification and permit acceptance", async () => {
+    const diagnostics = createUnifiedProviderRefillDiagnostics();
+    let evaluatedAtMs = 0;
+    const pool = createUnifiedProviderPool({
+      configuredLimit: 1,
+      requiresPermit: true,
+      yieldAfterClaim: true,
+      runCycle: async () => ({ claimed: false }),
+      onAssignmentsEvaluated: (result) => {
+        evaluatedAtMs = 23;
+        diagnostics.recordAssignmentsEvaluated(result, evaluatedAtMs);
+      },
+      onError() {}
+    });
+    const initial = { slotId: 0, expectedEpoch: 0, permit };
+    pool.assignPermits([initial]);
+    pool.setTargetSlots(1);
+    pool.wake();
+    await pool.waitForIdle();
+    const assignment = { slotId: 0, expectedEpoch: 2, permit };
+    diagnostics.recordChunkFinished({ slotId: 0, epoch: 1, atMs: 10 });
+    diagnostics.recordCheckpointFinished({ slotId: 0, epoch: 1, atMs: 18 });
+
+    const result = assignUnifiedProviderPermitsWithDiagnostics({
+      assignments: [assignment],
+      diagnostics,
+      now: () => 20,
+      assignPermits: (assignments) => pool.assignPermits(assignments)
+    });
+    diagnostics.recordTaskClaimed({ slotId: 0, epoch: 3, atMs: 25 });
+
+    expect(result.accepted).toEqual([assignment]);
+    expect(evaluatedAtMs).toBe(23);
+    expect(diagnostics.snapshot().phases.controllerToPermit).toEqual({
+      p50: 3,
+      p95: 3,
+      max: 3,
+      sampleCount: 1
+    });
+  });
+
   it("correlates exact epoch transitions and exports bounded identity-free phase metrics", () => {
     const diagnostics = createUnifiedProviderRefillDiagnostics();
     completeSample({ diagnostics });

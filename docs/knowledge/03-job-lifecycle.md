@@ -188,6 +188,10 @@ transition. Discontinuities are dropped rather than inferred, and exported
 snapshots contain aggregate assignment counts and refill percentiles without
 run, owner, task, address, key, or provider-group identities. This diagnostic
 path never participates in claim, checkpoint, acceptance, or commit success.
+`checkpoint_or_commit` is a stable supported reason code, but V1 intentionally
+does not emit it: current lifecycle state cannot prove that a checkpoint or
+commit holds the last otherwise-fillable slot. Emission waits for a direct
+causal signal rather than inferring the blocker after the fact.
 
 ## Remaining Operational Work
 

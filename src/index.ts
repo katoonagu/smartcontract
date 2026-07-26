@@ -218,6 +218,7 @@ import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionP
 import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
 import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
 import {
+  assignUnifiedProviderPermitsWithDiagnostics,
   createUnifiedProviderRefillDiagnostics
 } from "./unifiedCheck/providerRefillDiagnostics";
 import { createUnifiedProviderPool } from "./unifiedCheck/providerPool";
@@ -932,14 +933,6 @@ const unifiedProviderPool = createUnifiedProviderPool({
   },
   onSlotBoundary: () => wakeUnifiedController(),
   onAssignmentsEvaluated: (result) => {
-    const assignments = [
-      ...result.accepted,
-      ...result.rejected.map((rejection) => rejection.assignment)
-    ];
-    unifiedProviderRefillDiagnostics.recordControllerDecisionFinished({
-      assignments,
-      atMs: performance.now()
-    });
     unifiedProviderRefillDiagnostics.recordAssignmentsEvaluated(
       result,
       performance.now()
@@ -1179,7 +1172,13 @@ const runUnifiedControllerCycle = async (
       })
     ),
     assignProviderPermits: (assignments) =>
-      unifiedProviderPool.assignPermits(assignments),
+      assignUnifiedProviderPermitsWithDiagnostics({
+        assignments,
+        diagnostics: unifiedProviderRefillDiagnostics,
+        now: () => performance.now(),
+        assignPermits: (proposals) =>
+          unifiedProviderPool.assignPermits(proposals)
+      }),
     setPoolTarget: (target) =>
       unifiedProviderPool.setTargetSlots(target),
     wakePool: () => unifiedProviderPool.wake(),
