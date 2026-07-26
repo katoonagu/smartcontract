@@ -12,9 +12,11 @@ import {
 import type { AnalysisManifestV1 } from "../../src/unifiedCheck/contracts";
 import {
   buildFrozenLabelDataset,
+  buildProductionFrozenLabelDataset,
   type FrozenLabelDatasetV1
 } from "../../src/unifiedCheck/frozenLabels";
 import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
+import { decideTronScanProviderServiceAssertion } from "../../src/unifiedCheck/providerServiceBindings";
 import { initialUnifiedTraversalCheckpointV1 } from "../../src/unifiedCheck/productionTraversal";
 import {
   buildProductionBoundaryCandidateV2,
@@ -79,6 +81,29 @@ function frozenDataset(input: {
   });
 }
 
+function providerDataset(fetchedAt: string) {
+  const decision = decideTronScanProviderServiceAssertion({
+    metadata: {
+      address: CEX,
+      source: "tronscan",
+      name: null,
+      tag: "Bybit",
+      verified: false,
+      rawJson: { address: CEX, tag: "Bybit" },
+      fetchedAt: new Date(fetchedAt),
+      expiresAt: new Date("2026-07-24T00:00:00.000Z")
+    },
+    frozenAt: manifest.confirmedBlockTimestamp
+  });
+  if (!decision.accepted) throw new Error("expected accepted provider");
+  return buildProductionFrozenLabelDataset({
+    frozenAt: manifest.confirmedBlockTimestamp,
+    snapshotHash: manifest.snapshotHash,
+    legacyRows: [],
+    providerAssertions: [decision]
+  });
+}
+
 function v2Manifest(dataset: ReturnType<typeof frozenDataset>): AnalysisManifestV1 {
   return {
     ...manifest,
@@ -102,6 +127,7 @@ function coordinatorHarness(input: {
   let taskId = 0;
   const loadLabels = vi.fn(async () => input.legacyLabels ?? new Map());
   const loadFrozenLabelDataset = vi.fn(async () => input.dataset.dataset);
+  const createTaskId = vi.fn(() => `v2-history-${++taskId}`);
   const handler = createUnifiedTraversalCoordinatorHandler({
     commitMaxEntries: input.commitMaxEntries ?? 32,
     commitMaxBytes: input.commitMaxBytes ?? 8_388_608,
@@ -114,7 +140,7 @@ function coordinatorHarness(input: {
     loadLabels,
     loadFrozenLabelDataset,
     loadDurableAddressHistoryKeys: async () => new Set(),
-    createTaskId: () => `v2-history-${++taskId}`,
+    createTaskId,
     loadReadyAddressHistories: async () => [],
     loadCommittedAddressHistories: async () => [],
     loadAddressHistoryPage: async () => {
@@ -133,6 +159,7 @@ function coordinatorHarness(input: {
     artifacts,
     loadLabels,
     loadFrozenLabelDataset,
+    createTaskId,
     run: (checkpoint: unknown = {}) => handler({
       task: {
         id: "task-traversal-v2",
@@ -399,6 +426,94 @@ describe("Unified address-centric traversal coordinator", () => {
       (artifact as { version?: string }).version ===
         "unified-traversal-boundary-evidence-v2"
     )).toHaveLength(2);
+  });
+
+  it("commits a provider CEX boundary before history discovery", async () => {
+    const dataset = providerDataset("2026-07-23T11:00:00.000Z");
+    const scenario = coordinatorHarness({
+      manifest: v2Manifest(dataset),
+      directEvents: [event({
+        hash: "c".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset
+    });
+
+    const first = await scenario.run();
+
+    expect(first.kind).toBe("checkpoint");
+    if (first.kind !== "checkpoint") return;
+    expect(first.orderedCommit).toBeUndefined();
+    const boundaryEvidence = [...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    );
+    expect(boundaryEvidence).toHaveLength(1);
+    expect(boundaryEvidence[0]).toMatchObject({
+      labelCatalogEntryId: "cex:bybit",
+      labelAuthority: "tronscan_verified_metadata"
+    });
+
+    const second = await scenario.run(first.checkpoint);
+
+    expect(second.kind).toBe("completed");
+    expect(scenario.createTaskId).not.toHaveBeenCalled();
+  });
+
+  it("does not let a later provider observation rewrite an earlier event", async () => {
+    const dataset = providerDataset("2026-07-23T12:00:00.001Z");
+    const scenario = coordinatorHarness({
+      manifest: v2Manifest(dataset),
+      directEvents: [event({
+        hash: "d".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset
+    });
+
+    const first = await scenario.run();
+
+    expect(first.kind).toBe("checkpoint");
+    if (first.kind !== "checkpoint") return;
+    expect(first.orderedCommit?.discoveredTasks).toHaveLength(1);
+    expect(scenario.createTaskId).toHaveBeenCalledTimes(1);
+    expect([...scenario.artifacts.values()].some((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    )).toBe(false);
+  });
+
+  it("keeps V1 isolated from provider CEX metadata", async () => {
+    const dataset = buildProductionFrozenLabelDataset({
+      frozenAt: manifest.confirmedBlockTimestamp,
+      snapshotHash: manifest.snapshotHash,
+      legacyRows: []
+    });
+    const scenario = coordinatorHarness({
+      manifest,
+      directEvents: [event({
+        hash: "e".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset
+    });
+
+    const first = await scenario.run();
+
+    expect(first.kind).toBe("checkpoint");
+    if (first.kind !== "checkpoint") return;
+    expect(first.orderedCommit?.discoveredTasks).toHaveLength(1);
+    expect(scenario.loadFrozenLabelDataset).not.toHaveBeenCalled();
+    expect(scenario.createTaskId).toHaveBeenCalledTimes(1);
   });
 
   it("keeps v1 legacy boundary behavior unchanged", async () => {
