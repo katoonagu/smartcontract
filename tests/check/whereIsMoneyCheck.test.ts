@@ -1775,6 +1775,59 @@ describe("runWhereIsMoneyCheck", () => {
     expect(duplicateReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId)).toEqual(["indexed-event-1"]);
   });
 
+  it("suppresses a legacy latest shadow while preserving every rich window movement", async () => {
+    const mergeSubject = "TMergeSubject1111111111111111111111111";
+    const mergeSender = "TMergeSender11111111111111111111111111";
+    const sharedTxHash = "window-latest-overlap-transaction";
+    const richMovement = (eventIndex: number): ForensicRouteEdge => ({
+      ...edge(`window-event-${eventIndex}`, mergeSender, mergeSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      txHash: sharedTxHash,
+      transferId: `tronscan:${sharedTxHash}:${eventIndex}`,
+      eventIndex,
+      provider: "tronscan",
+      providerRowOrdinalInTx: eventIndex
+    });
+    const legacyShadow: ForensicRouteEdge = {
+      ...edge("latest-legacy-shadow", mergeSender, mergeSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      txHash: sharedTxHash
+    };
+    const run = (windowMovements: ForensicRouteEdge[]) => runWhereIsMoneyCheck({
+      getTrc20Balance: async () => `${(windowMovements.length + 1) * 1_000_000}`,
+      fetchEdgesForAddress: async (address) => address === mergeSubject ? windowMovements : [],
+      fetchLatestEdgesForAddress: async (address) => address === mergeSubject ? [legacyShadow] : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === mergeSender
+        ? service("cex", "Binance")
+        : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: mergeSubject,
+      requestedAmountRaw: `${(windowMovements.length + 1) * 1_000_000}`,
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    const singleReport = await run([richMovement(1)]);
+    expect(singleReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId)).toEqual(["window-event-1"]);
+    expect(singleReport.coverage).toMatchObject({
+      selectedInboundTxCount: 1,
+      selectedAmountRaw: "1000000",
+      selectedInboundVolumeRaw: "1000000"
+    });
+
+    const twoEventReport = await run([richMovement(1), richMovement(2)]);
+    expect(twoEventReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId).sort()).toEqual([
+      "window-event-1",
+      "window-event-2"
+    ]);
+    expect(twoEventReport.coverage).toMatchObject({
+      selectedInboundTxCount: 2,
+      selectedAmountRaw: "2000000",
+      selectedInboundVolumeRaw: "2000000"
+    });
+  });
+
   it("does not count a legacy live tuple as exact one-movement provenance", async () => {
     const legacySubject = "TLegacySubject111111111111111111111111";
     const legacyEdge = normalizeTransfer({

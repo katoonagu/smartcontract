@@ -842,7 +842,7 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
     const key = forensicRouteEdgeIdentity(edge);
     byKey.set(key, betterDedupeEdge(byKey.get(key), edge));
   }
-  return [...byKey.values()];
+  return mergeForensicRouteEdges([...byKey.values()]);
 }
 
 function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: ForensicRouteEdge): ForensicRouteEdge {
