@@ -95,6 +95,7 @@ postgresDescribe("Unified production finalizer", () => {
         labelDatasetSha256: fingerprintCanonicalArtifact(labelDataset),
         scoringPolicyVersion: "scoring-signal-matrix-v4",
         attributionPolicyVersion: "selected-attribution-policy-v1",
+        traversalPolicyVersion: "snapshot-closure-v1" as const,
         runtimeCommit: "candidate",
         schemaVersion: 33
       };

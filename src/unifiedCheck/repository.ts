@@ -833,7 +833,7 @@ export async function createUnifiedCanaryBatch(
       labelDatasetSha256: string;
       scoringPolicyVersion: string;
       attributionPolicyVersion: string;
-      traversalPolicyVersion: "snapshot-closure-v1";
+      traversalPolicyVersion: import("./contracts").UnifiedTraversalPolicyVersion;
       providerSchemaVersion: "tronscan-transfer-page-v1";
       providerConfiguration: {
         sha256: string;

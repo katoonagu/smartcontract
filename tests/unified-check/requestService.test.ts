@@ -4,7 +4,10 @@ import {
   type FrozenLabelDatasetV1
 } from "../../src/unifiedCheck/frozenLabels";
 import type { SnapshotSource } from "../../src/unifiedCheck/snapshot";
+import { assertUnifiedTraversalPolicyManifest } from "../../src/unifiedCheck/contracts";
 import {
+  buildUnifiedAnalysisIdentity,
+  buildUnifiedBranchInput,
   intakeUnifiedCheck,
   unifiedFairnessOwnerId,
   type AnalysisRunRecord,
@@ -20,6 +23,7 @@ const versions = {
   labelDatasetSha256: "c".repeat(64),
   scoringPolicyVersion: "scoring-signal-matrix-v4",
   attributionPolicyVersion: "selected-attribution-policy-v1",
+  traversalPolicyVersion: "snapshot-closure-v1",
   runtimeCommit: "candidate-commit",
   schemaVersion: 34
 } as const;
@@ -151,6 +155,83 @@ function input(
 }
 
 describe("Unified Check request intake", () => {
+  it("binds traversal policy into branch and reusable analysis identities", () => {
+    const snapshot = {
+      version: "confirmed-wallet-snapshot-v1" as const,
+      schemaVersion: 1 as const,
+      chain: "tron" as const,
+      subjectAddress: ADDRESS,
+      confirmedBlockNumber: "84713573",
+      confirmedBlockHash: HASH_A,
+      timestamp: "2026-07-23T12:53:54.000Z",
+      balances: {
+        usdtRaw: null,
+        trxSun: null,
+        source: "fixture",
+        consistency: "unavailable" as const
+      }
+    };
+    const v2 = { ...versions, traversalPolicyVersion: "snapshot-closure-v2" as const };
+
+    expect(buildUnifiedBranchInput("where", HASH_A, versions))
+      .toMatchObject({ traversalPolicyVersion: "snapshot-closure-v1" });
+    expect(buildUnifiedBranchInput("where", HASH_A, v2))
+      .toMatchObject({ traversalPolicyVersion: "snapshot-closure-v2" });
+    expect(buildUnifiedAnalysisIdentity({
+      subjectAddress: ADDRESS,
+      snapshot,
+      snapshotHash: HASH_A,
+      versions,
+      reuseScope: "shared"
+    })).not.toEqual(buildUnifiedAnalysisIdentity({
+      subjectAddress: ADDRESS,
+      snapshot,
+      snapshotHash: HASH_A,
+      versions: v2,
+      reuseScope: "shared"
+    }));
+  });
+
+  it("persists the selected traversal policy in newly created manifests", async () => {
+    const store = new MemoryStore();
+    const request = {
+      ...input(store, source(), "policy-v2", "request-v2", "run-v2"),
+      versions: {
+        ...versions,
+        traversalPolicyVersion: "snapshot-closure-v2" as const
+      }
+    };
+
+    const result = await intakeUnifiedCheck(request);
+
+    expect(result.kind).toBe("attached");
+    if (result.kind !== "attached") return;
+    expect(result.run.analysisManifest.traversalPolicyVersion)
+      .toBe("snapshot-closure-v2");
+  });
+
+  it("allows missing boundary versions only for historical v1 manifests", async () => {
+    const store = new MemoryStore();
+    const result = await intakeUnifiedCheck(input(
+      store,
+      source(),
+      "policy-versions",
+      "request-policy-versions",
+      "run-policy-versions"
+    ));
+    expect(result.kind).toBe("attached");
+    if (result.kind !== "attached") return;
+    const {
+      labelCatalogVersion: _labelCatalogVersion,
+      boundaryPredicateVersion: _boundaryPredicateVersion,
+      ...historical
+    } = structuredClone(result.run.analysisManifest);
+    expect(() => assertUnifiedTraversalPolicyManifest(historical)).not.toThrow();
+    expect(() => assertUnifiedTraversalPolicyManifest({
+      ...historical,
+      traversalPolicyVersion: "snapshot-closure-v2"
+    })).toThrow("unified_v2_boundary_versions_missing");
+  });
   it("freezes rollout policy on run creation while later runs use new authority", async () => {
     const store = new MemoryStore();
     const firstInput = {

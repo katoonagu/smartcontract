@@ -126,6 +126,8 @@ export async function runUnifiedWalletCanaryCli(
     };
     readonly labelDatasetSha256: string;
     readonly providerConfigurationSha256: string;
+    readonly traversalPolicyVersion: import("../src/unifiedCheck/contracts")
+      .UnifiedTraversalPolicyVersion;
   }[];
   readonly report: import("../src/unifiedCheck/canary")
     .UnifiedCanaryBatchReportV1;
@@ -275,6 +277,7 @@ export async function runUnifiedWalletCanaryCli(
               labelDatasetSha256,
               scoringPolicyVersion: SCORING_POLICY_V4.version,
               attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
+              traversalPolicyVersion: config.unifiedTraversalPolicyVersion,
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
             },
@@ -579,7 +582,8 @@ export async function runUnifiedWalletCanaryCli(
           outputBindings.get(item.runId)?.analysis_manifest
             ?.labelDatasetSha256
         ),
-        providerConfigurationSha256: providerConfiguration.sha256
+        providerConfigurationSha256: providerConfiguration.sha256,
+        traversalPolicyVersion: canary.batchIdentity.traversalPolicyVersion
       }))
     };
     if (runtime.emitResult !== false) {

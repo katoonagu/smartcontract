@@ -2,7 +2,8 @@ import { TronWeb } from "tronweb";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import {
   UNIFIED_CANARY_DEADLINE_MINUTES,
-  type UnifiedRunPurpose
+  type UnifiedRunPurpose,
+  type UnifiedTraversalPolicyVersion
 } from "./contracts";
 import {
   intakeUnifiedCheck,
@@ -349,7 +350,7 @@ export type UnifiedCanaryBatchIdentityV1 = {
   readonly labelDatasetSha256: string;
   readonly scoringPolicyVersion: string;
   readonly attributionPolicyVersion: string;
-  readonly traversalPolicyVersion: "snapshot-closure-v1";
+  readonly traversalPolicyVersion: UnifiedTraversalPolicyVersion;
   readonly providerSchemaVersion: "tronscan-transfer-page-v1";
   readonly providerConfiguration: {
     readonly sha256: string;
@@ -766,7 +767,7 @@ export async function prepareUnifiedCanaryBatch(input: {
     labelDatasetSha256: input.versions.labelDatasetSha256,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
-    traversalPolicyVersion: "snapshot-closure-v1",
+    traversalPolicyVersion: input.versions.traversalPolicyVersion,
     providerSchemaVersion: "tronscan-transfer-page-v1",
     providerConfiguration: input.providerConfiguration,
     databaseSchemaVersion: input.versions.schemaVersion,

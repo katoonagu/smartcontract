@@ -179,6 +179,7 @@ async function withScenario<T>(
         labelDatasetSha256,
         scoringPolicyVersion: "scoring-signal-matrix-v4",
         attributionPolicyVersion: "selected-attribution-policy-v1",
+        traversalPolicyVersion: "snapshot-closure-v1",
         runtimeCommit: "candidate",
         schemaVersion: 36
       },

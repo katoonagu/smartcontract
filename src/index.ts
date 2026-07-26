@@ -2298,6 +2298,7 @@ const bot = createBot(config, db, tronClient, {
         labelDatasetSha256: UNIFIED_LABEL_DATASET_SHA256,
         scoringPolicyVersion: SCORING_POLICY_V4.version,
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
+        traversalPolicyVersion: config.unifiedTraversalPolicyVersion,
         runtimeCommit: runtimeVersion.gitCommitSha,
         schemaVersion: SCHEMA_036_VERSION
       },

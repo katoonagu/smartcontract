@@ -16,6 +16,7 @@ import {
   compareUnifiedWalletGoldenScoreProperties,
   loadUnifiedWalletGoldenCases
 } from "../../src/unifiedCheck/comparator";
+import { GOLDEN_REPLAY_TRAVERSAL_POLICY_VERSION } from "../../src/unifiedCheck/comparator";
 import { GOLDEN_COMPARATOR_V1_LOCK } from "../../src/unifiedCheck/goldenComparatorV1.generated";
 import { runUnifiedWalletGoldenComparatorCli } from "../../scripts/compareUnifiedWalletGolden";
 
@@ -192,6 +193,8 @@ describe("Unified wallet Golden comparator", () => {
       const retry = buildUnifiedWalletGoldenReplayCandidate(goldenCase);
       expect(canonicalJson(retry), goldenCase.caseId)
         .toBe(canonicalJson(first));
+      expect(GOLDEN_REPLAY_TRAVERSAL_POLICY_VERSION, goldenCase.caseId)
+        .toBe("snapshot-closure-v1");
     }
   });
 

@@ -193,6 +193,7 @@ function runRecord(): AnalysisRunRecord {
     labelDatasetSha256: "c".repeat(64),
     scoringPolicyVersion: "scoring-signal-matrix-v4",
     attributionPolicyVersion: "selected-attribution-policy-v1",
+    traversalPolicyVersion: "snapshot-closure-v1" as const,
     runtimeCommit: "candidate",
     schemaVersion: 34
   };

@@ -101,6 +101,12 @@ code_refs:
   structure for migrations 032–035 before provider, bot, or worker startup.
 - Existing runs created before schema 035 remain barrier. New runs persist their
   selected policy in the run creation transaction.
+- `UNIFIED_TRAVERSAL_POLICY_VERSION` selects `snapshot-closure-v1` or
+  `snapshot-closure-v2` for new runs. Existing runs always resume the traversal
+  policy frozen in their analysis manifest; v1 and v2 use distinct branch,
+  request, analysis, and canary identities.
+- Newly created manifests bind the current label catalog and boundary predicate
+  versions. Only historical v1 manifests may omit those fields; v2 fails closed.
 - The active check generation fence is retained only for wallet-delivery
   idempotency between legacy and Unified delivery workers. It does not start,
   stop, authorize, or limit planner/controller execution and does not block an

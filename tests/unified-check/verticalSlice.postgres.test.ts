@@ -107,6 +107,7 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
                 labelDatasetSha256: "c".repeat(64),
                 scoringPolicyVersion: "scoring-signal-matrix-v4",
                 attributionPolicyVersion: "selected-attribution-policy-v1",
+                traversalPolicyVersion: "snapshot-closure-v1",
                 runtimeCommit: "candidate",
                 schemaVersion: 33
               }

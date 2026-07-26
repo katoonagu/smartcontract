@@ -284,6 +284,7 @@ describe("Unified eight-wallet release canary", () => {
         labelDatasetSha256: "b".repeat(64),
         scoringPolicyVersion: "scoring-signal-matrix-v4",
         attributionPolicyVersion: "selected-attribution-policy-v1",
+        traversalPolicyVersion: "snapshot-closure-v2" as const,
         runtimeCommit: CANDIDATE,
         schemaVersion: 33
       },
@@ -314,6 +315,7 @@ describe("Unified eight-wallet release canary", () => {
     expect(result.runs).toHaveLength(8);
     expect(result.batchIdentity).toMatchObject({
       candidateCommit: CANDIDATE,
+      traversalPolicyVersion: "snapshot-closure-v2",
       providerSchemaVersion: "tronscan-transfer-page-v1",
       providerConfiguration: PROVIDER_CONFIGURATION,
       diagnosticHypothesis

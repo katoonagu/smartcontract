@@ -99,6 +99,9 @@ export const UNIFIED_LABEL_CATALOG_VERSION =
   "unified-label-catalog-v1" as const;
 export const UNIFIED_BOUNDARY_PREDICATE_VERSION =
   "unified-boundary-predicates-v1" as const;
+export type UnifiedTraversalPolicyVersion =
+  | "snapshot-closure-v1"
+  | "snapshot-closure-v2";
 
 export type CheckRequestV1 = {
   readonly version: "check-request-v1";
@@ -129,13 +132,27 @@ export type AnalysisManifestV1 = {
     typeof UNIFIED_BOUNDARY_PREDICATE_VERSION;
   readonly scoringPolicyVersion: string;
   readonly attributionPolicyVersion: string;
-  readonly traversalPolicyVersion: "snapshot-closure-v1";
+  readonly traversalPolicyVersion: UnifiedTraversalPolicyVersion;
   readonly runtimeCommit: string;
   readonly databaseSchemaVersion: number;
   readonly paginationCutoffBlockNumber: string;
   readonly paginationCutoffBlockHash: string;
   readonly branchArtifactHashes: Readonly<Record<string, Hash>>;
 };
+
+export function assertUnifiedTraversalPolicyManifest(
+  manifest: AnalysisManifestV1
+): void {
+  if (
+    manifest.traversalPolicyVersion === "snapshot-closure-v2" &&
+    (
+      manifest.labelCatalogVersion === undefined ||
+      manifest.boundaryPredicateVersion === undefined
+    )
+  ) {
+    throw new Error("unified_v2_boundary_versions_missing");
+  }
+}
 
 export type ChildAttemptArtifactV1 = {
   readonly version: "child-attempt-artifact-v1";

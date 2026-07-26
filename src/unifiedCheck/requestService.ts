@@ -3,9 +3,11 @@ import type {
   AnalysisManifestV1,
   UnifiedRunPurpose,
   UnifiedRunStatus,
-  UnifiedSideEffectPolicy
+  UnifiedSideEffectPolicy,
+  UnifiedTraversalPolicyVersion
 } from "./contracts";
 import {
+  assertUnifiedTraversalPolicyManifest,
   UNIFIED_BOUNDARY_PREDICATE_VERSION,
   UNIFIED_LABEL_CATALOG_VERSION
 } from "./contracts";
@@ -114,6 +116,7 @@ async function runRecord(
   ).rows[0];
   if (!artifact) throw new Error("unified_analysis_manifest_missing");
   const manifest = artifact.artifact_json as AnalysisManifestV1;
+  assertUnifiedTraversalPolicyManifest(manifest);
   if (fingerprintCanonicalArtifact(manifest) !== row.analysis_manifest_sha256) {
     throw new Error("unified_analysis_manifest_hash_mismatch");
   }
@@ -429,6 +432,7 @@ export type UnifiedAnalysisVersions = {
   readonly labelDatasetSha256: string;
   readonly scoringPolicyVersion: string;
   readonly attributionPolicyVersion: string;
+  readonly traversalPolicyVersion: UnifiedTraversalPolicyVersion;
   readonly runtimeCommit: string;
   readonly schemaVersion: number;
 };
@@ -502,6 +506,7 @@ export function buildUnifiedBranchInput(
   readonly labelCatalogVersion: typeof UNIFIED_LABEL_CATALOG_VERSION;
   readonly boundaryPredicateVersion:
     typeof UNIFIED_BOUNDARY_PREDICATE_VERSION;
+  readonly traversalPolicyVersion: UnifiedTraversalPolicyVersion;
   readonly runtimeCommit: string;
   readonly schemaVersion: number;
 } {
@@ -512,6 +517,7 @@ export function buildUnifiedBranchInput(
     labelDatasetSha256: versions.labelDatasetSha256,
     labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
     boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
+    traversalPolicyVersion: versions.traversalPolicyVersion,
     runtimeCommit: versions.runtimeCommit,
     schemaVersion: versions.schemaVersion
   };
@@ -544,6 +550,7 @@ export function buildUnifiedAnalysisIdentity(input: {
     labelDatasetSha256: input.versions.labelDatasetSha256,
     labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
     boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
+    traversalPolicyVersion: input.versions.traversalPolicyVersion,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
     runtimeCommit: input.versions.runtimeCommit,
@@ -647,7 +654,7 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
       boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
       scoringPolicyVersion: effectiveVersions.scoringPolicyVersion,
       attributionPolicyVersion: effectiveVersions.attributionPolicyVersion,
-      traversalPolicyVersion: "snapshot-closure-v1",
+      traversalPolicyVersion: effectiveVersions.traversalPolicyVersion,
       runtimeCommit: effectiveVersions.runtimeCommit,
       databaseSchemaVersion: effectiveVersions.schemaVersion,
       paginationCutoffBlockNumber: snapshot.confirmedBlockNumber,

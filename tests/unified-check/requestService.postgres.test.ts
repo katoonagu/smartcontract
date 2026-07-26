@@ -72,6 +72,7 @@ postgresDescribe("Unified Check durable intake", () => {
           labelDatasetSha256: "b".repeat(64),
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
+          traversalPolicyVersion: "snapshot-closure-v1" as const,
           runtimeCommit: "candidate",
           schemaVersion: 36
         },

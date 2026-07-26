@@ -443,6 +443,7 @@ export function buildUnifiedProductionCompletionCandidate(input: {
         labelDatasetSha256: input.manifest.labelDatasetSha256,
         scoringPolicyVersion: input.manifest.scoringPolicyVersion,
         attributionPolicyVersion: input.manifest.attributionPolicyVersion,
+        traversalPolicyVersion: input.manifest.traversalPolicyVersion,
         runtimeCommit: input.manifest.runtimeCommit,
         schemaVersion: input.manifest.databaseSchemaVersion
       }

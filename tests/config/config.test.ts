@@ -88,6 +88,7 @@ describe("loadConfig", () => {
     expect(config.unifiedRepairMaxWaitChunks).toBe(8);
     expect(config.unifiedReconciliationIntervalMs).toBe(30_000);
     expect(config.unifiedRollingRolloutStage).toBe("global_barrier");
+    expect(config.unifiedTraversalPolicyVersion).toBe("snapshot-closure-v1");
     expect(config.unifiedRollingUserCheckBasisPoints).toBe(0);
     expect(config.unifiedProviderCapacityCeiling).toBe(1);
     expect(config.unifiedIsolatedWorkerOnly).toBe(false);
@@ -647,6 +648,7 @@ describe("loadConfig", () => {
       UNIFIED_REPAIR_MAX_WAIT_CHUNKS: "6",
       UNIFIED_RECONCILIATION_INTERVAL_MS: "45000",
       UNIFIED_ROLLING_ROLLOUT_STAGE: "bounded_user_check",
+      UNIFIED_TRAVERSAL_POLICY_VERSION: "snapshot-closure-v2",
       UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS: "2500",
       UNIFIED_PROVIDER_CAPACITY_CEILING: "4",
       UNIFIED_ISOLATED_WORKER_ONLY: "true"
@@ -674,6 +676,7 @@ describe("loadConfig", () => {
       unifiedRepairMaxWaitChunks: 6,
       unifiedReconciliationIntervalMs: 45_000,
       unifiedRollingRolloutStage: "bounded_user_check",
+      unifiedTraversalPolicyVersion: "snapshot-closure-v2",
       unifiedRollingUserCheckBasisPoints: 2_500,
       unifiedProviderCapacityCeiling: 4,
       unifiedIsolatedWorkerOnly: true
@@ -687,6 +690,7 @@ describe("loadConfig", () => {
     ["UNIFIED_REPAIR_SHARE", "-0.1"],
     ["UNIFIED_REPAIR_SHARE", "1.1"],
     ["UNIFIED_ROLLING_ROLLOUT_STAGE", "all"],
+    ["UNIFIED_TRAVERSAL_POLICY_VERSION", "snapshot-closure-v3"],
     ["UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS", "10001"],
     ["UNIFIED_PROVIDER_CAPACITY_CEILING", "101"]
   ])("rejects invalid adaptive Unified setting %s=%s", (name, value) => {

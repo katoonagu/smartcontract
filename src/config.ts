@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
+import type { UnifiedTraversalPolicyVersion } from "./unifiedCheck/contracts";
 
 export type CrossChainStage2Config = {
   crossChainStage2Enabled: boolean;
@@ -73,6 +74,7 @@ export type AppConfig = {
     | "isolated_rolling"
     | "bounded_user_check"
     | "rolling_default";
+  unifiedTraversalPolicyVersion: UnifiedTraversalPolicyVersion;
   unifiedRollingUserCheckBasisPoints: number;
   unifiedProviderCapacityCeiling: number;
   unifiedIsolatedWorkerOnly: boolean;
@@ -202,6 +204,18 @@ function parseUnifiedRollingRolloutStage(
   throw new Error(
     "UNIFIED_ROLLING_ROLLOUT_STAGE must be global_barrier, " +
     "isolated_rolling, bounded_user_check, or rolling_default"
+  );
+}
+
+function parseUnifiedTraversalPolicyVersion(
+  rawValue: string
+): UnifiedTraversalPolicyVersion {
+  if (
+    rawValue === "snapshot-closure-v1" ||
+    rawValue === "snapshot-closure-v2"
+  ) return rawValue;
+  throw new Error(
+    "UNIFIED_TRAVERSAL_POLICY_VERSION must be snapshot-closure-v1 or snapshot-closure-v2"
   );
 }
 
@@ -534,6 +548,9 @@ export function loadConfig(): AppConfig {
     ),
     unifiedRollingRolloutStage: parseUnifiedRollingRolloutStage(
       process.env.UNIFIED_ROLLING_ROLLOUT_STAGE ?? "global_barrier"
+    ),
+    unifiedTraversalPolicyVersion: parseUnifiedTraversalPolicyVersion(
+      process.env.UNIFIED_TRAVERSAL_POLICY_VERSION ?? "snapshot-closure-v1"
     ),
     unifiedRollingUserCheckBasisPoints: parseIntegerInRange(
       "UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS",

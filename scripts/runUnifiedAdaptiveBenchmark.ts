@@ -108,6 +108,25 @@ export function isNonterminalCheckpointedBenchmarkRun(run: {
     ));
 }
 
+export function completedCanaryTraversalPolicy(
+  outcomes: readonly {
+    readonly traversalPolicyVersion:
+      import("../src/unifiedCheck/contracts").UnifiedTraversalPolicyVersion;
+  }[]
+): import("../src/unifiedCheck/contracts").UnifiedTraversalPolicyVersion {
+  const policies = new Set(outcomes.map((outcome) =>
+    outcome.traversalPolicyVersion
+  ));
+  if (policies.size !== 1) {
+    throw new Error("unified_benchmark_live_traversal_policy_mismatch");
+  }
+  const policy = [...policies][0];
+  if (policy === undefined) {
+    throw new Error("unified_benchmark_live_traversal_policy_missing");
+  }
+  return policy;
+}
+
 export function calculateUnifiedBenchmarkPeakConcurrency(
   attempts: readonly {
     readonly startedAt: string;
@@ -2402,7 +2421,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
             outcomes[0]!.providerConfigurationSha256,
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
-          analysisPolicyVersion: "snapshot-closure-v1",
+          analysisPolicyVersion: completedCanaryTraversalPolicy(outcomes),
           presentationPolicyVersion: "unified-presentation-v1",
           locale: "ru",
           deterministicIdSeed: scenarioId,

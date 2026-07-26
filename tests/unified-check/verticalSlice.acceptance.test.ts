@@ -52,6 +52,7 @@ const branchVersions = {
   labelDatasetSha256: analysisManifest.labelDatasetSha256,
   scoringPolicyVersion: analysisManifest.scoringPolicyVersion,
   attributionPolicyVersion: analysisManifest.attributionPolicyVersion,
+  traversalPolicyVersion: analysisManifest.traversalPolicyVersion,
   runtimeCommit: analysisManifest.runtimeCommit,
   schemaVersion: analysisManifest.databaseSchemaVersion
 };

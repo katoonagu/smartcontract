@@ -132,6 +132,7 @@ export function buildMinimalUnifiedCheckCandidate(input: {
         labelDatasetSha256: input.run.analysisManifest.labelDatasetSha256,
         scoringPolicyVersion: input.run.analysisManifest.scoringPolicyVersion,
         attributionPolicyVersion: input.run.analysisManifest.attributionPolicyVersion,
+        traversalPolicyVersion: input.run.analysisManifest.traversalPolicyVersion,
         runtimeCommit: input.run.analysisManifest.runtimeCommit,
         schemaVersion: input.run.analysisManifest.databaseSchemaVersion
       }

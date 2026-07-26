@@ -305,6 +305,9 @@ function artifactHash(value: unknown): string {
   return result;
 }
 
+export const GOLDEN_REPLAY_TRAVERSAL_POLICY_VERSION =
+  "snapshot-closure-v1" as const;
+
 function replayCandidate(
   goldenCase: Omit<UnifiedWalletGoldenCase, "expected">
 ): ComparatorInputV1 {
@@ -332,7 +335,7 @@ function replayCandidate(
     labelDatasetSha256: neutral.snapshot.labelDatasetSha256,
     scoringPolicyVersion: "scoring-signal-matrix-v4",
     attributionPolicyVersion: "selected-attribution-policy-v1",
-    traversalPolicyVersion: "snapshot-closure-v1",
+    traversalPolicyVersion: GOLDEN_REPLAY_TRAVERSAL_POLICY_VERSION,
     runtimeCommit: "golden-v2-locked-replay",
     databaseSchemaVersion: 33,
     paginationCutoffBlockNumber: neutral.snapshot.confirmedBlockNumber,

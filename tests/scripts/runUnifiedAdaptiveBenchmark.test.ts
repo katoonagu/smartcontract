@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateUnifiedBenchmarkPeakConcurrency,
+  completedCanaryTraversalPolicy,
   isNonterminalCheckpointedBenchmarkRun,
   createUnifiedBenchmarkReleaseOwner,
   parseUnifiedAdaptiveLiveCapacityStateV1,
@@ -115,6 +116,17 @@ function replayOracleRuntime(
 }
 
 describe("runUnifiedAdaptiveBenchmark CLI", () => {
+  it("uses the completed canary traversal policy for live performance identity", () => {
+    expect(completedCanaryTraversalPolicy([
+      { traversalPolicyVersion: "snapshot-closure-v2" },
+      { traversalPolicyVersion: "snapshot-closure-v2" }
+    ])).toBe("snapshot-closure-v2");
+    expect(() => completedCanaryTraversalPolicy([
+      { traversalPolicyVersion: "snapshot-closure-v1" },
+      { traversalPolicyVersion: "snapshot-closure-v2" }
+    ])).toThrow("unified_benchmark_live_traversal_policy_mismatch");
+  });
+
   it("counts zero-duration live attempts at the same timestamp", () => {
     expect(calculateUnifiedBenchmarkPeakConcurrency([{
       startedAt: "2026-07-25T09:00:00.000Z",

@@ -443,6 +443,7 @@ function createConfig(): AppConfig {
     unifiedRepairMaxWaitChunks: 8,
     unifiedReconciliationIntervalMs: 30_000,
     unifiedRollingRolloutStage: "global_barrier",
+    unifiedTraversalPolicyVersion: "snapshot-closure-v1",
     unifiedRollingUserCheckBasisPoints: 0,
     unifiedProviderCapacityCeiling: 1,
     unifiedIsolatedWorkerOnly: false,

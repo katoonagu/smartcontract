@@ -120,6 +120,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           labelDatasetSha256: "b".repeat(64),
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
+          traversalPolicyVersion: "snapshot-closure-v2",
           runtimeCommit: "a".repeat(40),
           schemaVersion: 36
         },
@@ -144,6 +145,8 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
         batchIdentitySha256: batch.batchIdentitySha256
       });
       expect(resumed.runs).toHaveLength(3);
+      expect(resumed.batchIdentity.traversalPolicyVersion)
+        .toBe("snapshot-closure-v2");
       expect(new Set(resumed.runs.map((run) => run.subjectAddress)))
         .toEqual(new Set([ADDRESSES[7]]));
     } finally {
@@ -266,6 +269,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           labelDatasetSha256: "b".repeat(64),
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
+          traversalPolicyVersion: "snapshot-closure-v1",
           runtimeCommit: "a".repeat(40),
           schemaVersion: 33
         },
@@ -345,6 +349,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           labelDatasetSha256: "b".repeat(64),
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
+          traversalPolicyVersion: "snapshot-closure-v1",
           runtimeCommit: "a".repeat(40),
           schemaVersion: 33
         },
