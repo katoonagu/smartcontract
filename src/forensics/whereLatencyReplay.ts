@@ -39,6 +39,40 @@ export type BuildWhereLatencyReplayV1Input = Omit<WhereLatencyReplayV1, "depende
   rawTransactions: Array<Omit<WhereLatencyReplayV1["rawTransactions"][number], "payloadSha256">>;
 };
 
+export type DependencyInvocationRecorder = <T>(
+  method: string,
+  args: unknown[],
+  operation: () => Promise<T>
+) => Promise<T>;
+
+/** Wrap the dependency graph without changing its surface or call arguments. */
+export function recordWhereIsMoneyDependencies(
+  dependencies: WhereIsMoneyDeps,
+  record: DependencyInvocationRecorder
+): WhereIsMoneyDeps {
+  const wrap = (value: unknown, path: string[], owner: object): unknown => {
+    if (typeof value === "function") {
+      return (...args: unknown[]) => record(path.join("."), args, () =>
+        Promise.resolve(Reflect.apply(value, owner, args))
+      );
+    }
+    if (Array.isArray(value)) {
+      return value.map((child, index) => wrap(child, [...path, String(index)], value));
+    }
+    if (!value || typeof value !== "object") return value;
+    return new Proxy(value, {
+      get(target, property) {
+        const child = Reflect.get(target, property, target);
+        return typeof property === "string"
+          ? wrap(child, [...path, property], target)
+          : child;
+      }
+    });
+  };
+
+  return wrap(dependencies, [], dependencies) as WhereIsMoneyDeps;
+}
+
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const FORBIDDEN_FIELD = /(?:api[_-]?key|authorization|database[_-]?url|chat[_-]?id|telegram(?:[_-]?id)?|cookie|headers?)/i;
@@ -68,11 +102,14 @@ function reviveReplayValue(value: unknown, key = ""): unknown {
 }
 
 function normalizeReplayValue(value: unknown): unknown {
+  if (typeof value === "function" || typeof value === "symbol") return undefined;
   if (value === undefined) return null;
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(normalizeReplayValue);
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined).map(([key, child]) => [key, normalizeReplayValue(child)]));
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, child]) => child !== undefined && typeof child !== "function" && typeof child !== "symbol")
+    .map(([key, child]) => [key, normalizeReplayValue(child)]));
 }
 
 function sanitizeReplayValue(value: unknown): unknown {
@@ -371,6 +408,53 @@ export type WhereReplayDeps = WhereIsMoneyDeps & {
 export function createWhereReplayDeps(replay: WhereLatencyReplayV1): WhereReplayDeps {
   assertEnvelope(replay);
   const tape = new Map(replay.dependencies.map((entry) => [requestKey(entry.method, entry.args), entry]));
+  const hasMethod = (method: string): boolean => replay.dependencies.some((entry) => entry.method === method);
+  const hasNestedMethod = (prefix: string): boolean => replay.dependencies.some((entry) => entry.method.startsWith(`${prefix}.`));
+  const replayCall = (method: string) => async (...args: unknown[]) => {
+    const entry = tape.get(requestKey(method, args));
+    if (!entry) fail("where_latency_replay_request_missing");
+    return reviveReplayValue(structuredClone(entry.response));
+  };
+  const nested = (prefix: string): object => new Proxy({}, {
+    get(_target, property) {
+      if (typeof property !== "string") return undefined;
+      const method = `${prefix}.${property}`;
+      if (hasMethod(method)) return replayCall(method);
+      return hasNestedMethod(method) ? nested(method) : undefined;
+    }
+  });
+  const continuationProviders = (): NonNullable<WhereIsMoneyDeps["crossChainContinuationProviders"]> => {
+    const indexes = [...new Set(replay.dependencies.flatMap((entry) => {
+      const match = /^crossChainContinuationProviders\.(\d+)\./.exec(entry.method);
+      return match ? [Number(match[1])] : [];
+    }))].sort((left, right) => left - right);
+    return indexes.map((index) => {
+      const prefix = `crossChainContinuationProviders.${index}`;
+      const observed = replay.dependencies.find((entry) => entry.method.startsWith(`${prefix}.`));
+      const input = observed?.args[0];
+      const inputRecord = input && typeof input === "object" && !Array.isArray(input)
+        ? input as Record<string, unknown>
+        : {};
+      const address = inputRecord.address && typeof inputRecord.address === "object" && !Array.isArray(inputRecord.address)
+        ? inputRecord.address as Record<string, unknown>
+        : {};
+      const seed = inputRecord.seed && typeof inputRecord.seed === "object" && !Array.isArray(inputRecord.seed)
+        ? inputRecord.seed as Record<string, unknown>
+        : {};
+      const chain = typeof address.chain === "string"
+        ? address.chain
+        : typeof seed.chain === "string"
+          ? seed.chain
+          : fail("where_latency_replay_request_invalid");
+      const providerMethods = nested(prefix);
+      return new Proxy({ chain }, {
+        get(target, property) {
+          if (property === "chain") return target.chain;
+          return Reflect.get(providerMethods, property);
+        }
+      }) as NonNullable<WhereIsMoneyDeps["crossChainContinuationProviders"]>[number];
+    });
+  };
   return new Proxy({}, {
     get(_target, property) {
       if (typeof property !== "string") return undefined;
@@ -394,12 +478,10 @@ export function createWhereReplayDeps(replay: WhereLatencyReplayV1): WhereReplay
         if (!query) fail("where_latency_replay_request_missing");
         return reviveReplayValue(structuredClone(query.rows));
       };
-      if (!replay.dependencies.some((entry) => entry.method === property)) return undefined;
-      return async (...args: unknown[]) => {
-        const entry = tape.get(requestKey(property, args));
-        if (!entry) fail("where_latency_replay_request_missing");
-        return reviveReplayValue(structuredClone(entry.response));
-      };
+      if (property === "crossChainContinuationProviders" && hasNestedMethod(property)) return continuationProviders();
+      if (hasMethod(property)) return replayCall(property);
+      if (hasNestedMethod(property)) return nested(property);
+      return undefined;
     }
   }) as WhereReplayDeps;
 }

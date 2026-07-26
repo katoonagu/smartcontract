@@ -2,36 +2,42 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import { runWhereIsMoneyCheck } from "../src/check/whereIsMoneyCheck";
 import { loadConfig } from "../src/config";
-import { createLegacyWhereIsMoneyDeps, resolveLegacyWhereIsMoneyRunInput } from "../src/forensics/deepForensicJob";
+import { createLegacyWhereIsMoneyExecution, type DeepForensicJobRunnerDeps } from "../src/forensics/deepForensicJob";
+import { createEvmContinuationProvider } from "../src/forensics/evmContinuationProvider";
+import { createEtherscanV2EvmEvidenceProvider } from "../src/forensics/evmExplorerClient";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson";
-import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
-import { normalizeTransfer } from "../src/forensics/routeSearch";
+import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "../src/forensics/rangeClient";
+import { createTronUsdtContinuationProvider } from "../src/forensics/tronContinuationProvider";
 import {
-  assertExpectedStableWhereFacts,
   buildWhereLatencyReplayV1,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
-  projectStableWhereFacts
+  projectStableWhereFacts,
+  recordWhereIsMoneyDependencies
 } from "../src/forensics/whereLatencyReplay";
-import { whereIsMoneyIndexedFetchLimit, whereIsMoneyLatestFallbackCacheKey, whereIsMoneyLiveFallbackLimit } from "../src/forensics/whereIsMoneyFetchLimits";
-import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
-import { TRON_USDT_CONTRACT_ADDRESS } from "../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../src/runtime/deepForensicRuntimeOptions";
 import { closeDb, createDb } from "../src/storage/db";
 import {
   getAddressMetadata,
   getContractIntelligenceProfile,
+  getCoveringTronAddressUsdtIndexState,
+  getTronAddressUsdtIndexState,
   listActiveAddressLabelAssertionsForRoute,
   listAddressLabels,
   listIndexedTronUsdtTransfersByHashes,
-  listIndexedTronUsdtTransfersForAddress
+  listIndexedTronUsdtTransfersForAddress,
+  markWaitingForensicJobsReadyAfterTargetedIndex,
+  queueTronAddressUsdtIndexState,
+  releaseForensicCheckJobToWaiting,
+  updateForensicCheckJobProgress,
+  upsertForensicJobWait
 } from "../src/storage/repositories";
+import type { ForensicCheckJob } from "../src/storage/repositories";
 import { TronscanClient } from "../src/tron/tronClient";
 import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
-import type { ForensicRouteEdge, IndexedTronUsdtTransfer, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../src/types";
+import type { IndexedTronUsdtTransfer, WhereIsMoneyReport } from "../src/types";
 
 type JsonRecord = Record<string, unknown>;
 type TapeEntry = { method: string; args: unknown[]; response: unknown; origin?: "legacy_observed" | "supplemental_stage_b_fixture"; invocationCount?: number };
@@ -48,10 +54,6 @@ function requiredString(value: unknown, code: string): string {
 
 function recordField(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
-}
-
-function numberField(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 function nonSecretConfig(config: Record<string, unknown>): Record<string, unknown> {
@@ -173,6 +175,35 @@ try {
     scheduler,
     schedulerDedupeNamespace: `where-latency:${String(job.id)}`
   });
+  const crossChainDiscoveryProvider = config.crossChainStage2Enabled && config.rangeApiKey
+    ? createRangeCrossChainDiscoveryProvider({
+        apiKey: config.rangeApiKey,
+        baseUrl: config.rangeBaseUrl,
+        timeoutMs: config.rangeTimeoutMs,
+        endpointPaths: RANGE_ENDPOINT_PATHS,
+        allowUndocumentedRawAmountFields: true
+      })
+    : undefined;
+  const evmEvidenceProvider = config.crossChainStage2Enabled && config.evmExplorerApiKey
+    ? createEtherscanV2EvmEvidenceProvider({
+        apiKey: config.evmExplorerApiKey,
+        baseUrl: config.evmExplorerBaseUrl,
+        timeoutMs: config.evmExplorerTimeoutMs,
+        maxPagesPerQuery: config.evmExplorerMaxCallsPerCheck
+      })
+    : undefined;
+  const crossChainContinuationProviders = config.crossChainStage2Enabled
+    ? [
+        createTronUsdtContinuationProvider({ tronClient }),
+        ...(evmEvidenceProvider
+          ? [
+              createEvmContinuationProvider({ chain: "ethereum", evmProvider: evmEvidenceProvider }),
+              createEvmContinuationProvider({ chain: "arbitrum", evmProvider: evmEvidenceProvider }),
+              createEvmContinuationProvider({ chain: "bsc", evmProvider: evmEvidenceProvider })
+            ]
+          : [])
+      ]
+    : [];
 
   const tape: TapeEntry[] = [];
   const tapeByRequest = new Map<string, TapeEntry>();
@@ -199,71 +230,85 @@ try {
     if (method === "getTransaction" && typeof args[0] === "string") observedTransactions.add(args[0]);
     return response;
   };
-  const edgeCache = new Map<string, ForensicRouteEdge[]>();
-  const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
-  const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
-  const getStablecoin = (address: string) => {
-    if (!stablecoinCache.has(address)) stablecoinCache.set(address, tronClient.getUsdtRestrictionStatus(address).catch(() => null));
-    return stablecoinCache.get(address)!;
-  };
-  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => record("fetchEdgesForAddress", [address, { windowStart, windowEnd }], async () => {
-    if (edgeCache.has(address)) return edgeCache.get(address)!;
-    const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
-      address, minTimestamp: windowStart, maxTimestamp: windowEnd, direction: "both",
-      limit: whereIsMoneyIndexedFetchLimit(numberField(progress.maxEdgesPerAddress, 100)), orderBy: "newest"
-    });
-    const indexed = transfers.map(indexedTransferToRouteEdge);
-    const live = indexed.length === 0 ? (await tronClient.listRelatedTrc20Transfers(address, {
-      start: 0, limit: numberField(progress.maxEdgesPerAddress, 100), minTimestamp: windowStart.getTime(), endTimestamp: windowEnd.getTime()
-    }).catch(() => [])).map(normalizeTransfer).filter((edge): edge is ForensicRouteEdge => edge !== null) : [];
-    const edges = indexed.length > 0 ? indexed : live;
-    edgeCache.set(address, edges);
-    return edges;
-  });
-  const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => record("fetchLatestEdgesForAddress", [address, limit], async () => {
-    const liveLimit = whereIsMoneyLiveFallbackLimit(limit, numberField(progress.maxEdgesPerAddress, 100));
-    const key = whereIsMoneyLatestFallbackCacheKey(address, limit, liveLimit);
-    if (latestEdgeCache.has(key)) return latestEdgeCache.get(key)!;
-    const edges = (await tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
-      .map(normalizeTransfer).filter((edge): edge is ForensicRouteEdge => edge !== null);
-    latestEdgeCache.set(key, edges);
-    return edges;
-  });
-  const getClassification = async (address: string): Promise<ServiceClassification | null> => record("getClassificationForAddress", [address], async () => {
-    const metadata = await getAddressMetadata(db, address, new Date(windowEnd));
-      // The completed legacy run must not be changed by capture; a missing cached metadata record remains unknown.
-    if (!metadata) return null;
-    const profile = metadata.isContract ? await getContractIntelligenceProfile(db, address, new Date(windowEnd)) : null;
-    return classifyServiceAddress({ address, metadata, contractProfile: profile });
-  });
-  const captureBase = {
-    getLabelsForAddress: (address: string) => record("getLabelsForAddress", [address], () => listAddressLabels(db, address)),
-    getTransaction: (txHash: string) => record("getTransaction", [txHash], () => tronClient.getTransaction(txHash)),
-    listTrc20ApprovalChanges: (input: any) => record("listTrc20ApprovalChanges", [input], () => tronClient.listTrc20ApprovalChanges(input)),
-    getUsdtRestrictionStatus: (address: string, requestOptions?: { includeEventTimeline?: boolean }) => record("getUsdtRestrictionStatus", [address, requestOptions ?? null], () => tronClient.getUsdtRestrictionStatus(address, requestOptions)),
-    getContractIntelligenceProfile: (address: string) => record("getContractIntelligenceProfile", [address], async () =>
-      await getContractIntelligenceProfile(db, address, new Date(windowEnd)) ?? tronClient.getContractIntelligenceProfile(address, { now: new Date(windowEnd), requireComplete: true }))
-  };
-  const checkerDeps = createLegacyWhereIsMoneyDeps({
-    base: captureBase as any,
-    getTrc20Balance: (address, contract) => record("getTrc20Balance", [address, contract], async () => {
-      if (contract !== TRON_USDT_CONTRACT_ADDRESS) return null;
-      return (await getStablecoin(address))?.balanceRaw ?? null;
-    }),
-    fetchEdgesForAddress,
-    fetchLatestEdgesForAddress,
-    getClassificationForAddress: getClassification,
-    fastRiskReport: savedReport.fastWalletRisk
-  });
   const runtimeOptions = deepForensicRuntimeOptions(config, config.tronscanApiKeys.length > 0);
-  const runOptions = resolveLegacyWhereIsMoneyRunInput({
-    subjectAddress: jobSource, windowStart, windowEnd, progressJson: progress
-  } as any, runtimeOptions);
+  const runtimeJob: ForensicCheckJob = {
+    id: requiredString(job.id, "where_latency_replay_job_id_missing"),
+    kind: "where_is_money_check",
+    subjectAddress: jobSource,
+    status: "completed",
+    windowStart,
+    windowEnd,
+    priority: 0,
+    chatId: null,
+    messageId: null,
+    requestedBy: null,
+    progressJson: progress,
+    resultJson: result,
+    rawEvidenceIds: [],
+    observationIds: [],
+    lastError: null,
+    createdAt: completedAt,
+    updatedAt: completedAt,
+    startedAt: null,
+    completedAt
+  };
+  const runtimeDeps: DeepForensicJobRunnerDeps = {
+    tronClient,
+    claimNextForensicCheckJob: async () => null,
+    completeForensicCheckJob: async () => false,
+    recordRiskEvaluation: async () => undefined,
+    updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
+    releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
+    getLabelsForAddress: (address) => listAddressLabels(db, address),
+    getAddressMetadata: (address) => getAddressMetadata(db, address, completedAt),
+    getContractIntelligenceProfile: async (address) =>
+      await getContractIntelligenceProfile(db, address, completedAt) ??
+      tronClient.getContractIntelligenceProfile(address, { now: completedAt, requireComplete: true }),
+    getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
+    getTransaction: (txHash) => tronClient.getTransaction(txHash),
+    listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
+    listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
+      address,
+      minTimestamp: options.minTimestamp,
+      maxTimestamp: options.maxTimestamp,
+      limit: options.limit,
+      offset: options.offset,
+      orderBy: options.orderBy,
+      direction: "both"
+    }),
+    getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
+    getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
+    queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
+      ...input,
+      targetTimestamp: input.targetTimestamp ?? null,
+      requestKind: input.requestKind ?? "broad_targeted",
+      windowStartTimestamp: input.windowStartTimestamp ?? null,
+      windowEndTimestamp: input.windowEndTimestamp ?? null,
+      relatedHopTxHash: input.relatedHopTxHash ?? null,
+      candidateTxHash: input.candidateTxHash ?? null,
+      requestedByJobId: input.requestedByJobId ?? null,
+      priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "where_candidate_window" ? 240 : 10,
+      nextRunAt: new Date(),
+      budgetPages: input.budgetPages ?? null,
+      maxAttempts: input.maxAttempts ?? null,
+      allowRunningRequeue: input.allowRunningRequeue === true
+    }),
+    upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
+    markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
+    crossChainDiscoveryProvider,
+    crossChainContinuationProviders,
+    evmEvidenceProvider
+  };
+  const execution = createLegacyWhereIsMoneyExecution(runtimeDeps, runtimeJob, runtimeOptions);
+  const checkerDeps = recordWhereIsMoneyDependencies(execution.dependencies, record);
+  const { onProgress: _onProgress, abortSignal: _abortSignal, ...runOptions } = execution.runInput;
   const frozenClockIso = completedAt.toISOString();
   const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
-  const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(checkerDeps, runOptions));
+  const rerun = await withFrozenClock(frozenClockIso, () => execution.run(checkerDeps));
   const expectedStableFacts = projectStableWhereFacts(savedReport);
-  assertExpectedStableWhereFacts({ expectedStableFacts } as any, rerun);
+  if (canonicalizeArtifactJson(expectedStableFacts) !== canonicalizeArtifactJson(projectStableWhereFacts(rerun))) {
+    throw new Error("where_latency_replay_stable_fact_mismatch");
+  }
   const unresolvedEconomicRoleInputs = rerun.originPaths.flatMap((path) => (path.sourceProvenance ?? [])
     .filter((item) => item.proofClass === "unresolved")
     .map((item) => ({ txHash: item.targetTxHash })));
@@ -306,7 +351,7 @@ try {
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],
     assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],
     rawTransactions, baselineRequestCounts, expectedStableFacts
-  } as any);
+  });
   await writeReplayExclusive(output, complete.canonicalJson);
 } finally {
   await closeDb(db);

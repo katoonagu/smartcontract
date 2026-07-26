@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
-import { createLegacyWhereIsMoneyDeps, resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
+import { resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
 import {
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
@@ -11,6 +11,7 @@ import {
   runWhereLatencyReplay
 } from "../../src/forensics/whereLatencyReplay";
 import { canonicalizeArtifactJson } from "../../src/forensics/canonicalJson";
+import { createCrossChainProviderBudget } from "../../src/forensics/crossChainBudget";
 
 const base = {
   schema: "where-latency-replay-v1" as const,
@@ -49,25 +50,6 @@ describe("where latency replay v1", () => {
       sourceAddress: base.job.sourceAddress, maxEdgesPerAddress: 77,
       contractTransactionInfoMinIntervalMs: 1000, requestedAmountRaw: "7"
     });
-  });
-  it("assembles the complete production Where dependency contract", async () => {
-    const calls: unknown[][] = [];
-    const fn = async (...args: unknown[]) => { calls.push(args); return null; };
-    const deps = createLegacyWhereIsMoneyDeps({
-      base: { getLabelsForAddress: fn, getTransaction: fn, listTrc20ApprovalChanges: fn, getUsdtRestrictionStatus: fn, getContractIntelligenceProfile: fn } as any,
-      getTrc20Balance: fn as any, fetchEdgesForAddress: fn as any, getHistoryCoverageForAddress: fn as any,
-      repairSourceProvenanceWindow: fn as any, requestCandidateWindows: fn as any,
-      ensureBroadTargetedHistory: fn as any, ensureBroadTargetedHistories: fn as any,
-      fetchLatestEdgesForAddress: fn as any, getClassificationForAddress: fn as any, fastRiskReport: null
-    });
-    expect(Object.keys(deps).sort()).toEqual([
-      "crossChainContinuationProviders", "crossChainDiscoveryProvider", "ensureBroadTargetedHistories", "ensureBroadTargetedHistory",
-      "evmEvidenceProvider", "fetchEdgesForAddress", "fetchLatestEdgesForAddress", "getClassificationForAddress", "getContractIntelligenceProfile",
-      "getFastWalletRisk", "getHistoryCoverageForAddress", "getLabelsForAddress", "getTransaction", "getTrc20Balance", "getUsdtRestrictionStatus",
-      "listTrc20ApprovalChanges", "repairSourceProvenanceWindow", "requestCandidateWindows"
-    ]);
-    await deps.fetchEdgesForAddress("T", { latestTimestamp: new Date("2026-01-01T00:00:00.000Z") });
-    expect(calls[0]).toEqual(["T", { latestTimestamp: new Date("2026-01-01T00:00:00.000Z") }]);
   });
   it("collects a conservative route-critical transaction superset", () => {
     expect(collectRouteCriticalTransactionHashes({
@@ -128,6 +110,63 @@ describe("where latency replay v1", () => {
     const deps = createWhereReplayDeps(replay);
     await expect(deps.fetchEdgesForAddress(base.job.sourceAddress, { latestTimestamp: new Date("2026-01-02T00:00:00.000Z") })).resolves.toEqual([]);
     expect(deps.getFastWalletRisk).toBeUndefined();
+  });
+
+  it("replays recorded nested cross-chain provider calls", async () => {
+    const continuationInput = {
+      address: { chain: "tron", chainId: "tron", address: base.job.sourceAddress },
+      seed: {
+        id: "seed",
+        chain: "tron",
+        address: base.job.sourceAddress,
+        txHash: "a".repeat(64),
+        amountRaw: "1",
+        assetSymbol: "USDT",
+        timestamp: "2026-01-02T00:00:00.000Z",
+        labels: [],
+        evidenceRefs: []
+      },
+      budget: {}
+    };
+    const replay = parseWhereLatencyReplayV1(buildWhereLatencyReplayV1({
+      ...base,
+      baselineRequestCounts: {
+        getTrc20Balance: 1,
+        "crossChainDiscoveryProvider.findTransfersByTx": 1,
+        "crossChainContinuationProviders.0.listEdgesForAddress": 1,
+        "evmEvidenceProvider.listNormalTransactions": 1
+      },
+      dependencies: [
+        ...base.dependencies,
+        {
+          method: "crossChainDiscoveryProvider.findTransfersByTx",
+          args: [{ chain: "tron", txHash: "a".repeat(64) }],
+          response: [],
+          origin: "legacy_observed" as const
+        },
+        {
+          method: "crossChainContinuationProviders.0.listEdgesForAddress",
+          args: [continuationInput],
+          response: [],
+          origin: "legacy_observed" as const
+        },
+        {
+          method: "evmEvidenceProvider.listNormalTransactions",
+          args: [{ chain: "ethereum", address: "0xabc" }],
+          response: [],
+          origin: "legacy_observed" as const
+        }
+      ]
+    } as any).canonicalJson);
+    const deps = createWhereReplayDeps(replay);
+
+    await expect(deps.crossChainDiscoveryProvider?.findTransfersByTx({ chain: "tron", txHash: "a".repeat(64) })).resolves.toEqual([]);
+    expect(deps.crossChainContinuationProviders?.map((provider) => provider.chain)).toEqual(["tron"]);
+    await expect(deps.crossChainContinuationProviders?.[0]?.listEdgesForAddress({
+      ...continuationInput,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 1 })
+    })).resolves.toEqual([]);
+    await expect(deps.evmEvidenceProvider?.listNormalTransactions({ chain: "ethereum", address: "0xabc" })).resolves.toEqual([]);
   });
 
   it("redacts forbidden identifiers from captured dependency responses before hashing", () => {

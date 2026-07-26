@@ -237,44 +237,6 @@ export function resolveLegacyWhereIsMoneyRunInput(
   };
 }
 
-/** Exact legacy dependency graph shared by the worker and replay capture. */
-export function createLegacyWhereIsMoneyDeps(input: {
-  base: Pick<DeepForensicJobRunnerDeps,
-    "getLabelsForAddress" | "getTransaction" | "listTrc20ApprovalChanges" | "getUsdtRestrictionStatus" |
-    "getContractIntelligenceProfile" | "crossChainDiscoveryProvider" | "crossChainContinuationProviders" | "evmEvidenceProvider">;
-  getTrc20Balance: WhereIsMoneyDeps["getTrc20Balance"];
-  fetchEdgesForAddress: WhereIsMoneyDeps["fetchEdgesForAddress"];
-  getHistoryCoverageForAddress?: WhereIsMoneyDeps["getHistoryCoverageForAddress"];
-  repairSourceProvenanceWindow?: WhereIsMoneyDeps["repairSourceProvenanceWindow"];
-  requestCandidateWindows?: WhereIsMoneyDeps["requestCandidateWindows"];
-  ensureBroadTargetedHistory?: WhereIsMoneyDeps["ensureBroadTargetedHistory"];
-  ensureBroadTargetedHistories?: WhereIsMoneyDeps["ensureBroadTargetedHistories"];
-  fetchLatestEdgesForAddress?: WhereIsMoneyDeps["fetchLatestEdgesForAddress"];
-  getClassificationForAddress: WhereIsMoneyDeps["getClassificationForAddress"];
-  fastRiskReport: RiskReport | null;
-}): WhereIsMoneyDeps {
-  return {
-    getTrc20Balance: input.getTrc20Balance,
-    fetchEdgesForAddress: input.fetchEdgesForAddress,
-    getHistoryCoverageForAddress: input.getHistoryCoverageForAddress,
-    repairSourceProvenanceWindow: input.repairSourceProvenanceWindow,
-    requestCandidateWindows: input.requestCandidateWindows,
-    ensureBroadTargetedHistory: input.ensureBroadTargetedHistory,
-    ensureBroadTargetedHistories: input.ensureBroadTargetedHistories,
-    fetchLatestEdgesForAddress: input.fetchLatestEdgesForAddress,
-    getLabelsForAddress: input.base.getLabelsForAddress,
-    getClassificationForAddress: input.getClassificationForAddress,
-    getFastWalletRisk: async () => input.fastRiskReport,
-    getTransaction: input.base.getTransaction,
-    listTrc20ApprovalChanges: input.base.listTrc20ApprovalChanges,
-    getUsdtRestrictionStatus: input.base.getUsdtRestrictionStatus,
-    getContractIntelligenceProfile: input.base.getContractIntelligenceProfile,
-    crossChainDiscoveryProvider: input.base.crossChainDiscoveryProvider,
-    crossChainContinuationProviders: input.base.crossChainContinuationProviders,
-    evmEvidenceProvider: input.base.evmEvidenceProvider
-  };
-}
-
 type DerivedLabelResult = {
   label: "darknet_exchange_proximity" | "approval_drain_proximity";
   assertionId: string;
@@ -802,11 +764,20 @@ class StrictProvenanceWaitingForIndex extends Error {
   }
 }
 
-async function runWhereIsMoneyJob(
+export type LegacyWhereIsMoneyExecution = {
+  dependencies: WhereIsMoneyDeps;
+  runInput: RunWhereIsMoneyCheckInput;
+  run(dependencies?: WhereIsMoneyDeps): Promise<WhereIsMoneyReport>;
+  measureStage<T>(stage: StageKey, operation: () => Promise<T>): Promise<T>;
+  getCurrentProgress(): Record<string, unknown>;
+};
+
+/** Construct the one legacy Where execution graph used by production and capture. */
+export function createLegacyWhereIsMoneyExecution(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
-  options: DeepForensicJobRunnerOptions
-): Promise<boolean> {
+  options: DeepForensicJobRunnerOptions = {}
+): LegacyWhereIsMoneyExecution {
   let currentProgress = job.progressJson;
   const persistProgress = async (patch: ForensicJobProgressPatch): Promise<Record<string, unknown>> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
@@ -1618,31 +1589,63 @@ async function runWhereIsMoneyJob(
       })
     : undefined;
 
-  const resolvedWhereInput = resolveLegacyWhereIsMoneyRunInput(job, options);
+  const fastRiskReport = fastRiskReportFromJob(job);
+  const dependencies: WhereIsMoneyDeps = {
+    getTrc20Balance: async (address, tokenContractAddress) => {
+      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+      const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
+      return state?.balanceRaw ?? null;
+    },
+    fetchEdgesForAddress,
+    getHistoryCoverageForAddress,
+    repairSourceProvenanceWindow,
+    ...(requestCandidateWindows ? { requestCandidateWindows } : {}),
+    ...(ensureBroadTargetedHistory ? { ensureBroadTargetedHistory } : {}),
+    ...(ensureBroadTargetedHistories ? { ensureBroadTargetedHistories } : {}),
+    fetchLatestEdgesForAddress,
+    getLabelsForAddress: deps.getLabelsForAddress,
+    getClassificationForAddress,
+    getFastWalletRisk: async () => fastRiskReport,
+    ...(deps.getTransaction ? { getTransaction: deps.getTransaction } : {}),
+    ...(deps.listTrc20ApprovalChanges ? { listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges } : {}),
+    getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
+    ...(deps.getContractIntelligenceProfile
+      ? { getContractIntelligenceProfile: deps.getContractIntelligenceProfile }
+      : {}),
+    ...(deps.crossChainDiscoveryProvider
+      ? { crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider }
+      : {}),
+    ...(deps.crossChainContinuationProviders
+      ? { crossChainContinuationProviders: deps.crossChainContinuationProviders }
+      : {}),
+    ...(deps.evmEvidenceProvider ? { evmEvidenceProvider: deps.evmEvidenceProvider } : {})
+  };
+  const runInput: RunWhereIsMoneyCheckInput = {
+    ...resolveLegacyWhereIsMoneyRunInput(job, options),
+    onProgress: async (patch) => {
+      await persistProgress(patch);
+    }
+  };
+  return {
+    dependencies,
+    runInput,
+    run: (runtimeDependencies = dependencies) =>
+      measureJobStage("traceMs", () => runWhereIsMoneyCheck(runtimeDependencies, runInput)),
+    measureStage: measureJobStage,
+    getCurrentProgress: () => currentProgress
+  };
+}
+
+async function runWhereIsMoneyJob(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  options: DeepForensicJobRunnerOptions
+): Promise<boolean> {
+  const execution = createLegacyWhereIsMoneyExecution(deps, job, options);
+  const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
   let report: WhereIsMoneyReport;
   try {
-    const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck(createLegacyWhereIsMoneyDeps({
-      base: deps,
-      getTrc20Balance: async (address, tokenContractAddress) => {
-        if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
-        const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
-        return state?.balanceRaw ?? null;
-      },
-      fetchEdgesForAddress,
-      getHistoryCoverageForAddress,
-      repairSourceProvenanceWindow,
-      requestCandidateWindows,
-      ensureBroadTargetedHistory,
-      ensureBroadTargetedHistories,
-      fetchLatestEdgesForAddress,
-      getClassificationForAddress,
-      fastRiskReport: fastRiskReportFromJob(job)
-    }), {
-      ...resolvedWhereInput,
-      onProgress: async (patch) => {
-        await persistProgress(patch);
-      }
-    }));
+    const currentReport = await execution.run();
     report = {
       ...currentReport,
       scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
@@ -1655,7 +1658,7 @@ async function runWhereIsMoneyJob(
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
   const strictPartial = report.coverage?.partial === true || report.crossChainCorridor?.partial === true;
   if (strictBenchmark) {
-    await measureJobStage("scoringMs", async () => null);
+    await execution.measureStage("scoringMs", async () => null);
   }
   if (strictBenchmark && strictPartial) {
     // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
@@ -1665,7 +1668,7 @@ async function runWhereIsMoneyJob(
       id: job.id,
       status: "failed",
       progressJson: progressWithDelivery({
-        ...strictProviderLimitedProgressJson(currentProgress, reason),
+        ...strictProviderLimitedProgressJson(execution.getCurrentProgress(), reason),
         whereIsMoneyCoverage: report.coverage,
         decision: report.decision,
         riskScore: report.riskScore
@@ -1684,6 +1687,7 @@ async function runWhereIsMoneyJob(
     });
     return true;
   }
+  const currentProgress = execution.getCurrentProgress();
   const strictProgressPatch = strictBenchmark
     ? {
         strictProvenance: {
@@ -1700,7 +1704,7 @@ async function runWhereIsMoneyJob(
     id: job.id,
     status,
     progressJson: progressWithDelivery({
-      ...currentProgress,
+      ...execution.getCurrentProgress(),
       ...strictProgressPatch,
       whereIsMoneyCoverage: report.coverage,
       decision: report.decision,
