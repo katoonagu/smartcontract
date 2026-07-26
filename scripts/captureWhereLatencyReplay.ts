@@ -4,7 +4,7 @@ import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runWhereIsMoneyCheck, type WhereIsMoneyDeps } from "../src/check/whereIsMoneyCheck";
 import { loadConfig } from "../src/config";
-import { resolveLegacyWhereIsMoneyRunInput } from "../src/forensics/deepForensicJob";
+import { createLegacyWhereIsMoneyDeps, resolveLegacyWhereIsMoneyRunInput } from "../src/forensics/deepForensicJob";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { normalizeTransfer } from "../src/forensics/routeSearch";
@@ -289,7 +289,20 @@ try {
   } as any, runtimeOptions);
   const frozenClockIso = completedAt.toISOString();
   const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
-  const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(deps, runOptions));
+  const checkerDeps = createLegacyWhereIsMoneyDeps({
+    base: deps as any,
+    getTrc20Balance: deps.getTrc20Balance,
+    fetchEdgesForAddress: deps.fetchEdgesForAddress,
+    getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
+    repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
+    requestCandidateWindows: deps.requestCandidateWindows,
+    ensureBroadTargetedHistory: deps.ensureBroadTargetedHistory,
+    ensureBroadTargetedHistories: deps.ensureBroadTargetedHistories,
+    fetchLatestEdgesForAddress: deps.fetchLatestEdgesForAddress,
+    getClassificationForAddress: deps.getClassificationForAddress,
+    fastRiskReport: savedReport.fastWalletRisk
+  });
+  const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(checkerDeps, runOptions));
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   assertExpectedStableWhereFacts({ expectedStableFacts } as any, rerun);
   const unresolvedEconomicRoleInputs = rerun.originPaths.flatMap((path) => (path.sourceProvenance ?? [])
@@ -329,6 +342,7 @@ try {
     frozenClockIso,
     job: { sourceAddress: jobSource, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), options },
     routeCriticalTxHashes: routeHashes,
+    routeCriticalAddresses: routeAddresses,
     dependencies: tape,
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],
     assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],

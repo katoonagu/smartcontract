@@ -25,6 +25,7 @@ export type WhereLatencyReplayV1 = {
   frozenClockIso: string;
   job: Record<string, unknown>;
   routeCriticalTxHashes: string[];
+  routeCriticalAddresses: string[];
   dependencies: ReplayDependency[];
   indexedMovements: Array<{ txHashes: string[]; rows: Array<Record<string, unknown>> }>;
   assertionQueries: Array<{ chain: string; addresses: string[]; txHashes: string[]; rows: Array<Record<string, unknown>> }>;
@@ -117,6 +118,12 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     || !job.options || typeof job.options !== "object" || Array.isArray(job.options)) {
     fail("where_latency_replay_job_invalid");
   }
+  if (canonicalizeArtifactJson(job.options) !== canonicalizeArtifactJson(envelope.resolvedOptions)
+    || job.sourceAddress !== envelope.resolvedOptions.sourceAddress
+    || job.windowStart !== envelope.resolvedOptions.windowStart
+    || job.windowEnd !== envelope.resolvedOptions.windowEnd) {
+    fail("where_latency_replay_options_binding_mismatch");
+  }
   const requestKeys = new Set<string>();
   for (const dependency of envelope.dependencies) {
     if (!dependency || typeof dependency.method !== "string" || !Array.isArray(dependency.args)) {
@@ -200,7 +207,9 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
       fail("where_latency_replay_transaction_info_identity_mismatch");
     }
   }
-  if (envelope.assertionQueries.length === 0) fail("where_latency_replay_assertion_query_missing");
+  const routeAddresses = canonicalStringSet(envelope.routeCriticalAddresses);
+  if (routeAddresses.length === 0) fail("where_latency_replay_route_critical_address_missing");
+  if (envelope.assertionQueries.length !== 1) fail("where_latency_replay_assertion_query_missing");
   const assertionKeys = new Set<string>();
   for (const query of envelope.assertionQueries) {
     if (query.chain !== "tron" || !Array.isArray(query.addresses) || !Array.isArray(query.txHashes) || !Array.isArray(query.rows)) {
@@ -214,6 +223,11 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     if (!envelope.assertionQueries.some((query) => query.txHashes.includes(txHash))) {
       fail("where_latency_replay_assertion_query_missing");
     }
+  }
+  const assertion = envelope.assertionQueries[0]!;
+  if (canonicalStringSet(assertion.addresses).join("\u0000") !== routeAddresses.join("\u0000")
+    || canonicalStringSet(assertion.txHashes).join("\u0000") !== canonicalStringSet(envelope.routeCriticalTxHashes).join("\u0000")) {
+    fail("where_latency_replay_assertion_query_missing");
   }
 }
 

@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
-import { resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
+import { createLegacyWhereIsMoneyDeps, resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
 import {
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
   collectRouteCriticalTransactionHashes,
   createWhereReplayDeps,
   parseWhereLatencyReplayV1,
-  projectStableWhereFacts
+  projectStableWhereFacts,
+  runWhereLatencyReplay
 } from "../../src/forensics/whereLatencyReplay";
 import { canonicalizeArtifactJson } from "../../src/forensics/canonicalJson";
 
@@ -17,10 +18,11 @@ const base = {
   baselineGitCommit: "4861f22e697652c688489ef4be6ab9698cd6ef9f",
   resolvedConfigHash: "a".repeat(64),
   resolvedConfig: { tronscanBaseUrl: "https://apilist.tronscanapi.com" },
-  resolvedOptions: { maxDepth: 20 },
+  resolvedOptions: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" },
   routeCriticalTxHashes: ["a".repeat(64)],
+  routeCriticalAddresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"],
   frozenClockIso: "2026-07-26T00:00:00.000Z",
-  job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z", options: { maxDepth: 20 } },
+  job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z", options: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" } },
   dependencies: [
     { method: "getTrc20Balance", args: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", "TR7"], response: "1", origin: "legacy_observed" as const },
     { method: "getTransaction", args: ["a".repeat(64)], response: { txID: "a".repeat(64) }, origin: "supplemental_stage_b_fixture" as const }
@@ -47,6 +49,25 @@ describe("where latency replay v1", () => {
       sourceAddress: base.job.sourceAddress, maxEdgesPerAddress: 77,
       contractTransactionInfoMinIntervalMs: 1000, requestedAmountRaw: "7"
     });
+  });
+  it("assembles the complete production Where dependency contract", async () => {
+    const calls: unknown[][] = [];
+    const fn = async (...args: unknown[]) => { calls.push(args); return null; };
+    const deps = createLegacyWhereIsMoneyDeps({
+      base: { getLabelsForAddress: fn, getTransaction: fn, listTrc20ApprovalChanges: fn, getUsdtRestrictionStatus: fn, getContractIntelligenceProfile: fn } as any,
+      getTrc20Balance: fn as any, fetchEdgesForAddress: fn as any, getHistoryCoverageForAddress: fn as any,
+      repairSourceProvenanceWindow: fn as any, requestCandidateWindows: fn as any,
+      ensureBroadTargetedHistory: fn as any, ensureBroadTargetedHistories: fn as any,
+      fetchLatestEdgesForAddress: fn as any, getClassificationForAddress: fn as any, fastRiskReport: null
+    });
+    expect(Object.keys(deps).sort()).toEqual([
+      "crossChainContinuationProviders", "crossChainDiscoveryProvider", "ensureBroadTargetedHistories", "ensureBroadTargetedHistory",
+      "evmEvidenceProvider", "fetchEdgesForAddress", "fetchLatestEdgesForAddress", "getClassificationForAddress", "getContractIntelligenceProfile",
+      "getFastWalletRisk", "getHistoryCoverageForAddress", "getLabelsForAddress", "getTransaction", "getTrc20Balance", "getUsdtRestrictionStatus",
+      "listTrc20ApprovalChanges", "repairSourceProvenanceWindow", "requestCandidateWindows"
+    ]);
+    await deps.fetchEdgesForAddress("T", { latestTimestamp: new Date("2026-01-01T00:00:00.000Z") });
+    expect(calls[0]).toEqual(["T", { latestTimestamp: new Date("2026-01-01T00:00:00.000Z") }]);
   });
   it("collects a conservative route-critical transaction superset", () => {
     expect(collectRouteCriticalTransactionHashes({
@@ -153,5 +174,12 @@ describe("where latency replay v1", () => {
       sourceAddress: base.job.sourceAddress,
       windowStart: new Date(base.job.windowStart), windowEnd: new Date(base.job.windowEnd)
     })).resolves.toMatchObject({ subjectAddress: base.job.sourceAddress, balanceFormingTransfers: [] });
+  });
+
+  it("restores the global clock after a replay failure", async () => {
+    const originalDate = Date;
+    const replay = parseWhereLatencyReplayV1(built().canonicalJson);
+    await expect(runWhereLatencyReplay(replay)).rejects.toThrow();
+    expect(Date).toBe(originalDate);
   });
 });

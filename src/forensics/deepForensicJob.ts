@@ -4,7 +4,7 @@ import {
   type DeepAddressForensicDeps,
   type DeepAddressForensicReport
 } from "../check/deepForensicCheck";
-import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest, type RunWhereIsMoneyCheckInput } from "../check/whereIsMoneyCheck";
+import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest, type RunWhereIsMoneyCheckInput, type WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import {
@@ -234,6 +234,44 @@ export function resolveLegacyWhereIsMoneyRunInput(
     crossChainStage2Enabled: shouldRunCrossChainStage2ForJob(job, options),
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
     crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
+  };
+}
+
+/** Exact legacy dependency graph shared by the worker and replay capture. */
+export function createLegacyWhereIsMoneyDeps(input: {
+  base: Pick<DeepForensicJobRunnerDeps,
+    "getLabelsForAddress" | "getTransaction" | "listTrc20ApprovalChanges" | "getUsdtRestrictionStatus" |
+    "getContractIntelligenceProfile" | "crossChainDiscoveryProvider" | "crossChainContinuationProviders" | "evmEvidenceProvider">;
+  getTrc20Balance: WhereIsMoneyDeps["getTrc20Balance"];
+  fetchEdgesForAddress: WhereIsMoneyDeps["fetchEdgesForAddress"];
+  getHistoryCoverageForAddress?: WhereIsMoneyDeps["getHistoryCoverageForAddress"];
+  repairSourceProvenanceWindow?: WhereIsMoneyDeps["repairSourceProvenanceWindow"];
+  requestCandidateWindows?: WhereIsMoneyDeps["requestCandidateWindows"];
+  ensureBroadTargetedHistory?: WhereIsMoneyDeps["ensureBroadTargetedHistory"];
+  ensureBroadTargetedHistories?: WhereIsMoneyDeps["ensureBroadTargetedHistories"];
+  fetchLatestEdgesForAddress?: WhereIsMoneyDeps["fetchLatestEdgesForAddress"];
+  getClassificationForAddress: WhereIsMoneyDeps["getClassificationForAddress"];
+  fastRiskReport: RiskReport | null;
+}): WhereIsMoneyDeps {
+  return {
+    getTrc20Balance: input.getTrc20Balance,
+    fetchEdgesForAddress: input.fetchEdgesForAddress,
+    getHistoryCoverageForAddress: input.getHistoryCoverageForAddress,
+    repairSourceProvenanceWindow: input.repairSourceProvenanceWindow,
+    requestCandidateWindows: input.requestCandidateWindows,
+    ensureBroadTargetedHistory: input.ensureBroadTargetedHistory,
+    ensureBroadTargetedHistories: input.ensureBroadTargetedHistories,
+    fetchLatestEdgesForAddress: input.fetchLatestEdgesForAddress,
+    getLabelsForAddress: input.base.getLabelsForAddress,
+    getClassificationForAddress: input.getClassificationForAddress,
+    getFastWalletRisk: async () => input.fastRiskReport,
+    getTransaction: input.base.getTransaction,
+    listTrc20ApprovalChanges: input.base.listTrc20ApprovalChanges,
+    getUsdtRestrictionStatus: input.base.getUsdtRestrictionStatus,
+    getContractIntelligenceProfile: input.base.getContractIntelligenceProfile,
+    crossChainDiscoveryProvider: input.base.crossChainDiscoveryProvider,
+    crossChainContinuationProviders: input.base.crossChainContinuationProviders,
+    evmEvidenceProvider: input.base.evmEvidenceProvider
   };
 }
 
@@ -1583,7 +1621,8 @@ async function runWhereIsMoneyJob(
   const resolvedWhereInput = resolveLegacyWhereIsMoneyRunInput(job, options);
   let report: WhereIsMoneyReport;
   try {
-    const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
+    const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck(createLegacyWhereIsMoneyDeps({
+      base: deps,
       getTrc20Balance: async (address, tokenContractAddress) => {
         if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
         const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
@@ -1596,17 +1635,9 @@ async function runWhereIsMoneyJob(
       ensureBroadTargetedHistory,
       ensureBroadTargetedHistories,
       fetchLatestEdgesForAddress,
-      getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress,
-      getFastWalletRisk: async () => fastRiskReportFromJob(job),
-      getTransaction: deps.getTransaction,
-      listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
-      getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
-      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-      crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
-      crossChainContinuationProviders: deps.crossChainContinuationProviders,
-      evmEvidenceProvider: deps.evmEvidenceProvider
-    }, {
+      fastRiskReport: fastRiskReportFromJob(job)
+    }), {
       ...resolvedWhereInput,
       onProgress: async (patch) => {
         await persistProgress(patch);
