@@ -28,6 +28,7 @@ import type {
   UnifiedOrderedAdmissionBlocker
 } from "./plannerRepository";
 import type {
+  UnifiedProviderAssignmentResult,
   UnifiedProviderSlotAssignment,
   UnifiedProviderSlotSnapshot
 } from "./providerPool";
@@ -708,6 +709,8 @@ export type UnifiedAdaptiveControllerDecision = {
   readonly actionableProviderSlots: number;
   readonly claimPermits: readonly UnifiedProviderClaimPermit[];
   readonly claimAssignments: readonly UnifiedProviderSlotAssignment[];
+  readonly acceptedClaimAssignments: readonly UnifiedProviderSlotAssignment[];
+  readonly assignmentResult: UnifiedProviderAssignmentResult;
   readonly analysisConcurrencyLimit: number;
   readonly finalizationConcurrencyLimit: number;
   readonly allocations: ProviderSlotAllocation[];
@@ -783,9 +786,10 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
   ): Promise<readonly UnifiedActionableProviderScope[]>;
   assignProviderPermits?(
     assignments: readonly UnifiedProviderSlotAssignment[]
-  ): void;
+  ): UnifiedProviderAssignmentResult;
   setPoolTarget(target: number): void;
   wakePool(): void;
+  requestControllerWake?(): void;
   onDecision?(decision: UnifiedAdaptiveControllerDecision): void;
 }): Promise<UnifiedAdaptiveControllerDecision> {
   const runtimeState = classifyUnifiedRuntimeResources(
@@ -977,13 +981,44 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
       expectedEpoch: idleSlots[index]!.epoch,
       permit
     }));
+  const assignmentResult = input.assignProviderPermits?.(claimAssignments) ?? {
+    accepted: claimAssignments,
+    rejected: []
+  };
+  const acceptedClaimAssignments = assignmentResult.accepted;
   const actionableProviderSlots =
-    activeProviderSlots.length + claimAssignments.length;
-  input.assignProviderPermits?.(claimAssignments);
+    activeProviderSlots.length + acceptedClaimAssignments.length;
   input.setPoolTarget(Math.min(
     targetActiveProviderSlots,
     actionableProviderSlots
   ));
+  const shouldRefillStaleAssignment =
+    assignmentResult.rejected.some((item) => item.reason === "stale_epoch") &&
+    eligibleReadyProviderWork > 0 &&
+    providerCapacityLimit > activeProviderSlots.length &&
+    runtimeState === "normal" &&
+    claimAssignments.some((assignment) => {
+      const run = input.demand.find((candidate) =>
+        candidate.runId === assignment.permit.runId &&
+        candidate.ownerId === assignment.permit.ownerId &&
+        candidate.lane === assignment.permit.lane
+      );
+      return run !== undefined &&
+        run.eligibleReadyWork > 0 &&
+        run.providerAvailable &&
+        !run.providerPaced &&
+        !run.resourceGuarded &&
+        (!run.mergeBufferFull || run.canonicalHeadEligible) &&
+        refillByRun.get(run.runId)?.blocker === null;
+    });
+  if (shouldRefillStaleAssignment) {
+    try {
+      input.requestControllerWake?.();
+    } catch {
+      // ponytail: the event wake is a best-effort fast path; reconciliation
+      // remains the lost-wake and restart fallback.
+    }
+  }
   if (admitted > 0) {
     try {
       input.wakePool();
@@ -1034,7 +1069,7 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
       )[0];
     const lane = allocation?.lane ?? candidates[0]?.lane ?? first.lane;
     const activeSlots = activeSlotsByRun.get(first.runId) ?? 0;
-    const assignedSlots = claimAssignments.filter((item) =>
+    const assignedSlots = acceptedClaimAssignments.filter((item) =>
       item.permit.runId === first.runId
     ).length;
     const allocationReason = allocation?.reason ?? "no_eligible_work";
@@ -1109,6 +1144,8 @@ export async function runUnifiedAdaptiveControllerCycle(input: {
     actionableProviderSlots,
     claimPermits,
     claimAssignments,
+    acceptedClaimAssignments,
+    assignmentResult,
     analysisConcurrencyLimit: guarded.analysisConcurrencyLimit,
     finalizationConcurrencyLimit: guarded.finalizationConcurrencyLimit,
     allocations,

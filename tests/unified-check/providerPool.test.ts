@@ -24,6 +24,92 @@ function deferred<T>() {
 }
 
 describe("Unified resizable provider pool", () => {
+  const permit: UnifiedProviderClaimPermit = {
+    lane: "interactive",
+    ownerId: "owner",
+    runId: "run",
+    canonicalHeadPreferred: true
+  };
+
+  it("classifies mixed current and stale permit assignments", () => {
+    const pool = createUnifiedProviderPool({
+      configuredLimit: 2,
+      requiresPermit: true,
+      runCycle: async () => ({ claimed: false }),
+      onError: vi.fn()
+    });
+
+    expect(pool.assignPermits([{
+      slotId: 0,
+      expectedEpoch: 0,
+      permit
+    }, {
+      slotId: 1,
+      expectedEpoch: 1,
+      permit
+    }])).toEqual({
+      accepted: [{ slotId: 0, expectedEpoch: 0, permit }],
+      rejected: [{
+        assignment: { slotId: 1, expectedEpoch: 1, permit },
+        reason: "stale_epoch"
+      }]
+    });
+  });
+
+  it("classifies draining, active, and pending assignment guards", async () => {
+    const activeCycle = deferred<{ claimed: boolean }>();
+    const activePool = createUnifiedProviderPool({
+      configuredLimit: 1,
+      requiresPermit: true,
+      runCycle: async () => activeCycle.promise,
+      onError: vi.fn()
+    });
+    const assignment = { slotId: 0, expectedEpoch: 0, permit };
+    expect(activePool.assignPermits([assignment]).accepted).toEqual([
+      assignment
+    ]);
+    activePool.setTargetSlots(1);
+    activePool.wake();
+    await vi.waitFor(() => expect(activePool.slotSnapshots()[0]?.active)
+      .toBe(true));
+    expect(activePool.assignPermits([{
+      ...assignment,
+      expectedEpoch: 1
+    }])).toEqual({
+      accepted: [],
+      rejected: [{
+        assignment: { ...assignment, expectedEpoch: 1 },
+        reason: "slot_active"
+      }]
+    });
+    activeCycle.resolve({ claimed: false });
+    await activePool.waitForIdle();
+
+    const pendingPool = createUnifiedProviderPool({
+      configuredLimit: 1,
+      requiresPermit: true,
+      runCycle: async () => ({ claimed: false }),
+      onError: vi.fn()
+    });
+    pendingPool.assignPermits([assignment]);
+    expect(pendingPool.assignPermits([assignment])).toEqual({
+      accepted: [],
+      rejected: [{ assignment, reason: "pending_assignment" }]
+    });
+
+    const drainingPool = createUnifiedProviderPool({
+      configuredLimit: 1,
+      requiresPermit: true,
+      runCycle: async () => ({ claimed: false }),
+      onError: vi.fn()
+    });
+    await drainingPool.drain();
+    expect(drainingPool.assignPermits([assignment])).toEqual({
+      accepted: [],
+      rejected: [{ assignment, reason: "draining" }]
+    });
+  });
+
   it("starts at target zero and resizes 0 -> 1 -> 4 -> 2 in place", async () => {
     const pending = Array.from({ length: 4 }, () =>
       deferred<{ claimed: boolean }>()

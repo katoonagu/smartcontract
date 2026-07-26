@@ -240,6 +240,7 @@ postgresDescribe("Unified provider claim permits", () => {
         }),
         assignProviderPermits(value) {
           permits = value.map((assignment) => assignment.permit);
+          return { accepted: value, rejected: [] };
         },
         setPoolTarget() {},
         wakePool() {}

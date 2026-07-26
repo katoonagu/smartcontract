@@ -27,11 +27,25 @@ export type UnifiedProviderSlotAssignment = {
   readonly permit: UnifiedProviderClaimPermit;
 };
 
+export type UnifiedProviderAssignmentRejectionReason =
+  | "draining"
+  | "slot_active"
+  | "pending_assignment"
+  | "stale_epoch";
+
+export type UnifiedProviderAssignmentResult = {
+  readonly accepted: readonly UnifiedProviderSlotAssignment[];
+  readonly rejected: readonly {
+    readonly assignment: UnifiedProviderSlotAssignment;
+    readonly reason: UnifiedProviderAssignmentRejectionReason;
+  }[];
+};
+
 export interface UnifiedProviderPool {
   setTargetSlots(target: number): void;
   assignPermits(
     assignments: readonly UnifiedProviderSlotAssignment[]
-  ): UnifiedProviderSlotAssignment[];
+  ): UnifiedProviderAssignmentResult;
   wake(): void;
   drain(): Promise<void>;
   snapshot(): UnifiedProviderPoolSnapshot;
@@ -201,6 +215,7 @@ export function createUnifiedProviderPool(input: {
     },
     assignPermits(assignments) {
       const accepted: UnifiedProviderSlotAssignment[] = [];
+      const rejected: Array<UnifiedProviderAssignmentResult["rejected"][number]> = [];
       for (const assignment of assignments) {
         if (
           !Number.isSafeInteger(assignment.slotId) ||
@@ -212,16 +227,24 @@ export function createUnifiedProviderPool(input: {
           throw new TypeError("unified_provider_slot_assignment_invalid");
         }
         const slotId = assignment.slotId;
-        if (
-          draining ||
-          active[slotId] !== null ||
-          pendingAssignments[slotId] !== null ||
-          epochs[slotId] !== assignment.expectedEpoch
-        ) continue;
+        const reason: UnifiedProviderAssignmentRejectionReason | null =
+          draining
+            ? "draining"
+            : active[slotId] !== null
+              ? "slot_active"
+              : pendingAssignments[slotId] !== null
+                ? "pending_assignment"
+                : epochs[slotId] !== assignment.expectedEpoch
+                  ? "stale_epoch"
+                  : null;
+        if (reason !== null) {
+          rejected.push({ assignment, reason });
+          continue;
+        }
         pendingAssignments[slotId] = assignment;
         accepted.push(assignment);
       }
-      return accepted;
+      return { accepted, rejected };
     },
     wake() {
       if (draining) return;

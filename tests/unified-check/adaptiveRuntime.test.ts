@@ -56,6 +56,145 @@ function demand(
 }
 
 describe("adaptive Unified runtime", () => {
+  it("requests one coalesced refill after a stale assignment epoch and counts only accepted slots", async () => {
+    const requestControllerWake = vi.fn();
+    const setPoolTarget = vi.fn();
+    let stale = true;
+    const common = {
+      nowMs: 2_000,
+      rampState: { target: 1, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "group-a",
+        state: "healthy" as const,
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      providerSlots: [{
+        slotId: 0,
+        epoch: 0,
+        active: false,
+        activePermit: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 1,
+        providerWorkerLimit: 1,
+        providerIncreaseStep: 1,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling" as const,
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 1,
+        readyBufferMaxEntries: 1,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [demand("run", "owner", 1)],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      countActionableProviderWork: async () => [{
+        runId: "run",
+        lane: "interactive" as const,
+        count: 1
+      }],
+      assignProviderPermits(assignments: readonly import("../../src/unifiedCheck/providerPool").UnifiedProviderSlotAssignment[]) {
+        const result = stale
+          ? {
+              accepted: [],
+              rejected: assignments.map((assignment) => ({
+                assignment,
+                reason: "stale_epoch" as const
+              }))
+            }
+          : { accepted: assignments, rejected: [] };
+        stale = false;
+        return result;
+      },
+      setPoolTarget,
+      wakePool: vi.fn(),
+      requestControllerWake
+    };
+
+    const rejected = await runUnifiedAdaptiveControllerCycle(common);
+    expect(rejected.assignmentResult.rejected[0]?.reason).toBe("stale_epoch");
+    expect(rejected.acceptedClaimAssignments).toEqual([]);
+    expect(rejected.actionableProviderSlots).toBe(0);
+    expect(setPoolTarget).toHaveBeenLastCalledWith(0);
+    expect(requestControllerWake).toHaveBeenCalledOnce();
+
+    const accepted = await runUnifiedAdaptiveControllerCycle(common);
+    expect(accepted.acceptedClaimAssignments).toHaveLength(1);
+    expect(accepted.assignmentResult.rejected).toEqual([]);
+    expect(accepted.actionableProviderSlots).toBe(1);
+    expect(setPoolTarget).toHaveBeenLastCalledWith(1);
+    expect(requestControllerWake).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry assignment guards that a fresh controller snapshot cannot fix", async () => {
+    const requestControllerWake = vi.fn();
+    await runUnifiedAdaptiveControllerCycle({
+      nowMs: 2_000,
+      rampState: { target: 1, lastIncreaseAtMs: 0 },
+      providerGroups: [{
+        groupId: "group-a",
+        state: "healthy",
+        concurrencyLimit: 1,
+        inFlight: 0,
+        cooldownUntil: null
+      }],
+      resources: normalResources,
+      thresholds,
+      config: {
+        configuredProviderConcurrencyLimit: 1,
+        providerWorkerLimit: 1,
+        providerIncreaseStep: 1,
+        providerIncreaseIntervalMs: 1,
+        analysisConcurrencyLimit: 1,
+        finalizationConcurrencyLimit: 1,
+        admissionPolicy: "rolling",
+        lookaheadFactor: 1,
+        perRunLookaheadMaximum: 1,
+        readyBufferMaxEntries: 1,
+        readyBufferMaxBytes: 1_000,
+        reservedBufferMaxBytes: 1_000,
+        reservationBytesPerTask: 10,
+        repairShare: 0.1,
+        repairMaxSlots: 1,
+        repairMaxWaitChunks: 2,
+        chunksSinceLastRepair: 0
+      },
+      demand: [demand("run", "owner", 1)],
+      refill: async () => ({
+        admittedTaskIds: [],
+        deAdmittedTaskIds: [],
+        blocker: null
+      }),
+      assignProviderPermits: (assignments) => ({
+        accepted: [],
+        rejected: assignments.map((assignment) => ({
+          assignment,
+          reason: "slot_active" as const
+        }))
+      }),
+      setPoolTarget: vi.fn(),
+      wakePool: vi.fn(),
+      requestControllerWake
+    });
+
+    expect(requestControllerWake).not.toHaveBeenCalled();
+  });
+
   it("requires a healthy positive-capacity group without pinning ordered work to a group", () => {
     expect(hasHealthyCapableProviderGroup([{
       groupId: "healthy-but-incapable",

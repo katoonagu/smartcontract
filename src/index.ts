@@ -1163,6 +1163,7 @@ const runUnifiedControllerCycle = async (
     setPoolTarget: (target) =>
       unifiedProviderPool.setTargetSlots(target),
     wakePool: () => unifiedProviderPool.wake(),
+    requestControllerWake: () => wakeUnifiedController(),
     onDecision: (decision) => {
       unifiedAdminRunDecisionStore.replace(decision.runDecisions);
       if (
@@ -1360,7 +1361,7 @@ const runUnifiedControllerCycle = async (
                 .filter((item) => item.runId === plan.runId)
                 .reduce((sum, item) => sum + item.slots, 0),
               actualSlots: (decision?.activeSlots ?? 0) +
-                result.claimAssignments.filter((assignment) =>
+                result.acceptedClaimAssignments.filter((assignment) =>
                   assignment.permit.runId === plan.runId
                 ).length
             },

@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
@@ -566,6 +566,7 @@ async function runReplay(capacity: number, runCount: number) {
         Promise.resolve(replay.actionable(scopes)),
       assignProviderPermits(next) {
         permits = next.map((assignment) => assignment.permit);
+        return { accepted: next, rejected: [] };
       },
       setPoolTarget(target) {
         poolTarget = target;
@@ -738,6 +739,89 @@ async function runReplay(capacity: number, runCount: number) {
 }
 
 describe("deterministic provider scale replay", () => {
+  it("refills one stale epoch at logical capacity 100 without duplicate or starved permits", async () => {
+    const remaining = new Set(Array.from(
+      { length: 100 },
+      (_unused, index) => `run-${index}`
+    ));
+    const claimed = new Set<string>();
+    const targets: number[] = [];
+    const requestControllerWake = vi.fn();
+    let rejectOneStale = true;
+    let rampState: ProviderCapacityRampState = {
+      target: 100,
+      lastIncreaseAtMs: 0
+    };
+    const cycle = async () => {
+      const result = await runUnifiedAdaptiveControllerCycle({
+        nowMs: 1,
+        rampState,
+        providerGroups: Array.from({ length: 100 }, (_unused, index) => ({
+          groupId: `group-${index}`,
+          state: "healthy" as const,
+          concurrencyLimit: 1,
+          inFlight: 0,
+          cooldownUntil: null
+        })),
+        resources,
+        thresholds,
+        config: config(100, 0),
+        demand: [...remaining].map((runId) => ({
+          runId,
+          ownerId: `owner-${runId}`,
+          lane: "interactive" as const,
+          eligibleReadyWork: 1,
+          ownerLastServedAtMs: 0,
+          lastServedAtMs: 0,
+          mergeBufferFull: false,
+          providerAvailable: true,
+          resourceGuarded: false,
+          canonicalHeadEligible: true
+        })),
+        refill: async () => ({
+          admittedTaskIds: [],
+          deAdmittedTaskIds: [],
+          blocker: null
+        }),
+        assignProviderPermits(assignments) {
+          const rejected = rejectOneStale ? assignments.slice(0, 1) : [];
+          const accepted = assignments.slice(rejected.length);
+          rejectOneStale = false;
+          for (const assignment of accepted) {
+            expect(claimed.has(assignment.permit.runId)).toBe(false);
+            claimed.add(assignment.permit.runId);
+            remaining.delete(assignment.permit.runId);
+          }
+          return {
+            accepted,
+            rejected: rejected.map((assignment) => ({
+              assignment,
+              reason: "stale_epoch" as const
+            }))
+          };
+        },
+        setPoolTarget(target) {
+          targets.push(target);
+        },
+        wakePool() {},
+        requestControllerWake
+      });
+      rampState = result.rampState;
+      expect(result.acceptedClaimAssignments.length).toBeLessThanOrEqual(100);
+      return result;
+    };
+
+    const stale = await cycle();
+    expect(stale.acceptedClaimAssignments).toHaveLength(99);
+    expect(requestControllerWake).toHaveBeenCalledOnce();
+    const fresh = await cycle();
+    expect(fresh.acceptedClaimAssignments).toHaveLength(1);
+    expect(targets).toEqual([99, 1]);
+    expect(claimed.size).toBe(100);
+    expect(remaining.size).toBe(0);
+    expect(requestControllerWake).toHaveBeenCalledOnce();
+  });
+
   it("uses the real controller and worker claim lifecycle through capacity, cooldown, repair, buffer and restart scenarios", async () => {
     const baselines = new Map<number, string>();
     for (const capacity of CAPACITIES) {

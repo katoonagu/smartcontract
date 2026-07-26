@@ -425,6 +425,7 @@ export async function runUnifiedAdaptiveBenchmarkEvents(input: {
         })),
       assignProviderPermits(assignments) {
         permits = assignments.map((assignment) => assignment.permit);
+        return { accepted: assignments, rejected: [] };
       },
       setPoolTarget() {
         // The assigned permits below are the observed pool target.
