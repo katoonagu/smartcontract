@@ -76,6 +76,9 @@ import {
 import type {
   UnifiedProviderSlotIdentity
 } from "./providerPool";
+import type {
+  UnifiedProviderRefillDiagnostics
+} from "./providerRefillDiagnostics";
 import type { FrozenLabelDatasetV1 } from "./frozenLabels";
 
 type LoadedRun = {
@@ -299,6 +302,7 @@ export function createUnifiedProductionRuntime(input: {
   onProviderWorkAvailable?(): void;
   onCheckpointLatencyMs?(latencyMs: number): void;
   onAdaptiveEvent?(event: UnifiedAdaptiveEvent): void;
+  providerRefillDiagnostics?: UnifiedProviderRefillDiagnostics;
   requireProviderClaimPermit?: boolean;
   loadProviderPage(input: {
     run: LoadedRun;
@@ -741,7 +745,37 @@ export function createUnifiedProductionRuntime(input: {
           deep_direct: directEvidence
         },
         claimPermit,
-        createId
+        createId,
+        onTaskClaimed: () => {
+          const identity = providerSlotContext.getStore();
+          if (identity) {
+            input.providerRefillDiagnostics?.recordTaskClaimed({
+              ...identity,
+              atMs: performance.now()
+            });
+          }
+        },
+        onHandlerFinished: ({ result }) => {
+          if (result.kind !== "checkpoint" && result.kind !== "completed") {
+            return;
+          }
+          const identity = providerSlotContext.getStore();
+          if (identity) {
+            input.providerRefillDiagnostics?.recordChunkFinished({
+              ...identity,
+              atMs: performance.now()
+            });
+          }
+        },
+        onLifecyclePersisted: () => {
+          const identity = providerSlotContext.getStore();
+          if (identity) {
+            input.providerRefillDiagnostics?.recordCheckpointFinished({
+              ...identity,
+              atMs: performance.now()
+            });
+          }
+        }
       });
       return providerSlot
         ? providerSlotContext.run(providerSlot, runCycle)

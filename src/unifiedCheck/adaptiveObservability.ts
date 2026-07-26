@@ -18,7 +18,8 @@ export type UnifiedReasonCode =
   | "class_capacity_limit"
   | "repair_reserve_reclaim"
   | "background_preempted"
-  | "reconciliation_wait";
+  | "reconciliation_wait"
+  | "checkpoint_or_commit";
 
 export interface UnifiedDecisionReason {
   readonly scope: UnifiedReasonScope;

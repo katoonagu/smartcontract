@@ -200,6 +200,16 @@ describe("Unified adaptive observability", () => {
     expect(() =>
       createUnifiedDecisionReason("pool", "background_preempted")
     ).toThrow("unified_reason_scope_invalid");
+    expect(["pool", "run", "task"].map((scope) =>
+      createUnifiedDecisionReason(
+        scope as "pool" | "run" | "task",
+        "checkpoint_or_commit"
+      )
+    )).toEqual([
+      { scope: "pool", code: "checkpoint_or_commit" },
+      { scope: "run", code: "checkpoint_or_commit" },
+      { scope: "task", code: "checkpoint_or_commit" }
+    ]);
 
     expect(createUnifiedAdaptiveEvent({
       type: "resource_state_changed",

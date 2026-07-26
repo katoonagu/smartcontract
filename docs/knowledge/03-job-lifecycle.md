@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-26
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -174,9 +174,25 @@ process memory, and a no-action tick mutates no task. Provider, analysis, and
 finalization retain separate capacity; pressure lowers or pauses new claims
 without interrupting an in-flight provider request.
 
+Provider-slot assignments are evaluated against the pool's current monotonic
+slot epoch. Controller decisions preserve proposed and accepted assignments
+separately; pool targets and per-run assigned-slot counts include only accepted
+assignments. A stale-epoch rejection requests one coalesced controller wake
+when healthy eligible work and safe capacity remain, while active, pending, or
+draining rejections wait for the normal boundary/reconciliation path.
+
+Refill timing is best-effort and bounded in memory: at most 512 incomplete
+slot/epoch correlations and 512 completed samples per phase. Correlation uses
+only the explicit active-epoch, idle assignment epoch, and next active-epoch
+transition. Discontinuities are dropped rather than inferred, and exported
+snapshots contain aggregate assignment counts and refill percentiles without
+run, owner, task, address, key, or provider-group identities. This diagnostic
+path never participates in claim, checkpoint, acceptance, or commit success.
+
 ## Remaining Operational Work
 
-The schema-036 startup verifier, planner, adaptive capacity, reconciliation,
+The schema-036 startup verifier, planner, adaptive capacity, structured slot
+assignment outcomes, bounded refill diagnostics, reconciliation,
 staged policy, barrier fallback, and memory diagnostics are implemented.
 Configuration defaults to `global_barrier`; isolated or broader rolling is an
 ordinary validated configuration choice. Deterministic replay covers logical

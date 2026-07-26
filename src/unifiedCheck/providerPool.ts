@@ -65,6 +65,7 @@ export function createUnifiedProviderPool(input: {
   onError(error: unknown, slotId: number): void;
   onInFlight?(current: number): void;
   onSlotBoundary?(snapshot: UnifiedProviderSlotSnapshot): void;
+  onAssignmentsEvaluated?(result: UnifiedProviderAssignmentResult): void;
 }): UnifiedProviderPool {
   if (
     !Number.isSafeInteger(input.configuredLimit) ||
@@ -244,7 +245,14 @@ export function createUnifiedProviderPool(input: {
         pendingAssignments[slotId] = assignment;
         accepted.push(assignment);
       }
-      return { accepted, rejected };
+      const result = { accepted, rejected };
+      try {
+        input.onAssignmentsEvaluated?.(result);
+      } catch {
+        // ponytail: refill diagnostics are best-effort; pool state is the
+        // authority and the observer can be replaced by an external sink.
+      }
+      return result;
     },
     wake() {
       if (draining) return;

@@ -191,6 +191,18 @@ export async function runUnifiedTaskCycle(input: {
   createId?: () => string;
   claimPermit?: UnifiedProviderClaimPermit;
   onProviderWorkAvailable?(): void | Promise<void>;
+  onTaskClaimed?(task: UnifiedWorkerTask): void;
+  onHandlerFinished?(input: {
+    readonly task: UnifiedWorkerTask;
+    readonly result: UnifiedChunkOutcome;
+  }): void;
+  onLifecyclePersisted?(input: {
+    readonly task: UnifiedWorkerTask;
+    readonly result: UnifiedCompletedChunkOutcome | Extract<
+      UnifiedChunkOutcome,
+      { kind: "checkpoint" }
+    >;
+  }): void;
 }): Promise<
   | {
       claimed: false;
@@ -215,6 +227,11 @@ export async function runUnifiedTaskCycle(input: {
   });
   if (!task) {
     return { claimed: false, taskId: null, outcome: "idle" };
+  }
+  try {
+    input.onTaskClaimed?.(task);
+  } catch {
+    // ponytail: refill timing is best-effort and never owns task lifecycle.
   }
   const cycleResult = (
     outcome: "checkpointed" | "completed" | "waiting" | "blocked" | "failed"
@@ -260,6 +277,11 @@ export async function runUnifiedTaskCycle(input: {
         })) throw new Error("unified_worker_lease_lost");
       }
     });
+    try {
+      input.onHandlerFinished?.({ task, result });
+    } catch {
+      // ponytail: refill timing is best-effort and never owns task lifecycle.
+    }
     if (result.kind === "checkpoint") {
       const checkpointed = await input.repository.checkpoint({
         taskId: task.id,
@@ -270,6 +292,11 @@ export async function runUnifiedTaskCycle(input: {
       });
       if (!checkpointed.checkpointed) {
         throw new Error("unified_worker_lease_lost");
+      }
+      try {
+        input.onLifecyclePersisted?.({ task, result });
+      } catch {
+        // ponytail: refill timing is best-effort and never owns task lifecycle.
       }
       if (checkpointed.providerWorkAvailable) {
         await input.onProviderWorkAvailable?.();
@@ -285,6 +312,11 @@ export async function runUnifiedTaskCycle(input: {
         artifactSha256: result.artifactSha256,
         acceptedArtifact: result.acceptedArtifact
       })) throw new Error("unified_worker_lease_lost");
+      try {
+        input.onLifecyclePersisted?.({ task, result });
+      } catch {
+        // ponytail: refill timing is best-effort and never owns task lifecycle.
+      }
       return cycleResult("completed");
     }
     if (result.kind === "provider_wait") {

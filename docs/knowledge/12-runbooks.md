@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-26
 owner_area: docs
 code_refs:
   - package.json
@@ -81,6 +81,18 @@ fallback, and scale checks:
 ```powershell
 npm.cmd test -- tests/unified-check/providerCapacityController.test.ts tests/unified-check/fairProviderAllocator.test.ts tests/unified-check/providerPool.test.ts tests/unified-check/rollingAdmission.test.ts tests/unified-check/adaptiveRuntime.test.ts tests/unified-check/admissionRuntimeControl.test.ts tests/unified-check/reconciliation.test.ts tests/unified-check/providerScaleSimulation.test.ts
 ```
+
+Run the bounded provider-refill diagnostic contract and lifecycle wiring:
+
+```powershell
+npm.cmd test -- tests/unified-check/providerRefillDiagnostics.test.ts tests/unified-check/worker.test.ts tests/unified-check/productionWorker.test.ts tests/unified-check/adaptiveObservability.test.ts tests/unified-check/providerPool.test.ts tests/unified-check/adaptiveRuntime.test.ts
+```
+
+The `unified-provider-refill-diagnostics-v1` snapshot is identity-free,
+best-effort process evidence. It reports proposed/accepted/rejected assignments
+and refill phase percentiles with fixed 512-sample bounds. It is not yet a
+release evidence artifact and must not be used to claim live utilization or a
+higher production capacity ceiling.
 
 ### Emergency rolling-to-barrier fallback
 

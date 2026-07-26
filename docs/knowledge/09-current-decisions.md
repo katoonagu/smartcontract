@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-26
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -61,6 +61,11 @@ code_refs:
   Concurrency is bounded by healthy independent groups, configured provider and
   worker ceilings, DB/memory guards, and eligible ready work. Provider pacing,
   endpoint/account-group limits, cooldown, and 429 handling remain separate.
+- Provider assignment proposals are not capacity until the pool accepts them
+  against its current slot epoch. Pool targets, actionable capacity, and
+  per-run assigned-slot counts use accepted assignments only. A stale epoch may
+  request the existing coalesced controller wake fast path; other pool guards
+  wait for their real lifecycle transition or rare reconciliation.
 - Scheduling is work-conserving max-min fairness, hierarchically owner then run.
   Repair has an elastic borrowable reserve; at capacity one it receives bounded
   weighted turns at chunk boundaries.
@@ -189,6 +194,11 @@ expanding frontier has no percent or ETA.
 - Production capacity increases require a live canary under the real Linux
   container/cgroup or host limit. New key groups raise the configured ceiling
   only after their independent grouping and live behavior are verified.
+- Provider refill diagnostics are a separate best-effort V1 aggregate. They
+  retain at most 512 incomplete slot/epoch correlations and 512 durations per
+  phase, drop discontinuities, and export no run/task/provider identities.
+  They do not mutate the historical adaptive benchmark observation V1 shape;
+  a release evidence artifact that consumes them remains later work.
 
 ## Separate Decisions
 

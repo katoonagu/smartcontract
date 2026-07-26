@@ -217,6 +217,9 @@ import { createTronConfirmedSnapshotSource } from "./unifiedCheck/snapshot";
 import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionPolicy.generated";
 import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
 import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
+import {
+  createUnifiedProviderRefillDiagnostics
+} from "./unifiedCheck/providerRefillDiagnostics";
 import { createUnifiedProviderPool } from "./unifiedCheck/providerPool";
 import {
   countUnifiedActionableProviderWork,
@@ -544,6 +547,8 @@ const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
 };
 const unifiedCheckpointLatencySampler =
   createUnifiedCheckpointLatencySampler();
+const unifiedProviderRefillDiagnostics =
+  createUnifiedProviderRefillDiagnostics();
 const loadUnifiedFrozenLabelDataset = createFrozenLabelDatasetLoader({
   loadBySha256: async (labelDatasetSha256) => (
     await db.query(
@@ -573,6 +578,7 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     unifiedCheckpointLatencySampler.record(latencyMs);
   },
   onAdaptiveEvent: emitUnifiedAdaptiveEvent,
+  providerRefillDiagnostics: unifiedProviderRefillDiagnostics,
   requireProviderClaimPermit: true,
   async loadProviderPage({
     run,
@@ -925,6 +931,20 @@ const unifiedProviderPool = createUnifiedProviderPool({
     return result;
   },
   onSlotBoundary: () => wakeUnifiedController(),
+  onAssignmentsEvaluated: (result) => {
+    const assignments = [
+      ...result.accepted,
+      ...result.rejected.map((rejection) => rejection.assignment)
+    ];
+    unifiedProviderRefillDiagnostics.recordControllerDecisionFinished({
+      assignments,
+      atMs: performance.now()
+    });
+    unifiedProviderRefillDiagnostics.recordAssignmentsEvaluated(
+      result,
+      performance.now()
+    );
+  },
   onError(error, slotId) {
     logger.error("unified_provider_pool_slot_failed", {
       slotId,

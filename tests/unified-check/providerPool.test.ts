@@ -32,14 +32,16 @@ describe("Unified resizable provider pool", () => {
   };
 
   it("classifies mixed current and stale permit assignments", () => {
+    const onAssignmentsEvaluated = vi.fn();
     const pool = createUnifiedProviderPool({
       configuredLimit: 2,
       requiresPermit: true,
       runCycle: async () => ({ claimed: false }),
+      onAssignmentsEvaluated,
       onError: vi.fn()
     });
 
-    expect(pool.assignPermits([{
+    const result = pool.assignPermits([{
       slotId: 0,
       expectedEpoch: 0,
       permit
@@ -47,13 +49,16 @@ describe("Unified resizable provider pool", () => {
       slotId: 1,
       expectedEpoch: 1,
       permit
-    }])).toEqual({
+    }]);
+    expect(result).toEqual({
       accepted: [{ slotId: 0, expectedEpoch: 0, permit }],
       rejected: [{
         assignment: { slotId: 1, expectedEpoch: 1, permit },
         reason: "stale_epoch"
       }]
     });
+    expect(onAssignmentsEvaluated).toHaveBeenCalledOnce();
+    expect(onAssignmentsEvaluated).toHaveBeenCalledWith(result);
   });
 
   it("classifies draining, active, and pending assignment guards", async () => {

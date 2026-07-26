@@ -157,6 +157,68 @@ function cycle(
 }
 
 describe("Unified resumable worker", () => {
+  it("observes claim, handler, and persisted lifecycle boundaries in order", async () => {
+    const repository = new MemoryWorkerRepository();
+    const events: string[] = [];
+    const checkpoint = repository.checkpoint.bind(repository);
+    repository.checkpoint = async (input) => {
+      events.push("repository_checkpoint");
+      return checkpoint(input);
+    };
+
+    await runUnifiedTaskCycle({
+      workerId: "worker-1",
+      now: () => repository.now,
+      leaseMs: 60_000,
+      repository,
+      handlers: {
+        direct_history: async () => {
+          events.push("handler");
+          return { kind: "checkpoint", checkpoint: { cursor: "next" } };
+        }
+      },
+      createId: () => "lease-1",
+      onTaskClaimed: () => events.push("task_claimed"),
+      onHandlerFinished: () => events.push("handler_finished"),
+      onLifecyclePersisted: () => events.push("lifecycle_persisted")
+    });
+
+    expect(events).toEqual([
+      "task_claimed",
+      "handler",
+      "handler_finished",
+      "repository_checkpoint",
+      "lifecycle_persisted"
+    ]);
+  });
+
+  it("keeps successful work independent from throwing lifecycle observers", async () => {
+    const repository = new MemoryWorkerRepository();
+    const throwing = () => {
+      throw new Error("diagnostics unavailable");
+    };
+
+    await expect(runUnifiedTaskCycle({
+      workerId: "worker-1",
+      now: () => repository.now,
+      leaseMs: 60_000,
+      repository,
+      handlers: {
+        direct_history: async () => ({
+          kind: "completed",
+          artifactSha256: "a".repeat(64)
+        })
+      },
+      createId: (() => {
+        const ids = ["lease-1", "attempt-1"];
+        return () => ids.shift()!;
+      })(),
+      onTaskClaimed: throwing,
+      onHandlerFinished: throwing,
+      onLifecyclePersisted: throwing
+    })).resolves.toMatchObject({ outcome: "completed" });
+  });
+
   it("uses one shared predicate for every provider chunk limit", () => {
     const budget = {
       maxWorkUnits: 2,
