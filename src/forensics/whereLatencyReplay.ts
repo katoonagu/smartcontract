@@ -1,24 +1,51 @@
 import { createHash } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { runWhereIsMoneyCheck, type RunWhereIsMoneyCheckInput, type WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
+import type { AppConfig } from "../config";
 import type { WhereIsMoneyReport } from "../types";
 import { canonicalizeArtifactJson } from "./canonicalJson";
 
 export type StableWhereFactsV1 = Omit<WhereIsMoneyReport, "transactionInfoEnrichment">;
 export const LEGACY_WHERE_REPLAY_BASELINE_COMMIT = "4861f22e697652c688489ef4be6ab9698cd6ef9f";
+export const LEGACY_WHERE_BEHAVIOR_SOURCE_FILES = [
+  "src/check/whereIsMoneyCheck.ts",
+  "src/forensics/balanceFormingSlice.ts",
+  "src/forensics/balanceFormingTransfers.ts",
+  "src/forensics/crossChainCorridor.ts",
+  "src/forensics/crossChainStage2Triggers.ts",
+  "src/forensics/moneyOriginOperationalAssessment.ts",
+  "src/forensics/moneyOriginPolicy.ts",
+  "src/forensics/moneyOriginTrace.ts",
+  "src/forensics/provenanceScoring.ts",
+  "src/forensics/sourceBundleExposure.ts",
+  "src/risk/scoringSignalMatrix.ts"
+] as const;
+export const LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH = "0c7ba9a5f16397da7bbcb1cefc9d66f10055a28cf7fbeacad2a1562851b9df05";
+
+type SerializedReplayError = {
+  name: string;
+  message: string;
+};
 
 type ReplayDependency = {
   method: string;
   args: unknown[];
-  response: unknown;
   payloadSha256: string;
   origin?: "legacy_observed" | "supplemental_stage_b_fixture";
-  invocationCount?: number;
-};
+} & (
+  | { response: unknown; error?: never }
+  | { response?: never; error: SerializedReplayError }
+);
 
 export type WhereLatencyReplayV1 = {
   schema: "where-latency-replay-v1";
   version: 1;
   baselineGitCommit: string;
+  recorderGitCommit: string;
+  behaviorSourceFiles: string[];
+  sourceTreeHash: string;
+  recorderTreeClean: true;
   resolvedConfigHash: string;
   resolvedConfig: Record<string, unknown>;
   resolvedOptions: Record<string, unknown>;
@@ -34,7 +61,10 @@ export type WhereLatencyReplayV1 = {
   expectedStableFacts: StableWhereFactsV1;
 };
 
-export type BuildWhereLatencyReplayV1Input = Omit<WhereLatencyReplayV1, "dependencies" | "rawTransactions"> & {
+export type BuildWhereLatencyReplayV1Input = Omit<
+  WhereLatencyReplayV1,
+  "dependencies" | "rawTransactions" | "baselineRequestCounts" | "resolvedConfigHash"
+> & {
   dependencies: Array<Omit<ReplayDependency, "payloadSha256">>;
   rawTransactions: Array<Omit<WhereLatencyReplayV1["rawTransactions"][number], "payloadSha256">>;
 };
@@ -44,6 +74,59 @@ export type DependencyInvocationRecorder = <T>(
   args: unknown[],
   operation: () => Promise<T>
 ) => Promise<T>;
+
+export type DependencyInvocationTapeRecorder = {
+  record<T>(
+    method: string,
+    args: unknown[],
+    operation: () => Promise<T>,
+    origin?: ReplayDependency["origin"]
+  ): Promise<T>;
+  readonly invocations: Array<Omit<ReplayDependency, "payloadSha256">>;
+  baselineRequestCounts(): Record<string, number>;
+};
+
+function serializedError(error: unknown): SerializedReplayError {
+  return error instanceof Error
+    ? { name: error.name || "Error", message: error.message }
+    : { name: "Error", message: String(error) };
+}
+
+function snapshotReplayValue(value: unknown): unknown {
+  const json = JSON.stringify(value);
+  return json === undefined ? null : JSON.parse(json);
+}
+
+export function createDependencyInvocationTapeRecorder(): DependencyInvocationTapeRecorder {
+  const invocations: Array<Omit<ReplayDependency, "payloadSha256">> = [];
+  return {
+    async record<T>(
+      method: string,
+      args: unknown[],
+      operation: () => Promise<T>,
+      origin: ReplayDependency["origin"] = "legacy_observed"
+    ): Promise<T> {
+      const recordedArgs = snapshotReplayValue(args) as unknown[];
+      try {
+        const response = await operation();
+        invocations.push({ method, args: recordedArgs, response: snapshotReplayValue(response), origin });
+        return response;
+      } catch (error) {
+        invocations.push({ method, args: recordedArgs, error: serializedError(error), origin });
+        throw error;
+      }
+    },
+    invocations,
+    baselineRequestCounts() {
+      const counts: Record<string, number> = {};
+      for (const invocation of invocations) {
+        if (invocation.origin !== "legacy_observed") continue;
+        counts[invocation.method] = (counts[invocation.method] ?? 0) + 1;
+      }
+      return counts;
+    }
+  };
+}
 
 /** Wrap the dependency graph without changing its surface or call arguments. */
 export function recordWhereIsMoneyDependencies(
@@ -71,6 +154,229 @@ export function recordWhereIsMoneyDependencies(
   };
 
   return wrap(dependencies, [], dependencies) as WhereIsMoneyDeps;
+}
+
+type WhereReplayConfigSource = Pick<AppConfig,
+  | "tronscanBaseUrl"
+  | "tronFullNodeBaseUrl"
+  | "tronscanApiKeys"
+  | "tronscanApiKeyGroups"
+  | "tronFullNodeApiKey"
+  | "tronscanPageLimit"
+  | "tronscanMaxInFlight"
+  | "tronscanGroupMaxInFlight"
+  | "tronscanTimeoutMs"
+  | "tronscanRetryAttempts"
+  | "tronscanRetryBaseDelayMs"
+  | "tronscanRequestMinIntervalMs"
+  | "tronscanGlobalRequestMinIntervalMs"
+  | "tronscanTransferRequestMinIntervalMs"
+  | "tronscanApprovalRequestMinIntervalMs"
+  | "tronscanContractRequestMinIntervalMs"
+  | "tronscanFullNodeRequestMinIntervalMs"
+  | "tronscanAccountGroupRequestMinIntervalMs"
+  | "tronGridRequestMinIntervalMs"
+  | "tronscanRateLimitCooldownMs"
+  | "crossChainStage2Enabled"
+  | "crossChainStage2MaxProviderCalls"
+  | "crossChainStage2CacheTtlMs"
+  | "rangeApiKey"
+  | "rangeBaseUrl"
+  | "rangeTimeoutMs"
+  | "rangeMaxCallsPerCheck"
+  | "evmExplorerApiKey"
+  | "evmExplorerBaseUrl"
+  | "evmExplorerTimeoutMs"
+  | "evmExplorerMaxCallsPerCheck"
+  | "directHardEvidenceLiveLimit"
+  | "directHardEvidenceConcurrency"
+  | "tronAddressIndexSecondLayerMaxActiveWalletsPerJob"
+  | "adminSecondLayerMaxActiveWallets"
+>;
+
+const WHERE_REPLAY_CONFIG_KEYS = [
+  "adminSecondLayerMaxActiveWallets",
+  "crossChainStage2CacheTtlMs",
+  "crossChainStage2Enabled",
+  "crossChainStage2MaxProviderCalls",
+  "directHardEvidenceConcurrency",
+  "directHardEvidenceLiveLimit",
+  "evmExplorerBaseUrl",
+  "evmExplorerMaxCallsPerCheck",
+  "evmExplorerProviderConfigured",
+  "evmExplorerTimeoutMs",
+  "rangeBaseUrl",
+  "rangeMaxCallsPerCheck",
+  "rangeProviderConfigured",
+  "rangeTimeoutMs",
+  "tronAddressIndexSecondLayerMaxActiveWalletsPerJob",
+  "tronFullNodeApiKeyConfigured",
+  "tronFullNodeBaseUrl",
+  "tronGridRequestMinIntervalMs",
+  "tronscanAccountGroupRequestMinIntervalMs",
+  "tronscanApiKeyConfigured",
+  "tronscanApiKeyCount",
+  "tronscanApiKeyGroupIds",
+  "tronscanApiKeyGroupSizes",
+  "tronscanApprovalRequestMinIntervalMs",
+  "tronscanBaseUrl",
+  "tronscanContractRequestMinIntervalMs",
+  "tronscanFullNodeRequestMinIntervalMs",
+  "tronscanGlobalRequestMinIntervalMs",
+  "tronscanGroupMaxInFlight",
+  "tronscanMaxInFlight",
+  "tronscanPageLimit",
+  "tronscanRateLimitCooldownMs",
+  "tronscanRequestMinIntervalMs",
+  "tronscanRetryAttempts",
+  "tronscanRetryBaseDelayMs",
+  "tronscanTimeoutMs",
+  "tronscanTransferRequestMinIntervalMs"
+] as const;
+
+export function projectWhereReplayConfig(config: WhereReplayConfigSource): Record<string, unknown> {
+  return {
+    adminSecondLayerMaxActiveWallets: config.adminSecondLayerMaxActiveWallets ?? null,
+    crossChainStage2CacheTtlMs: config.crossChainStage2CacheTtlMs,
+    crossChainStage2Enabled: config.crossChainStage2Enabled,
+    crossChainStage2MaxProviderCalls: config.crossChainStage2MaxProviderCalls,
+    directHardEvidenceConcurrency: config.directHardEvidenceConcurrency ?? null,
+    directHardEvidenceLiveLimit: config.directHardEvidenceLiveLimit ?? null,
+    evmExplorerBaseUrl: config.evmExplorerBaseUrl.href,
+    evmExplorerMaxCallsPerCheck: config.evmExplorerMaxCallsPerCheck,
+    evmExplorerProviderConfigured: Boolean(config.evmExplorerApiKey),
+    evmExplorerTimeoutMs: config.evmExplorerTimeoutMs,
+    rangeBaseUrl: config.rangeBaseUrl.href,
+    rangeMaxCallsPerCheck: config.rangeMaxCallsPerCheck,
+    rangeProviderConfigured: Boolean(config.rangeApiKey),
+    rangeTimeoutMs: config.rangeTimeoutMs,
+    tronAddressIndexSecondLayerMaxActiveWalletsPerJob: config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob ?? null,
+    tronFullNodeApiKeyConfigured: Boolean(config.tronFullNodeApiKey),
+    tronFullNodeBaseUrl: config.tronFullNodeBaseUrl.href,
+    tronGridRequestMinIntervalMs: config.tronGridRequestMinIntervalMs,
+    tronscanAccountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
+    tronscanApiKeyConfigured: config.tronscanApiKeys.length > 0,
+    tronscanApiKeyCount: config.tronscanApiKeys.length,
+    tronscanApiKeyGroupIds: config.tronscanApiKeyGroups.map((group) => group.groupId),
+    tronscanApiKeyGroupSizes: config.tronscanApiKeyGroups.map((group) => group.apiKeys.length),
+    tronscanApprovalRequestMinIntervalMs: config.tronscanApprovalRequestMinIntervalMs,
+    tronscanBaseUrl: config.tronscanBaseUrl.href,
+    tronscanContractRequestMinIntervalMs: config.tronscanContractRequestMinIntervalMs,
+    tronscanFullNodeRequestMinIntervalMs: config.tronscanFullNodeRequestMinIntervalMs,
+    tronscanGlobalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
+    tronscanGroupMaxInFlight: config.tronscanGroupMaxInFlight ?? null,
+    tronscanMaxInFlight: config.tronscanMaxInFlight ?? null,
+    tronscanPageLimit: config.tronscanPageLimit,
+    tronscanRateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+    tronscanRequestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+    tronscanRetryAttempts: config.tronscanRetryAttempts,
+    tronscanRetryBaseDelayMs: config.tronscanRetryBaseDelayMs,
+    tronscanTimeoutMs: config.tronscanTimeoutMs,
+    tronscanTransferRequestMinIntervalMs: config.tronscanTransferRequestMinIntervalMs
+  };
+}
+
+function assertWhereReplayConfigProjection(value: unknown): asserts value is Record<string, unknown> {
+  const config = asObject(value, "where_latency_replay_config_invalid");
+  const keys = Object.keys(config).sort();
+  if (keys.length !== WHERE_REPLAY_CONFIG_KEYS.length || keys.some((key, index) => key !== WHERE_REPLAY_CONFIG_KEYS[index])) {
+    fail("where_latency_replay_config_invalid");
+  }
+  for (const key of ["tronscanBaseUrl", "tronFullNodeBaseUrl", "rangeBaseUrl", "evmExplorerBaseUrl"] as const) {
+    if (typeof config[key] !== "string") fail("where_latency_replay_config_invalid");
+    try {
+      new URL(config[key]);
+    } catch {
+      fail("where_latency_replay_config_invalid");
+    }
+  }
+  for (const key of ["tronscanApiKeyConfigured", "tronFullNodeApiKeyConfigured", "rangeProviderConfigured", "evmExplorerProviderConfigured", "crossChainStage2Enabled"] as const) {
+    if (typeof config[key] !== "boolean") fail("where_latency_replay_config_invalid");
+  }
+  if (!Array.isArray(config.tronscanApiKeyGroupIds) || config.tronscanApiKeyGroupIds.some((id) => typeof id !== "string" || id.length === 0)
+    || !Array.isArray(config.tronscanApiKeyGroupSizes) || config.tronscanApiKeyGroupSizes.some((count) => !Number.isSafeInteger(count) || Number(count) < 0)) {
+    fail("where_latency_replay_config_invalid");
+  }
+  for (const [key, field] of Object.entries(config)) {
+    if (["tronscanBaseUrl", "tronFullNodeBaseUrl", "rangeBaseUrl", "evmExplorerBaseUrl", "tronscanApiKeyGroupIds", "tronscanApiKeyGroupSizes"].includes(key)
+      || typeof field === "boolean" || field === null) continue;
+    if (typeof field !== "number" || !Number.isFinite(field) || field < 0) fail("where_latency_replay_config_invalid");
+  }
+}
+
+export type LegacyWhereSourceRevision = {
+  recorderGitCommit: string;
+  behaviorSourceFiles: string[];
+  sourceTreeHash: string;
+  approvedSourceTreeHash: string;
+  recorderTreeClean?: true;
+};
+
+export function assertLegacyWhereSourceRevision(revision: LegacyWhereSourceRevision): void {
+  if (!COMMIT.test(revision.recorderGitCommit)) fail("where_latency_replay_recorder_revision_invalid");
+  if (canonicalizeArtifactJson(revision.behaviorSourceFiles) !== canonicalizeArtifactJson([...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES])) {
+    fail("where_latency_replay_behavior_source_set_mismatch");
+  }
+  if (!SHA256.test(revision.sourceTreeHash) || !SHA256.test(revision.approvedSourceTreeHash)
+    || revision.approvedSourceTreeHash !== LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH
+    || revision.sourceTreeHash !== revision.approvedSourceTreeHash) {
+    fail("where_latency_replay_behavior_source_mismatch");
+  }
+  if (revision.recorderTreeClean !== undefined && revision.recorderTreeClean !== true) {
+    fail("where_latency_replay_source_tree_dirty");
+  }
+}
+
+const execFile = promisify(execFileCallback);
+
+async function gitOutput(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFile("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    });
+    return stdout.trim();
+  } catch {
+    fail("where_latency_replay_source_revision_unavailable");
+  }
+}
+
+function normalizeApprovedClockSeam(path: string, source: string): string {
+  if (path !== "src/check/whereIsMoneyCheck.ts") return source;
+  // ponytail: the only approved baseline delta is the injected clock seam; any other source edit changes the hash.
+  return source
+    .replace("  now?: () => number;\n", "")
+    .replace("  const nowMs = input.now ?? Date.now;\n", "")
+    .replaceAll("nowMs()", "Date.now()");
+}
+
+function sourceTreeHash(sources: string[]): string {
+  return sha256(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path, index) => ({
+    path,
+    contentSha256: sha256(normalizeApprovedClockSeam(path, sources[index] ?? ""))
+  })));
+}
+
+export async function readLegacyWhereSourceRevision(cwd: string): Promise<LegacyWhereSourceRevision & { recorderTreeClean: true }> {
+  const status = await gitOutput(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status.length > 0) fail("where_latency_replay_source_tree_dirty");
+  const recorderGitCommit = await gitOutput(cwd, ["rev-parse", "HEAD"]);
+  const currentSources = await Promise.all(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path) =>
+    gitOutput(cwd, ["show", `HEAD:${path}`])
+  ));
+  const approvedSources = await Promise.all(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path) =>
+    gitOutput(cwd, ["show", `${LEGACY_WHERE_REPLAY_BASELINE_COMMIT}:${path}`])
+  ));
+  const revision = {
+    recorderGitCommit,
+    behaviorSourceFiles: [...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES],
+    sourceTreeHash: sourceTreeHash(currentSources),
+    approvedSourceTreeHash: sourceTreeHash(approvedSources),
+    recorderTreeClean: true as const
+  };
+  assertLegacyWhereSourceRevision(revision);
+  return revision;
 }
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -140,14 +446,24 @@ function asObject(value: unknown, code: string): Record<string, unknown> {
 }
 
 function assertEnvelope(envelope: WhereLatencyReplayV1): void {
-  assertNoForbiddenFields(envelope);
+  const { resolvedConfig, ...envelopeWithoutValidatedConfig } = envelope;
+  assertNoForbiddenFields(envelopeWithoutValidatedConfig);
   if (envelope.schema !== "where-latency-replay-v1" || envelope.version !== 1) {
     fail("where_latency_replay_version_unsupported");
   }
   if (!COMMIT.test(envelope.baselineGitCommit) || envelope.baselineGitCommit !== LEGACY_WHERE_REPLAY_BASELINE_COMMIT || !SHA256.test(envelope.resolvedConfigHash)
-    || sha256({ config: envelope.resolvedConfig, options: envelope.resolvedOptions }) !== envelope.resolvedConfigHash) {
+    || sha256({ config: resolvedConfig, options: envelope.resolvedOptions }) !== envelope.resolvedConfigHash) {
     fail("where_latency_replay_baseline_binding_missing");
   }
+  assertWhereReplayConfigProjection(resolvedConfig);
+  if (envelope.recorderTreeClean !== true) fail("where_latency_replay_source_tree_dirty");
+  assertLegacyWhereSourceRevision({
+    recorderGitCommit: envelope.recorderGitCommit,
+    behaviorSourceFiles: envelope.behaviorSourceFiles,
+    sourceTreeHash: envelope.sourceTreeHash,
+    approvedSourceTreeHash: LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
+    recorderTreeClean: envelope.recorderTreeClean
+  });
   if (!Number.isFinite(Date.parse(envelope.frozenClockIso))) fail("where_latency_replay_clock_invalid");
   const job = asObject(envelope.job, "where_latency_replay_job_invalid");
   if (typeof job.sourceAddress !== "string" || !Number.isFinite(Date.parse(String(job.windowStart)))
@@ -161,29 +477,28 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     || job.windowEnd !== envelope.resolvedOptions.windowEnd) {
     fail("where_latency_replay_options_binding_mismatch");
   }
-  const requestKeys = new Set<string>();
   for (const dependency of envelope.dependencies) {
     if (!dependency || typeof dependency.method !== "string" || !Array.isArray(dependency.args)) {
       fail("where_latency_replay_request_invalid");
     }
-    if (!("response" in dependency)) fail("where_latency_replay_response_missing");
+    const hasResponse = Object.prototype.hasOwnProperty.call(dependency, "response");
+    const hasError = Object.prototype.hasOwnProperty.call(dependency, "error");
+    if (hasResponse === hasError) fail("where_latency_replay_outcome_missing");
     if (dependency.origin !== undefined && dependency.origin !== "legacy_observed" && dependency.origin !== "supplemental_stage_b_fixture") {
       fail("where_latency_replay_request_origin_invalid");
     }
-    if (!SHA256.test(dependency.payloadSha256) || dependency.payloadSha256 !== sha256(dependency.response)) {
+    const outcome = hasResponse ? dependency.response : dependency.error;
+    if (hasError && (typeof dependency.error?.name !== "string" || typeof dependency.error.message !== "string")) {
+      fail("where_latency_replay_error_invalid");
+    }
+    if (!SHA256.test(dependency.payloadSha256) || dependency.payloadSha256 !== sha256(outcome)) {
       fail("where_latency_replay_payload_sha256_mismatch");
     }
-    const key = requestKey(dependency.method, dependency.args);
-    if (requestKeys.has(key)) fail("where_latency_replay_request_duplicate");
-    requestKeys.add(key);
   }
   const countedLegacy = new Map<string, number>();
   for (const dependency of envelope.dependencies) {
     if (dependency.origin === "legacy_observed") {
-      if (dependency.invocationCount !== undefined && (!Number.isSafeInteger(dependency.invocationCount) || dependency.invocationCount < 1)) {
-        fail("where_latency_replay_baseline_request_count_mismatch");
-      }
-      countedLegacy.set(dependency.method, (countedLegacy.get(dependency.method) ?? 0) + (dependency.invocationCount ?? 1));
+      countedLegacy.set(dependency.method, (countedLegacy.get(dependency.method) ?? 0) + 1);
     }
   }
   for (const [method, count] of Object.entries(envelope.baselineRequestCounts)) {
@@ -234,7 +549,8 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     if (typeof response.txID !== "string" || response.txID.toLowerCase() !== txHash.toLowerCase()) {
       fail("where_latency_replay_raw_transaction_binding_mismatch");
     }
-    const full = envelope.dependencies.find((entry) => requestKey(entry.method, entry.args) === requestKey("getTransaction", [txHash]));
+    const full = envelope.dependencies.find((entry) => requestKey(entry.method, entry.args) === requestKey("getTransaction", [txHash])
+      && "response" in entry);
     if (!full || (full.origin !== "legacy_observed" && full.origin !== "supplemental_stage_b_fixture")) {
       fail("where_latency_replay_transaction_info_missing");
     }
@@ -276,26 +592,36 @@ export function buildWhereLatencyReplayV1(input: BuildWhereLatencyReplayV1Input)
   envelope: WhereLatencyReplayV1;
   canonicalJson: string;
 } {
-  const resolvedConfig = sanitizeReplayValue(input.resolvedConfig) as Record<string, unknown>;
+  const resolvedConfig = normalizeReplayValue(input.resolvedConfig) as Record<string, unknown>;
   const resolvedOptions = sanitizeReplayValue(input.resolvedOptions) as Record<string, unknown>;
-  const envelope = sanitizeReplayValue({
+  const dependencies = input.dependencies.map((entry) => {
+    const args = sanitizeReplayValue(entry.args) as unknown[];
+    if ("response" in entry) {
+      const response = sanitizeReplayValue(entry.response);
+      return { ...entry, args, response, payloadSha256: sha256(response) };
+    }
+    const error = sanitizeReplayValue(entry.error) as SerializedReplayError;
+    return { ...entry, args, error, payloadSha256: sha256(error) };
+  });
+  const baselineRequestCounts: Record<string, number> = {};
+  for (const dependency of dependencies) {
+    if (dependency.origin !== "legacy_observed") continue;
+    baselineRequestCounts[dependency.method] = (baselineRequestCounts[dependency.method] ?? 0) + 1;
+  }
+  const envelope = {
     ...input,
     resolvedConfig,
     resolvedOptions,
     resolvedConfigHash: sha256({ config: resolvedConfig, options: resolvedOptions }),
     job: normalizeReplayValue(input.job) as Record<string, unknown>,
-    dependencies: input.dependencies.map((entry) => ({
-      ...entry,
-      args: sanitizeReplayValue(entry.args) as unknown[],
-      response: sanitizeReplayValue(entry.response),
-      payloadSha256: sha256(sanitizeReplayValue(entry.response))
-    })),
+    dependencies,
+    baselineRequestCounts,
     rawTransactions: input.rawTransactions.map((entry) => ({
       ...entry,
       response: sanitizeReplayValue(entry.response),
       payloadSha256: sha256(sanitizeReplayValue(entry.response))
     }))
-  }) as WhereLatencyReplayV1;
+  } as WhereLatencyReplayV1;
   assertEnvelope(envelope);
   return { envelope, canonicalJson: canonicalizeArtifactJson(envelope) };
 }
@@ -328,23 +654,12 @@ export function assertExpectedStableWhereFacts(replay: WhereLatencyReplayV1, rep
 export async function runWhereLatencyReplay(replay: WhereLatencyReplayV1): Promise<WhereIsMoneyReport> {
   const fixed = new Date(replay.frozenClockIso).getTime();
   if (!Number.isFinite(fixed)) fail("where_latency_replay_clock_invalid");
-  const RealDate = Date;
-  class FrozenDate extends RealDate {
-    constructor(value?: string | number | Date) {
-      super(value === undefined ? fixed : value);
-    }
-    static now(): number { return fixed; }
-  }
-  Object.setPrototypeOf(FrozenDate, RealDate);
-  globalThis.Date = FrozenDate as DateConstructor;
-  try {
-    const options = reviveReplayValue(replay.job.options) as RunWhereIsMoneyCheckInput;
-    const report = await runWhereIsMoneyCheck(createWhereReplayDeps(replay), options);
-    assertExpectedStableWhereFacts(replay, report);
-    return report;
-  } finally {
-    globalThis.Date = RealDate;
-  }
+  const options = reviveReplayValue(replay.job.options) as RunWhereIsMoneyCheckInput;
+  const deps = createWhereReplayDeps(replay);
+  const report = await runWhereIsMoneyCheck(deps, { ...options, now: () => fixed });
+  assertWhereReplayConsumed(deps);
+  assertExpectedStableWhereFacts(replay, report);
+  return report;
 }
 
 /** Conservative fixture prefetch: only transaction identities already present in the legacy report. */
@@ -403,17 +718,46 @@ export type WhereReplayDeps = WhereIsMoneyDeps & {
   getRawTransaction(txHash: string): Promise<unknown>;
   listIndexedTronUsdtTransfersByHashes(txHashes: string[]): Promise<Array<Record<string, unknown>>>;
   listActiveAddressLabelAssertionsForRoute(input: { chain: string; addresses: string[]; txHashes: string[] }): Promise<Array<Record<string, unknown>>>;
+  assertAllLegacyInvocationsConsumed(): void;
 };
+
+export function assertWhereReplayConsumed(deps: WhereReplayDeps): void {
+  deps.assertAllLegacyInvocationsConsumed();
+}
 
 export function createWhereReplayDeps(replay: WhereLatencyReplayV1): WhereReplayDeps {
   assertEnvelope(replay);
-  const tape = new Map(replay.dependencies.map((entry) => [requestKey(entry.method, entry.args), entry]));
+  const legacyInvocations = replay.dependencies.filter((entry) => entry.origin === "legacy_observed");
+  const supplementalInvocations = replay.dependencies.filter((entry) => entry.origin === "supplemental_stage_b_fixture");
+  const consumedSupplemental = new Set<number>();
+  let legacyCursor = 0;
   const hasMethod = (method: string): boolean => replay.dependencies.some((entry) => entry.method === method);
   const hasNestedMethod = (prefix: string): boolean => replay.dependencies.some((entry) => entry.method.startsWith(`${prefix}.`));
-  const replayCall = (method: string) => async (...args: unknown[]) => {
-    const entry = tape.get(requestKey(method, args));
-    if (!entry) fail("where_latency_replay_request_missing");
+  const outcome = (entry: ReplayDependency): unknown => {
+    if ("error" in entry) {
+      if (!entry.error) fail("where_latency_replay_error_invalid");
+      const error = new Error(entry.error.message);
+      error.name = entry.error.name;
+      throw error;
+    }
     return reviveReplayValue(structuredClone(entry.response));
+  };
+  const replayCall = (method: string) => async (...args: unknown[]) => {
+    const key = requestKey(method, args);
+    const expected = legacyInvocations[legacyCursor];
+    if (expected) {
+      if (requestKey(expected.method, expected.args) !== key) fail("where_latency_replay_invocation_order_mismatch");
+      legacyCursor += 1;
+      return outcome(expected);
+    }
+    const supplementalIndex = supplementalInvocations.findIndex((entry, index) =>
+      !consumedSupplemental.has(index) && requestKey(entry.method, entry.args) === key
+    );
+    if (supplementalIndex >= 0) {
+      consumedSupplemental.add(supplementalIndex);
+      return outcome(supplementalInvocations[supplementalIndex]!);
+    }
+    fail("where_latency_replay_invocation_excess");
   };
   const nested = (prefix: string): object => new Proxy({}, {
     get(_target, property) {
@@ -458,6 +802,9 @@ export function createWhereReplayDeps(replay: WhereLatencyReplayV1): WhereReplay
   return new Proxy({}, {
     get(_target, property) {
       if (typeof property !== "string") return undefined;
+      if (property === "assertAllLegacyInvocationsConsumed") return () => {
+        if (legacyCursor !== legacyInvocations.length) fail("where_latency_replay_invocation_unconsumed");
+      };
       if (property === "getRawTransaction") return async (txHash: string) => {
         const entry = replay.rawTransactions.find((item) => item.txHash.toLowerCase() === txHash.toLowerCase());
         if (!entry) fail("where_latency_replay_request_missing");

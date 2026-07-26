@@ -776,7 +776,8 @@ export type LegacyWhereIsMoneyExecution = {
 export function createLegacyWhereIsMoneyExecution(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
-  options: DeepForensicJobRunnerOptions = {}
+  options: DeepForensicJobRunnerOptions = {},
+  runtime: { now?: () => number } = {}
 ): LegacyWhereIsMoneyExecution {
   let currentProgress = job.progressJson;
   const persistProgress = async (patch: ForensicJobProgressPatch): Promise<Record<string, unknown>> => {
@@ -1622,6 +1623,7 @@ export function createLegacyWhereIsMoneyExecution(
   };
   const runInput: RunWhereIsMoneyCheckInput = {
     ...resolveLegacyWhereIsMoneyRunInput(job, options),
+    ...(runtime.now ? { now: runtime.now } : {}),
     onProgress: async (patch) => {
       await persistProgress(patch);
     }

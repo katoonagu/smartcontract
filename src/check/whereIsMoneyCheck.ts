@@ -143,6 +143,7 @@ export type RunWhereIsMoneyCheckInput = {
   crossChainMaxProviderCalls?: number;
   deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
   deepServiceExposureProfiles?: ServiceExposureProfile[];
+  now?: () => number;
   onProgress?: (patch: ForensicJobProgressPatch) => Promise<void> | void;
   abortSignal?: AbortSignal;
 };
@@ -1332,6 +1333,7 @@ export async function runWhereIsMoneyCheck(
   deps: WhereIsMoneyDeps,
   input: RunWhereIsMoneyCheckInput
 ): Promise<WhereIsMoneyReport> {
+  const nowMs = input.now ?? Date.now;
   throwIfAborted(input.abortSignal);
   const sourceAddress = input.subjectAddress ?? input.sourceAddress;
   if (!sourceAddress) {
@@ -1394,9 +1396,9 @@ export async function runWhereIsMoneyCheck(
   let recoverableEdgeFetchFailed = false;
   const providerCoverageLimitationIds = new Set<string>();
   const localCoverageLimitationIds = new Set<string>();
-  let lastTraceProgressAt = Date.now();
+  let lastTraceProgressAt = nowMs();
   const emitTraceProgress = async (): Promise<void> => {
-    const now = Date.now();
+    const now = nowMs();
     if (
       fetchedAddresses.size % TRACE_PROGRESS_ADDRESS_INTERVAL !== 0 &&
       now - lastTraceProgressAt < TRACE_PROGRESS_MIN_INTERVAL_MS
@@ -1810,7 +1812,7 @@ export async function runWhereIsMoneyCheck(
     let transactionInfoFailures = 0;
     const transactionInfoCache = new Map<string, Promise<unknown | null>>();
     let transactionInfoQueue = Promise.resolve();
-    let lastTransactionInfoCompletedAt = Date.now() - txInfoMinIntervalMs;
+    let lastTransactionInfoCompletedAt = nowMs() - txInfoMinIntervalMs;
     const getBudgetedTransaction = (txHash: string): Promise<unknown | null> => {
       const cached = transactionInfoCache.get(txHash);
       if (cached) return cached;
@@ -1818,11 +1820,11 @@ export async function runWhereIsMoneyCheck(
       transactionInfoFetches += 1;
       const fetched = transactionInfoQueue.then(async () => {
         throwIfAborted(input.abortSignal);
-        const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - Date.now();
+        const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - nowMs();
         if (waitMs > 0) await sleep(waitMs);
         throwIfAborted(input.abortSignal);
         const transaction = await getCachedTransaction(txHash);
-        lastTransactionInfoCompletedAt = Date.now();
+        lastTransactionInfoCompletedAt = nowMs();
         if (transaction === null) {
           transactionInfoFailures += 1;
         } else {

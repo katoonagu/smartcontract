@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config";
@@ -13,8 +12,11 @@ import {
   buildWhereLatencyReplayV1,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
+  createDependencyInvocationTapeRecorder,
   LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
+  projectWhereReplayConfig,
   projectStableWhereFacts,
+  readLegacyWhereSourceRevision,
   recordWhereIsMoneyDependencies
 } from "../src/forensics/whereLatencyReplay";
 import { deepForensicRuntimeOptions } from "../src/runtime/deepForensicRuntimeOptions";
@@ -40,7 +42,6 @@ import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
 import type { IndexedTronUsdtTransfer, WhereIsMoneyReport } from "../src/types";
 
 type JsonRecord = Record<string, unknown>;
-type TapeEntry = { method: string; args: unknown[]; response: unknown; origin?: "legacy_observed" | "supplemental_stage_b_fixture"; invocationCount?: number };
 
 function argument(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -54,17 +55,6 @@ function requiredString(value: unknown, code: string): string {
 
 function recordField(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
-}
-
-function nonSecretConfig(config: Record<string, unknown>): Record<string, unknown> {
-  const visible = Object.fromEntries(Object.entries(config).filter(([key]) =>
-    !/(?:api[_-]?key|database|chat|telegram|token|secret|password)/i.test(key)
-  ));
-  return visible;
-}
-
-function nonSecretConfigHash(config: Record<string, unknown>, options: Record<string, unknown>): string {
-  return createHash("sha256").update(canonicalizeArtifactJson({ config: nonSecretConfig(config), options })).digest("hex");
 }
 
 function indexedSnapshotRow(row: IndexedTronUsdtTransfer): Record<string, unknown> {
@@ -99,30 +89,14 @@ async function writeReplayExclusive(path: string, bytes: string): Promise<void> 
   }
 }
 
-async function withFrozenClock<T>(iso: string, operation: () => Promise<T>): Promise<T> {
-  const fixed = new Date(iso).getTime();
-  const RealDate = Date;
-  class FrozenDate extends RealDate {
-    constructor(...args: ConstructorParameters<typeof Date>) {
-      super(args.length === 0 ? fixed : args[0] as string | number | Date);
-    }
-    static now(): number { return fixed; }
-  }
-  Object.setPrototypeOf(FrozenDate, RealDate);
-  globalThis.Date = FrozenDate as DateConstructor;
-  try {
-    return await operation();
-  } finally {
-    globalThis.Date = RealDate;
-  }
-}
-
 const positional = process.argv.slice(2).filter((value) => !value.startsWith("--"));
 const source = argument("--source") ?? positional[0] ?? null;
 const output = argument("--out") ?? positional[1] ?? null;
 if (!source || !output) throw new Error("Usage: forensic:where-latency:capture -- --source <TRON-address> --out <new-json-file>");
 
+const sourceRevision = await readLegacyWhereSourceRevision(process.cwd());
 const config = loadConfig();
+const replayConfig = projectWhereReplayConfig(config);
 const db = createDb(config.databaseUrl);
 try {
   const selected = await db.query(
@@ -205,28 +179,16 @@ try {
       ]
     : [];
 
-  const tape: TapeEntry[] = [];
-  const tapeByRequest = new Map<string, TapeEntry>();
+  const capture = createDependencyInvocationTapeRecorder();
   const observedTransactions = new Set<string>();
-  const baselineRequestCounts: Record<string, number> = {};
-  const record = async <T>(method: string, args: unknown[], operation: () => Promise<T>, origin: TapeEntry["origin"] = "legacy_observed"): Promise<T> => {
-    const request = canonicalizeArtifactJson({ method, args: JSON.parse(JSON.stringify(args)) });
-    baselineRequestCounts[method] = (baselineRequestCounts[method] ?? 0) + 1;
-    const existing = tapeByRequest.get(request);
-    if (existing) {
-      existing.invocationCount = (existing.invocationCount ?? 1) + 1;
-      return structuredClone(existing.response) as T;
-    }
-    const response = await operation();
+  const record = async <T>(method: string, args: unknown[], operation: () => Promise<T>): Promise<T> => {
+    const response = await capture.record(method, args, operation);
     if (method === "getTransaction" && typeof args[0] === "string") {
       const identity = recordField(response).txID ?? recordField(response).hash ?? recordField(response).id;
       if (typeof identity !== "string" || identity.toLowerCase() !== args[0].toLowerCase()) {
         throw new Error("where_latency_replay_transaction_info_identity_mismatch");
       }
     }
-    const entry = { method, args: JSON.parse(JSON.stringify(args)), response: JSON.parse(JSON.stringify(response)), origin, invocationCount: 1 };
-    tape.push(entry);
-    tapeByRequest.set(request, entry);
     if (method === "getTransaction" && typeof args[0] === "string") observedTransactions.add(args[0]);
     return response;
   };
@@ -288,7 +250,7 @@ try {
       candidateTxHash: input.candidateTxHash ?? null,
       requestedByJobId: input.requestedByJobId ?? null,
       priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "where_candidate_window" ? 240 : 10,
-      nextRunAt: new Date(),
+      nextRunAt: completedAt,
       budgetPages: input.budgetPages ?? null,
       maxAttempts: input.maxAttempts ?? null,
       allowRunningRequeue: input.allowRunningRequeue === true
@@ -299,12 +261,14 @@ try {
     crossChainContinuationProviders,
     evmEvidenceProvider
   };
-  const execution = createLegacyWhereIsMoneyExecution(runtimeDeps, runtimeJob, runtimeOptions);
+  const execution = createLegacyWhereIsMoneyExecution(runtimeDeps, runtimeJob, runtimeOptions, {
+    now: () => completedAt.getTime()
+  });
   const checkerDeps = recordWhereIsMoneyDependencies(execution.dependencies, record);
-  const { onProgress: _onProgress, abortSignal: _abortSignal, ...runOptions } = execution.runInput;
+  const { now: _now, onProgress: _onProgress, abortSignal: _abortSignal, ...runOptions } = execution.runInput;
   const frozenClockIso = completedAt.toISOString();
   const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
-  const rerun = await withFrozenClock(frozenClockIso, () => execution.run(checkerDeps));
+  const rerun = await execution.run(checkerDeps);
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   if (canonicalizeArtifactJson(expectedStableFacts) !== canonicalizeArtifactJson(projectStableWhereFacts(rerun))) {
     throw new Error("where_latency_replay_stable_fact_mismatch");
@@ -326,12 +290,16 @@ try {
   const rawTransactions = [];
   for (const txHash of routeHashes) {
     if (!observedTransactions.has(txHash)) {
-      const response = await tronClient.getTransaction(txHash);
+      const response = await capture.record(
+        "getTransaction",
+        [txHash],
+        () => tronClient.getTransaction(txHash),
+        "supplemental_stage_b_fixture"
+      );
       const identity = recordField(response).txID ?? recordField(response).hash ?? recordField(response).id;
       if (typeof identity !== "string" || identity.toLowerCase() !== txHash.toLowerCase()) {
         throw new Error("where_latency_replay_transaction_info_identity_mismatch");
       }
-      tape.push({ method: "getTransaction", args: [txHash], response, origin: "supplemental_stage_b_fixture" });
     }
     const raw = await tronClient.getRawTransaction(txHash) as JsonRecord;
     if (typeof raw.txID !== "string" || raw.txID.toLowerCase() !== txHash.toLowerCase()) {
@@ -341,16 +309,19 @@ try {
   }
   const complete = buildWhereLatencyReplayV1({
     schema: "where-latency-replay-v1", version: 1, baselineGitCommit: LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
-    resolvedConfigHash: nonSecretConfigHash(config as unknown as Record<string, unknown>, options),
-    resolvedConfig: nonSecretConfig(config as unknown as Record<string, unknown>), resolvedOptions: options,
+    recorderGitCommit: sourceRevision.recorderGitCommit,
+    behaviorSourceFiles: sourceRevision.behaviorSourceFiles,
+    sourceTreeHash: sourceRevision.sourceTreeHash,
+    recorderTreeClean: true,
+    resolvedConfig: replayConfig, resolvedOptions: options,
     frozenClockIso,
     job: { sourceAddress: jobSource, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), options },
     routeCriticalTxHashes: routeHashes,
     routeCriticalAddresses: routeAddresses,
-    dependencies: tape,
+    dependencies: capture.invocations,
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],
     assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],
-    rawTransactions, baselineRequestCounts, expectedStableFacts
+    rawTransactions, expectedStableFacts
   });
   await writeReplayExclusive(output, complete.canonicalJson);
 } finally {
