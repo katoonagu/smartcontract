@@ -1004,7 +1004,7 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     };
     const applyManifestEntry = async (
       entry: UnifiedOrderedReadyEntry
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const addressManifest = entry.artifact as
         Partial<AddressHistoryManifestV1>;
       if (
@@ -1079,15 +1079,21 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         state = applied.state;
         await heartbeat();
       }
-      if (!await partitionGeneratedV2Boundaries()) {
+      const partitioned = await partitionGeneratedV2Boundaries();
+      if (!partitioned) {
         await collectDiscoveries(entry.canonicalSequence);
       }
+      return partitioned;
     };
     const committedHistories = await input.loadCommittedAddressHistories({
       runId: task.runId,
       manifestKeys: mandatoryKeys
     });
-    for (const entry of committedHistories) await applyManifestEntry(entry);
+    for (const entry of committedHistories) {
+      if (await applyManifestEntry(entry)) {
+        return { kind: "checkpoint", checkpoint: v2 };
+      }
+    }
     const reusedCommittedHistory = committedHistories.length > 0;
     const readyPrefix = await input.loadReadyAddressHistories({
       runId: task.runId,
@@ -1096,14 +1102,18 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     });
 
     if (readyPrefix.length > 0) {
-      for (const entry of readyPrefix) await applyManifestEntry(entry);
+      const processedReady: UnifiedOrderedReadyEntry[] = [];
+      for (const entry of readyPrefix) {
+        processedReady.push(entry);
+        if (await applyManifestEntry(entry)) break;
+      }
       return {
         kind: "checkpoint",
         checkpoint: v2,
         orderedCommit: {
           runId: task.runId,
           expectedDeltaHeadSha256: persistedDeltaHeadSha256,
-          entries: readyPrefix.map((entry) => ({
+          entries: processedReady.map((entry) => ({
             canonicalSequence: entry.canonicalSequence,
             taskId: entry.taskId,
             logicalKey: entry.logicalKey,

@@ -76,6 +76,9 @@ code_refs:
   commit semantics.
 - Direct history and direct hard evidence can run alongside traversal, but only
   the completed parent owns scoring and delivery.
+- Every finalization, final hash-chain commit, and completed-presentation
+  reconciliation reparses the persisted manifest against the locked run,
+  subject, and confirmed snapshot before score/report/delivery mutation.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
 - Matrix v4 gives unknown addresses zero by default and creates risk only from
   evidence or confirmed behavior combinations. Hard floors are not diluted by
@@ -120,9 +123,11 @@ code_refs:
   artifacts, but cannot expose contradictory traversal state. Restart resumes
   without reopening terminal states; only continuing states can emit
   address-history work. The partition is repeated for frontier states generated
-  by every accepted history before discovery. Commit byte limits count the
-  exact persisted evidence artifacts plus the exact persisted delta, not a
-  synthetic estimate.
+  by every accepted history before discovery. The entry and byte limits are
+  aggregate per coordinator invocation: after the first generated-boundary
+  partition, only the processed continuous ready sub-prefix commits and the
+  next ready row resumes later. Commit byte limits count the exact persisted
+  evidence artifacts plus the exact persisted delta, not a synthetic estimate.
 - A v2 isolated canary freezes one label dataset per confirmed snapshot during
   preparation, persists each content-addressed dataset in the batch
   transaction, and binds all snapshot/dataset hashes in a schema-2 batch

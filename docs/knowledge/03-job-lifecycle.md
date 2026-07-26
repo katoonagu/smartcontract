@@ -80,6 +80,9 @@ Only the parent finalizer can commit the authoritative analysis manifest,
 canonical fact inventory, score anchor, report, locale presentations, and
 delivery intent. Completion requires terminal children, confirmed snapshot
 identity, traversal closure, fact reconciliation, and matching hashes.
+Finalization, final hash-chain commit, and completed-presentation reconciliation
+all parse the hash-verified manifest against the locked run, subject, and sole
+run-owned confirmed snapshot before writing score, report, or delivery state.
 `FAILED_TECHNICAL` has no score, decision, report, presentation, or send.
 
 Delivery is a separate state machine. `DELIVERY_UNKNOWN` records an ambiguous
@@ -120,8 +123,12 @@ canonical UTF-8 bytes of every persisted evidence artifact plus the actual
 delta artifact; the individual manifest ceiling applies to each evidence
 artifact. The same boundary partition runs again immediately after every
 accepted history expands the frontier, before discoveries can create another
-address-history task. A crash can leave reusable unreferenced artifacts, but
-cannot expose contradictory traversal state. Restart replays the durable delta
+address-history task. Entry and byte ceilings are aggregate limits for one
+coordinator invocation: the first accepted history that persists a generated
+boundary ends the invocation, and only the processed continuous ready
+sub-prefix is committed. The next ready row remains durable for restart. A
+crash can leave reusable unreferenced artifacts, but cannot expose
+contradictory traversal state. Restart replays the durable delta
 head, so terminal states do not reopen or emit duplicate evidence. Only the
 remaining non-terminal states can become new mandatory address-history work.
 `snapshot-closure-v1` keeps its historical label behavior unchanged.

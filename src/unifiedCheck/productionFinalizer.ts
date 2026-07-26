@@ -11,12 +11,10 @@ import {
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
 } from "./repository";
-import type {
-  AnalysisManifestV1,
-  ChildAttemptArtifactV1
-} from "./contracts";
+import type { ChildAttemptArtifactV1 } from "./contracts";
 import {
   assertUnifiedWriteAllowed,
+  parseAnalysisManifestV1,
   UNIFIED_CANARY_DEADLINE_MINUTES
 } from "./contracts";
 import type { UnifiedBranchArtifactV1 } from "./branchAdapters";
@@ -199,10 +197,28 @@ export async function runUnifiedProductionFinalizationCycle(input: {
       sideEffectPolicy: run.side_effect_policy,
       namespace: "run_scoped_artifact"
     });
-    const manifest = await artifact<AnalysisManifestV1>(client, {
+    const rawManifest = await artifact<unknown>(client, {
       runId,
       sha256: String(run.analysis_manifest_sha256),
       kind: "analysis_manifest"
+    });
+    const snapshotRows = (await client.query(
+      `select sha256, artifact_json
+         from unified_check_artifacts
+        where created_by_run_id = $1 and kind = 'confirmed_snapshot'`,
+      [runId]
+    )).rows;
+    if (
+      snapshotRows.length !== 1 ||
+      fingerprintCanonicalArtifact(snapshotRows[0]!.artifact_json) !==
+        snapshotRows[0]!.sha256
+    ) {
+      throw new Error("unified_production_snapshot_binding_invalid");
+    }
+    const manifest = parseAnalysisManifestV1(rawManifest, {
+      runId,
+      subjectAddress: String(run.subject_address),
+      snapshotHash: String(snapshotRows[0]!.sha256)
     });
     const labelDataset = one(
       await client.query(

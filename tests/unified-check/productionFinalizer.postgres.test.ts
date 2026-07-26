@@ -43,7 +43,26 @@ const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
 
 postgresDescribe("Unified production finalizer", () => {
-  it("commits one dossier and one pending delivery after every child is accepted", async () => {
+  it.each([
+    {
+      name: "commits one dossier after valid historical v1 input",
+      mutateManifest: null
+    },
+    {
+      name: "rejects a hash-consistent structurally invalid manifest",
+      mutateManifest: (manifest: AnalysisManifestV1) => ({
+        ...manifest,
+        unexpectedPersistedField: true
+      })
+    },
+    {
+      name: "rejects a hash-consistent snapshot-binding-invalid manifest",
+      mutateManifest: (manifest: AnalysisManifestV1) => ({
+        ...manifest,
+        snapshotHash: "f".repeat(64)
+      })
+    }
+  ])("$name", async ({ mutateManifest }) => {
     const pool = new pg.Pool({ connectionString, max: 1 });
     const client = await pool.connect();
     const schema = `unifiedfinal_${randomUUID().replaceAll("-", "")}`;
@@ -376,6 +395,58 @@ postgresDescribe("Unified production finalizer", () => {
           `update unified_check_tasks set accepted_attempt_id = $2 where id = $1`,
           [`task-${branchId}`, `attempt-${branchId}`]
         );
+      }
+
+      if (mutateManifest !== null) {
+        const invalidManifest = mutateManifest(manifest);
+        const invalidManifestHash = fingerprintCanonicalArtifact(
+          invalidManifest
+        );
+        await query(
+          `insert into unified_check_artifacts (
+            sha256, created_by_run_id, kind, schema_version, artifact_json
+          ) values ($1,'run-1','analysis_manifest','1',$2::jsonb)`,
+          [invalidManifestHash, JSON.stringify(invalidManifest)]
+        );
+        await query(
+          `update unified_check_runs
+              set analysis_manifest_sha256 = $1
+            where id = 'run-1'`,
+          [invalidManifestHash]
+        );
+        await expect(runUnifiedProductionFinalizationCycle({
+          db,
+          runtimeCommit: "candidate",
+          providerConfigurationSha256: "e".repeat(64),
+          now: () => new Date("2026-07-23T13:02:00.000Z"),
+          createId: () => "delivery-invalid"
+        })).rejects.toThrow(
+          "unified_analysis_manifest"
+        );
+        expect((await query(
+          `select status, final_score, final_decision, report_sha256
+             from unified_check_runs where id = 'run-1'`
+        )).rows[0]).toMatchObject({
+          status: "RUNNING",
+          final_score: null,
+          final_decision: null,
+          report_sha256: null
+        });
+        expect(Number((await query(
+          `select count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-1'
+              and kind in (
+                'canonical_facts','evidence_bundle','traversal_closure',
+                'scoring_bundle','score_anchor','unified_wallet_report',
+                'report_fact_inventory','presentation_envelope',
+                'delivery_intent'
+              )`
+        )).rows[0]!.count)).toBe(0);
+        expect(Number((await query(
+          "select count(*)::int as count from unified_check_deliveries"
+        )).rows[0]!.count)).toBe(0);
+        return;
       }
 
       await expect(runUnifiedProductionFinalizationCycle({

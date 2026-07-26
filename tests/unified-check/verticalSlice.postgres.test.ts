@@ -23,6 +23,7 @@ import type {
 import {
   applyUnifiedRecoveryAction,
   claimUnifiedTask,
+  ensureUnifiedPresentationForCompletedRequest,
   finalizeUnifiedRun,
   insertUnifiedArtifact
 } from "../../src/unifiedCheck/repository";
@@ -222,6 +223,37 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         )).rows[0]?.count
       ).toBe(1);
 
+      const invalidManifest = { ...manifest, unexpectedPersistedField: true };
+      const invalidManifestHash = fingerprintCanonicalArtifact(invalidManifest);
+      await insertUnifiedArtifact(queryable, {
+        sha256: invalidManifestHash,
+        createdByRunId: run.id,
+        kind: "analysis_manifest",
+        schemaVersion: "1",
+        artifact: invalidManifest
+      });
+      await client.query(
+        `update unified_check_runs
+            set status = 'FINALIZING', analysis_manifest_sha256 = $2
+          where id = $1`,
+        [run.id, invalidManifestHash]
+      );
+      await expect(finalizeUnifiedRun(db, {
+        runId: run.id,
+        finalScore: completed.report.score,
+        finalDecision: completed.report.decision,
+        evidenceBundleSha256: completed.hashes.evidence,
+        traversalClosureSha256: completed.hashes.closure,
+        scoringBundleSha256: completed.hashes.scoring,
+        reportSha256: completed.hashes.report
+      })).rejects.toThrow("unified_analysis_manifest_invalid");
+      await client.query(
+        `update unified_check_runs
+            set status = 'COMPLETED', analysis_manifest_sha256 = $2
+          where id = $1`,
+        [run.id, manifestHash]
+      );
+
       const mismatchedEvidence = {
         ...completed.evidence,
         analysisManifestHash: "f".repeat(64)
@@ -401,6 +433,29 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
           "select status from unified_check_deliveries where id = 'delivery-presented'"
         )).rows[0]?.status
       ).toBe("PENDING");
+
+      await client.query(
+        "delete from unified_check_deliveries where id = 'delivery-presented'"
+      );
+      await client.query(
+        `update unified_check_runs
+            set analysis_manifest_sha256 = $2
+          where id = $1`,
+        [run.id, invalidManifestHash]
+      );
+      await expect(ensureUnifiedPresentationForCompletedRequest(db, {
+        requestId: "request-presented",
+        deliveryId: "delivery-reconciled-invalid"
+      })).rejects.toThrow("unified_analysis_manifest_invalid");
+      expect(Number((await client.query(
+        "select count(*)::int as count from unified_check_deliveries"
+      )).rows[0]!.count)).toBe(0);
+      await client.query(
+        `update unified_check_runs
+            set analysis_manifest_sha256 = $2
+          where id = $1`,
+        [run.id, manifestHash]
+      );
 
       await client.query(
         `insert into unified_check_runs (

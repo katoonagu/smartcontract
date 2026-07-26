@@ -18,6 +18,7 @@ import type {
 } from "./contracts";
 import {
   assertUnifiedWriteAllowed,
+  parseAnalysisManifestV1,
   UNIFIED_CANARY_DEADLINE_MINUTES
 } from "./contracts";
 import {
@@ -522,6 +523,26 @@ function requiredRow(
   const row = result.rows[0];
   if (!row) throw new Error(code);
   return row;
+}
+
+async function lockedRunSnapshotHash(
+  db: UnifiedQueryable,
+  runId: string
+): Promise<string> {
+  const rows = (await db.query(
+    `select sha256, artifact_json
+       from unified_check_artifacts
+      where created_by_run_id = $1 and kind = 'confirmed_snapshot'`,
+    [runId]
+  )).rows;
+  if (
+    rows.length !== 1 ||
+    typeof rows[0]!.sha256 !== "string" ||
+    fingerprintCanonicalArtifact(rows[0]!.artifact_json) !== rows[0]!.sha256
+  ) {
+    throw new Error("unified_analysis_snapshot_binding_invalid");
+  }
+  return rows[0]!.sha256;
 }
 
 export async function createOrReuseUnifiedRun(
@@ -2986,7 +3007,14 @@ export async function finalizeUnifiedRun(
       }
       artifacts.set(kind, artifact.artifact_json as Record<string, unknown>);
     }
-    const manifest = artifacts.get("analysis_manifest")!;
+    const manifest = parseAnalysisManifestV1(
+      artifacts.get("analysis_manifest"),
+      {
+        runId: input.runId,
+        subjectAddress: String(run.subject_address),
+        snapshotHash: await lockedRunSnapshotHash(client, input.runId)
+      }
+    );
     const evidence = artifacts.get("evidence_bundle")!;
     const closure = artifacts.get("traversal_closure")!;
     const scoring = artifacts.get("scoring_bundle")!;
@@ -3384,6 +3412,33 @@ export async function ensureUnifiedPresentationForCompletedRequest(
     const report = reportRow.artifact_json as UnifiedWalletDossierV1;
     if (fingerprintCanonicalArtifact(report) !== run.report_sha256) {
       throw new Error("unified_delivery_report_hash_mismatch");
+    }
+    const manifestRow = requiredRow(
+      await client.query(
+        `select created_by_run_id, artifact_json
+           from unified_check_artifacts
+          where sha256 = $1 and kind = 'analysis_manifest'`,
+        [run.analysis_manifest_sha256]
+      ),
+      "unified_delivery_analysis_manifest_missing"
+    );
+    if (
+      String(manifestRow.created_by_run_id) !== String(run.id) ||
+      fingerprintCanonicalArtifact(manifestRow.artifact_json) !==
+        run.analysis_manifest_sha256
+    ) {
+      throw new Error("unified_delivery_analysis_manifest_mismatch");
+    }
+    const manifest = parseAnalysisManifestV1(manifestRow.artifact_json, {
+      runId: String(run.id),
+      subjectAddress: String(run.subject_address),
+      snapshotHash: await lockedRunSnapshotHash(client, String(run.id))
+    });
+    if (
+      report.analysisManifestHash !== run.analysis_manifest_sha256 ||
+      report.subjectAddress !== manifest.subjectAddress
+    ) {
+      throw new Error("unified_delivery_report_binding_mismatch");
     }
     const locale = request.locale as "ru" | "en";
     const presentation = renderUnifiedWalletPresentation({

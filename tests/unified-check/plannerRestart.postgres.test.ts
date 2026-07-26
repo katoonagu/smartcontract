@@ -39,6 +39,7 @@ const postgresDescribe = connectionString ? describe : describe.skip;
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const FIRST_SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
 const SECOND_SOURCE = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
+const THIRD_SOURCE = "TV6bBsrCXz2sDSBMZhvc7vHqDwjc65ALZX";
 const PROVIDER_CONFIGURATION_SHA256 = "e".repeat(64);
 const MANIFEST_RESERVED_BYTES = 1_048_576;
 type PlannerTransitionRow =
@@ -112,6 +113,7 @@ async function withScenario<T>(
     traversalPolicyVersion?: UnifiedTraversalPolicyVersion;
     custodialAddress?: string;
     upstreamCustodialAddress?: string;
+    rolling?: boolean;
   } = {}
 ): Promise<T> {
   const pool = new pg.Pool({ connectionString, max: 1 });
@@ -232,6 +234,13 @@ async function withScenario<T>(
         runtimeCommit: "candidate",
         schemaVersion: 36
       },
+      rolloutPolicy: options.rolling
+        ? {
+            stage: "isolated_rolling",
+            boundedUserCheckBasisPoints: 0,
+            providerCapacityCeiling: 2
+          }
+        : undefined,
       now: () => new Date("2026-07-23T13:00:00.000Z")
     });
     expect(intake.kind).toBe("attached");
@@ -249,19 +258,22 @@ async function withScenario<T>(
       ),
       block: 90 - index
     } as RawTronscanTrc20Transfer));
-    const upstreamTransfers = options.upstreamCustodialAddress === undefined
-      ? []
-      : [{
-        transaction_id: "8".repeat(64),
-        from_address: options.upstreamCustodialAddress,
-        to_address: FIRST_SOURCE,
-        quant: "10000000",
-        contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-        confirmed: true,
-        contractRet: "SUCCESS",
-        block_ts: Date.parse("2026-07-23T11:00:00.000Z"),
-        block: 80
-      } as RawTronscanTrc20Transfer];
+    const upstreamTransfers = (address: string) => {
+      const sourceIndex = sources.indexOf(address);
+      return options.upstreamCustodialAddress === undefined || sourceIndex < 0
+        ? []
+        : [{
+          transaction_id: ((sourceIndex + 8) % 16).toString(16).repeat(64),
+          from_address: options.upstreamCustodialAddress,
+          to_address: address,
+          quant: "10000000",
+          contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          confirmed: true,
+          contractRet: "SUCCESS",
+          block_ts: Date.parse("2026-07-23T11:00:00.000Z"),
+          block: 80
+        } as RawTronscanTrc20Transfer];
+    };
 
     const runtime = (
       options: {
@@ -282,8 +294,8 @@ async function withScenario<T>(
         async loadProviderPage({ address }) {
           const transfers = address === SUBJECT
             ? rawTransfers
-            : address === FIRST_SOURCE
-            ? upstreamTransfers
+            : typeof address === "string"
+            ? upstreamTransfers(address)
             : [];
           const content = transfers.length > 0 || address === SUBJECT
             ? {
@@ -743,6 +755,81 @@ postgresDescribe("Unified planner restart resume", () => {
         traversalPolicyVersion: "snapshot-closure-v2",
         custodialAddress: SECOND_SOURCE,
         upstreamCustodialAddress: SECOND_SOURCE
+      }
+    );
+  });
+
+  it("commits one continuous ready sub-prefix per generated V2 boundary restart", async () => {
+    await withScenario(
+      [FIRST_SOURCE, THIRD_SOURCE],
+      async ({ client, runtime, preparePlannedState }) => {
+        const firstProcess = runtime();
+        await preparePlannedState(firstProcess);
+        await client.query(
+          `update unified_check_planner_entries
+              set admitted_at = statement_timestamp(),
+                  reserved_bytes = $1
+            where run_id = 'run-restart'
+              and planner_state = 'planned' and admitted_at is null`,
+          [MANIFEST_RESERVED_BYTES]
+        );
+        await expect(firstProcess.runProviderCycle())
+          .resolves.toMatchObject({ outcome: "completed" });
+        await expect(firstProcess.runProviderCycle())
+          .resolves.toMatchObject({ outcome: "completed" });
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart' and planner_state = 'ready'`
+        )).rows[0]?.count)).toBe(2);
+
+        await expect(firstProcess.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "checkpointed" });
+        expect((await client.query(
+          `select planner_state, count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart'
+            group by planner_state order by planner_state`
+        )).rows).toEqual([
+          { planner_state: "committed", count: 1 },
+          { planner_state: "ready", count: 1 }
+        ]);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind = 'traversal_terminal_evidence'`
+        )).rows[0]?.count)).toBe(1);
+
+        const restarted = runtime();
+        await expect(restarted.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "checkpointed" });
+        await expect(restarted.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "completed" });
+        await expect(restarted.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "idle" });
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart' and planner_state = 'committed'`
+        )).rows[0]?.count)).toBe(2);
+        const evidenceCounts = (await client.query(
+          `select count(*)::int as count,
+                  count(distinct sha256)::int as distinct_count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind = 'traversal_terminal_evidence'`
+        )).rows[0]!;
+        expect(Number(evidenceCounts.count)).toBeGreaterThanOrEqual(2);
+        expect(Number(evidenceCounts.distinct_count))
+          .toBe(Number(evidenceCounts.count));
+        await expectNoDuplicateAuthority(client, { addressAttempts: 2 });
+      },
+      {
+        traversalPolicyVersion: "snapshot-closure-v2",
+        custodialAddress: SECOND_SOURCE,
+        upstreamCustodialAddress: SECOND_SOURCE,
+        rolling: true
       }
     );
   });
