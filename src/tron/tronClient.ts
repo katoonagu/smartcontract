@@ -861,24 +861,15 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
   async getTransactionSigningMetadata(txHash: string): Promise<TronTransactionSigningMetadata | null> {
     if (!this.fullNodeBaseUrl) return null;
-    const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl);
-    const json = await this.fetchJson(
-      url,
-      "raw_transaction",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: txHash })
-      },
-      this.fullNodeApiKey ?? null
-    );
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
+    const json = await this.getRawTransaction(normalizedTxHash);
     if (!this.isObjectRecord(json)) {
       throw new Error("TRON raw transaction response must be an object");
     }
     const rawData = this.objectField(json.raw_data);
     if (!rawData) return null;
     return {
-      txHash: this.stringField(json.txID) ?? txHash,
+      txHash: this.stringField(json.txID) ?? normalizedTxHash,
       signedAt: this.dateFromTimestamp(rawData.timestamp),
       expirationAt: this.dateFromTimestamp(rawData.expiration),
       refBlockBytes: this.stringField(rawData.ref_block_bytes),
@@ -887,6 +878,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   async getRawTransaction(txHash: string): Promise<unknown> {
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
     const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl ?? this.baseUrl);
     return this.fetchJson(
       url,
@@ -894,10 +886,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: txHash })
+        body: JSON.stringify({ value: normalizedTxHash })
       },
       this.fullNodeApiKey ?? null,
-      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:raw_transaction:v1:${txHash}` }
+      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:raw_transaction:v1:${normalizedTxHash}` }
     );
   }
 
@@ -1236,10 +1228,17 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   async getTransaction(txHash: string): Promise<unknown> {
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
     const url = new URL("/api/transaction-info", this.baseUrl);
-    url.searchParams.set("hash", txHash);
+    url.searchParams.set("hash", normalizedTxHash);
 
-    const transaction = await this.fetchJson(url, "tronscan_transaction_info");
+    const transaction = await this.fetchJson(
+      url,
+      "tronscan_transaction_info",
+      {},
+      undefined,
+      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:transaction_info:v1:${normalizedTxHash}` }
+    );
     if (!this.isObjectRecord(transaction)) return transaction;
     const receipt = this.objectField(transaction.receipt);
     if (!receipt || typeof receipt.success === "boolean" || typeof receipt.result !== "string") return transaction;
@@ -1984,6 +1983,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     }
     if (
       requestName === "contract_list" ||
+      requestName === "tronscan_transaction_info" ||
       requestName === "contract_detail" ||
       requestName === "contract_top_call" ||
       requestName === "contract_search" ||
@@ -2182,6 +2182,15 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (typeof value === "string" && value.trim().length > 0) return value;
     if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
     return null;
+  }
+
+  private normalizeTransactionHash(txHash: string): string {
+    const normalized = txHash.trim();
+    if (normalized.length === 0 || normalized.length > 128 || !/^[a-z0-9_-]+$/i.test(normalized)) {
+      throw new Error("TRON transaction hash is invalid");
+    }
+    // ponytail: symbolic legacy fixture IDs stay compatible; chain hashes still get one canonical scheduler identity.
+    return /^[0-9a-f]{64}$/i.test(normalized) ? normalized.toLowerCase() : normalized;
   }
 
   private safeIntegerField(value: unknown): number | null {

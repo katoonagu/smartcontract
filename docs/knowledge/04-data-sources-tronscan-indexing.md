@@ -55,6 +55,18 @@ Identical provider requests share an identity and may coalesce across child
 branches. The fair scheduler tracks per-key/group health and cooldowns so an
 old or waiting heavy job cannot reserve the entire pool.
 
+Raw full-node `gettransactionbyid` and TronScan `transaction-info` requests use
+separate versioned scheduler identities over the normalized transaction hash.
+Concurrent requests for the same endpoint/hash may coalesce, while raw and
+full responses never share an identity. Raw requests use the existing
+`fullnode` bucket; transaction-info uses the existing `contract` bucket, so
+this adds no provider-capacity class. The raw preflight parser accepts exactly
+one `TriggerSmartContract` call and preserves its caller, contract, selector,
+decoded transfer recipient/amount, and execution result. Malformed,
+unsupported, multi-contract, or insufficient payloads are explicit
+`ambiguous` evidence rather than a clean result; failed and reverted calls are
+parsed with `successful=false`.
+
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,
 and cooldown expiry. Multiple keys in one provider account share one group

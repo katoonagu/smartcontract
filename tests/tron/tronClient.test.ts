@@ -143,6 +143,112 @@ describe("TronscanClient", () => {
     await expect(same).resolves.toEqual({ txID: "a".repeat(64) });
     await expect(different).resolves.toEqual({ txID: "b".repeat(64) });
   });
+
+  it("coalesces normalized transaction-info identities in the contract bucket", async () => {
+    const scheduled: any[] = [];
+    const pending = new Map<string, Promise<unknown>>();
+    const scheduler = {
+      schedule: (request: any, work: (context: { apiKey: string | null; apiKeyIndex: number | null }) => Promise<unknown>) => {
+        scheduled.push(request);
+        const existing = request.cacheKey ? pending.get(request.cacheKey) : undefined;
+        if (existing) return existing;
+        const task = work({ apiKey: null, apiKeyIndex: null });
+        if (request.cacheKey) pending.set(request.cacheKey, task);
+        return task;
+      }
+    } as any;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fetchFn = vi.fn(async (input: URL | RequestInfo) => {
+      await gate;
+      return jsonResponse({ hash: (input as URL).searchParams.get("hash") });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn,
+      scheduler,
+      schedulerDedupeNamespace: "where"
+    });
+    const upperHash = "AB".repeat(32);
+    const normalizedHash = upperHash.toLowerCase();
+
+    const first = client.getTransaction(upperHash);
+    const same = client.getTransaction(normalizedHash);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce());
+    expect(scheduled[0]).toMatchObject({
+      endpointBucket: "contract",
+      cacheKey: `where:tron:transaction_info:v1:${normalizedHash}`
+    });
+    const [url] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.searchParams.get("hash")).toBe(normalizedHash);
+    release();
+    await expect(Promise.all([first, same])).resolves.toEqual([
+      { hash: normalizedHash },
+      { hash: normalizedHash }
+    ]);
+  });
+
+  it("keeps raw and transaction-info scheduler identities distinct for one hash", async () => {
+    const scheduled: any[] = [];
+    const scheduler = {
+      schedule: (request: any, work: (context: { apiKey: string | null; apiKeyIndex: number | null }) => Promise<unknown>) => {
+        scheduled.push(request);
+        return work({ apiKey: null, apiKeyIndex: null });
+      }
+    } as any;
+    const fetchFn = vi.fn(async (input: URL | RequestInfo) => jsonResponse({ path: (input as URL).pathname }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn,
+      scheduler
+    });
+    const txHash = "c".repeat(64);
+
+    await Promise.all([client.getRawTransaction(txHash), client.getTransaction(txHash)]);
+
+    expect(scheduled).toEqual(expect.arrayContaining([
+      expect.objectContaining({ endpointBucket: "fullnode", cacheKey: `default:tron:raw_transaction:v1:${txHash}` }),
+      expect.objectContaining({ endpointBucket: "contract", cacheKey: `default:tron:transaction_info:v1:${txHash}` })
+    ]));
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("projects signing metadata from the shared scheduled raw transaction", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fetchFn = vi.fn(async () => {
+      await gate;
+      return jsonResponse({
+        txID: "d".repeat(64),
+        raw_data: { timestamp: 1_777_907_188_559, expiration: 1_778_101_647_000 }
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn,
+      requestMinIntervalMs: 0
+    });
+    const txHash = "d".repeat(64);
+
+    const metadata = client.getTransactionSigningMetadata(txHash);
+    const raw = client.getRawTransaction(txHash);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce());
+    release();
+
+    await expect(metadata).resolves.toMatchObject({ txHash });
+    await expect(raw).resolves.toMatchObject({ txID: txHash });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it.each(["", "   ", "bad/hash"])("rejects an invalid transaction hash before scheduling: %j", async (txHash) => {
+    const fetchFn = vi.fn();
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+    await expect(client.getTransaction(txHash)).rejects.toThrow(/transaction hash/i);
+    await expect(client.getRawTransaction(txHash)).rejects.toThrow(/transaction hash/i);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
   it("requests incoming confirmed official USDT transfers", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ token_transfers: [] }));
     const client = new TronscanClient({

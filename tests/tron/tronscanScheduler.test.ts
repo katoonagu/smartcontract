@@ -557,6 +557,48 @@ describe("TronScan scheduler", () => {
     expect(work).toHaveBeenCalledTimes(1);
   });
 
+  it("coalesces only exact versioned transaction endpoint identities", async () => {
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0
+    });
+    const rawWork = vi.fn(async () => "raw");
+    const fullWork = vi.fn(async () => "full");
+    const otherRawWork = vi.fn(async () => "other-raw");
+    const hash = "a".repeat(64);
+
+    await expect(Promise.all([
+      scheduler.schedule({
+        requestName: "raw_transaction",
+        path: "/wallet/gettransactionbyid",
+        endpointBucket: "fullnode",
+        cacheKey: `default:tron:raw_transaction:v1:${hash}`
+      }, rawWork),
+      scheduler.schedule({
+        requestName: "raw_transaction",
+        path: "/wallet/gettransactionbyid",
+        endpointBucket: "fullnode",
+        cacheKey: `default:tron:raw_transaction:v1:${hash}`
+      }, rawWork),
+      scheduler.schedule({
+        requestName: "tronscan_transaction_info",
+        path: "/api/transaction-info",
+        endpointBucket: "contract",
+        cacheKey: `default:tron:transaction_info:v1:${hash}`
+      }, fullWork),
+      scheduler.schedule({
+        requestName: "raw_transaction",
+        path: "/wallet/gettransactionbyid",
+        endpointBucket: "fullnode",
+        cacheKey: `default:tron:raw_transaction:v1:${"b".repeat(64)}`
+      }, otherRawWork)
+    ])).resolves.toEqual(["raw", "raw", "full", "other-raw"]);
+
+    expect(rawWork).toHaveBeenCalledOnce();
+    expect(fullWork).toHaveBeenCalledOnce();
+    expect(otherRawWork).toHaveBeenCalledOnce();
+  });
+
   it("starts a slot cooldown after rate-limit failures when no alternate key is available", async () => {
     const delays: number[] = [];
     let now = 1_000;
