@@ -103,6 +103,7 @@ describe("adaptive benchmark leased runtime control", () => {
     };
     const observation: UnifiedProviderRefillObservationV1 = {
       version: "unified-provider-refill-observation-v1",
+      schemaVersion: 1,
       controlSha256: "a".repeat(64),
       observedAt: NOW.toISOString(),
       runtimeCommit: "b".repeat(40),
@@ -125,6 +126,11 @@ describe("adaptive benchmark leased runtime control", () => {
       .toEqual(observation);
     expect(() => parseUnifiedProviderRefillObservationV1(
       canonicalizeArtifactJson({ ...observation, unexpected: true })
+    )).toThrow("unified_provider_refill_observation_invalid");
+    const { schemaVersion: _schemaVersion, ...withoutSchemaVersion } =
+      observation;
+    expect(() => parseUnifiedProviderRefillObservationV1(
+      canonicalizeArtifactJson(withoutSchemaVersion)
     )).toThrow("unified_provider_refill_observation_invalid");
     expect(() => parseUnifiedProviderRefillObservationV1(
       canonicalizeArtifactJson({
@@ -338,21 +344,56 @@ describe("adaptive benchmark leased runtime control", () => {
     };
     expect(() => assertUnifiedSelectedDenseRefillEvidence(input))
       .not.toThrow();
-    for (const invalid of [
-      { saturated: { ...saturated, sampleCount: 0, activeSlotSum: 0 } },
-      { saturated: { ...saturated, activeSlotSum: 13 } },
-      { saturated: { ...saturated, unexplainedIdleSamples: 1 } },
-      { dispatchedGroupIds: ["g1", "g2", "g3"] },
-      { providerErrors: 1 },
-      { rateLimited429: 1 },
-      { deliveryIntents: 1 },
-      { externalSends: 1 },
-      { reconciliationRecoveries: 1 }
-    ]) {
+    for (const [invalid, error] of [
+      [
+        { providerErrors: -1 },
+        "unified_fast_fix_dense_input_invalid"
+      ],
+      [
+        { auditedGroupIds: ["g1", "g2", "g3"] },
+        "unified_fast_fix_group_audit_invalid"
+      ],
+      [
+        { dispatchedGroupIds: ["g1", "g2", "g3"] },
+        "unified_fast_fix_group_dispatch_incomplete"
+      ],
+      [
+        { saturated: { ...saturated, sampleCount: 0, activeSlotSum: 0 } },
+        "unified_fast_fix_saturation_missing"
+      ],
+      [
+        { saturated: { ...saturated, activeSlotSum: 13 } },
+        "unified_fast_fix_utilization_below_gate"
+      ],
+      [
+        { saturated: { ...saturated, unexplainedIdleSamples: 1 } },
+        "unified_fast_fix_idle_reason_missing"
+      ],
+      [
+        { providerErrors: 1 },
+        "unified_fast_fix_provider_errors_observed"
+      ],
+      [
+        { rateLimited429: 1 },
+        "unified_fast_fix_rate_limited_429_observed"
+      ],
+      [
+        { deliveryIntents: 1 },
+        "unified_fast_fix_delivery_observed"
+      ],
+      [
+        { externalSends: 1 },
+        "unified_fast_fix_delivery_observed"
+      ],
+      [
+        { reconciliationRecoveries: 1 },
+        "unified_fast_fix_reconciliation_observed"
+      ]
+    ] as const) {
       expect(() => assertUnifiedSelectedDenseRefillEvidence({
         ...input,
         ...invalid
-      })).toThrow("unified_provider_refill_selected_dense_rejected");
+      })).toThrow(error);
     }
   });
 

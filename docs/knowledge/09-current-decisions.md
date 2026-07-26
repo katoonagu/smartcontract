@@ -179,9 +179,12 @@ expanding frontier has no percent or ETA.
   binds its own replay hash, barrier facts, policy fixture, and capacity rows;
   exact equality is required within a policy, not across policies.
 - Scheduler replay proves deterministic admission behavior at logical scale.
-  The PostgreSQL barrier-versus-rolling oracle is the exact traversal,
-  terminal/frontier, canonical-fact, closure, score, decision, evidence,
-  report, presentation, restart/retry, and delivery-idempotency proof.
+  The PostgreSQL barrier-versus-rolling oracle executes the production runtime,
+  traversal coordinator, policy boundary, finalizer, restart, and fake delivery
+  path. It is the exact traversal, terminal/frontier, canonical-fact, closure,
+  manifest binding, score, decision, evidence, report, presentation, restart,
+  and delivery-idempotency proof. Immutable scheduler receipts remain a
+  separate compatibility artifact.
 - Live claims are limited to the independent groups actually configured and
   observed. Capacity above that is simulation evidence only.
 - Exact hashes are compared on one frozen provider replay. Separate live runs
@@ -220,8 +223,12 @@ expanding frontier has no percent or ETA.
 - The selected TXc benchmark is exactly one isolated canary. The command
   captures process memory before execution, once after the first provider
   claim, and after completion; it hashes the exact sample and summary files
-  before persisting passing refill evidence or the index. Missing WSL is a
-  diagnostic `skipped`, but missing/invalid process phases fail closed.
+  before persisting passing refill evidence or the index. The schema-V2 selected
+  index directly binds refill hash/creator, and a sealed export sidecar binds
+  runtime/configuration/run identity plus every memory file's bytes and hash.
+  Resume verifies that chain without another capture or canary. Missing WSL is
+  a diagnostic `skipped`, but missing/invalid/tampered process phases fail
+  closed.
 - `checkpoint_or_commit` is a stable pool/run/task reason code but is not
   emitted by diagnostic V1. Existing state cannot prove that the transition
   holds the last otherwise-fillable slot; emission remains pending a direct

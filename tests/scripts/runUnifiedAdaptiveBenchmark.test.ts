@@ -18,9 +18,14 @@ import {
   isNonterminalCheckpointedBenchmarkRun,
   createUnifiedBenchmarkReleaseOwner,
   parseUnifiedAdaptiveLiveCapacityStateV1,
+  parseUnifiedSelectedRefillExportEvidenceV1,
+  parseUnifiedSelectedAdaptiveBenchmarkIndexV2,
   recoverUnifiedBenchmarkCapacityStateControl,
+  runSelectedIsolatedCanaryBenchmark,
   runUnifiedBenchmarkControlScope,
   runUnifiedAdaptiveBenchmarkCli,
+  sealUnifiedSelectedRefillExportEvidenceV1,
+  sealUnifiedSelectedAdaptiveBenchmarkIndexV2,
   UNIFIED_ADAPTIVE_LIVE_SCENARIOS,
   UnifiedAdaptiveBenchmarkRestartRequiredError
 } from "../../scripts/runUnifiedAdaptiveBenchmark";
@@ -116,6 +121,397 @@ function replayOracleRuntime(
   };
 }
 
+async function writeSelectedLiveResumeBundle(root: string) {
+  const selected = "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd";
+  const scenarioId = `live:c4:${selected}`;
+  const runId = "run-txc";
+  const candidateCommit = "a".repeat(40);
+  const controlSha256 = "b".repeat(64);
+  const providerConfigurationSha256 = "c".repeat(64);
+  const output = join(root, "selected.json");
+  const scenarioDirectory = join(root, "selected.scenarios");
+  await mkdir(scenarioDirectory);
+  const audit = sealUnifiedProviderGroupAuditV1({
+    auditedAt: "2026-07-24T12:00:00.000Z",
+    groups: Array.from({ length: 4 }, (_, index) => ({
+      opaqueGroupId: `provider-group-${index + 1}`,
+      state: "healthy" as const,
+      concurrencyLimit: 1,
+      independenceEvidenceSha256: String(index + 1).repeat(64)
+    }))
+  });
+  const auditPath = join(root, "provider-audit.json");
+  await writeFile(auditPath, audit.canonicalJson, "utf8");
+  const executionIdentitySha256 = fingerprintCanonicalArtifact({
+    version: "unified-adaptive-benchmark-execution-identity-v1",
+    mode: "live",
+    seed: 1,
+    requestedCapacities: [4],
+    candidateCommit,
+    sourceIdentitySha256: audit.envelope.auditSha256,
+    traversalPolicyVersion: "snapshot-closure-v2",
+    scenarioIds: [selected]
+  });
+  const groups = audit.envelope.groups.map((group) => group.opaqueGroupId);
+  const observation = {
+    version: "unified-adaptive-benchmark-runtime-observation-v1",
+    controlSha256,
+    observedAt: "2026-07-24T12:00:30.000Z",
+    runtime: {
+      rssHeapScope: "process",
+      availableMemoryScope: "container_or_host",
+      instanceId: "runtime-selected-resume",
+      processStartedAt: "2026-07-24T12:00:00.000Z",
+      processId: 123,
+      rssBytes: 100,
+      heapUsedBytes: 50,
+      availableContainerBytes: 1_000,
+      availableHostBytes: 2_000
+    },
+    provider: {
+      requests: 4,
+      completed: 4,
+      errors: 0,
+      rateLimited429: 0,
+      requestsPerSecond: 4,
+      dispatchedGroupIds: groups
+    },
+    reuse: {
+      providerCacheHits: 0,
+      networkFetches: 4,
+      addressManifestReuses: 0,
+      addressHistoryReplaysAvoided: 0
+    },
+    integrity: {
+      duplicateCommits: 0,
+      duplicateSequences: 0,
+      deliveryIntents: 0
+    },
+    database: {
+      scope: "benchmark_runtime_connection_pool",
+      latencyMs: 1,
+      checkpointLatencyMs: 1,
+      poolWaitMs: 0
+    },
+    lifecycle: {
+      restartRunId: null,
+      checkpointObservationSha256: null,
+      restartCount: 0,
+      recoveryMs: 0,
+      reconciliationRecoveries: 0
+    },
+    runs: [{
+      runId,
+      scenarioId: selected,
+      planner: {
+        durableBacklog: 0,
+        admitted: 0,
+        leased: 0,
+        ready: 0,
+        committed: 1
+      },
+      buffer: { readyCount: 0, readyBytes: 0, reservedBytes: 0 },
+      canonicalHeadAgeMs: 1,
+      capacity: { eligibleDemand: 4, targetSlots: 4, actualSlots: 4 },
+      limitingReason: null
+    }]
+  } as const;
+  const observationSha256 = fingerprintCanonicalArtifact(observation);
+  const observationRelativePath =
+    `selected.scenarios/observation-${observationSha256}.json`;
+  await writeFile(
+    join(root, observationRelativePath),
+    `${canonicalizeArtifactJson(observation)}\n`,
+    "utf8"
+  );
+  const symptom = {
+    version: "unified-adaptive-benchmark-scenario-symptom-v1",
+    controlSha256,
+    runId,
+    scenarioId: selected,
+    phase: "run_completed",
+    observedAt: "2026-07-24T12:00:31.000Z",
+    observationArtifactSha256: observationSha256,
+    runtimeInstanceId: "runtime-selected-resume",
+    runtimeProcessStartedAt: "2026-07-24T12:00:00.000Z",
+    runtimeProcessId: 123
+  } as const;
+  const symptomSha256 = fingerprintCanonicalArtifact(symptom);
+  await writeFile(
+    join(scenarioDirectory, `symptom-${symptomSha256}.json`),
+    `${canonicalizeArtifactJson(symptom)}\n`,
+    "utf8"
+  );
+  const performanceManifest = buildUnifiedPerformanceBenchmarkManifest({
+    version: "unified-performance-benchmark-input-v1",
+    caseId: scenarioId,
+    runId,
+    frozenClockIso: "2026-07-24T12:00:00.000Z",
+    snapshot: {
+      blockNumber: "1",
+      blockHash: "2".repeat(64),
+      timestamp: "2026-07-24T12:00:00.000Z"
+    },
+    providerBundleSha256: controlSha256,
+    labelDatasetSha256: "3".repeat(64),
+    providerConfigurationSha256,
+    scoringPolicyVersion: "scoring-signal-matrix-v4",
+    attributionPolicyVersion: "selected-attribution-policy-v1",
+    analysisPolicyVersion: "snapshot-closure-v2",
+    presentationPolicyVersion: "unified-presentation-v1",
+    locale: "ru",
+    deterministicIdSeed: scenarioId,
+    runtimeCommit: candidateCommit,
+    checkpointVersion: "unified-production-traversal-checkpoint-v2",
+    logicalChunkEvents: 1,
+    providerSlots: 4,
+    harnessVersion: "unified-adaptive-live-canary-v1"
+  });
+  const benchmark = sealUnifiedAdaptiveBenchmarkEvidenceV1({
+    scenarioId,
+    scenarioKind: selected,
+    completedAt: "2026-07-24T12:01:00.000Z",
+    mode: "live",
+    admissionPolicy: "rolling",
+    sideEffectPolicy: "isolated",
+    requestedCapacity: 4,
+    actualAuditedIndependentGroupCapacity: 4,
+    independentGroupAudit: audit.envelope,
+    performanceManifest,
+    timing: { wallTimeMs: 1, aggregateThroughputPerSecond: 1 },
+    capacity: {
+      eligibleDemand: 4,
+      targetSlots: 4,
+      actualSlots: 4,
+      utilization: 1
+    },
+    provider: { rollingRps: 4, requests: 4, errors: 0, rateLimited429: 0 },
+    limiting: { reason: null, canonicalHeadAgeMs: null },
+    buffer: { readyBytes: 0, reservedBytes: 0 },
+    database: { latencyMs: 1, checkpointLatencyMs: 1, poolWaitMs: 0 },
+    memory: {
+      rssBytes: 100,
+      heapUsedBytes: 50,
+      availableContainerBytes: 1_000,
+      availableHostBytes: 2_000
+    },
+    repair: { maxWaitMs: 0, maxWaitChunks: 0 },
+    reuse: {
+      providerCacheHits: 0,
+      networkFetches: 4,
+      addressManifestReuses: 0,
+      addressHistoryReplaysAvoided: 0
+    },
+    restartRecovery: {
+      restartCount: 0,
+      recoveryMs: 0,
+      reconciliationRecoveries: 0,
+      duplicateCommits: 0,
+      duplicateSequences: 0
+    },
+    oracle: null,
+    runtimeObservationArtifactSha256s: [observationSha256],
+    scenarioSymptomArtifactSha256s: [symptomSha256],
+    liveOutcomes: [{
+      runId,
+      subjectAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      score: 0,
+      decision: "ACCEPTABLE",
+      evidenceBundleSha256: "4".repeat(64),
+      traversalClosureSha256: "5".repeat(64),
+      scoringBundleSha256: "6".repeat(64),
+      reportSha256: "7".repeat(64),
+      benchmarkControlSha256: controlSha256,
+      auditedGroupIds: groups,
+      dispatchedGroupIds: groups
+    }],
+    measurement: {
+      timing: "observed",
+      provider: "observed",
+      database: "observed",
+      memory: "observed",
+      lifecycle: "observed",
+      delivery: "observed"
+    },
+    delivery: {
+      eligibleRequests: 1,
+      deliveryIntents: 0,
+      externalTelegramSends: 0
+    }
+  });
+  const benchmarkFile = "001-selected.json";
+  const benchmarkRelativePath = `selected.scenarios/${benchmarkFile}`;
+  await writeFile(
+    join(scenarioDirectory, benchmarkFile),
+    `${benchmark.canonicalJson}\n`,
+    "utf8"
+  );
+  const memorySamples = ["before", "during", "after"].map((phase, index) => ({
+    capturedAt: `2026-07-24T12:00:0${index + 1}.000Z`,
+    localWslDiagnostic: {
+      linuxMemAvailableBytes: null,
+      linuxSwapFreeBytes: null,
+      linuxSwapTotalBytes: null,
+      status: "skipped",
+      vmmemWslWorkingSetBytes: null
+    },
+    nodePid: 123,
+    phase,
+    runId,
+    runtime: { heapUsedBytes: 50, rssBytes: 100 },
+    scenarioId: selected,
+    version: "unified-memory-sample-v1"
+  }));
+  const samplesBytes = canonicalizeArtifactJson(memorySamples);
+  const summaryBytes = canonicalizeArtifactJson({
+    completedAt: "2026-07-24T12:00:03.000Z",
+    diagnosticStatus: "skipped",
+    runId,
+    runtimeTrend: {
+      afterRssBytes: 100,
+      beforeRssBytes: 100,
+      peakRssBytes: 100,
+      postRunRssDeltaBytes: 0
+    },
+    scenarioId: selected,
+    scope: "local_wsl_diagnostic",
+    verdict: "diagnostic_only",
+    version: "unified-local-wsl-memory-summary-v1",
+    wslTrend: {
+      linuxAvailableDeltaBytes: null,
+      postRunVmmemDeltaBytes: null,
+      swapUsedGrowthBytes: null
+    }
+  });
+  const samplesSha256 = fingerprintCanonicalArtifact(memorySamples);
+  const summarySha256 = fingerprintCanonicalArtifact(JSON.parse(summaryBytes));
+  const samplesFile = `memory-samples-${samplesSha256}.json`;
+  const summaryFile = `memory-summary-${summarySha256}.json`;
+  await writeFile(join(scenarioDirectory, samplesFile), samplesBytes, "utf8");
+  await writeFile(join(scenarioDirectory, summaryFile), summaryBytes, "utf8");
+  const refill = {
+    version: "unified-provider-refill-observation-v1",
+    schemaVersion: 1,
+    controlSha256,
+    observedAt: "2026-07-24T12:00:32.000Z",
+    runtimeCommit: candidateCommit,
+    providerConfigurationSha256,
+    diagnostics: {
+      version: "unified-provider-refill-diagnostics-v1",
+      assignments: {
+        proposed: 4,
+        accepted: 4,
+        rejected: 0,
+        rejections: {
+          draining: 0,
+          slotActive: 0,
+          pendingAssignment: 0,
+          staleEpoch: 0
+        }
+      },
+      phases: Object.fromEntries([
+        "chunkToCheckpoint",
+        "checkpointToController",
+        "controllerToPermit",
+        "permitToClaim",
+        "checkpointToClaim"
+      ].map((name) => [name, {
+        p50: 1,
+        p95: 1,
+        max: 1,
+        sampleCount: 1
+      }])),
+      diagnostics: {
+        incomplete: 0,
+        evictedIncomplete: 0,
+        discontinuities: 0,
+        invalidClocks: 0
+      }
+    },
+    saturated: {
+      sampleCount: 2,
+      activeSlotSum: 7,
+      fourOfFourSamples: 1,
+      unexplainedIdleSamples: 0
+    },
+    memoryEvidence: {
+      samplesSha256,
+      summarySha256,
+      diagnosticStatus: "skipped"
+    }
+  } as const;
+  const refillBytes = canonicalizeArtifactJson(refill);
+  const refillArtifactSha256 = fingerprintCanonicalArtifact(refill);
+  const refillFile = `refill-${refillArtifactSha256}.json`;
+  await writeFile(join(scenarioDirectory, refillFile), `${refillBytes}\n`, "utf8");
+  const exportEvidence = sealUnifiedSelectedRefillExportEvidenceV1({
+    scenarioId,
+    executionIdentitySha256,
+    candidateCommit,
+    traversalPolicyVersion: "snapshot-closure-v2",
+    benchmarkEvidenceSha256: benchmark.envelope.evidenceSha256,
+    benchmarkEvidenceRelativePath: benchmarkRelativePath,
+    runId,
+    controlSha256,
+    providerConfigurationSha256,
+    refillArtifactSha256,
+    refillArtifactCreatedByRunId: runId,
+    refillArtifactRelativePath: `selected.scenarios/${refillFile}`,
+    memoryEvidence: {
+      nodePid: 123,
+      samplesRelativePath: `selected.scenarios/${samplesFile}`,
+      samplesSha256,
+      summaryRelativePath: `selected.scenarios/${summaryFile}`,
+      summarySha256
+    }
+  });
+  const exportFile = `selected-refill-${exportEvidence.envelope.evidenceSha256}.json`;
+  await writeFile(
+    join(scenarioDirectory, exportFile),
+    `${exportEvidence.canonicalJson}\n`,
+    "utf8"
+  );
+  const index = sealUnifiedSelectedAdaptiveBenchmarkIndexV2({
+    seed: 1,
+    requestedCapacities: [4],
+    candidateCommit,
+    executionIdentitySha256,
+    generatedAt: "2026-07-24T12:01:00.000Z",
+    artifacts: [{
+      scenarioId,
+      relativePath: benchmarkRelativePath,
+      evidenceSha256: benchmark.envelope.evidenceSha256,
+      candidateCommit,
+      executionIdentitySha256:
+        benchmark.envelope.performanceManifest.executionIdentitySha256,
+      refillArtifactSha256,
+      refillArtifactCreatedByRunId: runId,
+      selectedRefillEvidenceSha256: exportEvidence.envelope.evidenceSha256,
+      selectedRefillEvidenceRelativePath:
+        `selected.scenarios/${exportFile}`
+    }]
+  });
+  await writeFile(output, `${index.canonicalJson}\n`, "utf8");
+  return {
+    args: [
+      "--mode", "live",
+      "--capacity", "4",
+      "--isolated",
+      "--scenario", selected,
+      "--traversal-policy", "snapshot-closure-v2",
+      "--memory-evidence-dir", root,
+      "--provider-audit", auditPath,
+      "--output", output
+    ] as const,
+    candidateCommit,
+    index: index.envelope,
+    refillPath: join(scenarioDirectory, refillFile),
+    refillBytes: `${refillBytes}\n`,
+    samplesPath: join(scenarioDirectory, samplesFile),
+    samplesBytes
+  };
+}
+
 describe("runUnifiedAdaptiveBenchmark CLI", () => {
   it("allows only the registered TXc selected live scenario and binds policy plus sorted scenarios", async () => {
     const root = await mkdtemp(join(tmpdir(), "unified-selected-txc-"));
@@ -187,6 +583,85 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     ], { runIsolatedCanaryBenchmark })).rejects.toThrow(
       "unified_benchmark_cli_duplicate"
     );
+  });
+
+  it("stops after the single selected canary when the before capture fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-selected-capture-fail-"));
+    const audit = sealUnifiedProviderGroupAuditV1({
+      auditedAt: "2026-07-24T12:00:00.000Z",
+      groups: Array.from({ length: 4 }, (_, index) => ({
+        opaqueGroupId: `provider-group-${index + 1}`,
+        state: "healthy" as const,
+        concurrencyLimit: 1,
+        independenceEvidenceSha256: String(index + 1).repeat(64)
+      }))
+    }).envelope;
+    const memoryCapture = {
+      before: vi.fn(async () => {
+        throw new Error("memory_capture_failed");
+      }),
+      during: vi.fn(async () => undefined),
+      after: vi.fn(async () => {
+        throw new Error("after_must_not_run");
+      })
+    };
+    const runCanary = vi.fn(async (_args: readonly string[], hooks: {
+      readonly onBatchReady?: (batch: {
+        readonly runIds: readonly string[];
+        readonly providerConfigurationSha256: string;
+        readonly db: { query(): Promise<{ rows: readonly unknown[] }> };
+      }) => Promise<unknown>;
+    }) => {
+      await hooks.onBatchReady?.({
+        runIds: ["run-txc"],
+        providerConfigurationSha256: "5".repeat(64),
+        db: { query: async () => ({ rows: [] }) }
+      });
+      throw new Error("canary_must_stop_after_capture_failure");
+    });
+
+    await expect(runSelectedIsolatedCanaryBenchmark({
+      requestedCapacities: [4],
+      output: join(root, "selected.json"),
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      providerAudit: audit,
+      traversalPolicy: "snapshot-closure-v2",
+      memoryEvidenceDir: root,
+      runCanary: runCanary as never,
+      memoryCapture: memoryCapture as never
+    })).rejects.toThrow("memory_capture_failed");
+    expect(runCanary).toHaveBeenCalledOnce();
+    expect(memoryCapture.before).toHaveBeenCalledOnce();
+    expect(memoryCapture.during).not.toHaveBeenCalled();
+    expect(memoryCapture.after).not.toHaveBeenCalled();
+  });
+
+  it("resumes selected evidence without recapture and rejects replaced refill or memory bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-selected-resume-"));
+    const fixture = await writeSelectedLiveResumeBundle(root);
+    const runIsolatedCanaryBenchmark = vi.fn(async () => {
+      throw new Error("selected_canary_must_not_rerun");
+    });
+    const runtime = {
+      runtimeCommit: fixture.candidateCommit,
+      runIsolatedCanaryBenchmark
+    };
+
+    await expect(runUnifiedAdaptiveBenchmarkCli(fixture.args, runtime))
+      .resolves.toEqual(fixture.index);
+    expect(runIsolatedCanaryBenchmark).not.toHaveBeenCalled();
+
+    await writeFile(fixture.refillPath, "{}\n", "utf8");
+    await expect(runUnifiedAdaptiveBenchmarkCli(fixture.args, runtime))
+      .rejects.toThrow("unified_benchmark_existing_artifact_mismatch");
+    expect(runIsolatedCanaryBenchmark).not.toHaveBeenCalled();
+
+    await writeFile(fixture.refillPath, fixture.refillBytes, "utf8");
+    await writeFile(fixture.samplesPath, "[]", "utf8");
+    await expect(runUnifiedAdaptiveBenchmarkCli(fixture.args, runtime))
+      .rejects.toThrow("unified_benchmark_existing_artifact_mismatch");
+    expect(runIsolatedCanaryBenchmark).not.toHaveBeenCalled();
   });
 
   it("captures one before/during/after process sample with stable IDs and validates summary bytes", async () => {
@@ -273,7 +748,83 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     expect(evidence).toEqual({
       samplesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
       summarySha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      diagnosticStatus: "captured"
+      diagnosticStatus: "captured",
+      nodePid: 123,
+      samplesBytes: expect.any(String),
+      summaryBytes: expect.any(String)
+    });
+  });
+
+  it("seals the refill artifact creator, runtime, provider configuration, policy, execution, and exact memory files", () => {
+    const sealed = sealUnifiedSelectedRefillExportEvidenceV1({
+      scenarioId: "live:c4:isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      executionIdentitySha256: "1".repeat(64),
+      candidateCommit: "2".repeat(40),
+      traversalPolicyVersion: "snapshot-closure-v2",
+      benchmarkEvidenceSha256: "3".repeat(64),
+      benchmarkEvidenceRelativePath: "selected.scenarios/001.json",
+      runId: "run-txc",
+      controlSha256: "4".repeat(64),
+      providerConfigurationSha256: "5".repeat(64),
+      refillArtifactSha256: "6".repeat(64),
+      refillArtifactCreatedByRunId: "run-txc",
+      refillArtifactRelativePath: "selected.scenarios/refill.json",
+      memoryEvidence: {
+        nodePid: 123,
+        samplesRelativePath: "selected.scenarios/memory-samples.json",
+        samplesSha256: "7".repeat(64),
+        summaryRelativePath: "selected.scenarios/memory-summary.json",
+        summarySha256: "8".repeat(64)
+      }
+    });
+
+    expect(parseUnifiedSelectedRefillExportEvidenceV1(
+      sealed.canonicalJson
+    )).toEqual(sealed.envelope);
+    expect(sealed.envelope).toMatchObject({
+      schemaVersion: 1,
+      refillArtifactCreatedByRunId: "run-txc",
+      refillArtifactSha256: "6".repeat(64)
+    });
+    expect(() => parseUnifiedSelectedRefillExportEvidenceV1(
+      canonicalizeArtifactJson({
+        ...sealed.envelope,
+        refillArtifactCreatedByRunId: "replacement-run"
+      })
+    )).toThrow("unified_benchmark_selected_refill_export_invalid");
+  });
+
+  it("binds the selected refill artifact hash and creator directly into the live index", () => {
+    const sealed = sealUnifiedSelectedAdaptiveBenchmarkIndexV2({
+      seed: 1,
+      requestedCapacities: [4],
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      generatedAt: "2026-07-24T12:00:00.000Z",
+      artifacts: [{
+        scenarioId: "live:c4:isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+        relativePath: "selected.scenarios/001.json",
+        evidenceSha256: "3".repeat(64),
+        candidateCommit: "1".repeat(40),
+        executionIdentitySha256: "4".repeat(64),
+        refillArtifactSha256: "5".repeat(64),
+        refillArtifactCreatedByRunId: "run-txc",
+        selectedRefillEvidenceSha256: "6".repeat(64),
+        selectedRefillEvidenceRelativePath:
+          "selected.scenarios/selected-refill.json"
+      }]
+    });
+
+    expect(parseUnifiedSelectedAdaptiveBenchmarkIndexV2(
+      sealed.canonicalJson
+    )).toEqual(sealed.envelope);
+    expect(sealed.envelope).toMatchObject({
+      version: "unified-adaptive-benchmark-index-v2",
+      schemaVersion: 2,
+      artifacts: [{
+        refillArtifactSha256: "5".repeat(64),
+        refillArtifactCreatedByRunId: "run-txc"
+      }]
     });
   });
 

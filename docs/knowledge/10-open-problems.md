@@ -39,8 +39,9 @@ Before raising a configured production ceiling:
 Local WSL measurements remain diagnostic. The real production ceiling needs an
 equivalent Linux container/cgroup or host-memory run.
 
-The policy-specific PostgreSQL oracle and scheduler replay are complete for
-logical capacities 1, 4, 8, 16, 32, and 100. They do not verify live
+The policy-specific production-path PostgreSQL oracle and separate scheduler
+replay are complete for logical capacities 1, 4, 8, 16, 32, and 100. They do
+not verify live
 utilization. The selected isolated TXc canary, independent-group dispatch,
 zero-error saturated refill, and target Linux memory gate remain outstanding;
 until they pass, user checks and rollout stay on V1.

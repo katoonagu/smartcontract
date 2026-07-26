@@ -141,8 +141,12 @@ persist canonical provider pages.
 The frozen policy oracle has separate V1 and V2 provider fixtures over the
 same response pages, clock, and source snapshot. The V2 fixture binds the real
 production-built frozen label dataset hash. PostgreSQL seeds that exact dataset
-artifact before running barrier and rolling paths; the fixture alone or the
-scheduler simulation is not proof of production traversal/hash equivalence.
+artifact, loads it through the production runtime, and evaluates it through the
+production traversal coordinator and V2 boundary before comparing barrier and
+rolling outputs. The V2 proof closes the frozen CEX state and performs one
+fewer address-history page than V1, so merely seeding the dataset cannot satisfy
+the test. The fixture alone or the scheduler simulation is not proof of
+production traversal/hash equivalence.
 
 The runtime verifies exact schema 036 and its schema-032 through schema-035
 predecessors before canary selection. The adaptive runtime has no fixed

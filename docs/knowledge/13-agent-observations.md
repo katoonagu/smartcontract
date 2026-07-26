@@ -434,3 +434,25 @@ persisted predecessor timestamp.
 Correct rule: planner lifecycle timestamps use the later of database wall time
 and the preceding durable timestamp. Timestamp constraints remain strict, but
 clock adjustment cannot turn a valid state transition into a technical failure.
+
+## 2026-07-26: Proposed Assignments Are Not Accepted Capacity
+
+Agent mistake: repeated provider proposals were counted as refill and capacity
+before the pool checked the current slot epoch and accepted them.
+
+Correct rule: retain proposed, accepted, and rejected assignments separately.
+Only accepted assignments count toward actionable slots, pool target, or refill
+evidence. A stale-epoch rejection requests one coalesced retry wake when safe
+eligible work remains; active, pending, and draining rejections wait for their
+normal lifecycle boundary.
+
+## 2026-07-26: Seeded Fixtures Do Not Prove Production Boundaries
+
+Agent mistake: a generic planner replay seeded a frozen V2 dataset but never
+loaded or evaluated it through the production traversal coordinator, then was
+described as the production oracle.
+
+Correct rule: boundary evidence is proved only when the production runtime
+loads the hash-bound dataset and the production coordinator materially changes
+traversal. Keep scheduler replay receipts as a separate deterministic scale
+contract.

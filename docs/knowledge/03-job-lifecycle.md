@@ -201,8 +201,14 @@ aggregates only the selected run's samples, validates the three process-memory
 phases, and then persists one
 `unified-provider-refill-observation-v1` artifact. A passing benchmark index is
 written only after that artifact passes its control/run bindings and dense
-acceptance checks. Runtime samples and refill observations never participate in
-task claim, acceptance, traversal commit, scoring, or delivery.
+acceptance checks. The selected-run index is schema V2 and directly binds the
+refill artifact hash and creator run. Its sealed export-evidence sidecar binds
+the execution identity, runtime/configuration, control, benchmark evidence,
+refill bytes, and the exact before/during/after memory-file bytes and hashes.
+Resume revalidates that complete chain without recapturing memory or starting a
+second canary; any replacement or mismatch fails closed. Runtime samples and
+refill observations never participate in task claim, acceptance, traversal
+commit, scoring, or delivery.
 
 Traversal policy remains owned by the persisted analysis manifest. V1 resumes
 with its historical identities and evidence bytes. V2 resumes only with its
@@ -219,8 +225,11 @@ Configuration defaults to `global_barrier`; isolated or broader rolling is an
 ordinary validated configuration choice. Policy-specific PostgreSQL replay
 covers logical capacities through 100 for snapshot-closure-v1 and
 snapshot-closure-v2. Scheduler simulation is useful scale evidence, but the
-PostgreSQL barrier-versus-rolling oracle is the exact lifecycle/hash proof
-within each policy; cross-policy hashes need not match. Actual live capacity
+PostgreSQL barrier-versus-rolling oracle drives the production runtime,
+traversal coordinator, V2 boundary, finalizer, restart, and delivery paths and
+is the exact lifecycle/hash proof within each policy; cross-policy hashes need
+not match. Its scheduler receipt remains a separate immutable replay contract.
+Actual live capacity
 and the next DB/CPU/memory bottleneck must be measured with real independent
 groups. P1 boundary
 activation still waits for blind review/adjudication, and exact performance

@@ -136,8 +136,15 @@ the exact within-policy PostgreSQL oracle:
 
 ```powershell
 $env:TEST_DATABASE_URL = "<temporary-postgresql-url>"
+$env:UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT_V2 = `
+  "artifacts/unified-adaptive/fast-fix-v2-oracle.json"
 npm.cmd test -- tests/unified-check/rollingOracleEquivalence.postgres.test.ts tests/unified-check/plannerRestart.postgres.test.ts tests/unified-check/orderedCommit.postgres.test.ts tests/unified-check/productionRuntime.postgres.test.ts
+Remove-Item Env:UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT_V2
 ```
+
+Use `UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT_V1` only for a new explicit V1
+destination. Never rewrite `plan3-b2-oracle.json`. Receipt writes are
+create-if-absent and reject differing existing bytes.
 
 ## Isolated Live Canary
 
@@ -196,7 +203,10 @@ The command passes the traversal policy directly to the canary; it does not
 mutate the process environment. It captures before/during/after process phases
 within this same canary and writes no passing index until the refill and memory
 artifact validates. Do not start a second memory-only canary. Resume the exact
-same output/policy/scenario; a changed policy or scenario fails closed.
+same output/policy/scenario; resume verifies the schema-V2 index, sealed export
+sidecar, refill creator/hash, control/runtime/configuration/run bindings, and
+the exact bytes and hashes of all memory files without recapture. A changed
+policy/scenario or replaced sidecar, refill, or memory file fails closed.
 
 ## WSL And Linux Memory Capture
 

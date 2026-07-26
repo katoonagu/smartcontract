@@ -188,6 +188,7 @@ export type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1 = {
 
 export type UnifiedProviderRefillObservationV1 = {
   readonly version: "unified-provider-refill-observation-v1";
+  readonly schemaVersion: 1;
   readonly controlSha256: string;
   readonly observedAt: string;
   readonly runtimeCommit: string;
@@ -2378,6 +2379,7 @@ function validateProviderRefillObservation(
 ): void {
   const raw = exactKeys(observation, [
     "version",
+    "schemaVersion",
     "controlSha256",
     "observedAt",
     "runtimeCommit",
@@ -2442,6 +2444,7 @@ function validateProviderRefillObservation(
   }
   if (
     observation.version !== "unified-provider-refill-observation-v1" ||
+    observation.schemaVersion !== 1 ||
     diagnostics.version !== "unified-provider-refill-diagnostics-v1" ||
     !HASH.test(observation.controlSha256) ||
     !/^[0-9a-f]{40}$/u.test(observation.runtimeCommit) ||
@@ -2532,7 +2535,7 @@ export function assertUnifiedSelectedDenseRefillEvidence(input: {
   ]) {
     safeCount(
       value,
-      "unified_provider_refill_selected_dense_rejected"
+      "unified_fast_fix_dense_input_invalid"
     );
   }
   const audited = [...new Set(input.auditedGroupIds)].sort();
@@ -2540,21 +2543,39 @@ export function assertUnifiedSelectedDenseRefillEvidence(input: {
   if (
     audited.length !== 4 ||
     input.auditedGroupIds.length !== 4 ||
-    input.dispatchedGroupIds.length !== dispatched.length ||
-    audited.some((groupId) => !groupId.trim()) ||
-    canonicalizeArtifactJson(audited) !==
-      canonicalizeArtifactJson(dispatched) ||
-    input.saturated.sampleCount < 1 ||
-    input.saturated.activeSlotSum * 2 <
-      input.saturated.sampleCount * 7 ||
-    input.saturated.unexplainedIdleSamples !== 0 ||
-    input.providerErrors !== 0 ||
-    input.rateLimited429 !== 0 ||
-    input.deliveryIntents !== 0 ||
-    input.externalSends !== 0 ||
-    input.reconciliationRecoveries !== 0
+    audited.some((groupId) => !groupId.trim())
   ) {
-    throw new Error("unified_provider_refill_selected_dense_rejected");
+    throw new Error("unified_fast_fix_group_audit_invalid");
+  }
+  if (
+    input.dispatchedGroupIds.length !== dispatched.length ||
+    canonicalizeArtifactJson(audited) !== canonicalizeArtifactJson(dispatched)
+  ) {
+    throw new Error("unified_fast_fix_group_dispatch_incomplete");
+  }
+  if (input.saturated.sampleCount < 1) {
+    throw new Error("unified_fast_fix_saturation_missing");
+  }
+  if (
+    input.saturated.activeSlotSum * 2 <
+      input.saturated.sampleCount * 7
+  ) {
+    throw new Error("unified_fast_fix_utilization_below_gate");
+  }
+  if (input.saturated.unexplainedIdleSamples !== 0) {
+    throw new Error("unified_fast_fix_idle_reason_missing");
+  }
+  if (input.providerErrors !== 0) {
+    throw new Error("unified_fast_fix_provider_errors_observed");
+  }
+  if (input.rateLimited429 !== 0) {
+    throw new Error("unified_fast_fix_rate_limited_429_observed");
+  }
+  if (input.deliveryIntents !== 0 || input.externalSends !== 0) {
+    throw new Error("unified_fast_fix_delivery_observed");
+  }
+  if (input.reconciliationRecoveries !== 0) {
+    throw new Error("unified_fast_fix_reconciliation_observed");
   }
 }
 
@@ -2581,6 +2602,7 @@ function validateProviderRefillRuntimeSample(
   ], "unified_provider_refill_sample_invalid");
   validateProviderRefillObservation({
     version: "unified-provider-refill-observation-v1",
+    schemaVersion: 1,
     controlSha256: sample.controlSha256,
     observedAt: sample.observedAt,
     runtimeCommit: sample.runtimeCommit,

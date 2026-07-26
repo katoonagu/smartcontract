@@ -219,7 +219,7 @@ export type UnifiedAdaptiveBenchmarkRuntime = {
     readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
     readonly traversalPolicy: TraversalPolicy;
     readonly memoryEvidenceDir: string | null;
-  }) => Promise<UnifiedAdaptiveBenchmarkIndexV1>;
+  }) => Promise<UnifiedAdaptiveBenchmarkIndex>;
 };
 
 export type UnifiedAdaptiveBenchmarkIndexV1 = {
@@ -239,6 +239,293 @@ export type UnifiedAdaptiveBenchmarkIndexV1 = {
   }[];
   readonly indexSha256: string;
 };
+
+export type UnifiedSelectedRefillExportEvidenceV1 = {
+  readonly version: "unified-selected-refill-export-evidence-v1";
+  readonly schemaVersion: 1;
+  readonly scenarioId: string;
+  readonly executionIdentitySha256: string;
+  readonly candidateCommit: string;
+  readonly traversalPolicyVersion: TraversalPolicy;
+  readonly benchmarkEvidenceSha256: string;
+  readonly benchmarkEvidenceRelativePath: string;
+  readonly runId: string;
+  readonly controlSha256: string;
+  readonly providerConfigurationSha256: string;
+  readonly refillArtifactSha256: string;
+  readonly refillArtifactCreatedByRunId: string;
+  readonly refillArtifactRelativePath: string;
+  readonly memoryEvidence: {
+    readonly nodePid: number;
+    readonly samplesRelativePath: string;
+    readonly samplesSha256: string;
+    readonly summaryRelativePath: string;
+    readonly summarySha256: string;
+  };
+  readonly evidenceSha256: string;
+};
+
+type UnifiedSelectedRefillExportEvidenceInputV1 = Omit<
+  UnifiedSelectedRefillExportEvidenceV1,
+  "version" | "schemaVersion" | "evidenceSha256"
+>;
+
+function selectedEvidenceRecord(
+  value: unknown
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("unified_benchmark_selected_refill_export_invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+function selectedEvidenceExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): void {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    throw new TypeError("unified_benchmark_selected_refill_export_invalid");
+  }
+}
+
+function selectedEvidenceRelativePath(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    !value.includes("\\") &&
+    !isAbsolute(value) &&
+    !value.split("/").includes("..");
+}
+
+function validateUnifiedSelectedRefillExportEvidenceV1(
+  value: unknown
+): UnifiedSelectedRefillExportEvidenceV1 {
+  const raw = selectedEvidenceRecord(value);
+  selectedEvidenceExactKeys(raw, [
+    "version",
+    "schemaVersion",
+    "scenarioId",
+    "executionIdentitySha256",
+    "candidateCommit",
+    "traversalPolicyVersion",
+    "benchmarkEvidenceSha256",
+    "benchmarkEvidenceRelativePath",
+    "runId",
+    "controlSha256",
+    "providerConfigurationSha256",
+    "refillArtifactSha256",
+    "refillArtifactCreatedByRunId",
+    "refillArtifactRelativePath",
+    "memoryEvidence",
+    "evidenceSha256"
+  ]);
+  const memory = selectedEvidenceRecord(raw.memoryEvidence);
+  selectedEvidenceExactKeys(memory, [
+    "nodePid",
+    "samplesRelativePath",
+    "samplesSha256",
+    "summaryRelativePath",
+    "summarySha256"
+  ]);
+  const hash = /^[0-9a-f]{64}$/u;
+  if (
+    raw.version !== "unified-selected-refill-export-evidence-v1" ||
+    raw.schemaVersion !== 1 ||
+    typeof raw.scenarioId !== "string" ||
+    !raw.scenarioId.trim() ||
+    !hash.test(String(raw.executionIdentitySha256)) ||
+    !/^[0-9a-f]{40}$/u.test(String(raw.candidateCommit)) ||
+    !["snapshot-closure-v1", "snapshot-closure-v2"].includes(
+      String(raw.traversalPolicyVersion)
+    ) ||
+    !hash.test(String(raw.benchmarkEvidenceSha256)) ||
+    !selectedEvidenceRelativePath(raw.benchmarkEvidenceRelativePath) ||
+    typeof raw.runId !== "string" ||
+    !raw.runId.trim() ||
+    !hash.test(String(raw.controlSha256)) ||
+    !hash.test(String(raw.providerConfigurationSha256)) ||
+    !hash.test(String(raw.refillArtifactSha256)) ||
+    raw.refillArtifactCreatedByRunId !== raw.runId ||
+    !selectedEvidenceRelativePath(raw.refillArtifactRelativePath) ||
+    !Number.isSafeInteger(memory.nodePid) ||
+    Number(memory.nodePid) < 1 ||
+    !selectedEvidenceRelativePath(memory.samplesRelativePath) ||
+    !hash.test(String(memory.samplesSha256)) ||
+    !selectedEvidenceRelativePath(memory.summaryRelativePath) ||
+    !hash.test(String(memory.summarySha256)) ||
+    !hash.test(String(raw.evidenceSha256))
+  ) {
+    throw new TypeError("unified_benchmark_selected_refill_export_invalid");
+  }
+  const { evidenceSha256, ...withoutHash } = raw;
+  if (fingerprintCanonicalArtifact(withoutHash) !== evidenceSha256) {
+    throw new Error(
+      "unified_benchmark_selected_refill_export_hash_mismatch"
+    );
+  }
+  return raw as UnifiedSelectedRefillExportEvidenceV1;
+}
+
+export function sealUnifiedSelectedRefillExportEvidenceV1(
+  input: UnifiedSelectedRefillExportEvidenceInputV1
+): {
+  readonly envelope: UnifiedSelectedRefillExportEvidenceV1;
+  readonly canonicalJson: string;
+} {
+  const withoutHash = {
+    version: "unified-selected-refill-export-evidence-v1" as const,
+    schemaVersion: 1 as const,
+    ...input
+  };
+  const envelope = validateUnifiedSelectedRefillExportEvidenceV1({
+    ...withoutHash,
+    evidenceSha256: fingerprintCanonicalArtifact(withoutHash)
+  });
+  return { envelope, canonicalJson: canonicalizeArtifactJson(envelope) };
+}
+
+export function parseUnifiedSelectedRefillExportEvidenceV1(
+  rawCanonicalJson: string
+): UnifiedSelectedRefillExportEvidenceV1 {
+  const parsed = JSON.parse(rawCanonicalJson) as unknown;
+  if (canonicalizeArtifactJson(parsed) !== rawCanonicalJson) {
+    throw new Error("unified_benchmark_selected_refill_export_noncanonical");
+  }
+  return validateUnifiedSelectedRefillExportEvidenceV1(parsed);
+}
+
+export type UnifiedSelectedAdaptiveBenchmarkIndexV2 = {
+  readonly version: "unified-adaptive-benchmark-index-v2";
+  readonly schemaVersion: 2;
+  readonly mode: "live";
+  readonly seed: 1;
+  readonly requestedCapacities: readonly [4];
+  readonly candidateCommit: string;
+  readonly executionIdentitySha256: string;
+  readonly generatedAt: string;
+  readonly artifacts: readonly [{
+    readonly scenarioId: string;
+    readonly relativePath: string;
+    readonly evidenceSha256: string;
+    readonly candidateCommit: string;
+    readonly executionIdentitySha256: string;
+    readonly refillArtifactSha256: string;
+    readonly refillArtifactCreatedByRunId: string;
+    readonly selectedRefillEvidenceSha256: string;
+    readonly selectedRefillEvidenceRelativePath: string;
+  }];
+  readonly indexSha256: string;
+};
+
+export type UnifiedAdaptiveBenchmarkIndex =
+  | UnifiedAdaptiveBenchmarkIndexV1
+  | UnifiedSelectedAdaptiveBenchmarkIndexV2;
+
+type UnifiedSelectedAdaptiveBenchmarkIndexInputV2 = Omit<
+  UnifiedSelectedAdaptiveBenchmarkIndexV2,
+  "version" | "schemaVersion" | "mode" | "indexSha256"
+>;
+
+function validateUnifiedSelectedAdaptiveBenchmarkIndexV2(
+  value: unknown
+): UnifiedSelectedAdaptiveBenchmarkIndexV2 {
+  const raw = selectedEvidenceRecord(value);
+  selectedEvidenceExactKeys(raw, [
+    "version",
+    "schemaVersion",
+    "mode",
+    "seed",
+    "requestedCapacities",
+    "candidateCommit",
+    "executionIdentitySha256",
+    "generatedAt",
+    "artifacts",
+    "indexSha256"
+  ]);
+  if (!Array.isArray(raw.artifacts) || raw.artifacts.length !== 1) {
+    throw new TypeError("unified_benchmark_selected_index_invalid");
+  }
+  const artifact = selectedEvidenceRecord(raw.artifacts[0]);
+  selectedEvidenceExactKeys(artifact, [
+    "scenarioId",
+    "relativePath",
+    "evidenceSha256",
+    "candidateCommit",
+    "executionIdentitySha256",
+    "refillArtifactSha256",
+    "refillArtifactCreatedByRunId",
+    "selectedRefillEvidenceSha256",
+    "selectedRefillEvidenceRelativePath"
+  ]);
+  const hash = /^[0-9a-f]{64}$/u;
+  if (
+    raw.version !== "unified-adaptive-benchmark-index-v2" ||
+    raw.schemaVersion !== 2 ||
+    raw.mode !== "live" ||
+    raw.seed !== 1 ||
+    !Array.isArray(raw.requestedCapacities) ||
+    raw.requestedCapacities.length !== 1 ||
+    raw.requestedCapacities[0] !== 4 ||
+    !/^[0-9a-f]{40}$/u.test(String(raw.candidateCommit)) ||
+    !hash.test(String(raw.executionIdentitySha256)) ||
+    typeof raw.generatedAt !== "string" ||
+    !Number.isFinite(Date.parse(raw.generatedAt)) ||
+    typeof artifact.scenarioId !== "string" ||
+    !artifact.scenarioId.startsWith("live:c4:isolated:") ||
+    !selectedEvidenceRelativePath(artifact.relativePath) ||
+    !hash.test(String(artifact.evidenceSha256)) ||
+    artifact.candidateCommit !== raw.candidateCommit ||
+    !hash.test(String(artifact.executionIdentitySha256)) ||
+    !hash.test(String(artifact.refillArtifactSha256)) ||
+    typeof artifact.refillArtifactCreatedByRunId !== "string" ||
+    !artifact.refillArtifactCreatedByRunId.trim() ||
+    !hash.test(String(artifact.selectedRefillEvidenceSha256)) ||
+    !selectedEvidenceRelativePath(
+      artifact.selectedRefillEvidenceRelativePath
+    ) ||
+    !hash.test(String(raw.indexSha256))
+  ) {
+    throw new TypeError("unified_benchmark_selected_index_invalid");
+  }
+  const { indexSha256, ...withoutHash } = raw;
+  if (fingerprintCanonicalArtifact(withoutHash) !== indexSha256) {
+    throw new Error("unified_benchmark_selected_index_hash_mismatch");
+  }
+  return raw as unknown as UnifiedSelectedAdaptiveBenchmarkIndexV2;
+}
+
+export function sealUnifiedSelectedAdaptiveBenchmarkIndexV2(
+  input: UnifiedSelectedAdaptiveBenchmarkIndexInputV2
+): {
+  readonly envelope: UnifiedSelectedAdaptiveBenchmarkIndexV2;
+  readonly canonicalJson: string;
+} {
+  const withoutHash = {
+    version: "unified-adaptive-benchmark-index-v2" as const,
+    schemaVersion: 2 as const,
+    mode: "live" as const,
+    ...input
+  };
+  const envelope = validateUnifiedSelectedAdaptiveBenchmarkIndexV2({
+    ...withoutHash,
+    indexSha256: fingerprintCanonicalArtifact(withoutHash)
+  });
+  return { envelope, canonicalJson: canonicalizeArtifactJson(envelope) };
+}
+
+export function parseUnifiedSelectedAdaptiveBenchmarkIndexV2(
+  rawCanonicalJson: string
+): UnifiedSelectedAdaptiveBenchmarkIndexV2 {
+  const parsed = JSON.parse(rawCanonicalJson) as unknown;
+  if (canonicalizeArtifactJson(parsed) !== rawCanonicalJson) {
+    throw new Error("unified_benchmark_selected_index_noncanonical");
+  }
+  return validateUnifiedSelectedAdaptiveBenchmarkIndexV2(parsed);
+}
 
 export class UnifiedAdaptiveBenchmarkRestartRequiredError extends Error {
   readonly exitCode = 75;
@@ -986,7 +1273,10 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
       return {
         samplesSha256: createHash("sha256").update(samplesBytes).digest("hex"),
         summarySha256: createHash("sha256").update(summaryBytes).digest("hex"),
-        diagnosticStatus
+        diagnosticStatus,
+        nodePid,
+        samplesBytes,
+        summaryBytes
       } as const;
     }
   };
@@ -1640,7 +1930,8 @@ async function loadCompletedLiveIndex(input: {
   readonly providerAudit:
     ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
   readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
-}): Promise<UnifiedAdaptiveBenchmarkIndexV1 | null> {
+  readonly traversalPolicy: TraversalPolicy;
+}): Promise<UnifiedAdaptiveBenchmarkIndex | null> {
   let raw: string;
   try {
     await rejectSymlink(input.output);
@@ -1650,35 +1941,34 @@ async function loadCompletedLiveIndex(input: {
     throw error;
   }
   try {
-    const parsed = parseCanonicalResumeRecord(raw, [
-      "version",
-      "mode",
-      "seed",
-      "requestedCapacities",
-      "candidateCommit",
-      "executionIdentitySha256",
-      "generatedAt",
-      "artifacts",
-      "indexSha256"
-    ]) as unknown as UnifiedAdaptiveBenchmarkIndexV1;
+    const selected = input.scenarios.length === 1 &&
+      input.scenarios[0] === SELECTED_LIVE_SCENARIO;
+    const canonical = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+    const parsed: UnifiedAdaptiveBenchmarkIndex = selected
+      ? parseUnifiedSelectedAdaptiveBenchmarkIndexV2(canonical)
+      : parseCanonicalResumeRecord(raw, [
+          "version",
+          "mode",
+          "seed",
+          "requestedCapacities",
+          "candidateCommit",
+          "executionIdentitySha256",
+          "generatedAt",
+          "artifacts",
+          "indexSha256"
+        ]) as unknown as UnifiedAdaptiveBenchmarkIndexV1;
     const expectedScenarios = input.capacities.flatMap((capacity) =>
       input.scenarios.map((kind) => ({
         scenarioId: `live:c${capacity}:${kind}`,
         capacity
       }))
     );
-    const withoutHash = {
-      version: parsed.version,
-      mode: parsed.mode,
-      seed: parsed.seed,
-      requestedCapacities: parsed.requestedCapacities,
-      candidateCommit: parsed.candidateCommit,
-      executionIdentitySha256: parsed.executionIdentitySha256,
-      generatedAt: parsed.generatedAt,
-      artifacts: parsed.artifacts
-    };
     if (
-      parsed.version !== "unified-adaptive-benchmark-index-v1" ||
+      (
+        selected
+          ? parsed.version !== "unified-adaptive-benchmark-index-v2"
+          : parsed.version !== "unified-adaptive-benchmark-index-v1"
+      ) ||
       parsed.mode !== "live" ||
       parsed.seed !== 1 ||
       parsed.candidateCommit !== input.candidateCommit ||
@@ -1691,7 +1981,19 @@ async function loadCompletedLiveIndex(input: {
       ) ||
       !Array.isArray(parsed.artifacts) ||
       parsed.artifacts.length !== expectedScenarios.length ||
-      parsed.indexSha256 !== fingerprintCanonicalArtifact(withoutHash)
+      (
+        parsed.version === "unified-adaptive-benchmark-index-v1" &&
+        parsed.indexSha256 !== fingerprintCanonicalArtifact({
+          version: parsed.version,
+          mode: parsed.mode,
+          seed: parsed.seed,
+          requestedCapacities: parsed.requestedCapacities,
+          candidateCommit: parsed.candidateCommit,
+          executionIdentitySha256: parsed.executionIdentitySha256,
+          generatedAt: parsed.generatedAt,
+          artifacts: parsed.artifacts
+        })
+      )
     ) {
       throw new Error("unified_benchmark_existing_artifact_mismatch");
     }
@@ -1709,7 +2011,13 @@ async function loadCompletedLiveIndex(input: {
           "evidenceSha256",
           "candidateCommit",
           "executionIdentitySha256",
-          "relativePath"
+          "relativePath",
+          ...(selected ? [
+            "refillArtifactSha256",
+            "refillArtifactCreatedByRunId",
+            "selectedRefillEvidenceSha256",
+            "selectedRefillEvidenceRelativePath"
+          ] : [])
         ].includes(key))
       ) {
         throw new Error("unified_benchmark_existing_artifact_mismatch");
@@ -1842,10 +2150,63 @@ async function loadCompletedLiveIndex(input: {
         kind === SELECTED_LIVE_SCENARIO &&
         input.scenarios.length === 1
       ) {
+        if (parsed.version !== "unified-adaptive-benchmark-index-v2") {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
+        const selectedArtifact = artifact as
+          UnifiedSelectedAdaptiveBenchmarkIndexV2["artifacts"][number];
+        const relativeExportPath = selectedArtifact
+          .selectedRefillEvidenceRelativePath;
+        const exportPath = resolve(outputDirectory, relativeExportPath);
+        if (
+          relative(outputDirectory, exportPath).startsWith("..") ||
+          isAbsolute(relative(outputDirectory, exportPath)) ||
+          dirname(exportPath) !== scenarioDirectory
+        ) {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
+        await rejectSymlink(exportPath);
+        const exportRaw = await readNoFollow(exportPath);
+        const selectedEvidence =
+          parseUnifiedSelectedRefillExportEvidenceV1(
+            exportRaw.endsWith("\n") ? exportRaw.slice(0, -1) : exportRaw
+          );
+        const liveOutcome = evidence.liveOutcomes[0];
+        if (
+          !liveOutcome ||
+          selectedEvidence.evidenceSha256 !==
+            selectedArtifact.selectedRefillEvidenceSha256 ||
+          selectedEvidence.refillArtifactSha256 !==
+            selectedArtifact.refillArtifactSha256 ||
+          selectedEvidence.refillArtifactCreatedByRunId !==
+            selectedArtifact.refillArtifactCreatedByRunId ||
+          selectedEvidence.scenarioId !== expected.scenarioId ||
+          selectedEvidence.executionIdentitySha256 !==
+            input.executionIdentitySha256 ||
+          selectedEvidence.candidateCommit !== input.candidateCommit ||
+          selectedEvidence.traversalPolicyVersion !== input.traversalPolicy ||
+          selectedEvidence.benchmarkEvidenceSha256 !==
+            evidence.evidenceSha256 ||
+          selectedEvidence.benchmarkEvidenceRelativePath !==
+            artifact.relativePath ||
+          selectedEvidence.runId !== liveOutcome.runId ||
+          selectedEvidence.refillArtifactCreatedByRunId !==
+            liveOutcome.runId ||
+          selectedEvidence.controlSha256 !== controlSha256
+        ) {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
         const refillPath = resolve(
-          scenarioDirectory,
-          `refill-${controlSha256}.json`
+          outputDirectory,
+          selectedEvidence.refillArtifactRelativePath
         );
+        if (
+          relative(outputDirectory, refillPath).startsWith("..") ||
+          isAbsolute(relative(outputDirectory, refillPath)) ||
+          dirname(refillPath) !== scenarioDirectory
+        ) {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
         await rejectSymlink(refillPath);
         const refillRaw = await readNoFollow(refillPath);
         const refill = parseUnifiedProviderRefillObservationV1(
@@ -1858,13 +2219,60 @@ async function loadCompletedLiveIndex(input: {
             left.provider.requests - right.provider.requests ||
             Date.parse(left.observedAt) - Date.parse(right.observedAt)
           ).at(-1);
-        const liveOutcome = evidence.liveOutcomes[0];
         if (
           !latest ||
-          !liveOutcome ||
+          fingerprintCanonicalArtifact(refill) !==
+            selectedEvidence.refillArtifactSha256 ||
           refill.controlSha256 !== controlSha256 ||
-          refill.runtimeCommit !== input.candidateCommit
+          refill.runtimeCommit !== input.candidateCommit ||
+          refill.providerConfigurationSha256 !==
+            selectedEvidence.providerConfigurationSha256 ||
+          refill.memoryEvidence.samplesSha256 !==
+            selectedEvidence.memoryEvidence.samplesSha256 ||
+          refill.memoryEvidence.summarySha256 !==
+            selectedEvidence.memoryEvidence.summarySha256
         ) {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
+        const memoryFile = async (
+          relativePath: string,
+          expectedSha256: string
+        ) => {
+          const path = resolve(outputDirectory, relativePath);
+          if (
+            relative(outputDirectory, path).startsWith("..") ||
+            isAbsolute(relative(outputDirectory, path)) ||
+            dirname(path) !== scenarioDirectory
+          ) {
+            throw new Error("unified_benchmark_existing_artifact_mismatch");
+          }
+          await rejectSymlink(path);
+          const bytes = await readNoFollow(path);
+          if (
+            createHash("sha256").update(bytes).digest("hex") !==
+              expectedSha256
+          ) {
+            throw new Error("unified_benchmark_existing_artifact_mismatch");
+          }
+          return bytes;
+        };
+        const [samplesBytes, summaryBytes] = await Promise.all([
+          memoryFile(
+            selectedEvidence.memoryEvidence.samplesRelativePath,
+            selectedEvidence.memoryEvidence.samplesSha256
+          ),
+          memoryFile(
+            selectedEvidence.memoryEvidence.summaryRelativePath,
+            selectedEvidence.memoryEvidence.summarySha256
+          )
+        ]);
+        if (validateMemoryEvidenceFiles({
+          samplesBytes,
+          summaryBytes,
+          runId: liveOutcome.runId,
+          scenarioId: SELECTED_LIVE_SCENARIO,
+          nodePid: selectedEvidence.memoryEvidence.nodePid
+        }) !== refill.memoryEvidence.diagnosticStatus) {
           throw new Error("unified_benchmark_existing_artifact_mismatch");
         }
         assertUnifiedSelectedDenseRefillEvidence({
@@ -1936,7 +2344,7 @@ async function resolveReplayOracleReceipt(
   return verified;
 }
 
-async function runSelectedIsolatedCanaryBenchmark(input: {
+export async function runSelectedIsolatedCanaryBenchmark(input: {
   readonly requestedCapacities: readonly number[];
   readonly output: string;
   readonly candidateCommit: string;
@@ -1946,7 +2354,11 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
   readonly traversalPolicy: TraversalPolicy;
   readonly memoryEvidenceDir: string;
   readonly runCanary: typeof import("./runUnifiedWalletCanary")["runUnifiedWalletCanaryCli"];
-}): Promise<UnifiedAdaptiveBenchmarkIndexV1> {
+  readonly memoryCapture?: Pick<
+    ReturnType<typeof createUnifiedBenchmarkMemoryCapture>,
+    "before" | "during" | "after"
+  >;
+}): Promise<UnifiedSelectedAdaptiveBenchmarkIndexV2> {
   if (
     input.requestedCapacities.length !== 1 ||
     input.requestedCapacities[0] !== 4
@@ -1969,17 +2381,24 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
     `${parse(input.output).name}.scenarios`
   );
   await mkdirNoFollow(scenarioDirectory);
-  const memoryCapture = createUnifiedBenchmarkMemoryCapture({
-    directory: input.memoryEvidenceDir,
-    scenarioId: SELECTED_LIVE_SCENARIO
-  });
+  const memoryCapture = input.memoryCapture ??
+    createUnifiedBenchmarkMemoryCapture({
+      directory: input.memoryEvidenceDir,
+      scenarioId: SELECTED_LIVE_SCENARIO
+    });
   let runId = "";
   let controlSha256 = "";
   const refillArtifacts: {
     readonly sha256: string;
+    readonly createdByRunId: string;
     readonly observation: import("../src/unifiedCheck/adaptiveBenchmarkControl")
       .UnifiedProviderRefillObservationV1;
   }[] = [];
+  const capturedMemoryHolder: {
+    value: Awaited<ReturnType<
+      ReturnType<typeof createUnifiedBenchmarkMemoryCapture>["after"]
+    >> | null;
+  } = { value: null };
   const canary = await input.runCanary([
     "--candidate", input.candidateCommit,
     "--cutoff", new Date().toISOString(),
@@ -2057,7 +2476,13 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
       ) {
         throw new Error("unified_benchmark_selected_binding_invalid");
       }
-      const memoryEvidence = await memoryCapture.after(runId);
+      const memoryCaptureResult = await memoryCapture.after(runId);
+      capturedMemoryHolder.value = memoryCaptureResult;
+      const memoryEvidence = {
+        samplesSha256: memoryCaptureResult.samplesSha256,
+        summarySha256: memoryCaptureResult.summarySha256,
+        diagnosticStatus: memoryCaptureResult.diagnosticStatus
+      };
       const [samples, observations] = await Promise.all([
         listUnifiedProviderRefillRuntimeSamples({
           db,
@@ -2096,6 +2521,7 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
       });
       const observation = {
         version: "unified-provider-refill-observation-v1" as const,
+        schemaVersion: 1 as const,
         controlSha256,
         observedAt: new Date().toISOString(),
         runtimeCommit: input.candidateCommit,
@@ -2109,12 +2535,20 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
         createdByRunId: runId,
         observation
       });
-      refillArtifacts.push({ sha256, observation });
+      refillArtifacts.push({
+        sha256,
+        createdByRunId: runId,
+        observation
+      });
     }
   });
   const refillArtifact = refillArtifacts[0];
   if (refillArtifact === undefined || refillArtifacts.length !== 1) {
     throw new Error("unified_benchmark_selected_refill_missing");
+  }
+  const capturedMemory = capturedMemoryHolder.value;
+  if (capturedMemory === null) {
+    throw new Error("unified_benchmark_selected_memory_missing");
   }
   const outcome = canary.outcomes[0];
   const result = canary.report.results[0];
@@ -2310,33 +2744,85 @@ async function runSelectedIsolatedCanaryBenchmark(input: {
       `${canonicalizeArtifactJson(item.symptom)}\n`
     );
   }
-  await writeImmutable(
-    resolve(scenarioDirectory, `refill-${controlSha256}.json`),
-    `${canonicalizeArtifactJson(refillArtifact.observation)}\n`
-  );
   const fileName = scenarioFileName(0, scenarioId);
   await writeImmutable(
     resolve(scenarioDirectory, fileName),
     `${canonicalizeArtifactJson(evidence)}\n`
   );
-  const index = indexEnvelope({
-    mode: "live",
+  const refillFileName = `refill-${refillArtifact.sha256}.json`;
+  const samplesFileName =
+    `memory-samples-${capturedMemory.samplesSha256}.json`;
+  const summaryFileName =
+    `memory-summary-${capturedMemory.summarySha256}.json`;
+  await writeImmutable(
+    resolve(scenarioDirectory, refillFileName),
+    `${canonicalizeArtifactJson(refillArtifact.observation)}\n`
+  );
+  await writeImmutable(
+    resolve(scenarioDirectory, samplesFileName),
+    capturedMemory.samplesBytes
+  );
+  await writeImmutable(
+    resolve(scenarioDirectory, summaryFileName),
+    capturedMemory.summaryBytes
+  );
+  const relativeScenarioDirectory = basename(scenarioDirectory);
+  const selectedRefillEvidence =
+    sealUnifiedSelectedRefillExportEvidenceV1({
+      scenarioId,
+      executionIdentitySha256: input.executionIdentitySha256,
+      candidateCommit: input.candidateCommit,
+      traversalPolicyVersion: input.traversalPolicy,
+      benchmarkEvidenceSha256: evidence.evidenceSha256,
+      benchmarkEvidenceRelativePath:
+        `${relativeScenarioDirectory}/${fileName}`,
+      runId,
+      controlSha256,
+      providerConfigurationSha256:
+        refillArtifact.observation.providerConfigurationSha256,
+      refillArtifactSha256: refillArtifact.sha256,
+      refillArtifactCreatedByRunId: refillArtifact.createdByRunId,
+      refillArtifactRelativePath:
+        `${relativeScenarioDirectory}/${refillFileName}`,
+      memoryEvidence: {
+        nodePid: capturedMemory.nodePid,
+        samplesRelativePath:
+          `${relativeScenarioDirectory}/${samplesFileName}`,
+        samplesSha256: capturedMemory.samplesSha256,
+        summaryRelativePath:
+          `${relativeScenarioDirectory}/${summaryFileName}`,
+        summarySha256: capturedMemory.summarySha256
+      }
+    });
+  const selectedRefillEvidenceFileName =
+    `selected-refill-${selectedRefillEvidence.envelope.evidenceSha256}.json`;
+  await writeImmutable(
+    resolve(scenarioDirectory, selectedRefillEvidenceFileName),
+    `${selectedRefillEvidence.canonicalJson}\n`
+  );
+  const index = sealUnifiedSelectedAdaptiveBenchmarkIndexV2({
     seed: 1,
-    capacities: [capacity],
+    requestedCapacities: [capacity],
     candidateCommit: input.candidateCommit,
     executionIdentitySha256: input.executionIdentitySha256,
     generatedAt: canary.report.generatedAt,
     artifacts: [{
       scenarioId,
-      relativePath: `${basename(scenarioDirectory)}/${fileName}`,
+      relativePath: `${relativeScenarioDirectory}/${fileName}`,
       evidenceSha256: evidence.evidenceSha256,
       candidateCommit: input.candidateCommit,
       executionIdentitySha256:
-        evidence.performanceManifest.executionIdentitySha256
+        evidence.performanceManifest.executionIdentitySha256,
+      refillArtifactSha256: refillArtifact.sha256,
+      refillArtifactCreatedByRunId: refillArtifact.createdByRunId,
+      selectedRefillEvidenceSha256:
+        selectedRefillEvidence.envelope.evidenceSha256,
+      selectedRefillEvidenceRelativePath:
+        `${relativeScenarioDirectory}/${selectedRefillEvidenceFileName}`
     }]
   });
-  await writeImmutable(input.output, `${canonicalizeArtifactJson(index)}\n`);
-  return index;
+  await writeImmutable(input.output, `${index.canonicalJson}\n`);
+  return index.envelope;
 }
 
 async function runExistingIsolatedCanaryBenchmark(input: {
@@ -2349,7 +2835,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
   readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
   readonly traversalPolicy: TraversalPolicy;
   readonly memoryEvidenceDir: string | null;
-}): Promise<UnifiedAdaptiveBenchmarkIndexV1> {
+}): Promise<UnifiedAdaptiveBenchmarkIndex> {
   const candidateCommit = input.candidateCommit;
   const { runUnifiedWalletCanaryCli } = await import(
     "./runUnifiedWalletCanary"
@@ -3379,7 +3865,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
 export async function runUnifiedAdaptiveBenchmarkCli(
   args: readonly string[],
   runtime: UnifiedAdaptiveBenchmarkRuntime = {}
-): Promise<UnifiedAdaptiveBenchmarkIndexV1> {
+): Promise<UnifiedAdaptiveBenchmarkIndex> {
   const options = parseCli(args);
   const output = safeOutputPath(options.output);
   if (options.mode === "live") {
@@ -3406,7 +3892,8 @@ export async function runUnifiedAdaptiveBenchmarkCli(
       candidateCommit,
       executionIdentitySha256,
       providerAudit,
-      scenarios
+      scenarios,
+      traversalPolicy: options.traversalPolicy
     });
     if (completed !== null) return completed;
     const runLive = runtime.runIsolatedCanaryBenchmark ??

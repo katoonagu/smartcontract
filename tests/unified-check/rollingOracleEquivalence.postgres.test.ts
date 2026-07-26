@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
+import type { RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact,
@@ -51,8 +52,16 @@ import {
   type AnalysisRunRecord
 } from "../../src/unifiedCheck/requestService";
 import {
-  buildProductionFrozenLabelDataset
+  buildFrozenLabelDataset
 } from "../../src/unifiedCheck/frozenLabels";
+import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
+import {
+  createUnifiedProductionRuntime
+} from "../../src/unifiedCheck/productionRuntime";
+import {
+  createPostgresUnifiedRequestStore,
+  intakeUnifiedCheck
+} from "../../src/unifiedCheck/requestService";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -64,17 +73,21 @@ const RESERVATION_BYTES = 4_096;
 const POLICY_FIXTURES = [{
   policy: "snapshot-closure-v1" as const,
   path: "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
-  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_V1_OUTPUT"
+  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT_V1"
 }, {
   policy: "snapshot-closure-v2" as const,
   path: "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
-  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_V2_OUTPUT"
+  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT_V2"
 }] as const;
 
 type OracleFacts = {
+  readonly traversalArtifactVersion: string;
   readonly canonicalFacts: unknown;
   readonly finalFrontier: readonly unknown[];
   readonly terminalEvidenceSha256s: readonly string[];
+  readonly terminalEvidenceSchemaVersions: readonly string[];
+  readonly terminalEvidenceArtifacts: readonly unknown[];
+  readonly analysisManifestSha256: string;
   readonly closureCertificate: {
     readonly analysisManifestHash: string;
     readonly [key: string]: unknown;
@@ -160,6 +173,15 @@ async function withSchema<T>(
         "utf8"
       )
     );
+    await client.query(
+      await readFile(
+        "migrations/035_unified_check_run_rollout_policy.sql",
+        "utf8"
+      )
+    );
+    await client.query(
+      await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
+    );
     return await work({ client, host: hostFor(client) });
   } finally {
     await client.query("reset search_path").catch(() => undefined);
@@ -193,9 +215,21 @@ function oracleFrozenLabelDataset(
   replay: UnifiedProviderReplayV1,
   snapshotHash: string
 ) {
-  const frozen = buildProductionFrozenLabelDataset({
+  const frozen = buildFrozenLabelDataset({
     frozenAt: replay.frozenAt,
     snapshotHash,
+    labels: [buildFrozenLabelRecord({
+      address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      classifierHint: null,
+      exactRegistryBinding: null,
+      verifiedProviderBinding: {
+        catalogEntryId: "cex:bybit",
+        authority: "tronscan_verified_metadata",
+        sourcePayloadSha256: "7".repeat(64),
+        validFrom: "2025-01-01T00:00:00.000Z",
+        validTo: null
+      }
+    })],
     legacyRows: [{
       address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
       label: "fixture-service-boundary",
@@ -873,12 +907,43 @@ async function finalizeOracleFacts(input: {
       order by sha256`,
     [input.run.id]
   )).rows.map((row) => String(row.sha256));
+  const traversalArtifactVersion = String((await input.client.query(
+    `select artifact.artifact_json->>'version' as version
+       from unified_check_tasks task
+       join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+       join unified_check_artifacts artifact
+         on artifact.sha256 = attempt.artifact_sha256
+      where task.run_id = $1 and task.kind = 'traversal'`,
+    [input.run.id]
+  )).rows[0]?.version);
+  const terminalEvidenceSchemaVersions = (await input.client.query(
+    `select distinct schema_version
+       from unified_check_artifacts
+      where created_by_run_id = $1
+        and kind = 'traversal_terminal_evidence'
+      order by schema_version`,
+    [input.run.id]
+  )).rows.map((row) => String(row.schema_version));
+  const terminalEvidenceArtifacts = (await input.client.query(
+    `select artifact_json
+       from unified_check_artifacts
+      where created_by_run_id = $1
+        and kind = 'traversal_terminal_evidence'
+      order by sha256`,
+    [input.run.id]
+  )).rows.map((row) => row.artifact_json);
   return {
+    traversalArtifactVersion: traversalArtifactVersion as
+      OracleFacts["traversalArtifactVersion"],
     canonicalFacts: completed.artifacts.get(
       completed.evidence.canonicalFactsHash
     ),
     finalFrontier: completed.frontier,
     terminalEvidenceSha256s,
+    terminalEvidenceSchemaVersions,
+    terminalEvidenceArtifacts,
+    analysisManifestSha256: input.run.analysisManifestSha256,
     closureCertificate: completed.closure,
     score: completed.scoring.score,
     decision: completed.scoring.decision,
@@ -901,7 +966,7 @@ async function finalizeOracleFacts(input: {
   };
 }
 
-async function runScenario(input: {
+async function runGenericPlannerScenario(input: {
   readonly replay: UnifiedProviderReplayV1;
   readonly policy: "barrier" | "rolling";
   readonly capacity: number;
@@ -931,6 +996,428 @@ async function runScenario(input: {
   });
 }
 
+function replayHistoryId(address: string): "tpcp" | "tfwg" | "txc" {
+  if (address === SUBJECT) return "tpcp";
+  if (address === "TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr") return "tfwg";
+  if (address === "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd") return "txc";
+  throw new Error(`rolling_oracle_unexpected_history_address:${address}`);
+}
+
+function productionProviderPage(
+  replay: UnifiedProviderReplayV1,
+  address: string,
+  cursor: string | null
+) {
+  // ponytail: project the frozen scheduler snapshot to the smallest valid
+  // production report graph; replace this adapter when canonical real provider
+  // pages are captured. The separate scheduler receipt still binds every page.
+  const historyId = replayHistoryId(address);
+  if (historyId === "txc") {
+    const content = {
+      kind: "page" as const,
+      cursor: null,
+      nextCursor: null,
+      transfers: [] as readonly RawTronscanTrc20Transfer[],
+      reachedAccountCreation: true,
+      provider: "tronscan" as const
+    };
+    return {
+      ...content,
+      pageHash: fingerprintCanonicalArtifact(content)
+    };
+  }
+  const response = replay.responses.map((item) => item.artifact).find(
+    (artifact) => {
+      if (
+        artifact === null ||
+        typeof artifact !== "object" ||
+        Array.isArray(artifact)
+      ) return false;
+      const row = artifact as Record<string, unknown>;
+      return row.historyId === historyId && row.cursor === cursor;
+    }
+  ) as {
+    readonly cursor: string | null;
+    readonly nextCursor: string | null;
+    readonly transfers: readonly {
+      readonly block: string;
+      readonly from_address: string;
+      readonly quant: string;
+      readonly to_address: string;
+      readonly transaction_id: string;
+    }[];
+  } | undefined;
+  if (!response) {
+    throw new Error(
+      `rolling_oracle_provider_page_missing:${historyId}:${cursor ?? "root"}`
+    );
+  }
+  const transfers = response.transfers.map((transfer) => ({
+    transaction_id: fingerprintCanonicalArtifact({
+      replaySha256: replay.expectedReplaySha256,
+      transactionId: transfer.transaction_id
+    }),
+    from_address: transfer.from_address,
+    to_address: transfer.to_address,
+    quant: transfer.quant,
+    contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    confirmed: true,
+    contractRet: "SUCCESS",
+    block_ts: Date.parse(replay.frozenClockIso) -
+      Math.max(1, 90_000_000 - Number(transfer.block)) * 1_000,
+    block: Number(transfer.block)
+  } as RawTronscanTrc20Transfer));
+  const nextCursor = historyId === "tpcp" ? null : response.nextCursor;
+  const content = {
+    kind: "page" as const,
+    cursor: response.cursor,
+    nextCursor,
+    transfers,
+    reachedAccountCreation: nextCursor === null,
+    provider: "tronscan" as const
+  };
+  return {
+    ...content,
+    pageHash: fingerprintCanonicalArtifact(content)
+  };
+}
+
+async function productionOracleFacts(input: {
+  readonly client: pg.PoolClient;
+  readonly replay: UnifiedProviderReplayV1;
+  readonly policy: "barrier" | "rolling";
+  readonly capacity: number;
+}): Promise<OracleFacts> {
+  const db = hostFor(input.client);
+  const policyVersion = input.replay.deterministic.traversalPolicyVersion;
+  if (
+    policyVersion !== "snapshot-closure-v1" &&
+    policyVersion !== "snapshot-closure-v2"
+  ) {
+    throw new Error("rolling_oracle_traversal_policy_invalid");
+  }
+  const snapshot = runRecord(input.replay).snapshot;
+  const frozen = oracleFrozenLabelDataset(
+    input.replay,
+    fingerprintCanonicalArtifact(snapshot)
+  );
+  const legacyDataset = {
+    version: "unified-label-dataset-v1",
+    rows: []
+  } as const;
+  const labelDatasetSha256 = policyVersion === "snapshot-closure-v2"
+    ? frozen.sha256
+    : fingerprintCanonicalArtifact(legacyDataset);
+  const labelDataset = policyVersion === "snapshot-closure-v2"
+    ? frozen.dataset
+    : legacyDataset;
+  await input.client.query(
+    `insert into unified_label_datasets (sha256, dataset_json)
+     values ($1,$2::jsonb)`,
+    [labelDatasetSha256, JSON.stringify(labelDataset)]
+  );
+  const intake = await intakeUnifiedCheck({
+    store: createPostgresUnifiedRequestStore(db),
+    snapshotSource: {
+      latestConfirmedBlock: async () => ({
+        number: snapshot.confirmedBlockNumber,
+        hash: snapshot.confirmedBlockHash,
+        timestamp: snapshot.timestamp
+      }),
+      snapshotBalances: async () => snapshot.balances
+    },
+    request: {
+      id: "oracle-request",
+      requestCorrelationId: "oracle-correlation",
+      subjectAddress: SUBJECT,
+      chatId: "oracle-chat",
+      messageThreadId: "",
+      locale: "ru",
+      runPurpose: "user_check",
+      sideEffectPolicy: "authoritative"
+    },
+    candidateRunId: RUN_ID,
+    initialTasks: ([
+      "direct_history",
+      "deep_direct",
+      "traversal",
+      "fast",
+      "where",
+      "deep"
+    ] as const).map((kind) => ({
+      id: `oracle-${kind}`,
+      kind,
+      priorityLane: "interactive" as const,
+      logicalKey: "main"
+    })),
+    versions: {
+      labelDatasetSha256,
+      scoringPolicyVersion: "scoring-signal-matrix-v4",
+      attributionPolicyVersion: "selected-attribution-policy-v1",
+      traversalPolicyVersion: policyVersion,
+      runtimeCommit: "candidate",
+      schemaVersion: 36
+    },
+    rolloutPolicy: input.policy === "rolling"
+      ? {
+          stage: "isolated_rolling",
+          boundedUserCheckBasisPoints: 0,
+          providerCapacityCeiling: input.capacity
+        }
+      : {
+          stage: "global_barrier",
+          boundedUserCheckBasisPoints: 0,
+          providerCapacityCeiling: 1
+        },
+    now: () => new Date(input.replay.frozenClockIso)
+  });
+  if (intake.kind !== "attached") {
+    throw new Error("rolling_oracle_intake_not_attached");
+  }
+  let runtimeNumber = 0;
+  const makeRuntime = () => {
+    const process = ++runtimeNumber;
+    let id = 0;
+    return createUnifiedProductionRuntime({
+      db,
+      runtimeCommit: "candidate",
+      providerConfigurationSha256: "e".repeat(64),
+      addressHistoryPagesPerChunk: 1,
+      commitMaxEntries: 1,
+      now: () => new Date(input.replay.frozenClockIso),
+      createId: () => `oracle-p${process}-id-${++id}`,
+      loadProviderPage: async ({ run, address, cursor }) =>
+        productionProviderPage(
+          input.replay,
+          address ?? run.subjectAddress,
+          cursor
+        ),
+      loadCounterpartyLabels: async ({ addresses }) => {
+        const labels = new Map<string, readonly string[]>();
+        const response = input.replay.responses.map((item) => item.artifact)
+          .find((artifact) =>
+            artifact !== null &&
+            typeof artifact === "object" &&
+            !Array.isArray(artifact) &&
+            (artifact as Record<string, unknown>).branch === "labels"
+          ) as { readonly labels?: readonly {
+            readonly address: string;
+            readonly labels: readonly string[];
+          }[] } | undefined;
+        for (const row of response?.labels ?? []) {
+          if (addresses.includes(row.address)) labels.set(row.address, row.labels);
+        }
+        return labels;
+      },
+      loadFrozenLabelDataset: async ({ labelDatasetSha256 }) => {
+        const row = (await input.client.query(
+          `select dataset_json from unified_label_datasets where sha256 = $1`,
+          [labelDatasetSha256]
+        )).rows[0];
+        if (!row) throw new Error("rolling_oracle_frozen_dataset_missing");
+        return row.dataset_json;
+      },
+      loadHardEvidence: async () => ({})
+    });
+  };
+  let runtime = makeRuntime();
+  let restarted = false;
+  let completed = false;
+  for (let guard = 0; guard < 128; guard += 1) {
+    await runtime.runAnalysisCycle();
+    await runtime.runProviderCycle(0);
+    if (!restarted) {
+      const durableProgress = Number((await input.client.query(
+        `select count(*)::int as count
+           from unified_check_attempts attempt
+           join unified_check_tasks task on task.id = attempt.task_id
+          where task.run_id = $1`,
+        [RUN_ID]
+      )).rows[0]?.count);
+      if (durableProgress > 0) {
+        runtime = makeRuntime();
+        restarted = true;
+      }
+    }
+    const outstanding = Number((await input.client.query(
+      `select count(*)::int as count
+         from unified_check_tasks
+        where run_id = $1 and status <> 'COMPLETED'`,
+      [RUN_ID]
+    )).rows[0]?.count);
+    if (outstanding === 0) {
+      const finalization = await runtime.runFinalizationCycle();
+      if (finalization.finalized) {
+        completed = true;
+        break;
+      }
+    }
+  }
+  if (!completed || !restarted) {
+    throw new Error("rolling_oracle_production_progress_stalled");
+  }
+  const transport = {
+    simulated: 0,
+    external: 0,
+    async sendTelegram() {
+      this.simulated += 1;
+      return {
+        kind: "confirmed" as const,
+        telegramMessageId: "oracle-fake-message"
+      };
+    }
+  };
+  const delivery = await runUnifiedDeliveryCycle({
+    repository: createPostgresUnifiedDeliveryRepository(input.client),
+    now: () => new Date(input.replay.frozenClockIso),
+    leaseToken: () => "oracle-delivery-lease",
+    leaseMs: 60_000,
+    limit: 1,
+    sendTelegram: () => transport.sendTelegram()
+  });
+  expect(delivery).toMatchObject({ claimed: 1, settled: 1 });
+  const beforeRestart = (await input.client.query(
+    `select status, final_score, final_decision,
+            analysis_manifest_sha256,
+            evidence_bundle_sha256, traversal_closure_sha256,
+            scoring_bundle_sha256, report_sha256
+       from unified_check_runs where id = $1`,
+    [RUN_ID]
+  )).rows[0]!;
+  const completedRestart = makeRuntime();
+  await expect(completedRestart.runProviderCycle())
+    .resolves.toMatchObject({ outcome: "idle" });
+  await expect(completedRestart.runAnalysisCycle())
+    .resolves.toMatchObject({ outcome: "idle" });
+  await expect(completedRestart.runFinalizationCycle())
+    .resolves.toMatchObject({ finalized: false });
+  const secondDelivery = await runUnifiedDeliveryCycle({
+    repository: createPostgresUnifiedDeliveryRepository(input.client),
+    now: () => new Date(input.replay.frozenClockIso),
+    leaseToken: () => "oracle-delivery-lease-2",
+    leaseMs: 60_000,
+    limit: 1,
+    sendTelegram: () => transport.sendTelegram()
+  });
+  expect(secondDelivery).toMatchObject({ claimed: 0, settled: 0 });
+  expect((await input.client.query(
+    `select status, final_score, final_decision,
+            analysis_manifest_sha256,
+            evidence_bundle_sha256, traversal_closure_sha256,
+            scoring_bundle_sha256, report_sha256
+       from unified_check_runs where id = $1`,
+    [RUN_ID]
+  )).rows[0]).toEqual(beforeRestart);
+
+  const traversalArtifact = (await input.client.query(
+    `select artifact.artifact_json
+       from unified_check_tasks task
+       join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+       join unified_check_artifacts artifact
+         on artifact.sha256 = attempt.artifact_sha256
+      where task.run_id = $1 and task.kind = 'traversal'`,
+    [RUN_ID]
+  )).rows[0]?.artifact_json as {
+    readonly version: string;
+    readonly frontier: readonly unknown[];
+  };
+  const artifactByKind = async (kind: string) => (
+    await input.client.query(
+      `select sha256, artifact_json
+         from unified_check_artifacts
+        where created_by_run_id = $1 and kind = $2
+        order by sha256`,
+      [RUN_ID, kind]
+    )
+  ).rows;
+  const factsRows = await artifactByKind("canonical_facts");
+  const closureRows = await artifactByKind("traversal_closure");
+  const terminalRows = await artifactByKind(
+    "traversal_terminal_evidence"
+  );
+  const providerRows = await input.client.query(
+    `select sha256
+       from unified_check_artifacts
+      where created_by_run_id = $1
+        and kind in ('direct_history_page','address_history_page')
+      order by sha256`,
+    [RUN_ID]
+  );
+  if (
+    factsRows.length !== 1 ||
+    closureRows.length !== 1 ||
+    !traversalArtifact
+  ) {
+    throw new Error("rolling_oracle_production_artifacts_missing");
+  }
+  const plannerCounts = (await input.client.query(
+    `select count(*)::int as count,
+            count(distinct canonical_sequence)::int as distinct_count,
+            count(distinct task_id)::int as distinct_tasks
+       from unified_check_planner_entries
+      where run_id = $1 and planner_state = 'committed'`,
+    [RUN_ID]
+  )).rows[0]!;
+  const presentationSha256s = (await input.client.query(
+    `select presentation_sha256
+       from unified_check_deliveries delivery
+       join unified_check_requests request on request.id = delivery.request_id
+      where request.run_id = $1
+      order by presentation_sha256`,
+    [RUN_ID]
+  )).rows.map((row) => String(row.presentation_sha256));
+  return {
+    traversalArtifactVersion: traversalArtifact.version,
+    canonicalFacts: factsRows[0]!.artifact_json,
+    finalFrontier: traversalArtifact.frontier,
+    terminalEvidenceSha256s: terminalRows.map((row) => String(row.sha256)),
+    terminalEvidenceSchemaVersions: [...new Set(
+      terminalRows.map((row) => String(
+        (row.artifact_json as { schemaVersion?: unknown }).schemaVersion ?? 1
+      ))
+    )].sort(),
+    terminalEvidenceArtifacts:
+      terminalRows.map((row) => row.artifact_json),
+    analysisManifestSha256: String(
+      beforeRestart.analysis_manifest_sha256
+    ),
+    closureCertificate: closureRows[0]!.artifact_json,
+    score: Number(beforeRestart.final_score),
+    decision: String(beforeRestart.final_decision) as OracleFacts["decision"],
+    evidenceBundleSha256: String(beforeRestart.evidence_bundle_sha256),
+    traversalClosureSha256:
+      String(beforeRestart.traversal_closure_sha256),
+    scoringBundleSha256: String(beforeRestart.scoring_bundle_sha256),
+    reportSha256: String(beforeRestart.report_sha256),
+    presentationSha256s,
+    eligibleDeliveryIntentCount: presentationSha256s.length,
+    externalTelegramSends: transport.external,
+    providerResponseArtifactSha256s:
+      providerRows.rows.map((row) => String(row.sha256)),
+    committedSequenceCount: Number(plannerCounts.count),
+    duplicateCommitCount:
+      Number(plannerCounts.count) - Number(plannerCounts.distinct_tasks),
+    duplicateSequenceCount:
+      Number(plannerCounts.count) - Number(plannerCounts.distinct_count)
+  };
+}
+
+async function runScenario(input: {
+  readonly replay: UnifiedProviderReplayV1;
+  readonly policy: "barrier" | "rolling";
+  readonly capacity: number;
+  readonly seed: number;
+}): Promise<OracleFacts> {
+  void input.seed;
+  return withSchema(({ client }) => productionOracleFacts({
+    client,
+    replay: input.replay,
+    policy: input.policy,
+    capacity: input.capacity
+  }));
+}
+
 function mismatchMessage(input: {
   readonly replaySha256: string;
   readonly seed: number;
@@ -950,6 +1437,10 @@ function receiptFacts(facts: OracleFacts): UnifiedRollingOracleFactsV1 {
   const {
     presentationSha256s: _presentationSha256s,
     terminalEvidenceSha256s: _terminalEvidenceSha256s,
+    terminalEvidenceSchemaVersions: _terminalEvidenceSchemaVersions,
+    terminalEvidenceArtifacts: _terminalEvidenceArtifacts,
+    analysisManifestSha256: _analysisManifestSha256,
+    traversalArtifactVersion: _traversalArtifactVersion,
     ...receipt
   } = facts;
   return JSON.parse(
@@ -975,17 +1466,7 @@ describe("Unified rolling oracle comparison harness", () => {
     const v1 = parse(v1Bytes);
     const v2 = parse(v2Bytes);
     const snapshotHash = fingerprintCanonicalJson(runRecord().snapshot);
-    const frozen = buildProductionFrozenLabelDataset({
-      frozenAt: v2.frozenAt,
-      snapshotHash,
-      legacyRows: [{
-        address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
-        label: "fixture-service-boundary",
-        category: "fixture-service-boundary",
-        provider: "frozen-replay",
-        observedAt: v2.frozenAt
-      }]
-    });
+    const frozen = oracleFrozenLabelDataset(v2, snapshotHash);
     expect(v1.deterministic.traversalPolicyVersion)
       .toBe("snapshot-closure-v1");
     expect(v2.deterministic.traversalPolicyVersion)
@@ -1056,7 +1537,7 @@ describe("Unified rolling oracle comparison harness", () => {
 
 postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () => {
   it.each(POLICY_FIXTURES)(
-    "keeps $policy exact canonical outputs through capacities, retry, restart, lost wake, slow head, cooldown, and delivery idempotency",
+    "keeps $policy production traversal exact through capacities, restart, and delivery idempotency",
     async ({ policy, path, receiptOutputEnv }) => {
     const fixtureBytes = await readFile(
       path,
@@ -1077,15 +1558,21 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       (barrier.canonicalFacts as { facts?: readonly unknown[] }).facts?.length
     ).toBeGreaterThan(0);
     expect(barrier.providerResponseArtifactSha256s.length)
-      .toBe(replay.requests.length);
+      .toBe(policy === "snapshot-closure-v2" ? 3 : 4);
     expect(barrier.eligibleDeliveryIntentCount).toBe(1);
     expect(barrier.externalTelegramSends).toBe(0);
     expect(barrier.duplicateCommitCount).toBe(0);
     expect(barrier.duplicateSequenceCount).toBe(0);
     expect(barrier.presentationSha256s).toHaveLength(1);
-    expect(barrier.terminalEvidenceSha256s).toEqual([]);
+    expect(barrier.traversalArtifactVersion)
+      .toBe("unified-traversal-artifact-v1");
+    if (policy === "snapshot-closure-v2") {
+      expect(barrier.terminalEvidenceSha256s.length).toBeGreaterThan(0);
+      expect(barrier.terminalEvidenceSchemaVersions).toEqual(["2"]);
+      expect(barrier.finalFrontier).toEqual([]);
+    }
     expect(barrier.closureCertificate.analysisManifestHash)
-      .toBe(runRecord(replay).analysisManifestSha256);
+      .toBe(barrier.analysisManifestSha256);
 
     const receiptRollingFacts: Array<{
       readonly capacity: number;
@@ -1114,10 +1601,29 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       expect(rolling.externalTelegramSends).toBe(0);
       expect(rolling.duplicateCommitCount).toBe(0);
       expect(rolling.duplicateSequenceCount).toBe(0);
+    }
+
+    // The immutable scheduler receipt remains a separate compatibility
+    // artifact. Production equivalence above crosses the real coordinator,
+    // boundary, finalizer, restart, and delivery paths.
+    const receiptBarrier = await runGenericPlannerScenario({
+      replay,
+      policy: "barrier",
+      capacity: 1,
+      seed: BASE_SEED
+    });
+    for (const capacity of CAPACITIES) {
+      const seed = BASE_SEED + capacity;
+      const receiptRolling = await runGenericPlannerScenario({
+        replay,
+        policy: "rolling",
+        capacity,
+        seed
+      });
       receiptRollingFacts.push({
         capacity,
         seed,
-        facts: receiptFacts(rolling)
+        facts: receiptFacts(receiptRolling)
       });
     }
 
@@ -1127,13 +1633,14 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       schemaVersion: 34,
       replaySha256: replay.expectedReplaySha256,
       seed: BASE_SEED,
-      barrierFacts: receiptFacts(barrier),
+      barrierFacts: receiptFacts(receiptBarrier),
       rollingFacts: receiptRollingFacts
     });
     const receiptOutput = process.env[receiptOutputEnv] ?? (
       policy === "snapshot-closure-v1"
-        ? process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT
-        : undefined
+        ? process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_V1_OUTPUT ??
+          process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT
+        : process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_V2_OUTPUT
     );
     if (receiptOutput) {
       const output = resolve(receiptOutput);
