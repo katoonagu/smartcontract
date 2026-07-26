@@ -301,10 +301,52 @@ describe("where latency replay v1", () => {
 
     expect(calls).toBe(2);
     expect(capture.invocations).toEqual([
-      expect.objectContaining({ method: "same", args: ["key"], response: "response-1", origin: "legacy_observed" }),
-      expect.objectContaining({ method: "same", args: ["key"], error: { name: "TypeError", message: "second failed" }, origin: "legacy_observed" })
+      expect.objectContaining({ method: "same", args: ["key"], response: "response-1", origin: "legacy_observed", payloadSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+      expect.objectContaining({ method: "same", args: ["key"], error: { name: "TypeError", message: "second failed" }, origin: "legacy_observed", payloadSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
     ]);
     expect(capture.baselineRequestCounts()).toEqual({ same: 2 });
+    expect(JSON.stringify(capture.invocations)).not.toContain("pending");
+  });
+
+  it("reserves invocation order at call start even when later calls settle first", async () => {
+    let resolveFirst!: (value: string) => void;
+    let resolveSecond!: (value: string) => void;
+    const firstResult = new Promise<string>((resolve) => { resolveFirst = resolve; });
+    const secondResult = new Promise<string>((resolve) => { resolveSecond = resolve; });
+    const capture = createDependencyInvocationTapeRecorder();
+
+    const first = capture.record("first", [1], () => firstResult);
+    const second = capture.record("second", [2], () => secondResult);
+    resolveSecond("second-response");
+    await expect(second).resolves.toBe("second-response");
+    resolveFirst("first-response");
+    await expect(first).resolves.toBe("first-response");
+
+    expect(capture.invocations.map((entry) => entry.method)).toEqual(["first", "second"]);
+    const replay = parseWhereLatencyReplayV1(buildWhereLatencyReplayV1({
+      ...base,
+      dependencies: [...capture.invocations, base.dependencies[1]]
+    } as any).canonicalJson);
+    const deps = createWhereReplayDeps(replay) as any;
+    await expect(deps.first(1)).resolves.toBe("first-response");
+    await expect(deps.second(2)).resolves.toBe("second-response");
+    expect(() => assertWhereReplayConsumed(deps)).not.toThrow();
+  });
+
+  it("rejects a recorder slot that is still pending", async () => {
+    let resolve!: (value: string) => void;
+    const pendingResult = new Promise<string>((done) => { resolve = done; });
+    const capture = createDependencyInvocationTapeRecorder();
+    const pending = capture.record("pending", [], () => pendingResult);
+
+    expect(() => buildWhereLatencyReplayV1({
+      ...base,
+      dependencies: [...capture.invocations, base.dependencies[1]]
+    } as any)).toThrow("where_latency_replay_invocation_pending");
+
+    resolve("done");
+    await pending;
+    expect(JSON.stringify(capture.invocations)).not.toContain('"state":"pending"');
   });
 
   it("consumes repeated calls in global order, rejects excess and detects under-consumption", async () => {
@@ -388,6 +430,26 @@ describe("where latency replay v1", () => {
       behaviorSourceFiles: [...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES],
       sourceTreeHash: "b".repeat(64),
       approvedSourceTreeHash: "c".repeat(64)
+    })).toThrow("where_latency_replay_behavior_source_mismatch");
+  });
+
+  it("fences the extracted production execution builder and its runtime options adapter", () => {
+    expect(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES).toContain("src/forensics/deepForensicJob.ts");
+    expect(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES).toContain("src/runtime/deepForensicRuntimeOptions.ts");
+    expect(() => assertLegacyWhereSourceRevision({
+      recorderGitCommit: "a".repeat(40),
+      behaviorSourceFiles: [...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES],
+      sourceTreeHash: LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
+      approvedSourceTreeHash: LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
+      recorderTreeClean: true
+    })).not.toThrow();
+    const changedDeepForensicJobHash = `${LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH.slice(0, -1)}${LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH.endsWith("0") ? "1" : "0"}`;
+    expect(() => assertLegacyWhereSourceRevision({
+      recorderGitCommit: "a".repeat(40),
+      behaviorSourceFiles: [...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES],
+      sourceTreeHash: changedDeepForensicJobHash,
+      approvedSourceTreeHash: LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
+      recorderTreeClean: true
     })).toThrow("where_latency_replay_behavior_source_mismatch");
   });
 

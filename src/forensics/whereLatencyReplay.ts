@@ -8,20 +8,24 @@ import { canonicalizeArtifactJson } from "./canonicalJson";
 
 export type StableWhereFactsV1 = Omit<WhereIsMoneyReport, "transactionInfoEnrichment">;
 export const LEGACY_WHERE_REPLAY_BASELINE_COMMIT = "4861f22e697652c688489ef4be6ab9698cd6ef9f";
+// The shared production/capture builder was extracted after the legacy baseline; pin that exact approved source.
+const LEGACY_WHERE_EXECUTION_ADAPTER_SOURCE_SHA256 = "8061ad07af5147af4a8d0b1bd7aa23914fde9b44eefa3d77b936263fd536001e";
 export const LEGACY_WHERE_BEHAVIOR_SOURCE_FILES = [
   "src/check/whereIsMoneyCheck.ts",
   "src/forensics/balanceFormingSlice.ts",
   "src/forensics/balanceFormingTransfers.ts",
   "src/forensics/crossChainCorridor.ts",
   "src/forensics/crossChainStage2Triggers.ts",
+  "src/forensics/deepForensicJob.ts",
   "src/forensics/moneyOriginOperationalAssessment.ts",
   "src/forensics/moneyOriginPolicy.ts",
   "src/forensics/moneyOriginTrace.ts",
   "src/forensics/provenanceScoring.ts",
   "src/forensics/sourceBundleExposure.ts",
-  "src/risk/scoringSignalMatrix.ts"
+  "src/risk/scoringSignalMatrix.ts",
+  "src/runtime/deepForensicRuntimeOptions.ts"
 ] as const;
-export const LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH = "0c7ba9a5f16397da7bbcb1cefc9d66f10055a28cf7fbeacad2a1562851b9df05";
+export const LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH = "b5ad8d43fbcfd693f8d998100f22070c0ef4dbbeeb228e5eeb0e722b3831fde2";
 
 type SerializedReplayError = {
   name: string;
@@ -29,14 +33,31 @@ type SerializedReplayError = {
 };
 
 type ReplayDependency = {
+  sequence: number;
   method: string;
   args: unknown[];
+  requestSha256: string;
   payloadSha256: string;
   origin?: "legacy_observed" | "supplemental_stage_b_fixture";
 } & (
   | { response: unknown; error?: never }
   | { response?: never; error: SerializedReplayError }
 );
+
+type UnhashedReplayDependency = {
+  method: string;
+  args: unknown[];
+  origin?: ReplayDependency["origin"];
+  response?: unknown;
+  error?: SerializedReplayError;
+};
+
+type CapturedDependencyInvocation = UnhashedReplayDependency & {
+  sequence: number;
+  requestSha256: string;
+  payloadSha256?: string;
+  state: "pending" | "settled";
+};
 
 export type WhereLatencyReplayV1 = {
   schema: "where-latency-replay-v1";
@@ -65,7 +86,7 @@ export type BuildWhereLatencyReplayV1Input = Omit<
   WhereLatencyReplayV1,
   "dependencies" | "rawTransactions" | "baselineRequestCounts" | "resolvedConfigHash"
 > & {
-  dependencies: Array<Omit<ReplayDependency, "payloadSha256">>;
+  dependencies: Array<UnhashedReplayDependency | CapturedDependencyInvocation>;
   rawTransactions: Array<Omit<WhereLatencyReplayV1["rawTransactions"][number], "payloadSha256">>;
 };
 
@@ -82,7 +103,7 @@ export type DependencyInvocationTapeRecorder = {
     operation: () => Promise<T>,
     origin?: ReplayDependency["origin"]
   ): Promise<T>;
-  readonly invocations: Array<Omit<ReplayDependency, "payloadSha256">>;
+  readonly invocations: CapturedDependencyInvocation[];
   baselineRequestCounts(): Record<string, number>;
 };
 
@@ -92,13 +113,8 @@ function serializedError(error: unknown): SerializedReplayError {
     : { name: "Error", message: String(error) };
 }
 
-function snapshotReplayValue(value: unknown): unknown {
-  const json = JSON.stringify(value);
-  return json === undefined ? null : JSON.parse(json);
-}
-
 export function createDependencyInvocationTapeRecorder(): DependencyInvocationTapeRecorder {
-  const invocations: Array<Omit<ReplayDependency, "payloadSha256">> = [];
+  const invocations: CapturedDependencyInvocation[] = [];
   return {
     async record<T>(
       method: string,
@@ -106,13 +122,24 @@ export function createDependencyInvocationTapeRecorder(): DependencyInvocationTa
       operation: () => Promise<T>,
       origin: ReplayDependency["origin"] = "legacy_observed"
     ): Promise<T> {
-      const recordedArgs = snapshotReplayValue(args) as unknown[];
+      const recordedArgs = sanitizeReplayValue(args) as unknown[];
+      const slot: CapturedDependencyInvocation = {
+        sequence: invocations.length,
+        method,
+        args: recordedArgs,
+        requestSha256: requestKey(method, recordedArgs),
+        origin,
+        state: "pending"
+      };
+      invocations.push(slot);
       try {
         const response = await operation();
-        invocations.push({ method, args: recordedArgs, response: snapshotReplayValue(response), origin });
+        const recordedResponse = sanitizeReplayValue(response);
+        Object.assign(slot, { state: "settled", response: recordedResponse, payloadSha256: sha256(recordedResponse) });
         return response;
       } catch (error) {
-        invocations.push({ method, args: recordedArgs, error: serializedError(error), origin });
+        const recordedError = serializedError(error);
+        Object.assign(slot, { state: "settled", error: recordedError, payloadSha256: sha256(recordedError) });
         throw error;
       }
     },
@@ -351,10 +378,16 @@ function normalizeApprovedClockSeam(path: string, source: string): string {
     .replaceAll("nowMs()", "Date.now()");
 }
 
-function sourceTreeHash(sources: string[]): string {
+function sourceContentHashes(sources: string[]): string[] {
+  return LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path, index) =>
+    sha256(normalizeApprovedClockSeam(path, sources[index] ?? ""))
+  );
+}
+
+function sourceTreeHash(contentHashes: string[]): string {
   return sha256(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path, index) => ({
     path,
-    contentSha256: sha256(normalizeApprovedClockSeam(path, sources[index] ?? ""))
+    contentSha256: contentHashes[index]
   })));
 }
 
@@ -368,11 +401,15 @@ export async function readLegacyWhereSourceRevision(cwd: string): Promise<Legacy
   const approvedSources = await Promise.all(LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.map((path) =>
     gitOutput(cwd, ["show", `${LEGACY_WHERE_REPLAY_BASELINE_COMMIT}:${path}`])
   ));
+  const currentContentHashes = sourceContentHashes(currentSources);
+  const approvedContentHashes = sourceContentHashes(approvedSources);
+  approvedContentHashes[LEGACY_WHERE_BEHAVIOR_SOURCE_FILES.indexOf("src/forensics/deepForensicJob.ts")] =
+    LEGACY_WHERE_EXECUTION_ADAPTER_SOURCE_SHA256;
   const revision = {
     recorderGitCommit,
     behaviorSourceFiles: [...LEGACY_WHERE_BEHAVIOR_SOURCE_FILES],
-    sourceTreeHash: sourceTreeHash(currentSources),
-    approvedSourceTreeHash: sourceTreeHash(approvedSources),
+    sourceTreeHash: sourceTreeHash(currentContentHashes),
+    approvedSourceTreeHash: sourceTreeHash(approvedContentHashes),
     recorderTreeClean: true as const
   };
   assertLegacyWhereSourceRevision(revision);
@@ -477,10 +514,15 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     || job.windowEnd !== envelope.resolvedOptions.windowEnd) {
     fail("where_latency_replay_options_binding_mismatch");
   }
-  for (const dependency of envelope.dependencies) {
+  for (const [index, dependency] of envelope.dependencies.entries()) {
     if (!dependency || typeof dependency.method !== "string" || !Array.isArray(dependency.args)) {
       fail("where_latency_replay_request_invalid");
     }
+    if (dependency.sequence !== index || !SHA256.test(dependency.requestSha256)
+      || dependency.requestSha256 !== requestKey(dependency.method, dependency.args)) {
+      fail("where_latency_replay_invocation_sequence_invalid");
+    }
+    if ("state" in dependency) fail("where_latency_replay_invocation_pending");
     const hasResponse = Object.prototype.hasOwnProperty.call(dependency, "response");
     const hasError = Object.prototype.hasOwnProperty.call(dependency, "error");
     if (hasResponse === hasError) fail("where_latency_replay_outcome_missing");
@@ -594,14 +636,29 @@ export function buildWhereLatencyReplayV1(input: BuildWhereLatencyReplayV1Input)
 } {
   const resolvedConfig = normalizeReplayValue(input.resolvedConfig) as Record<string, unknown>;
   const resolvedOptions = sanitizeReplayValue(input.resolvedOptions) as Record<string, unknown>;
-  const dependencies = input.dependencies.map((entry) => {
-    const args = sanitizeReplayValue(entry.args) as unknown[];
-    if ("response" in entry) {
-      const response = sanitizeReplayValue(entry.response);
-      return { ...entry, args, response, payloadSha256: sha256(response) };
+  const dependencies = input.dependencies.map((entry, sequence) => {
+    const captured = "state" in entry;
+    if (captured && entry.state === "pending") fail("where_latency_replay_invocation_pending");
+    const {
+      state: _state,
+      sequence: _capturedSequence,
+      requestSha256: _capturedRequestSha256,
+      payloadSha256: capturedPayloadSha256,
+      ...invocation
+    } = entry as CapturedDependencyInvocation;
+    const args = sanitizeReplayValue(invocation.args) as unknown[];
+    const requestSha256 = requestKey(invocation.method, args);
+    if (captured && (entry.sequence !== sequence || entry.requestSha256 !== requestSha256)) {
+      fail("where_latency_replay_invocation_sequence_invalid");
     }
-    const error = sanitizeReplayValue(entry.error) as SerializedReplayError;
-    return { ...entry, args, error, payloadSha256: sha256(error) };
+    if (Object.prototype.hasOwnProperty.call(invocation, "response")) {
+      const response = sanitizeReplayValue(invocation.response);
+      if (captured && capturedPayloadSha256 !== sha256(response)) fail("where_latency_replay_payload_sha256_mismatch");
+      return { ...invocation, sequence, args, requestSha256, response, payloadSha256: sha256(response) };
+    }
+    const error = sanitizeReplayValue(invocation.error) as SerializedReplayError;
+    if (captured && capturedPayloadSha256 !== sha256(error)) fail("where_latency_replay_payload_sha256_mismatch");
+    return { ...invocation, sequence, args, requestSha256, error, payloadSha256: sha256(error) };
   });
   const baselineRequestCounts: Record<string, number> = {};
   for (const dependency of dependencies) {
