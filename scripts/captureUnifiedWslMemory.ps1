@@ -17,13 +17,7 @@ param(
 
   [Parameter(Mandatory = $true)]
   [ValidateNotNullOrEmpty()]
-  [string]$RuntimeSnapshotPath,
-
-  [Parameter(Mandatory = $true)]
-  [ValidateNotNullOrEmpty()]
-  [string]$OutputPath,
-
-  [string]$SummaryPath
+  [string]$RuntimeSnapshotPath
 )
 
 Set-StrictMode -Version Latest
@@ -66,24 +60,6 @@ function Require-NonNegativeInt64 {
     throw "unified_memory_runtime_snapshot_invalid:$Name"
   }
   return $parsed
-}
-
-function Write-Utf8NoBom {
-  param(
-    [string]$Path,
-    [string]$Content
-  )
-  $parent = [System.IO.Path]::GetDirectoryName(
-    [System.IO.Path]::GetFullPath($Path)
-  )
-  if (-not [System.IO.Directory]::Exists($parent)) {
-    throw "unified_memory_output_directory_missing"
-  }
-  [System.IO.File]::WriteAllText(
-    [System.IO.Path]::GetFullPath($Path),
-    $Content,
-    [System.Text.UTF8Encoding]::new($false)
-  )
 }
 
 $runtimePath = [System.IO.Path]::GetFullPath($RuntimeSnapshotPath)
@@ -169,99 +145,6 @@ $sample = [ordered]@{
   version = "unified-memory-sample-v1"
 }
 
-$samples = @()
-$resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
-if ([System.IO.File]::Exists($resolvedOutput)) {
-  $samples = @(
-    Get-Content -Raw -Encoding UTF8 $resolvedOutput |
-      ConvertFrom-Json
-  )
-}
-if ($samples | Where-Object {
-  $_.runId -ne $RunId -or $_.scenarioId -ne $ScenarioId
-}) {
-  throw "unified_memory_sample_identity_mismatch"
-}
-if ($samples | Where-Object { $_.phase -eq $Phase }) {
-  throw "unified_memory_sample_phase_duplicate"
-}
-$samples += [pscustomobject]$sample
-$orderedSamples = @(
-  foreach ($name in @("before", "during", "after")) {
-    $samples | Where-Object { $_.phase -eq $name }
-  }
+[Console]::Out.Write(
+  (ConvertTo-Json -InputObject $sample -Depth 8 -Compress)
 )
-Write-Utf8NoBom `
-  $resolvedOutput `
-  (ConvertTo-Json -InputObject $orderedSamples -Depth 8 -Compress)
-
-if (
-  $Phase -eq "after" -and
-  -not [string]::IsNullOrWhiteSpace($SummaryPath)
-) {
-  $before = $orderedSamples | Where-Object { $_.phase -eq "before" } |
-    Select-Object -First 1
-  $during = $orderedSamples | Where-Object { $_.phase -eq "during" } |
-    Select-Object -First 1
-  $after = $orderedSamples | Where-Object { $_.phase -eq "after" } |
-    Select-Object -First 1
-  if ($null -eq $before -or $null -eq $during -or $null -eq $after) {
-    throw "unified_memory_summary_phases_incomplete"
-  }
-  $wslComplete = @($before, $during, $after) |
-    Where-Object { $_.localWslDiagnostic.status -ne "captured" } |
-    Measure-Object |
-    Select-Object -ExpandProperty Count
-  $wslComplete = $wslComplete -eq 0
-  $swapGrowth = if ($wslComplete) {
-    $beforeSwapUsed =
-      [int64]$before.localWslDiagnostic.linuxSwapTotalBytes -
-      [int64]$before.localWslDiagnostic.linuxSwapFreeBytes
-    $afterSwapUsed =
-      [int64]$after.localWslDiagnostic.linuxSwapTotalBytes -
-      [int64]$after.localWslDiagnostic.linuxSwapFreeBytes
-    $afterSwapUsed - $beforeSwapUsed
-  } else {
-    $null
-  }
-  $summary = [ordered]@{
-    completedAt = $sample.capturedAt
-    diagnosticStatus = if ($wslComplete) { "captured" } else { "skipped" }
-    runId = $RunId
-    runtimeTrend = [ordered]@{
-      afterRssBytes = [int64]$after.runtime.rssBytes
-      beforeRssBytes = [int64]$before.runtime.rssBytes
-      peakRssBytes = [int64](
-        @($before, $during, $after) |
-          ForEach-Object { [int64]$_.runtime.rssBytes } |
-          Measure-Object -Maximum |
-          Select-Object -ExpandProperty Maximum
-      )
-      postRunRssDeltaBytes =
-        [int64]$after.runtime.rssBytes -
-        [int64]$before.runtime.rssBytes
-    }
-    scenarioId = $ScenarioId
-    scope = "local_wsl_diagnostic"
-    verdict = "diagnostic_only"
-    version = "unified-local-wsl-memory-summary-v1"
-    wslTrend = [ordered]@{
-      linuxAvailableDeltaBytes = if ($wslComplete) {
-        [int64]$after.localWslDiagnostic.linuxMemAvailableBytes -
-        [int64]$before.localWslDiagnostic.linuxMemAvailableBytes
-      } else {
-        $null
-      }
-      postRunVmmemDeltaBytes = if ($wslComplete) {
-        [int64]$after.localWslDiagnostic.vmmemWslWorkingSetBytes -
-        [int64]$before.localWslDiagnostic.vmmemWslWorkingSetBytes
-      } else {
-        $null
-      }
-      swapUsedGrowthBytes = $swapGrowth
-    }
-  }
-  Write-Utf8NoBom `
-    ([System.IO.Path]::GetFullPath($SummaryPath)) `
-    ($summary | ConvertTo-Json -Depth 8 -Compress)
-}

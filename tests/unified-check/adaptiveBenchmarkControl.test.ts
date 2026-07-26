@@ -38,6 +38,7 @@ import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../../src/forensics/canonicalJson";
+import { createUnifiedReconciliation } from "../../src/unifiedCheck/reconciliation";
 
 const NOW = new Date("2026-07-25T09:00:00.000Z");
 
@@ -447,13 +448,23 @@ describe("adaptive benchmark leased runtime control", () => {
     })).toThrow("unified_fast_fix_utilization_below_gate");
   });
 
-  it("counts actual reconciliation recovery events only for the active selected control", () => {
+  it("counts only timer recovery for the active selected control and rejects the gate", async () => {
     const counter = createUnifiedSelectedReconciliationCounter();
     counter.activate("a".repeat(64), ["run-txc"]);
-    counter.record({
-      type: "reconciliation_recovered_work",
-      occurredAt: NOW.toISOString()
+    const reconciliation = createUnifiedReconciliation({
+      intervalMs: 60_000,
+      runCycle: async () => ({
+        actionableWorkFound: true,
+        admitted: 1,
+        wokenSlots: 1
+      }),
+      onAdaptiveEvent: (event) => counter.record(event)
     });
+
+    reconciliation.wake();
+    await reconciliation.waitForIdle();
+    expect(counter.count("a".repeat(64), "run-txc")).toBe(0);
+    await reconciliation.tick();
     expect(counter.count("a".repeat(64), "run-txc")).toBe(1);
     expect(() => assertUnifiedSelectedDenseRefillEvidence({
       saturated: {

@@ -465,8 +465,10 @@ selected control identity. Unrelated work could therefore satisfy utilization,
 and a real recovery could disappear.
 
 Correct rule: scope selected capacity and limiting values to the controlled
-run, reset retained diagnostics at the control boundary, mark foreign active
-permits as contamination, and count actual recovery events. Write an exclusive
-journal before the one authorized canary so partial state blocks a duplicate;
-capture memory only in a fresh exclusive directory and never follow child
-links.
+run, reset and scope every retained diagnostic event at the control boundary,
+mark foreign active permits as contamination, and count only timer-originated
+recovery events. A generic event-woken controller cycle is not reconciliation.
+Write and durably sync an exclusive journal before the one authorized canary so
+partial state blocks a duplicate. Capture phase bytes through stdout and let
+Node exclusively create/sync final memory children; a pathname check before an
+external writer is not a write boundary.

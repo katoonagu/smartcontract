@@ -193,6 +193,38 @@ describe("Unified provider refill diagnostics", () => {
     });
   });
 
+  it("excludes a foreign rejected proposal from selected-run diagnostics", () => {
+    const diagnostics = createUnifiedProviderRefillDiagnostics();
+    diagnostics.setRunScope(["run-txc"]);
+    diagnostics.recordAssignmentsEvaluated({
+      accepted: [{
+        slotId: 0,
+        expectedEpoch: 0,
+        permit: { ...permit, runId: "run-txc" }
+      }],
+      rejected: [{
+        assignment: {
+          slotId: 1,
+          expectedEpoch: 0,
+          permit: { ...permit, runId: "foreign-run" }
+        },
+        reason: "stale_epoch"
+      }]
+    }, 10);
+
+    expect(diagnostics.snapshot().assignments).toEqual({
+      proposed: 1,
+      accepted: 1,
+      rejected: 0,
+      rejections: {
+        draining: 0,
+        slotActive: 0,
+        pendingAssignment: 0,
+        staleEpoch: 0
+      }
+    });
+  });
+
   it("drops epoch discontinuities instead of guessing elapsed time", () => {
     const diagnostics = createUnifiedProviderRefillDiagnostics();
     const assignment = { slotId: 0, expectedEpoch: 4, permit };

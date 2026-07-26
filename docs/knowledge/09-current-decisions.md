@@ -231,13 +231,18 @@ expanding frontier has no percent or ETA.
   closed.
 - Selected saturation and limiting evidence is scoped to the controlled run.
   Foreign active permits create a failing contamination sample, retained refill
-  diagnostics reset at the control boundary, and real reconciliation recovery
-  events are counted for the active control/run. Process-global work cannot
-  satisfy the selected utilization gate.
+  diagnostics reset and filter every assignment/rejection and
+  chunk/checkpoint/claim event to the selected run set at the control boundary,
+  and only timer-originated reconciliation recovery events are counted for the
+  active control/run. Process-global work cannot satisfy the selected
+  utilization gate.
 - The selected harness writes an exclusive journal before invoking the canary.
-  Partial journal state without a completed index blocks a second invocation;
-  it is never treated as permission to create another run. Memory evidence uses
-  a fresh exclusive capture directory and rejects linked/preexisting children.
+  It syncs the file and, where supported, its parent directory before canary
+  execution. A required sync failure and any partial journal state without a
+  completed index block a second invocation; neither is permission to create
+  another run. Memory evidence uses a fresh exclusive capture directory;
+  PowerShell emits phase bytes on stdout and Node alone writes/syncs final
+  children through exclusive no-follow handles.
 - `checkpoint_or_commit` is a stable pool/run/task reason code but is not
   emitted by diagnostic V1. Existing state cannot prove that the transition
   holds the last otherwise-fillable slot; emission remains pending a direct

@@ -90,9 +90,11 @@ npm.cmd test -- tests/unified-check/providerRefillDiagnostics.test.ts tests/unif
 
 The `unified-provider-refill-diagnostics-v1` snapshot is identity-free,
 best-effort process evidence. It reports proposed/accepted/rejected assignments
-and refill phase percentiles with fixed 512-sample bounds. It is not yet a
-release evidence artifact and must not be used to claim live utilization or a
-higher production capacity ceiling.
+and refill phase percentiles with fixed 512-sample bounds. While the selected
+control is active, the accumulator accepts only its exact run set, including
+rejection, chunk, checkpoint, and claim events. It is not yet a release
+evidence artifact and must not be used to claim live utilization or a higher
+production capacity ceiling.
 
 ### Emergency rolling-to-barrier fallback
 
@@ -209,14 +211,18 @@ the exact bytes and hashes of all memory files without recapture. A changed
 policy/scenario or replaced sidecar, refill, or memory file fails closed.
 The command creates a fresh exclusive capture subdirectory; do not pre-create
 its children. It also writes `selected-canary-journal.json` before invoking the
-canary. If that journal exists without a valid completed index, the command
+canary, syncs the journal file, and syncs its parent directory where supported.
+If required sync fails, no canary starts and the persisted journal remains the
+restart fence. If that journal exists without a valid completed index, the command
 stops with `unified_benchmark_selected_partial_state` and must not be rerun or
 have the journal deleted merely to obtain another canary. Inspect the recorded
 run/control and adjudicate the orphan first.
 
 Selected utilization comes only from the controlled run. Any foreign active
-provider permit is a contamination failure, and any counted
-`reconciliation_recovered_work` event rejects the gate.
+provider permit is a contamination failure; foreign accepted/rejected
+proposals and lifecycle timing events are absent from its refill diagnostics.
+Only a timer/reconciliation tick can emit `reconciliation_recovered_work`; an
+ordinary event/intake/slot wake cannot. Any counted recovery rejects the gate.
 
 ## WSL And Linux Memory Capture
 
@@ -229,14 +235,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/captureUnifiedWslMemory.ps1 `
   -RunId <run-id> -ScenarioId <scenario-id> `
   -Phase before -NodePid <node-pid> `
-  -RuntimeSnapshotPath <runtime-memory.json> `
-  -OutputPath <memory-samples.json>
+  -RuntimeSnapshotPath <runtime-memory.json>
 ```
 
-Repeat for `during` and `after`; pass `-SummaryPath` on the final sample. Record
-vmmemWSL, Linux available memory/swap, and process RSS/heap. A missing WSL
-process is a diagnostic skip. Local WSL is not evidence of server capacity;
-repeat capacity gates under the target Linux container/cgroup or host limit.
+The script emits one canonical sample on stdout and never writes an output
+pathname. The selected harness captures that stdout, validates all three
+phases, builds the summary, and exclusively creates/syncs its final files from
+Node. For a manual diagnostic, preserve each phase's stdout separately; it is
+not selected-gate evidence. Record vmmemWSL, Linux available memory/swap, and
+process RSS/heap. A missing WSL process is a diagnostic skip. Local WSL is not
+evidence of server capacity; repeat capacity gates under the target Linux
+container/cgroup or host limit.
 
 ## Delivery Recovery
 

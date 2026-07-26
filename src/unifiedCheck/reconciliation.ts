@@ -31,6 +31,7 @@ export function createUnifiedReconciliation(input: {
     throw new TypeError("unified_reconciliation_interval_invalid");
   }
   let pending = false;
+  let pendingTimerTick = false;
   let running: Promise<void> | null = null;
   let interval: NodeJS.Timeout | null = null;
   let stopped = false;
@@ -53,11 +54,13 @@ export function createUnifiedReconciliation(input: {
   const startPending = () => {
     if (stopped || running !== null || !pending) return;
     pending = false;
+    const timerTick = pendingTimerTick;
+    pendingTimerTick = false;
     running = (async () => {
       try {
         lastResult = await input.runCycle();
-        observe(lastResult);
-        if (lastResult.actionableWorkFound) {
+        if (timerTick) observe(lastResult);
+        if (timerTick && lastResult.actionableWorkFound) {
           emitBestEffort(
             input.onAdaptiveEvent,
             createUnifiedAdaptiveEvent({
@@ -82,7 +85,7 @@ export function createUnifiedReconciliation(input: {
       }
     })();
   };
-  const wake = () => {
+  const wake = (cause: "event" | "timer" = "event") => {
     if (stopped) return;
     if (running !== null || pending) {
       try {
@@ -94,6 +97,7 @@ export function createUnifiedReconciliation(input: {
       }
     }
     pending = true;
+    if (cause === "timer") pendingTimerTick = true;
     queueMicrotask(startPending);
   };
   const waitForIdle = (): Promise<void> => {
@@ -104,18 +108,19 @@ export function createUnifiedReconciliation(input: {
   return {
     wake,
     async tick() {
-      wake();
+      wake("timer");
       await waitForIdle();
       return lastResult;
     },
     start() {
       if (interval !== null || stopped) return;
-      interval = setInterval(wake, input.intervalMs);
+      interval = setInterval(() => wake("timer"), input.intervalMs);
       interval.unref?.();
     },
     async stop() {
       stopped = true;
       pending = false;
+      pendingTimerTick = false;
       if (interval !== null) {
         clearInterval(interval);
         interval = null;

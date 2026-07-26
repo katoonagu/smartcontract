@@ -93,6 +93,24 @@ export function createUnifiedProviderRefillDiagnostics() {
   let evictedIncomplete = 0;
   let discontinuities = 0;
   let invalidClocks = 0;
+  let runScope: Set<string> | null = null;
+
+  const reset = (): void => {
+    incomplete.clear();
+    for (const values of Object.values(phases)) values.splice(0);
+    assignments.proposed = 0;
+    assignments.accepted = 0;
+    assignments.rejected = 0;
+    assignments.rejections.draining = 0;
+    assignments.rejections.slotActive = 0;
+    assignments.rejections.pendingAssignment = 0;
+    assignments.rejections.staleEpoch = 0;
+    evictedIncomplete = 0;
+    discontinuities = 0;
+    invalidClocks = 0;
+  };
+  const inScope = (runId: string | undefined): boolean =>
+    runScope === null || (runId !== undefined && runScope.has(runId));
 
   const validClock = (atMs: number): boolean => {
     if (Number.isFinite(atMs) && atMs >= 0) return true;
@@ -121,25 +139,28 @@ export function createUnifiedProviderRefillDiagnostics() {
   };
 
   return {
-    reset(): void {
-      incomplete.clear();
-      for (const values of Object.values(phases)) values.splice(0);
-      assignments.proposed = 0;
-      assignments.accepted = 0;
-      assignments.rejected = 0;
-      assignments.rejections.draining = 0;
-      assignments.rejections.slotActive = 0;
-      assignments.rejections.pendingAssignment = 0;
-      assignments.rejections.staleEpoch = 0;
-      evictedIncomplete = 0;
-      discontinuities = 0;
-      invalidClocks = 0;
+    reset,
+    setRunScope(runIds: readonly string[] | null): void {
+      if (
+        runIds !== null &&
+        (
+          runIds.length < 1 ||
+          runIds.some((runId) => !runId.trim()) ||
+          new Set(runIds).size !== runIds.length
+        )
+      ) {
+        throw new TypeError("unified_provider_refill_scope_invalid");
+      }
+      reset();
+      runScope = runIds === null ? null : new Set(runIds);
     },
     recordChunkFinished(event: {
       readonly slotId: number;
       readonly epoch: number;
       readonly atMs: number;
+      readonly runId?: string;
     }): void {
+      if (!inScope(event.runId)) return;
       if (!validIdentity(event.slotId, event.epoch) ||
         !validClock(event.atMs)) return;
       drop(event.slotId, true);
@@ -158,7 +179,9 @@ export function createUnifiedProviderRefillDiagnostics() {
       readonly slotId: number;
       readonly epoch: number;
       readonly atMs: number;
+      readonly runId?: string;
     }): void {
+      if (!inScope(event.runId)) return;
       if (!validIdentity(event.slotId, event.epoch) ||
         !validClock(event.atMs)) return;
       const sample = incomplete.get(event.slotId);
@@ -179,7 +202,9 @@ export function createUnifiedProviderRefillDiagnostics() {
       readonly atMs: number;
     }): void {
       if (!validClock(event.atMs)) return;
-      for (const assignment of event.assignments) {
+      for (const assignment of event.assignments.filter((item) =>
+        inScope(item.permit.runId)
+      )) {
         const sample = correlateAssignment(assignment);
         if (!sample) continue;
         if (sample.checkpointFinishedAtMs === undefined) {
@@ -203,10 +228,16 @@ export function createUnifiedProviderRefillDiagnostics() {
       result: UnifiedProviderAssignmentResult,
       atMs: number
     ): void {
-      assignments.proposed += result.accepted.length + result.rejected.length;
-      assignments.accepted += result.accepted.length;
-      assignments.rejected += result.rejected.length;
-      for (const rejection of result.rejected) {
+      const accepted = result.accepted.filter((item) =>
+        inScope(item.permit.runId)
+      );
+      const rejected = result.rejected.filter((item) =>
+        inScope(item.assignment.permit.runId)
+      );
+      assignments.proposed += accepted.length + rejected.length;
+      assignments.accepted += accepted.length;
+      assignments.rejected += rejected.length;
+      for (const rejection of rejected) {
         if (rejection.reason === "slot_active") {
           assignments.rejections.slotActive += 1;
         } else if (rejection.reason === "pending_assignment") {
@@ -218,7 +249,7 @@ export function createUnifiedProviderRefillDiagnostics() {
         }
       }
       if (!validClock(atMs)) return;
-      for (const assignment of result.accepted) {
+      for (const assignment of accepted) {
         const sample = correlateAssignment(assignment);
         if (!sample) continue;
         if (sample.controllerDecisionFinishedAtMs === undefined) {
@@ -241,7 +272,9 @@ export function createUnifiedProviderRefillDiagnostics() {
       readonly slotId: number;
       readonly epoch: number;
       readonly atMs: number;
+      readonly runId?: string;
     }): void {
+      if (!inScope(event.runId)) return;
       if (!validIdentity(event.slotId, event.epoch) ||
         !validClock(event.atMs)) return;
       const sample = incomplete.get(event.slotId);

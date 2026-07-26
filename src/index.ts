@@ -553,6 +553,7 @@ const unifiedProviderRefillDiagnostics =
 const unifiedSelectedReconciliationCounter =
   createUnifiedSelectedReconciliationCounter();
 const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
+  unifiedSelectedReconciliationCounter.record(event);
   logger.info("unified_adaptive_event", { ...event });
 };
 const loadUnifiedFrozenLabelDataset = createFrozenLabelDatasetLoader({
@@ -1026,7 +1027,9 @@ const runUnifiedControllerCycle = async (
     );
     const nextControlSha256 = benchmarkControl?.sha256 ?? null;
     if (activeUnifiedBenchmarkControlSha256 !== nextControlSha256) {
-      unifiedProviderRefillDiagnostics.reset();
+      unifiedProviderRefillDiagnostics.setRunScope(
+        benchmarkControl?.control.runPlans.map((plan) => plan.runId) ?? null
+      );
       unifiedSelectedReconciliationCounter.activate(
         nextControlSha256,
         benchmarkControl?.control.runPlans.map((plan) => plan.runId) ?? []
@@ -1290,13 +1293,6 @@ const runUnifiedControllerCycle = async (
     }
   });
   unifiedProviderRampState = result.rampState;
-  if (benchmarkControl !== null && result.eligibleReadyProviderWork > 0) {
-    unifiedSelectedReconciliationCounter.record({
-      type: "reconciliation_recovered_work",
-      occurredAt: new Date(startedAtMs).toISOString()
-    });
-  }
-
   if (unifiedCooldownWake !== null) {
     clearTimeout(unifiedCooldownWake);
     unifiedCooldownWake = null;

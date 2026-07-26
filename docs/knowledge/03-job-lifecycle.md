@@ -170,7 +170,11 @@ planner/commit functions.
 Controller wakes coalesce after durable intake, provider lifecycle changes,
 planning/commit, and cooldown expiry. A rare reconciliation tick invokes the
 same cycle after restart or a lost signal. It reconstructs nothing from
-process memory, and a no-action tick mutates no task. Provider, analysis, and
+process memory, and a no-action tick mutates no task. The coalescer retains
+whether a timer tick is pending; an event/intake/slot wake never emits
+`reconciliation_recovered_work`, even when its ordinary cycle sees eligible
+work. Only an actual timer tick that finds actionable work emits recovery.
+Provider, analysis, and
 finalization retain separate capacity; pressure lowers or pauses new claims
 without interrupting an in-flight provider request.
 
@@ -213,16 +217,22 @@ commit, scoring, or delivery.
 Selected runtime saturation uses only the controlled run's eligible demand,
 accepted/active slots, and limiting reason. A foreign active provider permit is
 persisted as a failing contamination sample; it can never contribute four slots
-to TXc utilization. Retained refill diagnostics reset at the new control
-boundary, and actual `reconciliation_recovered_work` events are counted for the
+to TXc utilization. Retained refill diagnostics reset and switch to the exact
+selected run set at the new control boundary. Foreign accepted or rejected
+assignments and foreign chunk/checkpoint/claim events are excluded. Actual
+timer-originated `reconciliation_recovered_work` events are counted for the
 active control/run and bound into lifecycle evidence. One recovery rejects the
 selected gate.
 
 Before the selected canary is invoked, the harness writes an exclusive sealed
-journal in its scenario directory. If execution stops before the completed
-index exists, the journal blocks every later invocation from creating another
-batch or canary. Memory capture creates a fresh exclusive per-execution child
-directory and rejects preexisting or linked child files.
+journal, syncs the file, closes it, and syncs the scenario directory where the
+platform supports directory fsync. A required sync failure stops before the
+canary and leaves the journal to block restart. If execution stops before the
+completed index exists, that journal blocks every later invocation from
+creating another batch or canary. Memory capture creates a fresh exclusive
+per-execution child directory. PowerShell returns one exact phase sample on
+stdout; Node validates the bytes, builds the summary, and creates/syncs the
+final sample and summary children with exclusive no-follow handles.
 
 Traversal policy remains owned by the persisted analysis manifest. V1 resumes
 with its historical identities and evidence bytes. V2 resumes only with its

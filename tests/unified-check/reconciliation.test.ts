@@ -89,4 +89,25 @@ describe("Unified reconciliation", () => {
       type: "reconciliation_recovered_work"
     }));
   });
+
+  it("does not call a normal event wake a reconciliation recovery", async () => {
+    const onAdaptiveEvent = vi.fn();
+    const onResult = vi.fn();
+    const reconciliation = createUnifiedReconciliation({
+      intervalMs: 60_000,
+      runCycle: async () => ({
+        actionableWorkFound: true,
+        admitted: 1,
+        wokenSlots: 1
+      }),
+      onResult,
+      onAdaptiveEvent
+    });
+
+    reconciliation.wake();
+    await reconciliation.waitForIdle();
+
+    expect(onAdaptiveEvent).not.toHaveBeenCalled();
+    expect(onResult).not.toHaveBeenCalled();
+  });
 });

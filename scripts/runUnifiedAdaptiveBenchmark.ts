@@ -1014,9 +1014,12 @@ async function writeImmutable(path: string, content: string): Promise<void> {
 async function writeExclusiveState(
   path: string,
   content: string,
-  existsCode: string
+  existsCode: string,
+  durability?: {
+    syncFile?(handle: { sync(): Promise<void> }): Promise<void>;
+    syncDirectory?(handle: { sync(): Promise<void> }): Promise<void>;
+  }
 ): Promise<void> {
-  await rejectSymlink(path);
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   try {
     const handle = await open(
@@ -1029,6 +1032,7 @@ async function writeExclusiveState(
     );
     try {
       await handle.writeFile(content, "utf8");
+      await (durability?.syncFile?.(handle) ?? handle.sync());
     } finally {
       await handle.close();
     }
@@ -1037,6 +1041,26 @@ async function writeExclusiveState(
       throw new Error(existsCode);
     }
     throw error;
+  }
+  let directoryHandle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    directoryHandle = await open(dirname(path), fsConstants.O_RDONLY);
+    await (
+      durability?.syncDirectory?.(directoryHandle) ?? directoryHandle.sync()
+    );
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      durability?.syncDirectory !== undefined ||
+      process.platform !== "win32" ||
+      !["EINVAL", "ENOTSUP", "EPERM", "EISDIR"].includes(String(code))
+    ) {
+      throw error;
+    }
+    // ponytail: Windows filesystems may reject directory fsync; the journal
+    // file itself is still synced. Unix directory-sync failures stay fatal.
+  } finally {
+    await directoryHandle?.close();
   }
 }
 
@@ -1050,7 +1074,7 @@ export type UnifiedBenchmarkMemoryPhaseRunner = (input: {
   readonly runtimeSnapshotPath: string;
   readonly samplesPath: string;
   readonly summaryPath: string;
-}) => Promise<void>;
+}) => Promise<{ readonly sampleBytes: string }>;
 
 function memoryExactKeys(
   value: unknown,
@@ -1208,14 +1232,143 @@ const runUnifiedBenchmarkMemoryPowerShell: UnifiedBenchmarkMemoryPhaseRunner =
       "-ScenarioId", input.scenarioId,
       "-Phase", input.phase,
       "-NodePid", String(input.nodePid),
-      "-RuntimeSnapshotPath", input.runtimeSnapshotPath,
-      "-OutputPath", input.samplesPath
+      "-RuntimeSnapshotPath", input.runtimeSnapshotPath
     ];
-    if (input.phase === "after") {
-      args.push("-SummaryPath", input.summaryPath);
-    }
-    await execFileAsync("powershell.exe", args, { windowsHide: true });
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      args,
+      { windowsHide: true }
+    );
+    return { sampleBytes: stdout };
   };
+
+type UnifiedBenchmarkMemorySample = {
+  readonly capturedAt: string;
+  readonly localWslDiagnostic: {
+    readonly linuxMemAvailableBytes: number | null;
+    readonly linuxSwapFreeBytes: number | null;
+    readonly linuxSwapTotalBytes: number | null;
+    readonly status: "captured" | "skipped";
+    readonly vmmemWslWorkingSetBytes: number | null;
+  };
+  readonly nodePid: number;
+  readonly phase: UnifiedBenchmarkMemoryPhase;
+  readonly runId: string;
+  readonly runtime: {
+    readonly heapUsedBytes: number;
+    readonly rssBytes: number;
+  };
+  readonly scenarioId: string;
+  readonly version: "unified-memory-sample-v1";
+};
+
+function parseMemoryPhaseSample(input: {
+  readonly sampleBytes: string;
+  readonly phase: UnifiedBenchmarkMemoryPhase;
+  readonly runId: string;
+  readonly scenarioId: string;
+  readonly nodePid: number;
+}): UnifiedBenchmarkMemorySample {
+  const sample = memoryExactKeys(JSON.parse(input.sampleBytes), [
+    "capturedAt",
+    "localWslDiagnostic",
+    "nodePid",
+    "phase",
+    "runId",
+    "runtime",
+    "scenarioId",
+    "version"
+  ]);
+  const runtime = memoryExactKeys(sample.runtime, [
+    "heapUsedBytes",
+    "rssBytes"
+  ]);
+  const local = memoryExactKeys(sample.localWslDiagnostic, [
+    "linuxMemAvailableBytes",
+    "linuxSwapFreeBytes",
+    "linuxSwapTotalBytes",
+    "status",
+    "vmmemWslWorkingSetBytes"
+  ]);
+  const localValues = [
+    local.linuxMemAvailableBytes,
+    local.linuxSwapFreeBytes,
+    local.linuxSwapTotalBytes,
+    local.vmmemWslWorkingSetBytes
+  ];
+  if (
+    canonicalizeArtifactJson(sample) !== input.sampleBytes ||
+    sample.version !== "unified-memory-sample-v1" ||
+    sample.runId !== input.runId ||
+    sample.scenarioId !== input.scenarioId ||
+    sample.nodePid !== input.nodePid ||
+    sample.phase !== input.phase ||
+    typeof sample.capturedAt !== "string" ||
+    !Number.isFinite(Date.parse(sample.capturedAt)) ||
+    !memoryPositive(runtime.rssBytes) ||
+    !memoryPositive(runtime.heapUsedBytes) ||
+    runtime.heapUsedBytes > runtime.rssBytes ||
+    !["captured", "skipped"].includes(String(local.status)) ||
+    (local.status === "skipped" &&
+      localValues.some((value) => value !== null)) ||
+    (local.status === "captured" && (
+      !memoryPositive(local.linuxMemAvailableBytes) ||
+      !memoryNonNegative(local.linuxSwapFreeBytes) ||
+      !memoryNonNegative(local.linuxSwapTotalBytes) ||
+      local.linuxSwapFreeBytes > local.linuxSwapTotalBytes ||
+      !memoryPositive(local.vmmemWslWorkingSetBytes)
+    ))
+  ) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  return sample as UnifiedBenchmarkMemorySample;
+}
+
+function buildMemorySummary(
+  samples: readonly UnifiedBenchmarkMemorySample[]
+) {
+  const [before, during, after] = samples;
+  if (!before || !during || !after) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  const captured = samples.every((sample) =>
+    sample.localWslDiagnostic.status === "captured"
+  );
+  const swapUsed = (sample: UnifiedBenchmarkMemorySample) =>
+    sample.localWslDiagnostic.linuxSwapTotalBytes! -
+      sample.localWslDiagnostic.linuxSwapFreeBytes!;
+  return {
+    completedAt: after.capturedAt,
+    diagnosticStatus: captured ? "captured" as const : "skipped" as const,
+    runId: after.runId,
+    runtimeTrend: {
+      afterRssBytes: after.runtime.rssBytes,
+      beforeRssBytes: before.runtime.rssBytes,
+      peakRssBytes: Math.max(...samples.map((sample) =>
+        sample.runtime.rssBytes
+      )),
+      postRunRssDeltaBytes:
+        after.runtime.rssBytes - before.runtime.rssBytes
+    },
+    scenarioId: after.scenarioId,
+    scope: "local_wsl_diagnostic" as const,
+    verdict: "diagnostic_only" as const,
+    version: "unified-local-wsl-memory-summary-v1" as const,
+    wslTrend: {
+      linuxAvailableDeltaBytes: captured
+        ? after.localWslDiagnostic.linuxMemAvailableBytes! -
+          before.localWslDiagnostic.linuxMemAvailableBytes!
+        : null,
+      postRunVmmemDeltaBytes: captured
+        ? after.localWslDiagnostic.vmmemWslWorkingSetBytes! -
+          before.localWslDiagnostic.vmmemWslWorkingSetBytes!
+        : null,
+      swapUsedGrowthBytes: captured
+        ? swapUsed(after) - swapUsed(before)
+        : null
+    }
+  };
+}
 
 export function createUnifiedBenchmarkMemoryCapture(input: {
   readonly directory: string;
@@ -1238,6 +1391,7 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
   let stableRunId: string | null = null;
   let initialized = false;
   const completed = new Set<UnifiedBenchmarkMemoryPhase>();
+  const samples: UnifiedBenchmarkMemorySample[] = [];
   const capture = async (
     phase: UnifiedBenchmarkMemoryPhase,
     runId: string
@@ -1286,27 +1440,7 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
       }),
       "unified_benchmark_memory_child_exists"
     );
-    if (phase === "before") {
-      for (const path of [samplesPath, summaryPath]) {
-        try {
-          await lstat(path);
-          throw new Error("unified_benchmark_memory_child_exists");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }
-    } else {
-      await rejectSymlink(samplesPath);
-      if (phase === "after") {
-        try {
-          await lstat(summaryPath);
-          throw new Error("unified_benchmark_memory_child_exists");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }
-    }
-    await phaseRunner({
+    const result = await phaseRunner({
       phase,
       runId,
       scenarioId: input.scenarioId,
@@ -1315,6 +1449,13 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
       samplesPath,
       summaryPath
     });
+    samples.push(parseMemoryPhaseSample({
+      sampleBytes: result.sampleBytes,
+      phase,
+      runId,
+      scenarioId: input.scenarioId,
+      nodePid
+    }));
     completed.add(phase);
   };
   return {
@@ -1322,10 +1463,20 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
     during: (runId: string) => capture("during", runId),
     async after(runId: string) {
       await capture("after", runId);
-      const [samplesBytes, summaryBytes] = await Promise.all([
-        readNoFollow(samplesPath),
-        readNoFollow(summaryPath)
-      ]);
+      const samplesBytes = canonicalizeArtifactJson(samples);
+      const summaryBytes = canonicalizeArtifactJson(
+        buildMemorySummary(samples)
+      );
+      await writeExclusiveState(
+        samplesPath,
+        samplesBytes,
+        "unified_benchmark_memory_child_exists"
+      );
+      await writeExclusiveState(
+        summaryPath,
+        summaryBytes,
+        "unified_benchmark_memory_child_exists"
+      );
       const diagnosticStatus = validateMemoryEvidenceFiles({
         samplesBytes,
         summaryBytes,
@@ -2421,6 +2572,10 @@ export async function runSelectedIsolatedCanaryBenchmark(input: {
     ReturnType<typeof createUnifiedBenchmarkMemoryCapture>,
     "before" | "during" | "after"
   >;
+  readonly journalDurability?: {
+    syncFile?(handle: { sync(): Promise<void> }): Promise<void>;
+    syncDirectory?(handle: { sync(): Promise<void> }): Promise<void>;
+  };
 }): Promise<UnifiedSelectedAdaptiveBenchmarkIndexV2> {
   if (
     input.requestedCapacities.length !== 1 ||
@@ -2458,7 +2613,8 @@ export async function runSelectedIsolatedCanaryBenchmark(input: {
       ...journalWithoutHash,
       journalSha256: fingerprintCanonicalArtifact(journalWithoutHash)
     })}\n`,
-    "unified_benchmark_selected_partial_state"
+    "unified_benchmark_selected_partial_state",
+    input.journalDurability
   );
   const memoryCapture = input.memoryCapture ??
     createUnifiedBenchmarkMemoryCapture({

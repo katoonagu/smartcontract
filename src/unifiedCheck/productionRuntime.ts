@@ -751,6 +751,7 @@ export function createUnifiedProductionRuntime(input: {
           if (identity) {
             input.providerRefillDiagnostics?.recordTaskClaimed({
               ...identity,
+              runId: claimPermit?.runId,
               atMs: performance.now()
             });
           }
@@ -763,6 +764,7 @@ export function createUnifiedProductionRuntime(input: {
           if (identity) {
             input.providerRefillDiagnostics?.recordChunkFinished({
               ...identity,
+              runId: claimPermit?.runId,
               atMs: performance.now()
             });
           }
@@ -772,6 +774,7 @@ export function createUnifiedProductionRuntime(input: {
           if (identity) {
             input.providerRefillDiagnostics?.recordCheckpointFinished({
               ...identity,
+              runId: claimPermit?.runId,
               atMs: performance.now()
             });
           }

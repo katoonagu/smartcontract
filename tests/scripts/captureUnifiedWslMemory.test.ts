@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -50,14 +49,13 @@ describe("Unified WSL and target-Linux memory evidence", () => {
     const root = mkdtempSync(join(tmpdir(), "unified-wsl-memory-"));
     try {
       const runtimePath = join(root, "runtime.json");
-      const outputPath = join(root, "samples.json");
       const memory = process.memoryUsage();
       writeFileSync(runtimePath, JSON.stringify({
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed
       }));
 
-      execFileSync("powershell.exe", [
+      const rawSample = execFileSync("powershell.exe", [
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
@@ -72,20 +70,17 @@ describe("Unified WSL and target-Linux memory evidence", () => {
         "-NodePid",
         String(process.pid),
         "-RuntimeSnapshotPath",
-        runtimePath,
-        "-OutputPath",
-        outputPath
+        runtimePath
       ], {
         cwd: resolve("."),
+        encoding: "utf8",
         windowsHide: true,
         stdio: "pipe"
       });
 
-      const rawSamples = readFileSync(outputPath, "utf8");
-      const samples = JSON.parse(rawSamples);
-      expect(rawSamples).toBe(canonicalizeArtifactJson(samples));
-      expect(samples).toHaveLength(1);
-      expect(samples[0]).toMatchObject({
+      const parsed = JSON.parse(rawSample);
+      expect(rawSample).toBe(canonicalizeArtifactJson(parsed));
+      expect(parsed).toMatchObject({
         version: "unified-memory-sample-v1",
         runId: "run-local-sample",
         scenarioId: "local-wsl-smoke",
@@ -97,7 +92,7 @@ describe("Unified WSL and target-Linux memory evidence", () => {
         }
       });
       expect(["captured", "skipped"]).toContain(
-        samples[0].localWslDiagnostic.status
+        parsed.localWslDiagnostic.status
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
