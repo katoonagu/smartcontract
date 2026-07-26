@@ -380,6 +380,58 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("preserves distinct indexed events and deduplicates a repeated indexed identity in where runtime edges", async () => {
+    vi.resetModules();
+    let fetchedEdges: ForensicRouteEdge[] = [];
+    const whereReport = {
+      subjectAddress: subject,
+      decision: "REVIEW",
+      riskScore: 0,
+      coverage: { partial: true, notes: [] }
+    } as unknown as WhereIsMoneyReport;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      fetchedEdges = await deps.fetchEdgesForAddress(subject);
+      return whereReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile", requestedAmountRaw: "2000000" }
+      };
+      const first = indexedTransfer({
+        txHash: "same-tuple-runtime",
+        eventIndex: 1,
+        fromAddress: transit,
+        toAddress: subject,
+        amountRaw: "1000000"
+      });
+      const second = { ...first, eventIndex: 2 };
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        listIndexedUsdtTransfersForAddress: async (address: string) => address === subject ? [first, second, { ...first }] : [],
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: "2000000" })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(fetchedEdges.map((item) => item.eventIndex).sort()).toEqual([1, 2]);
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("materializes row 151 from a complete targeted index before marking Where exact", async () => {
     const hopAddress = "THopLocalMaterialization11111111111111";
     const hopTimestamp = new Date("2026-05-20T12:00:00.000Z");

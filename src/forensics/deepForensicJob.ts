@@ -9,6 +9,7 @@ import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import {
   DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
+  forensicRouteEdgeIdentity,
   indexedTransferToRouteEdge,
   materializeIndexedTransferWindow
 } from "./localTronUsdtIndex";
@@ -735,7 +736,7 @@ function fastRiskReasonsField(value: unknown): RiskReport["reasons"] {
 function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const byKey = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    byKey.set(forensicRouteEdgeIdentity(edge), edge);
   }
   return [...byKey.values()];
 }

@@ -1807,6 +1807,50 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverageV2?.tracedAmountRaw).toBe("0");
   });
 
+  it("requires exact movement identity on every edge contributing to traced coverage", async () => {
+    const pathSubject = "TExactPathSubject111111111111111111111";
+    const pathHop = "TExactPathHop1111111111111111111111111";
+    const firstHop = {
+      ...edge("exact-first-hop", pathHop, pathSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      transferId: "tronscan:exact-first-hop:0"
+    };
+    const legacyUpstream = normalizeTransfer({
+      transaction_id: "upstream-movement",
+      from_address: cleanSender,
+      to_address: pathHop,
+      quant: "1000000",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      confirmed: true,
+      contractRet: "SUCCESS",
+      block_ts: Date.parse("2026-07-12T11:00:00.000Z")
+    });
+    if (!legacyUpstream) throw new Error("test fixture must normalize");
+    const run = (upstream: ForensicRouteEdge) => runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => {
+        if (address === pathSubject) return [firstHop];
+        if (address === pathHop) return [upstream];
+        return [];
+      },
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === cleanSender ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: pathSubject,
+      requestedAmountRaw: "1000000",
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    const mixedIdentityReport = await run(legacyUpstream);
+    const allExactReport = await run({ ...legacyUpstream, transferId: "tronscan:upstream-movement:0" });
+
+    expect(mixedIdentityReport.originPaths[0]?.rootSourceType).toBe("allowlist_cex");
+    expect(mixedIdentityReport.coverageV2?.tracedAmountRaw).toBe("0");
+    expect(allExactReport.coverageV2?.tracedAmountRaw).toBe("1000000");
+  });
+
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {
     const lowBalanceSubject = "TSubjectAnchorNoFunding111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

@@ -1869,6 +1869,59 @@ describe("runSingleIncomingDepositJobCycle", () => {
 });
 
 describe("buildIncomingDepositReport", () => {
+  it("preserves distinct indexed events and deduplicates a repeated indexed identity in incoming runtime seeds", async () => {
+    vi.resetModules();
+    let seedTransfers: Array<{ evidenceId?: string }> = [];
+    const captureError = new Error("captured incoming runtime seeds");
+    const runWhereIsMoneyCheck = vi.fn(async (_deps: unknown, input: { seedTransfers?: Array<{ evidenceId?: string }> }) => {
+      seedTransfers = input.seedTransfers ?? [];
+      throw captureError;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { buildIncomingDepositReport: buildReportWithMock } = await import("../../src/forensics/incomingDepositJob");
+      const first = indexedTransfer({
+        txHash: "same-tuple-incoming-runtime",
+        eventIndex: 1,
+        fromAddress: "TFunderSameTuple111111111111111111111",
+        toAddress: validProgressJson.sender,
+        amountRaw: "1000000"
+      });
+      const second = { ...first, eventIndex: 2 };
+      const amountRaw = "2000000";
+
+      await expect(buildReportWithMock({
+        deps: {
+          listIndexedUsdtTransfersForAddress: async (address) => address === validProgressJson.sender
+            ? [first, second, { ...first }]
+            : [],
+          listRelatedTrc20Transfers: async () => [],
+          getLabelsForAddress: async () => [],
+          getClassificationForAddress: async () => null,
+          getContractIntelligenceProfile: async () => null,
+          getTransaction: async () => ({}),
+          getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: amountRaw })
+        },
+        job: job({ ...validProgressJson, amountRaw, amount: "2" }),
+        depositTxHash,
+        watchedWallet: validProgressJson.watchedWallet,
+        sender: validProgressJson.sender,
+        amountRaw,
+        timestamp: new Date(validProgressJson.timestamp)
+      })).rejects.toThrow(captureError.message);
+
+      expect(seedTransfers).toHaveLength(2);
+      expect(new Set(seedTransfers.map((item) => item.evidenceId)).size).toBe(2);
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("[REQ-31][AC-13][INCOMING] persists transaction-seed coverage with the checked deposit context", async () => {
     const receiverDeepReport = {
       subjectAddress: validProgressJson.watchedWallet,

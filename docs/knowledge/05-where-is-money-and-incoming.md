@@ -46,5 +46,12 @@ Coverage remains a factual denominator, not a risk floor or publication gate.
 `COMPLETED` requires traversal closure and produces one parent score.
 Provider/execution failure remains `FAILED_TECHNICAL` without a partial report.
 
+Exact TRON movement and traced-coverage proof requires rich identity on every
+contributing on-chain edge: a transfer ID, an event index, or a provider plus
+its row ordinal within the transaction. Legacy transaction/from/to/amount
+tuples remain valid for traversal and compatibility deduplication, but cannot
+by themselves prove exactly one emitted movement or contribute exact traced
+coverage.
+
 This contract is implemented and tested. Delivery ownership is separate from
 the analysis path and does not gate isolated execution.

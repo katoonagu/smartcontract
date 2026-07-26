@@ -1217,8 +1217,21 @@ function coverageV2ForSelection(input: {
 function exactWhereTracedAmountRaw(
   selection: BalanceFormingSelection,
   paths: MoneyOriginPath[],
-  exactMovementEvidenceIds: ReadonlySet<string>
+  fetchedEdges: readonly ForensicRouteEdge[]
 ): string {
+  const exactMovementEvidenceIds = new Set(
+    fetchedEdges.filter(forensicRouteEdgeHasExactMovementIdentity).map((edge) => edge.id)
+  );
+  const pathStepIdentity = new Map<string, boolean>();
+  const pathStepKey = (input: { txHash: string; fromAddress: string; toAddress: string; timestamp: string }): string =>
+    [input.txHash, input.fromAddress.toLowerCase(), input.toAddress.toLowerCase(), input.timestamp].join(":");
+  for (const edge of fetchedEdges) {
+    const key = pathStepKey({ ...edge, timestamp: edge.timestamp.toISOString() });
+    pathStepIdentity.set(
+      key,
+      (pathStepIdentity.get(key) ?? true) && forensicRouteEdgeHasExactMovementIdentity(edge)
+    );
+  }
   const selectedByTxHash = new Map<string, BalanceFormingTransfer[]>();
   const pathsByTxHash = new Map<string, MoneyOriginPath[]>();
   const pathsByEvidenceId = new Map<string, MoneyOriginPath>();
@@ -1253,6 +1266,7 @@ function exactWhereTracedAmountRaw(
         ? pathsByTxHash.get(transfer.txHash)![0]
         : undefined;
     if (!path || path.rootSourceType === "incomplete" || path.rootSourceType === "unknown") return sum;
+    if (!path.steps.every((step) => pathStepIdentity.get(pathStepKey(step)) === true)) return sum;
     if ((path.sourceProvenance ?? []).some((item) =>
       item.proofClass !== "exact" && item.proofClass !== "service_boundary"
     )) return sum;
@@ -2157,7 +2171,7 @@ export async function runWhereIsMoneyCheck(
     tracedAmountRaw: exactWhereTracedAmountRaw(
       provenanceSelection,
       provenanceOriginPaths,
-      new Set(sourceEdges.filter(forensicRouteEdgeHasExactMovementIdentity).map((edge) => edge.id))
+      [...edgeCache.values()].flat()
     ),
     limitations: coverageLimitations,
     exclusions: exactFeeTransfers.length === 0
