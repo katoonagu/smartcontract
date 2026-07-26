@@ -568,7 +568,10 @@ async function replay(input: {
     directEvents,
     knownCounterparties: new Map(),
     branches,
-    traversal: completedArtifact
+    traversal: completedArtifact,
+    labelDataset: input.traversalPolicyVersion === "snapshot-closure-v2"
+      ? EMPTY_FROZEN_LABEL_DATASET.dataset
+      : null
   });
   const canonicalFactsEntry = [...candidate.artifactKinds]
     .find(([, kind]) => kind === "canonical_facts");

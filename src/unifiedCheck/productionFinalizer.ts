@@ -329,7 +329,8 @@ export async function runUnifiedProductionFinalizationCycle(input: {
       directEvents,
       knownCounterparties: knownCounterparties(branches),
       branches,
-      traversal
+      traversal,
+      labelDataset: labelDataset.dataset_json
     });
     for (const [sha256, value] of candidate.artifacts) {
       await insertUnifiedArtifact(client, {

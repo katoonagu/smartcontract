@@ -3,11 +3,20 @@ import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson"
 import {
   canonicalTronUsdtEventKey
 } from "../../src/forensics/tronAddressAllTimeIndex";
+import type { IndexedTronUsdtTransfer } from "../../src/types";
 import {
   runUnifiedDeepBranch,
   runUnifiedFastBranch,
   runUnifiedWhereBranch
 } from "../../src/unifiedCheck/branchAdapters";
+import type {
+  AnalysisManifestV1,
+  ChildAttemptArtifactV1
+} from "../../src/unifiedCheck/contracts";
+import {
+  buildProductionFrozenLabelDataset,
+  type FrozenLabelDatasetV1
+} from "../../src/unifiedCheck/frozenLabels";
 import {
   buildUnifiedProductionCompletionCandidate
 } from "../../src/unifiedCheck/productionCompletion";
@@ -15,18 +24,19 @@ import {
   buildUnifiedProductionEvidence
 } from "../../src/unifiedCheck/productionEvidence";
 import type {
-  AnalysisManifestV1,
-  ChildAttemptArtifactV1
-} from "../../src/unifiedCheck/contracts";
-import type { IndexedTronUsdtTransfer } from "../../src/types";
+  UnifiedTraversalArtifactV1
+} from "../../src/unifiedCheck/productionTraversal";
+import {
+  decideTronScanProviderServiceAssertion
+} from "../../src/unifiedCheck/providerServiceBindings";
+import {
+  buildUnifiedBranchInput
+} from "../../src/unifiedCheck/requestService";
 import {
   buildTraversalCoverage,
   traversalStateId,
   type TraversalStateV1
 } from "../../src/unifiedCheck/traversal";
-import type {
-  UnifiedTraversalArtifactV1
-} from "../../src/unifiedCheck/productionTraversal";
 
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
@@ -123,62 +133,258 @@ const traversal: UnifiedTraversalArtifactV1 = {
   closed: true
 };
 
-describe("Unified production completion", () => {
-  it("builds one coverage-independent hash chain and dossier from all branches", async () => {
-    const evidence = buildUnifiedProductionEvidence({
-      subjectAddress: SUBJECT,
-      snapshotBlock: "100",
-      events: [event],
-      knownCounterparties: new Map(),
-      hardEvidence: {},
-      traversal
+function manifestV2(
+  dataset: { readonly sha256: string }
+): AnalysisManifestV1 {
+  const versions = {
+    labelDatasetSha256: dataset.sha256,
+    scoringPolicyVersion: "scoring-signal-matrix-v4",
+    attributionPolicyVersion: "selected-attribution-policy-v1",
+    traversalPolicyVersion: "snapshot-closure-v2",
+    runtimeCommit: "candidate",
+    schemaVersion: 33
+  } as const;
+  return {
+    ...manifest,
+    labelDatasetSha256: dataset.sha256,
+    labelCatalogVersion: "unified-label-catalog-v1",
+    boundaryPredicateVersion: "unified-boundary-predicates-v1",
+    traversalPolicyVersion: "snapshot-closure-v2",
+    branchArtifactHashes: Object.fromEntries(
+      (["fast", "where", "deep"] as const).map((branchId) => [
+        branchId,
+        fingerprintCanonicalArtifact(buildUnifiedBranchInput(
+          branchId,
+          manifest.snapshotHash,
+          versions
+        ))
+      ])
+    ) as Record<"fast" | "where" | "deep", string>
+  };
+}
+
+function providerDataset(input: {
+  readonly entries: readonly {
+    readonly address: string;
+    readonly tag: "Bybit" | "Binance";
+    readonly fetchedAt: string;
+  }[];
+  readonly legacyRows?: FrozenLabelDatasetV1["legacyRows"];
+}) {
+  const providerAssertions = input.entries.map((entry) => {
+    const rawJson = { address: entry.address, tag: entry.tag };
+    const assertion = decideTronScanProviderServiceAssertion({
+      metadata: {
+        address: entry.address,
+        source: "tronscan",
+        name: null,
+        tag: entry.tag,
+        verified: false,
+        rawJson,
+        fetchedAt: new Date(entry.fetchedAt),
+        expiresAt: new Date("2026-07-23T14:00:00.000Z")
+      },
+      frozenAt: manifest.confirmedBlockTimestamp
     });
-    const runners = {
-      fast: runUnifiedFastBranch,
-      where: runUnifiedWhereBranch,
-      deep: runUnifiedDeepBranch
-    };
-    const branches = await Promise.all(
-      (["fast", "where", "deep"] as const).map(async (branchId, index) => {
-        const output = await runners[branchId]({
-          context: {
-            runId: "run-1",
-            manifest,
-            directHistoryArtifactSha256: "3".repeat(64),
-            directEvents: [event],
-            labelsDatasetSha256: manifest.labelDatasetSha256,
-            deliveryAuthority: false
-          },
-          analyze: async () => evidence[branchId]
-        });
-        const outputHash = fingerprintCanonicalArtifact(output);
-        const attempt: ChildAttemptArtifactV1 = {
-          version: "child-attempt-artifact-v1",
-          schemaVersion: 1,
-          runId: "run-1",
-          branchId,
-          attemptId: `attempt-${branchId}`,
-          previousAttemptHash: null,
-          inputHash: manifest.branchArtifactHashes[branchId],
-          outputHash,
-          status: "COMPLETED",
-          createdAt: `2026-07-23T13:01:0${index}.000Z`
-        };
-        return {
-          branchId,
-          output,
-          outputHash,
-          attempt,
-          attemptHash: fingerprintCanonicalArtifact(attempt)
-        };
-      })
-    );
-    const candidate = buildUnifiedProductionCompletionCandidate({
-      manifest,
+    if (!assertion.accepted) {
+      throw new Error(`provider fixture rejected: ${assertion.reason}`);
+    }
+    return assertion;
+  });
+  return buildProductionFrozenLabelDataset({
+    frozenAt: manifest.confirmedBlockTimestamp,
+    snapshotHash: manifest.snapshotHash,
+    legacyRows: input.legacyRows ?? [],
+    providerAssertions
+  });
+}
+
+function traversalFor(input: {
+  readonly currentManifest: AnalysisManifestV1;
+  readonly terminalAddress: string;
+  readonly labels: readonly string[];
+  readonly sourceEventIds: readonly string[];
+}): UnifiedTraversalArtifactV1 {
+  const state = {
+    ...traversalState,
+    address: input.terminalAddress,
+    sourceEventIds: input.sourceEventIds
+  };
+  return {
+    ...traversal,
+    runId: input.currentManifest.runId,
+    analysisManifestHash: fingerprintCanonicalArtifact(input.currentManifest),
+    snapshotHash: input.currentManifest.snapshotHash,
+    visitedStates: [state],
+    terminalStates: [{
+      ...traversal.terminalStates[0]!,
+      stateId: traversalStateId(state),
+      address: input.terminalAddress,
+      labels: input.labels,
+      sourceEventIds: input.sourceEventIds
+    }]
+  };
+}
+
+function bidirectionalTraversalFor(input: {
+  readonly currentManifest: AnalysisManifestV1;
+  readonly address: string;
+  readonly incomingEventId: string;
+  readonly outgoingEventId: string;
+}): UnifiedTraversalArtifactV1 {
+  const backward = {
+    ...traversalState,
+    address: input.address,
+    sourceEventIds: [input.incomingEventId]
+  };
+  const forward = {
+    ...traversalState,
+    address: input.address,
+    direction: "forward" as const,
+    fundingEpisodeId: "episode-2",
+    sourceEventIds: [input.outgoingEventId]
+  };
+  return {
+    ...traversal,
+    runId: input.currentManifest.runId,
+    analysisManifestHash: fingerprintCanonicalArtifact(input.currentManifest),
+    snapshotHash: input.currentManifest.snapshotHash,
+    visitedStates: [backward, forward],
+    terminalStates: [
+      {
+        ...traversal.terminalStates[0]!,
+        stateId: traversalStateId(backward),
+        address: input.address,
+        direction: "backward",
+        fundingEpisodeId: backward.fundingEpisodeId,
+        labels: ["cex:bybit"],
+        sourceEventIds: backward.sourceEventIds
+      },
+      {
+        ...traversal.terminalStates[0]!,
+        stateId: traversalStateId(forward),
+        address: input.address,
+        direction: "forward",
+        fundingEpisodeId: forward.fundingEpisodeId,
+        labels: ["cex:bybit"],
+        sourceEventIds: forward.sourceEventIds
+      }
+    ],
+    directionCount: 2,
+    fundingEpisodeCount: 2,
+    allocatedInputRaw: (BigInt(event.amountRaw) * 2n).toString(),
+    terminalRaw: (BigInt(event.amountRaw) * 2n).toString(),
+    backwardCoverage,
+    forwardCoverage: backwardCoverage
+  };
+}
+
+async function candidateFor(input: {
+  readonly currentManifest: AnalysisManifestV1;
+  readonly directEvents: readonly IndexedTronUsdtTransfer[];
+  readonly currentTraversal: UnifiedTraversalArtifactV1;
+  readonly labelDataset: unknown;
+  readonly knownCounterparties?: ReadonlyMap<string, readonly string[]>;
+}) {
+  const knownCounterparties = input.knownCounterparties ?? new Map();
+  const evidence = buildUnifiedProductionEvidence({
+    subjectAddress: SUBJECT,
+    snapshotBlock: input.currentManifest.confirmedBlockNumber,
+    events: input.directEvents,
+    knownCounterparties,
+    hardEvidence: {},
+    traversal: input.currentTraversal
+  });
+  const runners = {
+    fast: runUnifiedFastBranch,
+    where: runUnifiedWhereBranch,
+    deep: runUnifiedDeepBranch
+  };
+  const branches = await Promise.all(
+    (["fast", "where", "deep"] as const).map(async (branchId, index) => {
+      const output = await runners[branchId]({
+        context: {
+          runId: input.currentManifest.runId,
+          manifest: input.currentManifest,
+          directHistoryArtifactSha256: "3".repeat(64),
+          directEvents: input.directEvents,
+          labelsDatasetSha256: input.currentManifest.labelDatasetSha256,
+          deliveryAuthority: false
+        },
+        analyze: async () => evidence[branchId]
+      });
+      const outputHash = fingerprintCanonicalArtifact(output);
+      const attempt: ChildAttemptArtifactV1 = {
+        version: "child-attempt-artifact-v1",
+        schemaVersion: 1,
+        runId: input.currentManifest.runId,
+        branchId,
+        attemptId: `attempt-${branchId}`,
+        previousAttemptHash: null,
+        inputHash: input.currentManifest.branchArtifactHashes[branchId],
+        outputHash,
+        status: "COMPLETED",
+        createdAt: `2026-07-23T13:01:0${index}.000Z`
+      };
+      return {
+        branchId,
+        output,
+        outputHash,
+        attempt,
+        attemptHash: fingerprintCanonicalArtifact(attempt)
+      };
+    })
+  );
+  return buildUnifiedProductionCompletionCandidate({
+    manifest: input.currentManifest,
+    directEvents: input.directEvents,
+    knownCounterparties,
+    branches,
+    traversal: input.currentTraversal,
+    labelDataset: input.labelDataset
+  });
+}
+
+function serviceRows(candidate: Awaited<ReturnType<typeof candidateFor>>) {
+  const section = candidate.dossier.sections.find((item) =>
+    item.kind === "services_boundaries"
+  );
+  if (!section || section.kind !== "services_boundaries") {
+    throw new Error("services section missing");
+  }
+  return section.rows;
+}
+
+function terminalFactId(
+  candidate: Awaited<ReturnType<typeof candidateFor>>,
+  subjectRole: "recipient" | "sender"
+): string {
+  const entry = [...candidate.artifactKinds].find(([, kind]) =>
+    kind === "canonical_facts"
+  );
+  if (!entry) throw new Error("canonical facts missing");
+  const artifact = candidate.artifacts.get(entry[0]) as {
+    readonly facts: readonly {
+      readonly id: string;
+      readonly factType: string;
+      readonly subjectRole: string;
+    }[];
+  };
+  const fact = artifact.facts.find((item) =>
+    item.factType === "identified_service_boundary" &&
+    item.subjectRole === subjectRole
+  );
+  if (!fact) throw new Error(`terminal fact missing: ${subjectRole}`);
+  return fact.id;
+}
+
+describe("Unified production completion", () => {
+  it("preserves V1 indirect service identity behavior", async () => {
+    const candidate = await candidateFor({
+      currentManifest: manifest,
       directEvents: [event],
-      knownCounterparties: new Map(),
-      branches,
-      traversal
+      currentTraversal: traversal,
+      labelDataset: null
     });
 
     expect(candidate.dossier).toMatchObject({
@@ -192,24 +398,274 @@ describe("Unified production completion", () => {
     expect(candidate.dossier.latestPrincipalInboundEvents).toHaveLength(1);
     expect(candidate.dossier.currentBalanceAttribution.denominatorRaw)
       .toBe("10000000");
-    const services = candidate.dossier.sections.find((section) =>
-      section.kind === "services_boundaries"
-    );
-    expect(services).toMatchObject({
-      kind: "services_boundaries",
-      rows: [{
-        service: "Bybit",
-        address: UPSTREAM_CEX,
-        direction: "incoming",
-        directness: "indirect",
-        amount: {
-          amountRaw: event.amountRaw,
-          denominatorRaw: event.amountRaw
-        }
-      }]
-    });
+    expect(serviceRows(candidate)).toMatchObject([{
+      service: "Bybit",
+      address: UPSTREAM_CEX,
+      direction: "incoming",
+      directness: "indirect",
+      amount: {
+        amountRaw: event.amountRaw,
+        denominatorRaw: event.amountRaw
+      }
+    }]);
     for (const [hash, artifact] of candidate.artifacts) {
       expect(fingerprintCanonicalArtifact(artifact)).toBe(hash);
     }
+  });
+
+  it("resolves a V2 terminal CEX from its frozen event-time record", async () => {
+    const frozen = providerDataset({
+      entries: [{
+        address: UPSTREAM_CEX,
+        tag: "Bybit",
+        fetchedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+    const candidate = await candidateFor({
+      currentManifest,
+      directEvents: [event],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: UPSTREAM_CEX,
+        labels: ["cex:bybit"],
+        sourceEventIds: traversalState.sourceEventIds
+      }),
+      labelDataset: frozen.dataset
+    });
+
+    expect(candidate.dossier).toMatchObject({ score: 0, decision: "ACCEPTABLE" });
+    expect(serviceRows(candidate)).toMatchObject([{
+      service: "Bybit",
+      address: UPSTREAM_CEX,
+      direction: "incoming",
+      directness: "indirect"
+    }]);
+  });
+
+  it("rejects a V2 terminal whose provider identity starts after the event", async () => {
+    const frozen = providerDataset({
+      entries: [{
+        address: UPSTREAM_CEX,
+        tag: "Bybit",
+        fetchedAt: "2026-07-23T12:00:00.001Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+
+    await expect(candidateFor({
+      currentManifest,
+      directEvents: [event],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: UPSTREAM_CEX,
+        labels: ["cex:bybit"],
+        sourceEventIds: traversalState.sourceEventIds
+      }),
+      labelDataset: frozen.dataset
+    })).rejects.toThrow("unified_production_v2_service_boundary_unbound");
+  });
+
+  it("aggregates a direct V2 provider service exactly once", async () => {
+    const frozen = providerDataset({
+      entries: [{
+        address: UPSTREAM_CEX,
+        tag: "Bybit",
+        fetchedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+    const directEvent = { ...event, fromAddress: UPSTREAM_CEX };
+    const directEventId = canonicalTronUsdtEventKey(directEvent);
+    const candidate = await candidateFor({
+      currentManifest,
+      directEvents: [directEvent],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: UPSTREAM_CEX,
+        labels: ["cex:bybit"],
+        sourceEventIds: [directEventId]
+      }),
+      labelDataset: frozen.dataset
+    });
+
+    expect(candidate.dossier).toMatchObject({ score: 0, decision: "ACCEPTABLE" });
+    expect(serviceRows(candidate)).toHaveLength(1);
+    expect(serviceRows(candidate)[0]).toMatchObject({
+      service: "Bybit",
+      address: UPSTREAM_CEX,
+      direction: "incoming",
+      directness: "direct",
+      amount: {
+        amountRaw: directEvent.amountRaw,
+        denominatorRaw: directEvent.amountRaw
+      },
+      transferCount: 1
+    });
+    expect(serviceRows(candidate)[0]!.factIds).toContain(
+      terminalFactId(candidate, "recipient")
+    );
+  });
+
+  it("keeps inbound and outbound V2 terminal provenance separate", async () => {
+    const frozen = providerDataset({
+      entries: [{
+        address: UPSTREAM_CEX,
+        tag: "Bybit",
+        fetchedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+    const incoming = { ...event, fromAddress: UPSTREAM_CEX };
+    const outgoing = {
+      ...event,
+      txHash: "4".repeat(64),
+      fromAddress: SUBJECT,
+      toAddress: UPSTREAM_CEX
+    };
+    const candidate = await candidateFor({
+      currentManifest,
+      directEvents: [incoming, outgoing],
+      currentTraversal: bidirectionalTraversalFor({
+        currentManifest,
+        address: UPSTREAM_CEX,
+        incomingEventId: canonicalTronUsdtEventKey(incoming),
+        outgoingEventId: canonicalTronUsdtEventKey(outgoing)
+      }),
+      labelDataset: frozen.dataset
+    });
+    const rows = serviceRows(candidate);
+    const incomingRow = rows.find((row) => row.direction === "incoming");
+    const outgoingRow = rows.find((row) => row.direction === "outgoing");
+    const recipientFactId = terminalFactId(candidate, "recipient");
+    const senderFactId = terminalFactId(candidate, "sender");
+
+    expect(rows).toHaveLength(2);
+    expect(incomingRow).toMatchObject({
+      directness: "direct",
+      transferCount: 1,
+      amount: {
+        amountRaw: event.amountRaw,
+        denominatorRaw: event.amountRaw
+      }
+    });
+    expect(outgoingRow).toMatchObject({
+      directness: "direct",
+      transferCount: 1,
+      amount: {
+        amountRaw: event.amountRaw,
+        denominatorRaw: event.amountRaw
+      }
+    });
+    expect(incomingRow!.factIds).toContain(recipientFactId);
+    expect(incomingRow!.factIds).not.toContain(senderFactId);
+    expect(outgoingRow!.factIds).toContain(senderFactId);
+    expect(outgoingRow!.factIds).not.toContain(recipientFactId);
+  });
+
+  it.each([
+    ["later_provider", providerDataset({
+      entries: [
+        {
+          address: UPSTREAM_CEX,
+          tag: "Bybit",
+          fetchedAt: "2026-07-23T12:00:00.001Z"
+        },
+        {
+          address: SOURCE,
+          tag: "Binance",
+          fetchedAt: "2026-07-23T11:00:00.000Z"
+        }
+      ]
+    })],
+    ["hint", providerDataset({
+      entries: [{
+        address: SOURCE,
+        tag: "Binance",
+        fetchedAt: "2026-07-23T11:00:00.000Z"
+      }],
+      legacyRows: [{
+        address: UPSTREAM_CEX,
+        label: "Bybit",
+        category: "cex",
+        provider: "legacy-risk-context",
+        observedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    })]
+  ])("does not authorize a direct V2 service from %s context", async (
+    _name,
+    frozen
+  ) => {
+    const currentManifest = manifestV2(frozen);
+    const directEvent = { ...event, fromAddress: UPSTREAM_CEX };
+    const candidate = await candidateFor({
+      currentManifest,
+      directEvents: [directEvent],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: SOURCE,
+        labels: ["cex:binance"],
+        sourceEventIds: [canonicalTronUsdtEventKey(directEvent), "upstream-hop"]
+      }),
+      labelDataset: frozen.dataset,
+      knownCounterparties: new Map([[UPSTREAM_CEX, ["Bybit", "cex"]]])
+    });
+
+    expect(candidate.dossier).toMatchObject({ score: 0, decision: "ACCEPTABLE" });
+    expect(serviceRows(candidate).some((row) => row.service === "Bybit"))
+      .toBe(false);
+  });
+
+  it("rejects a persisted V2 terminal backed only by a hint", async () => {
+    const frozen = providerDataset({
+      entries: [],
+      legacyRows: [{
+        address: UPSTREAM_CEX,
+        label: "Bybit",
+        category: "cex",
+        provider: "legacy-risk-context",
+        observedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+
+    await expect(candidateFor({
+      currentManifest,
+      directEvents: [event],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: UPSTREAM_CEX,
+        labels: ["cex:bybit"],
+        sourceEventIds: traversalState.sourceEventIds
+      }),
+      labelDataset: frozen.dataset
+    })).rejects.toThrow("unified_production_v2_service_boundary_unbound");
+  });
+
+  it("rejects V2 dataset content outside the manifest hash", async () => {
+    const frozen = providerDataset({
+      entries: [{
+        address: UPSTREAM_CEX,
+        tag: "Bybit",
+        fetchedAt: "2026-07-23T11:00:00.000Z"
+      }]
+    });
+    const currentManifest = manifestV2(frozen);
+    const tampered = {
+      ...frozen.dataset,
+      frozenAt: "2026-07-23T12:59:59.999Z"
+    };
+
+    await expect(candidateFor({
+      currentManifest,
+      directEvents: [event],
+      currentTraversal: traversalFor({
+        currentManifest,
+        terminalAddress: UPSTREAM_CEX,
+        labels: ["cex:bybit"],
+        sourceEventIds: traversalState.sourceEventIds
+      }),
+      labelDataset: tampered
+    })).rejects.toThrow("unified_frozen_label_dataset_hash_mismatch");
   });
 });

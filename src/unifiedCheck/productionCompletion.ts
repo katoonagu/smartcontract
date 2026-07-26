@@ -1,4 +1,7 @@
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import {
+  canonicalTronUsdtEventKey
+} from "../forensics/tronAddressAllTimeIndex";
 import { buildScoreAnchorV3 } from "../risk/scoreAnchorV3";
 import {
   scoreSignalMatrixV4,
@@ -19,6 +22,12 @@ import type {
   TraversalClosureCertificateV1
 } from "./contracts";
 import type { UnifiedBranchArtifactV1 } from "./branchAdapters";
+import {
+  validateFrozenLabelDatasetV1,
+  type FrozenLabelDatasetV1,
+  type FrozenLabelRecordV1
+} from "./frozenLabels";
+import { resolveFrozenLabelAtEventV1 } from "./labelCatalog";
 import {
   buildTraversalClosureCertificate,
   traversalStateId
@@ -121,6 +130,163 @@ function eventKey(event: IndexedTronUsdtTransfer): string {
   return `${event.txHash}:${event.eventIndex}`;
 }
 
+const LEGACY_SERVICE_CATEGORIES = new Set([
+  "cex", "exchange", "trusted", "whitebit", "bridge"
+]);
+const LEGACY_SERVICE_NOISE = new Set([
+  ...LEGACY_SERVICE_CATEGORIES,
+  "hot_wallet", "router", "dex", "pool", "unknown"
+]);
+
+function legacyServiceIdentity(labels: readonly string[]): string | null {
+  const category = labels.find((label) =>
+    LEGACY_SERVICE_CATEGORIES.has(label)
+  );
+  if (category === undefined) return null;
+  return labels.find((label) => !LEGACY_SERVICE_NOISE.has(label)) ?? category;
+}
+
+function indexFrozenLabelsByAddress(
+  dataset: FrozenLabelDatasetV1
+): ReadonlyMap<string, readonly FrozenLabelRecordV1[]> {
+  const mutable = new Map<string, FrozenLabelRecordV1[]>();
+  for (const label of dataset.labels) {
+    const labels = mutable.get(label.address) ?? [];
+    labels.push(label);
+    mutable.set(label.address, labels);
+  }
+  return new Map([...mutable].map(([address, labels]) => [
+    address,
+    Object.freeze([...labels])
+  ]));
+}
+
+function resolveV2CustodialService(input: {
+  readonly labelsByAddress:
+    ReadonlyMap<string, readonly FrozenLabelRecordV1[]>;
+  readonly address: string;
+  readonly eventTimestamp: string;
+  readonly allowedCatalogEntryIds?: ReadonlySet<string>;
+}): { readonly catalogEntryId: string; readonly service: string } | null {
+  const matches = new Map<string, string>();
+  for (const label of input.labelsByAddress.get(input.address) ?? []) {
+    if (
+      (
+        input.allowedCatalogEntryIds !== undefined &&
+        !input.allowedCatalogEntryIds.has(label.catalogEntryId)
+      )
+    ) continue;
+    const resolution = resolveFrozenLabelAtEventV1({
+      label,
+      eventTimestamp: input.eventTimestamp
+    });
+    if (
+      resolution.kind !== "eligible" ||
+      resolution.entry.category !== "cex" ||
+      resolution.entry.terminalPolicy !== "custodial_boundary"
+    ) continue;
+    matches.set(resolution.entry.id, resolution.entry.identity);
+  }
+  if (matches.size > 1) {
+    throw new Error("unified_production_v2_service_boundary_ambiguous");
+  }
+  const match = matches.entries().next().value as
+    [string, string] | undefined;
+  return match === undefined
+    ? null
+    : { catalogEntryId: match[0], service: match[1] };
+}
+
+function v2DirectServiceLinks(input: {
+  readonly subject: string;
+  readonly events: readonly IndexedTronUsdtTransfer[];
+  readonly labelsByAddress:
+    ReadonlyMap<string, readonly FrozenLabelRecordV1[]>;
+  readonly incomingDenominatorRaw: bigint;
+  readonly outgoingDenominatorRaw: bigint;
+  readonly factIdOf: (event: IndexedTronUsdtTransfer) => string;
+}): WalletMetrics["serviceLinks"] {
+  const groups = new Map<string, {
+    service: string;
+    address: string;
+    direction: "incoming" | "outgoing";
+    catalogEntryId: string;
+    amountRaw: bigint;
+    transferCount: number;
+    factIds: Set<string>;
+  }>();
+  for (const event of input.events) {
+    const directions: Array<{
+      direction: "incoming" | "outgoing";
+      address: string;
+    }> = [];
+    if (isSubject(event.toAddress, input.subject)) {
+      directions.push({ direction: "incoming", address: event.fromAddress });
+    }
+    if (isSubject(event.fromAddress, input.subject)) {
+      directions.push({ direction: "outgoing", address: event.toAddress });
+    }
+    for (const item of directions) {
+      const identity = resolveV2CustodialService({
+        labelsByAddress: input.labelsByAddress,
+        address: item.address,
+        eventTimestamp: event.blockTimestamp.toISOString()
+      });
+      if (identity === null) continue;
+      const key = JSON.stringify([
+        item.direction,
+        item.address,
+        identity.catalogEntryId
+      ]);
+      const group = groups.get(key) ?? {
+        service: identity.service,
+        address: item.address,
+        direction: item.direction,
+        catalogEntryId: identity.catalogEntryId,
+        amountRaw: 0n,
+        transferCount: 0,
+        factIds: new Set<string>()
+      };
+      group.amountRaw += BigInt(event.amountRaw);
+      group.transferCount += 1;
+      group.factIds.add(input.factIdOf(event));
+      groups.set(key, group);
+    }
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, group]) => ({
+      service: group.service,
+      address: group.address,
+      direction: group.direction,
+      directness: "direct",
+      amountRaw: group.amountRaw.toString(),
+      denominatorRaw: (group.direction === "incoming"
+        ? input.incomingDenominatorRaw
+        : input.outgoingDenominatorRaw).toString(),
+      transferCount: group.transferCount,
+      factIds: [...group.factIds].sort()
+    }));
+}
+
+function terminalDirectness(
+  sourceEventIds: readonly string[],
+  directEventIds: ReadonlySet<string>
+): "direct" | "indirect" {
+  return sourceEventIds.length > 0 &&
+    sourceEventIds.every((id) => directEventIds.has(id))
+    ? "direct"
+    : "indirect";
+}
+
+function v2DirectServiceLinkMergeKey(input: {
+  readonly service: string;
+  readonly address: string;
+  readonly direction: "incoming" | "outgoing";
+}): string {
+  return JSON.stringify([input.service, input.address, input.direction]);
+}
+
 function metrics(input: {
   manifest: AnalysisManifestV1;
   events: readonly IndexedTronUsdtTransfer[];
@@ -131,6 +297,7 @@ function metrics(input: {
   matrixRow: string;
   score: number;
   knownCounterparties: ReadonlyMap<string, readonly string[]>;
+  frozenLabelDataset: FrozenLabelDatasetV1 | null;
   traversal: UnifiedTraversalArtifactV1;
 }): WalletMetrics {
   const subject = input.manifest.subjectAddress;
@@ -172,6 +339,9 @@ function metrics(input: {
     (event) => event.toAddress,
     factIdOf
   );
+  const frozenLabelsByAddress = input.frozenLabelDataset === null
+    ? null
+    : indexFrozenLabelsByAddress(input.frozenLabelDataset);
   const serviceFactIdsByCounterparty = new Map<string, string[]>();
   const traversalFactIds = new Map<string, string[]>();
   for (const fact of input.facts) {
@@ -179,12 +349,20 @@ function metrics(input: {
       fact.profile === "state" &&
       fact.counterpartyOrObject !== null
     ) {
-      const key = JSON.stringify([
-        fact.factType,
-        fact.counterpartyOrObject,
-        fact.directness,
-        fact.effectiveAt
-      ]);
+      const key = input.frozenLabelDataset === null
+        ? JSON.stringify([
+            fact.factType,
+            fact.counterpartyOrObject,
+            fact.directness,
+            fact.effectiveAt
+          ])
+        : JSON.stringify([
+            fact.factType,
+            fact.counterpartyOrObject,
+            fact.directness,
+            fact.effectiveAt,
+            fact.subjectRole
+          ]);
       const ids = traversalFactIds.get(key) ?? [];
       ids.push(canonicalFactId(fact));
       traversalFactIds.set(key, [...new Set(ids)].sort());
@@ -204,68 +382,120 @@ function metrics(input: {
     );
   }
   const serviceLinks: WalletMetrics["serviceLinks"] = [];
-  for (const [direction, rows, denominator] of [
-    ["incoming", incomingRows, incomingRaw],
-    ["outgoing", outgoingRows, outgoingRaw]
-  ] as const) {
-    for (const row of rows) {
-      const labels = input.knownCounterparties.get(row.key) ?? [];
-      const serviceCategory = labels.find((label) =>
-        ["cex", "exchange", "trusted", "whitebit", "bridge"].includes(label)
-      );
-      if (!serviceCategory) continue;
-      const service = labels.find((label) =>
-        ![
-          "cex", "exchange", "trusted", "whitebit", "bridge",
-          "hot_wallet", "router", "dex", "pool", "unknown"
-        ].includes(label)
-      ) ?? serviceCategory;
-      serviceLinks.push({
-        service,
-        address: row.key,
-        direction,
-        directness: "direct",
-        amountRaw: row.amountRaw,
-        denominatorRaw: denominator.toString(),
-        transferCount: row.transferCount,
-        factIds: [...new Set([
-          ...row.factIds,
-          ...(serviceFactIdsByCounterparty.get(row.key) ?? [])
-        ])].sort()
-      });
+  let v2DirectServiceLinksByKey: Map<
+    string,
+    WalletMetrics["serviceLinks"][number]
+  > | null = null;
+  if (input.frozenLabelDataset === null) {
+    for (const [direction, rows, denominator] of [
+      ["incoming", incomingRows, incomingRaw],
+      ["outgoing", outgoingRows, outgoingRaw]
+    ] as const) {
+      for (const row of rows) {
+        const service = legacyServiceIdentity(
+          input.knownCounterparties.get(row.key) ?? []
+        );
+        if (service === null) continue;
+        serviceLinks.push({
+          service,
+          address: row.key,
+          direction,
+          directness: "direct",
+          amountRaw: row.amountRaw,
+          denominatorRaw: denominator.toString(),
+          transferCount: row.transferCount,
+          factIds: [...new Set([
+            ...row.factIds,
+            ...(serviceFactIdsByCounterparty.get(row.key) ?? [])
+          ])].sort()
+        });
+      }
+    }
+  } else {
+    const directServiceLinks = v2DirectServiceLinks({
+      subject,
+      events: input.events,
+      labelsByAddress: frozenLabelsByAddress!,
+      incomingDenominatorRaw: incomingRaw,
+      outgoingDenominatorRaw: outgoingRaw,
+      factIdOf
+    });
+    serviceLinks.push(...directServiceLinks);
+    v2DirectServiceLinksByKey = new Map();
+    for (const link of directServiceLinks) {
+      const key = v2DirectServiceLinkMergeKey(link);
+      if (!v2DirectServiceLinksByKey.has(key)) {
+        v2DirectServiceLinksByKey.set(key, link);
+      }
     }
   }
+  const directEventIds = input.frozenLabelDataset === null
+    ? new Set<string>()
+    : new Set(input.events.map((event) => canonicalTronUsdtEventKey(event)));
   for (const terminal of input.traversal.terminalStates) {
     if (terminal.reason !== "identified_service_boundary") continue;
-    const factKey = JSON.stringify([
-      terminal.reason,
-      terminal.address,
-      "indirect",
-      terminal.anchorTimestamp
-    ]);
+    const directness = input.frozenLabelDataset === null
+      ? "indirect"
+      : terminalDirectness(terminal.sourceEventIds, directEventIds);
+    const v2Identity = input.frozenLabelDataset === null
+      ? null
+      : resolveV2CustodialService({
+          labelsByAddress: frozenLabelsByAddress!,
+          address: terminal.address,
+          eventTimestamp: terminal.anchorTimestamp,
+          allowedCatalogEntryIds: new Set(terminal.labels)
+        });
+    if (input.frozenLabelDataset !== null && v2Identity === null) {
+      throw new Error("unified_production_v2_service_boundary_unbound");
+    }
+    const factKey = input.frozenLabelDataset === null
+      ? JSON.stringify([
+          terminal.reason,
+          terminal.address,
+          directness,
+          terminal.anchorTimestamp
+        ])
+      : JSON.stringify([
+          terminal.reason,
+          terminal.address,
+          directness,
+          terminal.anchorTimestamp,
+          terminal.direction === "backward" ? "recipient" : "sender"
+        ]);
     const factIds = traversalFactIds.get(factKey) ?? [];
     if (factIds.length === 0) continue;
-    const category = terminal.labels.find((label) =>
-      ["cex", "exchange", "trusted", "whitebit", "bridge"].includes(label)
-    );
-    if (!category) continue;
-    const service = terminal.labels.find((label) =>
-      ![
-        "cex", "exchange", "trusted", "whitebit", "bridge",
-        "hot_wallet", "router", "dex", "pool", "unknown"
-      ].includes(label)
-    ) ?? category;
+    const identity = input.frozenLabelDataset === null
+      ? legacyServiceIdentity(terminal.labels)
+      : v2Identity;
+    if (identity === null) {
+      continue;
+    }
+    const service = typeof identity === "string"
+      ? identity
+      : identity.service;
     const direction = terminal.direction === "backward"
       ? "incoming"
       : "outgoing";
     const denominatorRaw = terminal.direction === "backward"
       ? input.traversal.backwardCoverage.selectedAmountRaw
       : input.traversal.forwardCoverage.selectedAmountRaw;
+    const existing = input.frozenLabelDataset !== null &&
+      directness === "direct"
+      ? v2DirectServiceLinksByKey?.get(v2DirectServiceLinkMergeKey({
+          service,
+          address: terminal.address,
+          direction
+        }))
+      : undefined;
+    if (existing !== undefined) {
+      existing.factIds = [...new Set([...existing.factIds, ...factIds])].sort();
+      continue;
+    }
     serviceLinks.push({
       service,
       address: terminal.address,
       direction,
-      directness: "indirect",
+      directness,
       amountRaw: terminal.amountRaw,
       denominatorRaw,
       transferCount: new Set(terminal.sourceEventIds).size,
@@ -395,7 +625,24 @@ export function buildUnifiedProductionCompletionCandidate(input: {
   readonly knownCounterparties: ReadonlyMap<string, readonly string[]>;
   readonly branches: readonly CompletedProductionBranch[];
   readonly traversal: UnifiedTraversalArtifactV1;
+  readonly labelDataset: unknown;
 }): UnifiedProductionCompletionCandidate {
+  let frozenLabelDataset: FrozenLabelDatasetV1 | null = null;
+  if (input.manifest.traversalPolicyVersion === "snapshot-closure-v2") {
+    if (
+      input.manifest.labelCatalogVersion === undefined ||
+      input.manifest.boundaryPredicateVersion === undefined
+    ) {
+      throw new Error("unified_v2_boundary_versions_missing");
+    }
+    frozenLabelDataset = validateFrozenLabelDatasetV1({
+      dataset: input.labelDataset,
+      expectedSha256: input.manifest.labelDatasetSha256,
+      snapshotHash: input.manifest.snapshotHash,
+      catalogVersion: input.manifest.labelCatalogVersion,
+      boundaryPredicateVersion: input.manifest.boundaryPredicateVersion
+    });
+  }
   const manifestHash = fingerprintCanonicalArtifact(input.manifest);
   const byBranch = new Map(input.branches.map((branch) => [
     branch.branchId,
@@ -572,6 +819,7 @@ export function buildUnifiedProductionCompletionCandidate(input: {
     matrixRow: matrix.matrixRow,
     score: matrix.score,
     knownCounterparties: input.knownCounterparties,
+    frozenLabelDataset,
     traversal: input.traversal
   });
   add("wallet_metrics", walletMetrics);
