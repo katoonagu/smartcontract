@@ -133,6 +133,19 @@ code_refs:
   partition, only the processed continuous ready sub-prefix commits and the
   next ready row resumes later. Commit byte limits count the exact persisted
   evidence artifacts plus the exact persisted delta, not a synthetic estimate.
+- New V2 freezes may derive `tronscan-address-tag-observation-v1` records from
+  fresh `address_metadata` through `unified-tronscan-cex-tag-map-v1`. The
+  source hash binds the raw payload, exact tag, catalog identity, fetch and
+  expiry times, and matcher version. `validFrom` equals `fetchedAt` and
+  `validTo` is `null`; a current tag is never backdated. Provider-freeze
+  diagnostics are count-only (candidates, accepted records, and rejection
+  reasons), with no addresses or raw payloads. Restart reuses the immutable
+  run-bound dataset rather than rereading provider metadata.
+- Completion resolves V2 service identity only from the run-bound frozen
+  dataset at the direct-transfer or terminal-anchor timestamp. Direct V2 links
+  aggregate event by event; V1 retains its legacy string fallback. Service
+  identity is contextual presentation and does not change
+  `scoring-signal-matrix-v4`, coverage, or delivery authority.
 - A v2 isolated canary freezes one label dataset per confirmed snapshot during
   preparation, persists each content-addressed dataset in the batch
   transaction, and binds all snapshot/dataset hashes in a schema-2 batch

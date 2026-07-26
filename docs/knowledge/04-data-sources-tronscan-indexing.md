@@ -119,6 +119,19 @@ an economic boundary: terminal predicates require valid-at-event identity and
 the corresponding route/economic proof. Hint labels and later-discovered
 restrictions remain context only.
 
+For each new `snapshot-closure-v2` run, freezing reads fresh
+`address_metadata` rows directly at confirmed snapshot time. Only a canonical
+TRON address whose stored address and TronScan tag exactly match
+`raw_json.address` and `raw_json.tag` respectively, and whose tag satisfies
+the versioned full-value CEX matcher, becomes `verified_provider`. Name,
+`verified`, flat labels, classifier output, generic exchange text, and
+substring matches never grant authority. Provider validity starts at
+`fetched_at`; `expires_at` establishes freshness at freeze, not the end of
+historical ownership. A current tag is never backdated to an earlier route
+event. Existing runs use their persisted dataset; V1 never queries or freezes
+provider records. Count-only diagnostics expose candidates, accepted records,
+and rejection reasons, never addresses or raw payloads.
+
 For `snapshot-closure-v2`, production closure is CEX-only: it uses only exact
 frozen records whose catalog policy is `custodial_boundary` and whose validity interval
 contains the traversal state's event time. The coordinator commits this
