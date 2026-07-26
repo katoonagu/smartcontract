@@ -209,6 +209,10 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
   }
   const routeAddresses = canonicalStringSet(envelope.routeCriticalAddresses);
   if (routeAddresses.length === 0) fail("where_latency_replay_route_critical_address_missing");
+  const expectedAddresses = collectRouteCriticalAddresses(envelope.expectedStableFacts as WhereIsMoneyReport);
+  if (routeAddresses.join("\u0000") !== expectedAddresses.join("\u0000")) {
+    fail("where_latency_replay_route_critical_address_missing");
+  }
   if (envelope.assertionQueries.length !== 1) fail("where_latency_replay_assertion_query_missing");
   const assertionKeys = new Set<string>();
   for (const query of envelope.assertionQueries) {
@@ -336,6 +340,26 @@ input: {
     if (hash.length > 0) hashes.add(hash);
   }
   return [...hashes];
+}
+
+export function collectRouteCriticalAddresses(report: Pick<WhereIsMoneyReport,
+  "subjectAddress" | "balanceFormingTransfers" | "originPaths" | "approvalDrainProvenanceProfiles" | "contractDrivenReceiverProfile" | "contractDrivenTransferProfiles">,
+input: { unresolvedAddresses?: string[] } = {}): string[] {
+  const addresses = new Set<string>([report.subjectAddress]);
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (typeof child === "string" && /(?:^|[A-Z_])address$/i.test(key) && child.length > 0) addresses.add(child);
+      else if (key === "pathAddresses" && Array.isArray(child)) child.forEach((address) => {
+        if (typeof address === "string" && address.length > 0) addresses.add(address);
+      });
+      else visit(child);
+    }
+  };
+  visit(report);
+  for (const address of input.unresolvedAddresses ?? []) if (address.length > 0) addresses.add(address);
+  return [...addresses].sort();
 }
 
 export type WhereReplayDeps = WhereIsMoneyDeps & {

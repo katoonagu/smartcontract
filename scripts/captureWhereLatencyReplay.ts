@@ -2,7 +2,7 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import { runWhereIsMoneyCheck, type WhereIsMoneyDeps } from "../src/check/whereIsMoneyCheck";
+import { runWhereIsMoneyCheck } from "../src/check/whereIsMoneyCheck";
 import { loadConfig } from "../src/config";
 import { createLegacyWhereIsMoneyDeps, resolveLegacyWhereIsMoneyRunInput } from "../src/forensics/deepForensicJob";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson";
@@ -11,6 +11,7 @@ import { normalizeTransfer } from "../src/forensics/routeSearch";
 import {
   assertExpectedStableWhereFacts,
   buildWhereLatencyReplayV1,
+  collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
   projectStableWhereFacts
@@ -19,7 +20,6 @@ import { whereIsMoneyIndexedFetchLimit, whereIsMoneyLatestFallbackCacheKey, wher
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../src/runtime/deepForensicRuntimeOptions";
-import { evaluateAddressRisk } from "../src/risk/evaluation";
 import { closeDb, createDb } from "../src/storage/db";
 import {
   getAddressMetadata,
@@ -31,7 +31,7 @@ import {
 } from "../src/storage/repositories";
 import { TronscanClient } from "../src/tron/tronClient";
 import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
-import type { ForensicRouteEdge, IndexedTronUsdtTransfer, RiskReport, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../src/types";
+import type { ForensicRouteEdge, IndexedTronUsdtTransfer, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../src/types";
 
 type JsonRecord = Record<string, unknown>;
 type TapeEntry = { method: string; args: unknown[]; response: unknown; origin?: "legacy_observed" | "supplemental_stage_b_fixture"; invocationCount?: number };
@@ -86,30 +86,6 @@ function indexedSnapshotRow(row: IndexedTronUsdtTransfer): Record<string, unknow
     riskTransaction: row.riskTransaction ?? false,
     confirmed: row.confirmed
   };
-}
-
-function routeAddressSet(report: WhereIsMoneyReport, unresolved: Array<{ txHash: string }>): string[] {
-  const addresses = new Set<string>([report.subjectAddress]);
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (!value || typeof value !== "object") return;
-    for (const [key, child] of Object.entries(value)) {
-      if (typeof child === "string" && /(?:^|[A-Z_])address$/i.test(key) && child.startsWith("T")) addresses.add(child);
-      else if (key === "pathAddresses" && Array.isArray(child)) child.forEach((address) => {
-        if (typeof address === "string" && address.startsWith("T")) addresses.add(address);
-      });
-      else visit(child);
-    }
-  };
-  visit({
-    balanceFormingTransfers: report.balanceFormingTransfers,
-    originPaths: report.originPaths,
-    approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
-    contractDrivenReceiverProfile: report.contractDrivenReceiverProfile,
-    contractDrivenTransferProfiles: report.contractDrivenTransferProfiles,
-    unresolved
-  });
-  return [...addresses].sort();
 }
 
 async function writeReplayExclusive(path: string, bytes: string): Promise<void> {
@@ -260,48 +236,31 @@ try {
     const profile = metadata.isContract ? await getContractIntelligenceProfile(db, address, new Date(windowEnd)) : null;
     return classifyServiceAddress({ address, metadata, contractProfile: profile });
   });
-  const deps: WhereIsMoneyDeps = {
+  const captureBase = {
+    getLabelsForAddress: (address: string) => record("getLabelsForAddress", [address], () => listAddressLabels(db, address)),
+    getTransaction: (txHash: string) => record("getTransaction", [txHash], () => tronClient.getTransaction(txHash)),
+    listTrc20ApprovalChanges: (input: any) => record("listTrc20ApprovalChanges", [input], () => tronClient.listTrc20ApprovalChanges(input)),
+    getUsdtRestrictionStatus: (address: string, requestOptions?: { includeEventTimeline?: boolean }) => record("getUsdtRestrictionStatus", [address, requestOptions ?? null], () => tronClient.getUsdtRestrictionStatus(address, requestOptions)),
+    getContractIntelligenceProfile: (address: string) => record("getContractIntelligenceProfile", [address], async () =>
+      await getContractIntelligenceProfile(db, address, new Date(windowEnd)) ?? tronClient.getContractIntelligenceProfile(address, { now: new Date(windowEnd), requireComplete: true }))
+  };
+  const checkerDeps = createLegacyWhereIsMoneyDeps({
+    base: captureBase as any,
     getTrc20Balance: (address, contract) => record("getTrc20Balance", [address, contract], async () => {
       if (contract !== TRON_USDT_CONTRACT_ADDRESS) return null;
       return (await getStablecoin(address))?.balanceRaw ?? null;
     }),
     fetchEdgesForAddress,
     fetchLatestEdgesForAddress,
-    getLabelsForAddress: (address) => record("getLabelsForAddress", [address], () => listAddressLabels(db, address)),
     getClassificationForAddress: getClassification,
-    getFastWalletRisk: (address) => record("getFastWalletRisk", [address], async () => {
-      const labels = await listAddressLabels(db, address);
-      const state = await getStablecoin(address);
-      return evaluateAddressRisk({ context: { subjectAddress: address }, labels, amlSignals: state?.isBlacklisted ? [{
-        code: "stablecoin_usdt_blacklisted", message: "Official TRON USDT contract blacklist state is active for this address.",
-        scoreImpact: 90, source: "stablecoin_contract", confidence: "high", severity: "critical"
-      }] : [] }).report as RiskReport;
-    }),
-    getTransaction: (txHash) => record("getTransaction", [txHash], () => tronClient.getTransaction(txHash)),
-    listTrc20ApprovalChanges: (input) => record("listTrc20ApprovalChanges", [input], () => tronClient.listTrc20ApprovalChanges(input)),
-    getUsdtRestrictionStatus: (address, options) => record("getUsdtRestrictionStatus", [address, options ?? null], () => tronClient.getUsdtRestrictionStatus(address, options)),
-    getContractIntelligenceProfile: (address) => record("getContractIntelligenceProfile", [address], async () =>
-      await getContractIntelligenceProfile(db, address, new Date(windowEnd)) ?? tronClient.getContractIntelligenceProfile(address, { now: new Date(windowEnd), requireComplete: true }))
-  };
+    fastRiskReport: savedReport.fastWalletRisk
+  });
   const runtimeOptions = deepForensicRuntimeOptions(config, config.tronscanApiKeys.length > 0);
   const runOptions = resolveLegacyWhereIsMoneyRunInput({
     subjectAddress: jobSource, windowStart, windowEnd, progressJson: progress
   } as any, runtimeOptions);
   const frozenClockIso = completedAt.toISOString();
   const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
-  const checkerDeps = createLegacyWhereIsMoneyDeps({
-    base: deps as any,
-    getTrc20Balance: deps.getTrc20Balance,
-    fetchEdgesForAddress: deps.fetchEdgesForAddress,
-    getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
-    repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
-    requestCandidateWindows: deps.requestCandidateWindows,
-    ensureBroadTargetedHistory: deps.ensureBroadTargetedHistory,
-    ensureBroadTargetedHistories: deps.ensureBroadTargetedHistories,
-    fetchLatestEdgesForAddress: deps.fetchLatestEdgesForAddress,
-    getClassificationForAddress: deps.getClassificationForAddress,
-    fastRiskReport: savedReport.fastWalletRisk
-  });
   const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(checkerDeps, runOptions));
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   assertExpectedStableWhereFacts({ expectedStableFacts } as any, rerun);
@@ -312,7 +271,7 @@ try {
     unresolvedEconomicRoleInputs,
     legacyObservedTransactionHashes: [...observedTransactions]
   });
-  const routeAddresses = routeAddressSet(rerun, unresolvedEconomicRoleInputs as Array<{ txHash: string }>);
+  const routeAddresses = collectRouteCriticalAddresses(rerun);
   if (routeHashes.length === 0) throw new Error("where_latency_replay_route_critical_hash_missing");
   const indexedRows = await listIndexedTronUsdtTransfersByHashes(db, routeHashes);
   if (indexedRows.length === 0 || routeHashes.some((txHash) => !indexedRows.some((row) => row.txHash === txHash))) {
