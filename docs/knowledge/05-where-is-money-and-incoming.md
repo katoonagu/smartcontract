@@ -53,5 +53,9 @@ tuples remain valid for traversal and compatibility deduplication, but cannot
 by themselves prove exactly one emitted movement or contribute exact traced
 coverage.
 
+When a legacy row's tuple matches one or more rich rows, the legacy shadow is
+suppressed while each distinct rich event remains separate. Legacy-only
+duplicates continue to use the compatibility tuple for deduplication.
+
 This contract is implemented and tested. Delivery ownership is separate from
 the analysis path and does not gate isolated execution.

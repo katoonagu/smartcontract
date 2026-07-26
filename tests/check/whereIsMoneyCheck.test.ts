@@ -1851,6 +1851,80 @@ describe("runWhereIsMoneyCheck", () => {
     expect(allExactReport.coverageV2?.tracedAmountRaw).toBe("1000000");
   });
 
+  it("counts rich exact-window repair edges but keeps legacy repair edges non-exact", async () => {
+    const repairSubject = "TRepairSubject11111111111111111111111";
+    const repairHop = "TRepairHop111111111111111111111111111";
+    const firstHop = {
+      ...edge("repair-first-hop", repairHop, repairSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      transferId: "tronscan:repair-first-hop:0"
+    };
+    const provisionalFunding = edge(
+      "repair-provisional-funding",
+      cleanSender,
+      repairHop,
+      "1000000",
+      "2026-07-12T11:30:00.000Z"
+    );
+    const repairedFunding = {
+      ...edge("repair-exact-funding", cleanSender, repairHop, "1000000", "2026-07-12T11:00:00.000Z"),
+      txHash: "repair-exact-funding"
+    };
+    const run = (repairEdge: ForensicRouteEdge) => runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => {
+        if (address === repairSubject) return [firstHop];
+        if (address === repairHop) return [provisionalFunding];
+        return [];
+      },
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? firstHop.timestamp.toISOString(),
+        fetchedTransferCount: 1,
+        oldestFetchedTransferAt: provisionalFunding.timestamp.toISOString(),
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: false,
+        providerInconsistent: false,
+        statusReason: "partial_provider_cap"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === cleanSender ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async () => true,
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [repairEdge],
+        windowCoverage: {
+          complete: true,
+          capped: false,
+          statusReason: "complete_provider_windowed",
+          fetchedTransferCount: 1,
+          fetchedPageCount: 1,
+          oldestFetchedTransferAt: repairEdge.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      })
+    }, {
+      sourceAddress: repairSubject,
+      requestedAmountRaw: "1000000",
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    const richRepair = await run({ ...repairedFunding, transferId: "tronscan:repair-exact-funding:0" });
+    const legacyRepair = await run(repairedFunding);
+
+    expect(richRepair.originPaths[0]?.rootSourceType).toBe("allowlist_cex");
+    expect(richRepair.coverageV2?.tracedAmountRaw).toBe("1000000");
+    expect(legacyRepair.coverageV2?.tracedAmountRaw).toBe("0");
+  });
+
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {
     const lowBalanceSubject = "TSubjectAnchorNoFunding111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

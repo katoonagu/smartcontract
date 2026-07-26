@@ -9,8 +9,8 @@ import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import {
   DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
-  forensicRouteEdgeIdentity,
   indexedTransferToRouteEdge,
+  mergeForensicRouteEdges,
   materializeIndexedTransferWindow
 } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
@@ -734,11 +734,7 @@ function fastRiskReasonsField(value: unknown): RiskReport["reasons"] {
 }
 
 function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
-  const byKey = new Map<string, ForensicRouteEdge>();
-  for (const edge of edges) {
-    byKey.set(forensicRouteEdgeIdentity(edge), edge);
-  }
-  return [...byKey.values()];
+  return mergeForensicRouteEdges(edges);
 }
 
 function historyCoverageSource(input: {

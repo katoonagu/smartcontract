@@ -120,6 +120,10 @@ function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
+function forensicRouteEdgeLegacyIdentity(edge: ForensicRouteEdge): string {
+  return `legacy:${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+}
+
 export function forensicRouteEdgeIdentity(edge: ForensicRouteEdge): string {
   if (edge.transferId) return `transfer:${edge.transferId}`;
   if (edge.eventIndex !== null && edge.eventIndex !== undefined) return `event:${edge.txHash}:${edge.eventIndex}`;
@@ -127,13 +131,27 @@ export function forensicRouteEdgeIdentity(edge: ForensicRouteEdge): string {
     return `provider:${edge.provider}:${edge.txHash}:${edge.providerRowOrdinalInTx}`;
   }
   // ponytail: legacy rows cannot prove exactly one emitted movement; use provider event identity when available.
-  return `legacy:${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+  return forensicRouteEdgeLegacyIdentity(edge);
 }
 
 export function forensicRouteEdgeHasExactMovementIdentity(edge: ForensicRouteEdge): boolean {
   return Boolean(edge.transferId) ||
     (edge.eventIndex !== null && edge.eventIndex !== undefined) ||
     Boolean(edge.provider) && edge.providerRowOrdinalInTx !== null && edge.providerRowOrdinalInTx !== undefined;
+}
+
+export function mergeForensicRouteEdges(edges: readonly ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const richLegacyIdentities = new Set(
+    edges.filter(forensicRouteEdgeHasExactMovementIdentity).map(forensicRouteEdgeLegacyIdentity)
+  );
+  const byIdentity = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    if (!forensicRouteEdgeHasExactMovementIdentity(edge) && richLegacyIdentities.has(forensicRouteEdgeLegacyIdentity(edge))) {
+      continue;
+    }
+    byIdentity.set(forensicRouteEdgeIdentity(edge), edge);
+  }
+  return [...byIdentity.values()];
 }
 
 export function indexedTransferToRouteEdge(transfer: IndexedTronUsdtTransfer): ForensicRouteEdge {

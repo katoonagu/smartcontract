@@ -76,8 +76,8 @@ import {
 import { buildBalanceFormingSlice } from "./balanceFormingSlice";
 import {
   DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
-  forensicRouteEdgeIdentity,
   indexedTransferToRouteEdge,
+  mergeForensicRouteEdges,
   materializeIndexedTransferWindow
 } from "./localTronUsdtIndex";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
@@ -270,11 +270,7 @@ function depositEdge(input: Pick<BuildIncomingDepositReportInput, "depositTxHash
 }
 
 function mergeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
-  const byKey = new Map<string, ForensicRouteEdge>();
-  for (const edge of edges) {
-    byKey.set(forensicRouteEdgeIdentity(edge), edge);
-  }
-  return [...byKey.values()];
+  return mergeForensicRouteEdges(edges);
 }
 
 function oldestRouteEdgeTimestamp(edges: ForensicRouteEdge[]): Date | null {

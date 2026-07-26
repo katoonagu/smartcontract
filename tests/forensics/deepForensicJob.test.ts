@@ -382,7 +382,7 @@ function emptyDeepReport(): DeepAddressForensicReport {
 describe("deep forensic job runner", () => {
   it("preserves distinct indexed events and deduplicates a repeated indexed identity in where runtime edges", async () => {
     vi.resetModules();
-    let fetchedEdges: ForensicRouteEdge[] = [];
+    const fetchedRuns: ForensicRouteEdge[][] = [];
     const whereReport = {
       subjectAddress: subject,
       decision: "REVIEW",
@@ -390,7 +390,7 @@ describe("deep forensic job runner", () => {
       coverage: { partial: true, notes: [] }
     } as unknown as WhereIsMoneyReport;
     const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
-      fetchedEdges = await deps.fetchEdgesForAddress(subject);
+      fetchedRuns.push(await deps.fetchEdgesForAddress(subject));
       return whereReport;
     });
     vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
@@ -413,19 +413,29 @@ describe("deep forensic job runner", () => {
         amountRaw: "1000000"
       });
       const second = { ...first, eventIndex: 2 };
-
-      const handled = await runCycleWithMock({
+      const liveOverlap = transfer({
+        id: first.txHash,
+        from: first.fromAddress,
+        to: first.toAddress,
+        amountRaw: first.amountRaw,
+        at: first.blockTimestamp.toISOString()
+      });
+      let indexedRows = [first, { ...first }];
+      const deps = {
         claimNextForensicCheckJob: async () => sourceJob,
         completeForensicCheckJob: vi.fn(async () => true),
         recordRiskEvaluation: vi.fn(async () => undefined),
-        listIndexedUsdtTransfersForAddress: async (address: string) => address === subject ? [first, second, { ...first }] : [],
-        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        listIndexedUsdtTransfersForAddress: async (address: string) => address === subject ? indexedRows : [],
+        tronClient: { listRelatedTrc20Transfers: async () => [liveOverlap] },
         getLabelsForAddress: async () => [],
         getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: "2000000" })
-      } as any);
+      } as any;
 
-      expect(handled).toBe(true);
-      expect(fetchedEdges.map((item) => item.eventIndex).sort()).toEqual([1, 2]);
+      expect(await runCycleWithMock(deps)).toBe(true);
+      indexedRows = [first, second, { ...first }];
+      expect(await runCycleWithMock(deps)).toBe(true);
+      expect(fetchedRuns[0].map((item) => item.eventIndex)).toEqual([1]);
+      expect(fetchedRuns[1].map((item) => item.eventIndex).sort()).toEqual([1, 2]);
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

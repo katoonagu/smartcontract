@@ -1,6 +1,10 @@
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import { forensicRouteEdgeHasExactMovementIdentity, forensicRouteEdgeIdentity } from "../forensics/localTronUsdtIndex";
+import {
+  forensicRouteEdgeHasExactMovementIdentity,
+  forensicRouteEdgeIdentity,
+  mergeForensicRouteEdges
+} from "../forensics/localTronUsdtIndex";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
 import { buildForensicCoverageV2 } from "../forensics/forensicCoverageV2";
@@ -1370,6 +1374,7 @@ export async function runWhereIsMoneyCheck(
   };
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const repairedExactWindowEdges: ForensicRouteEdge[] = [];
   const classifications = new Map<string, ServiceClassification | null>();
   const transactionCache = new Map<string, Promise<unknown | null>>();
   const exactGasFreeAccounts = new Set<string>();
@@ -1750,6 +1755,13 @@ export async function runWhereIsMoneyCheck(
     throwIfAborted(input.abortSignal);
     return fetchCachedEdgesForAddress(address, options);
   };
+  const repairSourceProvenanceWindow = deps.repairSourceProvenanceWindow
+    ? async (repairInput: Parameters<NonNullable<WhereIsMoneyDeps["repairSourceProvenanceWindow"]>>[0]) => {
+        const repaired = await deps.repairSourceProvenanceWindow!(repairInput);
+        repairedExactWindowEdges.push(...(repaired?.traceBundle?.members.map((member) => member.edge) ?? []));
+        return repaired;
+      }
+    : undefined;
 
   throwIfAborted(input.abortSignal);
   const originPaths: MoneyOriginPath[] = [];
@@ -1764,7 +1776,7 @@ export async function runWhereIsMoneyCheck(
       minAmountPreservationRatio: input.minAmountPreservationRatio,
       fetchEdgesForAddress,
       getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
-      repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
+      repairSourceProvenanceWindow,
       requestCandidateWindows: deps.requestCandidateWindows,
       ensureBroadTargetedHistory,
       getLabelsForAddress: deps.getLabelsForAddress,
@@ -2171,7 +2183,7 @@ export async function runWhereIsMoneyCheck(
     tracedAmountRaw: exactWhereTracedAmountRaw(
       provenanceSelection,
       provenanceOriginPaths,
-      [...edgeCache.values()].flat()
+      mergeForensicRouteEdges([...edgeCache.values()].flat().concat(repairedExactWindowEdges))
     ),
     limitations: coverageLimitations,
     exclusions: exactFeeTransfers.length === 0

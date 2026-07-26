@@ -1871,10 +1871,10 @@ describe("runSingleIncomingDepositJobCycle", () => {
 describe("buildIncomingDepositReport", () => {
   it("preserves distinct indexed events and deduplicates a repeated indexed identity in incoming runtime seeds", async () => {
     vi.resetModules();
-    let seedTransfers: Array<{ evidenceId?: string }> = [];
+    const seedTransferRuns: Array<Array<{ evidenceId?: string }>> = [];
     const captureError = new Error("captured incoming runtime seeds");
     const runWhereIsMoneyCheck = vi.fn(async (_deps: unknown, input: { seedTransfers?: Array<{ evidenceId?: string }> }) => {
-      seedTransfers = input.seedTransfers ?? [];
+      seedTransferRuns.push(input.seedTransfers ?? []);
       throw captureError;
     });
     vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
@@ -1893,13 +1893,20 @@ describe("buildIncomingDepositReport", () => {
       });
       const second = { ...first, eventIndex: 2 };
       const amountRaw = "2000000";
-
-      await expect(buildReportWithMock({
+      const liveOverlap = liveTransfer({
+        transaction_id: first.txHash,
+        from_address: first.fromAddress,
+        to_address: first.toAddress,
+        quant: first.amountRaw,
+        block_ts: first.blockTimestamp.getTime()
+      });
+      let indexedRows = [first, { ...first }];
+      const run = () => buildReportWithMock({
         deps: {
           listIndexedUsdtTransfersForAddress: async (address) => address === validProgressJson.sender
-            ? [first, second, { ...first }]
+            ? indexedRows
             : [],
-          listRelatedTrc20Transfers: async () => [],
+          listRelatedTrc20Transfers: async () => [liveOverlap],
           getLabelsForAddress: async () => [],
           getClassificationForAddress: async () => null,
           getContractIntelligenceProfile: async () => null,
@@ -1912,10 +1919,14 @@ describe("buildIncomingDepositReport", () => {
         sender: validProgressJson.sender,
         amountRaw,
         timestamp: new Date(validProgressJson.timestamp)
-      })).rejects.toThrow(captureError.message);
+      });
 
-      expect(seedTransfers).toHaveLength(2);
-      expect(new Set(seedTransfers.map((item) => item.evidenceId)).size).toBe(2);
+      await expect(run()).rejects.toThrow(captureError.message);
+      indexedRows = [first, second, { ...first }];
+      await expect(run()).rejects.toThrow(captureError.message);
+      expect(seedTransferRuns[0]).toHaveLength(1);
+      expect(seedTransferRuns[1]).toHaveLength(2);
+      expect(new Set(seedTransferRuns[1].map((item) => item.evidenceId)).size).toBe(2);
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
