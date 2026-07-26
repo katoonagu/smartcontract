@@ -191,6 +191,14 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           return () => `runtime-id-${++index}`;
         })(),
         loadProviderPage,
+        loadFrozenLabelDataset: async ({
+          labelDatasetSha256
+        }: { labelDatasetSha256: string }) => (
+          await query(
+            "select dataset_json from unified_label_datasets where sha256 = $1",
+            [labelDatasetSha256]
+          )
+        ).rows[0]?.dataset_json,
         loadCounterpartyLabels: async () => new Map(),
         loadHardEvidence: async () => ({})
       };

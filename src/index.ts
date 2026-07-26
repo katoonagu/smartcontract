@@ -283,6 +283,7 @@ import {
 } from "./unifiedCheck/labelCatalog";
 import {
   buildFrozenLabelDataset,
+  validateFrozenLabelDatasetV1,
   type FrozenLabelDatasetV1
 } from "./unifiedCheck/frozenLabels";
 
@@ -784,6 +785,26 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
       ])].sort());
     }
     return labels;
+  },
+  async loadFrozenLabelDataset({
+    labelDatasetSha256,
+    snapshotHash,
+    labelCatalogVersion,
+    boundaryPredicateVersion
+  }) {
+    const stored = (
+      await db.query(
+        "select dataset_json from unified_label_datasets where sha256 = $1",
+        [labelDatasetSha256]
+      )
+    ).rows[0]?.dataset_json;
+    return validateFrozenLabelDatasetV1({
+      dataset: stored,
+      expectedSha256: labelDatasetSha256,
+      snapshotHash,
+      catalogVersion: labelCatalogVersion,
+      boundaryPredicateVersion
+    });
   },
   async loadHardEvidence({
     subjectAddress,

@@ -299,6 +299,12 @@ export function createUnifiedProductionRuntime(input: {
     labelDatasetSha256: string;
     addresses: readonly string[];
   }): Promise<ReadonlyMap<string, readonly string[]>>;
+  loadFrozenLabelDataset(input: {
+    labelDatasetSha256: string;
+    snapshotHash: string;
+    labelCatalogVersion: "unified-label-catalog-v1";
+    boundaryPredicateVersion: "unified-boundary-predicates-v1";
+  }): Promise<unknown>;
   loadHardEvidence(input: {
     subjectAddress: string;
     snapshotBlockNumber: string;
@@ -340,9 +346,6 @@ export function createUnifiedProductionRuntime(input: {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new TypeError(code);
     }
-  }
-  if (commitMaxBytes < manifestMaxBytes) {
-    throw new TypeError("unified_production_commit_max_bytes_too_small");
   }
   const cooperate = async (runId: string): Promise<void> => {
     if (!await cooperateUnifiedCanaryRun(input.db, { runId })) {
@@ -388,10 +391,22 @@ export function createUnifiedProductionRuntime(input: {
     sha256: string;
     artifact: unknown;
   }) => {
+    const schemaVersion = artifactInput.kind ===
+        "traversal_terminal_evidence" &&
+        artifactInput.artifact !== null &&
+        typeof artifactInput.artifact === "object" &&
+        !Array.isArray(artifactInput.artifact) &&
+        Number.isSafeInteger(
+          (artifactInput.artifact as { schemaVersion?: unknown }).schemaVersion
+        )
+      ? String(
+          (artifactInput.artifact as { schemaVersion: number }).schemaVersion
+        )
+      : "1";
     await insertUnifiedArtifact(input.db, {
       ...artifactInput,
       createdByRunId: artifactInput.runId,
-      schemaVersion: "1"
+      schemaVersion
     });
   };
   const directHistory = createUnifiedDirectHistoryHandler({
@@ -494,6 +509,7 @@ export function createUnifiedProductionRuntime(input: {
       };
     },
     loadLabels: input.loadCounterpartyLabels,
+    loadFrozenLabelDataset: input.loadFrozenLabelDataset,
     loadDurableAddressHistoryKeys: async ({ runId, manifestKeys }) => {
       const identities = await loadUnifiedDurableOrderedTaskIdentities(
         input.db,

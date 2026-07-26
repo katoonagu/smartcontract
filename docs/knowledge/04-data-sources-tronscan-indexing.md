@@ -110,8 +110,8 @@ terminal boundary.
 Coverage is multidimensional audit metadata. It cannot change matrix-v4 score
 or turn unfinished work into `COMPLETED`.
 
-The candidate also freezes a versioned supported-label catalog and provenance
-dataset per snapshot. The supported CEX catalog is Binance, Bybit, OKX,
+The runtime freezes a versioned supported-label catalog and provenance dataset
+per snapshot. The supported CEX catalog is Binance, Bybit, OKX,
 WhiteBIT, Coinbase, Kraken, KuCoin, Bitget, MEXC, Bitstamp, Crypto.com, and
 HTX/Huobi. Other supported entries are SunSwap/SUN, Allbridge, Bridgers, USDD
 PSM/GemJoin, GasFree, and the TronLink GasFree provider. A label alone is not
@@ -119,11 +119,14 @@ an economic boundary: terminal predicates require valid-at-event identity and
 the corresponding route/economic proof. Hint labels and later-discovered
 restrictions remain context only.
 
-This data plane is implemented and tested but is not the deployed index path.
-The new predicates are deliberately not wired into production closure or
-exact scores until P1 blind review/adjudication. Frozen real-address
-performance replay is also pending because the earlier live runtime did not
-persist canonical provider response pages.
+For `snapshot-closure-v2`, production closure uses only exact frozen records
+whose catalog policy is `custodial_boundary` and whose validity interval
+contains the traversal state's event time. The coordinator commits this
+boundary evidence and its delta before address-history planning. Hints, legacy
+risk rows, unknowns, bridges, DEXes, generic contracts, and labels valid only
+later cannot terminate traversal. Exact scoring remains gated by P1 blind
+review/adjudication; frozen real-address performance replay is still pending
+because the earlier live runtime did not persist canonical provider pages.
 
 The runtime verifies exact schema 036 and its schema-032 through schema-035
 predecessors before canary selection. The adaptive runtime has no fixed

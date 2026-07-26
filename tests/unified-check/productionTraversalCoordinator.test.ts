@@ -11,6 +11,13 @@ import {
 } from "../../src/unifiedCheck/addressHistory";
 import type { AnalysisManifestV1 } from "../../src/unifiedCheck/contracts";
 import {
+  buildFrozenLabelDataset,
+  type FrozenLabelDatasetV1
+} from "../../src/unifiedCheck/frozenLabels";
+import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
+import { initialUnifiedTraversalCheckpointV1 } from "../../src/unifiedCheck/productionTraversal";
+import {
+  buildProductionBoundaryCandidateV2,
   createUnifiedTraversalCoordinatorHandler
 } from "../../src/unifiedCheck/productionTraversalCoordinator";
 
@@ -43,6 +50,104 @@ const manifest: AnalysisManifestV1 = {
     deep: "1".repeat(64)
   }
 };
+
+function frozenDataset(input: {
+  catalogEntryId?: "cex:bybit" | "cex:htx-huobi";
+  validFrom?: string | null;
+  legacyRows?: FrozenLabelDatasetV1["legacyRows"];
+} = {}) {
+  const labels = input.catalogEntryId === undefined
+    ? []
+    : [buildFrozenLabelRecord({
+        address: CEX,
+        classifierHint: null,
+        exactRegistryBinding: null,
+        verifiedProviderBinding: {
+          catalogEntryId: input.catalogEntryId,
+          authority: "tronscan_verified_metadata",
+          sourcePayloadSha256: "7".repeat(64),
+          validFrom: input.validFrom ?? "2025-01-01T00:00:00.000Z",
+          validTo: null
+        }
+      })];
+  return buildFrozenLabelDataset({
+    frozenAt: manifest.confirmedBlockTimestamp,
+    snapshotHash: manifest.snapshotHash,
+    labels,
+    legacyRows: input.legacyRows ?? []
+  });
+}
+
+function v2Manifest(dataset: ReturnType<typeof frozenDataset>): AnalysisManifestV1 {
+  return {
+    ...manifest,
+    labelDatasetSha256: dataset.sha256,
+    labelCatalogVersion: "unified-label-catalog-v1",
+    boundaryPredicateVersion: "unified-boundary-predicates-v1",
+    traversalPolicyVersion: "snapshot-closure-v2"
+  };
+}
+
+function coordinatorHarness(input: {
+  manifest: AnalysisManifestV1;
+  directEvents: readonly IndexedTronUsdtTransfer[];
+  dataset: ReturnType<typeof frozenDataset>;
+  commitMaxEntries?: number;
+  commitMaxBytes?: number;
+  manifestMaxBytes?: number;
+  legacyLabels?: ReadonlyMap<string, readonly string[]>;
+}) {
+  const artifacts = new Map<string, unknown>();
+  let taskId = 0;
+  const loadLabels = vi.fn(async () => input.legacyLabels ?? new Map());
+  const loadFrozenLabelDataset = vi.fn(async () => input.dataset.dataset);
+  const handler = createUnifiedTraversalCoordinatorHandler({
+    commitMaxEntries: input.commitMaxEntries ?? 32,
+    commitMaxBytes: input.commitMaxBytes ?? 8_388_608,
+    manifestMaxBytes: input.manifestMaxBytes ?? 1_048_576,
+    loadContext: async () => ({
+      runId: "run-1",
+      manifest: input.manifest,
+      directEvents: input.directEvents
+    }),
+    loadLabels,
+    loadFrozenLabelDataset,
+    loadDurableAddressHistoryKeys: async () => new Set(),
+    createTaskId: () => `v2-history-${++taskId}`,
+    loadReadyAddressHistories: async () => [],
+    loadCommittedAddressHistories: async () => [],
+    loadAddressHistoryPage: async () => {
+      throw new Error("history not ready");
+    },
+    loadCompactionArtifact: async ({ sha256 }) =>
+      artifacts.get(sha256) as never,
+    loadDeltaArtifact: async ({ sha256 }) =>
+      artifacts.get(sha256) as never,
+    persistArtifact: async (artifact) => {
+      artifacts.set(artifact.sha256, artifact.artifact);
+    }
+  });
+  let attempt = 0;
+  return {
+    artifacts,
+    loadLabels,
+    loadFrozenLabelDataset,
+    run: (checkpoint: unknown = {}) => handler({
+      task: {
+        id: "task-traversal-v2",
+        runId: "run-1",
+        kind: "traversal",
+        logicalKey: "main",
+        priorityLane: "interactive",
+        attempt: ++attempt,
+        checkpoint,
+        cancellationRequestedAt: null
+      },
+      leaseToken: `lease-v2-${attempt}`,
+      heartbeat: vi.fn(async () => undefined)
+    })
+  };
+}
 
 function event(input: {
   hash: string;
@@ -183,6 +288,289 @@ function twoReadyHistories(input: {
 }
 
 describe("Unified address-centric traversal coordinator", () => {
+  it("commits only the state-valid v2 boundary before discovering one reusable address history", async () => {
+    const dataset = frozenDataset({
+      catalogEntryId: "cex:htx-huobi",
+      validFrom: "2026-07-23T12:05:00.000Z"
+    });
+    const directEvents = [
+      event({
+        hash: "1".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:10:00.000Z"
+      }),
+      event({
+        hash: "2".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "20",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })
+    ];
+    const scenario = coordinatorHarness({
+      manifest: v2Manifest(dataset),
+      directEvents,
+      dataset
+    });
+
+    const boundary = await scenario.run();
+    expect(boundary.kind).toBe("checkpoint");
+    if (boundary.kind !== "checkpoint") return;
+    expect(boundary.orderedCommit).toBeUndefined();
+    const evidence = [...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    );
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      state: { address: CEX, anchorTimestamp: "2026-07-23T12:10:00.000Z" }
+    });
+
+    const planning = await scenario.run(boundary.checkpoint);
+    expect(planning.kind).toBe("checkpoint");
+    if (planning.kind !== "checkpoint") return;
+    expect(planning.orderedCommit?.entries).toEqual([]);
+    expect(planning.orderedCommit?.discoveredTasks).toHaveLength(1);
+    expect(planning.orderedCommit?.discoveredTasks[0]?.checkpoint)
+      .toMatchObject({ identity: { address: CEX } });
+  });
+
+  it("checkpoints an all-terminal v2 frontier without planner work", async () => {
+    const dataset = frozenDataset({ catalogEntryId: "cex:bybit" });
+    const scenario = coordinatorHarness({
+      manifest: v2Manifest(dataset),
+      directEvents: [
+        event({
+          hash: "3".repeat(64),
+          from: CEX,
+          to: SUBJECT,
+          amountRaw: "10",
+          timestamp: "2026-07-23T12:10:00.000Z"
+        }),
+        event({
+          hash: "4".repeat(64),
+          from: CEX,
+          to: SUBJECT,
+          amountRaw: "20",
+          timestamp: "2026-07-23T12:00:00.000Z"
+        })
+      ],
+      dataset
+    });
+
+    const result = await scenario.run();
+    expect(result.kind).toBe("checkpoint");
+    if (result.kind !== "checkpoint") return;
+    expect(result.orderedCommit).toBeUndefined();
+    expect((result.checkpoint as { operational?: { frontierCount: number } })
+      .operational?.frontierCount).toBe(0);
+    expect([...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    )).toHaveLength(2);
+  });
+
+  it("keeps v1 legacy boundary behavior unchanged", async () => {
+    const dataset = frozenDataset();
+    const scenario = coordinatorHarness({
+      manifest,
+      directEvents: [event({
+        hash: "5".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset,
+      legacyLabels: new Map([[CEX, ["cex", "Bybit"]]])
+    });
+
+    const result = await scenario.run();
+    expect(result.kind).toBe("completed");
+    expect([...scenario.artifacts.values()].some((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-terminal-evidence-v1"
+    )).toBe(true);
+    expect(scenario.loadFrozenLabelDataset).not.toHaveBeenCalled();
+  });
+
+  it("does not let legacy risk context authorize a v2 boundary", async () => {
+    const dataset = frozenDataset({
+      legacyRows: [{
+        address: CEX,
+        label: "Bybit",
+        category: "cex",
+        provider: "legacy-risk-context",
+        observedAt: "2026-07-23T12:00:00.000Z"
+      }]
+    });
+    const scenario = coordinatorHarness({
+      manifest: v2Manifest(dataset),
+      directEvents: [event({
+        hash: "6".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset,
+      legacyLabels: new Map([[CEX, ["cex", "Bybit"]]])
+    });
+
+    const result = await scenario.run();
+    expect(result.kind).toBe("checkpoint");
+    if (result.kind !== "checkpoint") return;
+    expect(result.orderedCommit?.discoveredTasks).toHaveLength(1);
+    expect([...scenario.artifacts.values()].some((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    )).toBe(false);
+  });
+
+  it.each([
+    ["missing", null, "unified_v2_boundary_versions_missing"],
+    ["mismatched", "wrong-catalog", "unified_v2_boundary_versions_mismatch"]
+  ])("fails for %s manifest boundary versions before loading labels", async (
+    _name,
+    catalogVersion,
+    code
+  ) => {
+    const dataset = frozenDataset({ catalogEntryId: "cex:bybit" });
+    const current = v2Manifest(dataset) as unknown as Record<string, unknown>;
+    const changed = catalogVersion === null
+      ? Object.fromEntries(Object.entries(current).filter(([key]) =>
+          key !== "labelCatalogVersion"
+        ))
+      : { ...current, labelCatalogVersion: catalogVersion };
+    const scenario = coordinatorHarness({
+      manifest: changed as unknown as AnalysisManifestV1,
+      directEvents: [event({
+        hash: "7".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })],
+      dataset
+    });
+
+    await expect(scenario.run()).rejects.toThrow(code);
+    expect(scenario.loadFrozenLabelDataset).not.toHaveBeenCalled();
+    expect(scenario.loadLabels).not.toHaveBeenCalled();
+  });
+
+  it("commits a byte-bounded canonical terminal prefix once across restart", async () => {
+    const dataset = frozenDataset({ catalogEntryId: "cex:bybit" });
+    const currentManifest = v2Manifest(dataset);
+    const directEvents = [
+      event({
+        hash: "8".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "10",
+        timestamp: "2026-07-23T12:10:00.000Z"
+      }),
+      event({
+        hash: "9".repeat(64),
+        from: CEX,
+        to: SUBJECT,
+        amountRaw: "20",
+        timestamp: "2026-07-23T12:00:00.000Z"
+      })
+    ];
+    const frontier = initialUnifiedTraversalCheckpointV1({
+      runId: "run-1",
+      manifest: currentManifest,
+      directEvents
+    }).frontier;
+    const labels = dataset.dataset.labels.filter((label) =>
+      label.address === CEX
+    );
+    const candidates = frontier.map((state) =>
+      buildProductionBoundaryCandidateV2({
+        state,
+        labels,
+        snapshotHash: currentManifest.snapshotHash,
+        labelDatasetSha256: currentManifest.labelDatasetSha256
+      })
+    );
+    const commitMaxBytes = Math.max(...candidates.map((item) =>
+      item.canonicalBytes
+    ));
+    expect(candidates.reduce((sum, item) => sum + item.canonicalBytes, 0))
+      .toBeGreaterThan(commitMaxBytes);
+    const scenario = coordinatorHarness({
+      manifest: currentManifest,
+      directEvents,
+      dataset,
+      commitMaxBytes,
+      manifestMaxBytes: commitMaxBytes
+    });
+
+    const first = await scenario.run();
+    expect(first.kind).toBe("checkpoint");
+    if (first.kind !== "checkpoint") return;
+    expect([...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    )).toHaveLength(1);
+    const second = await scenario.run(first.checkpoint);
+    expect(second.kind).toBe("checkpoint");
+    expect([...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    )).toHaveLength(2);
+    expect(new Set([...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-boundary-evidence-v2"
+    ).map((artifact) => fingerprintCanonicalArtifact(artifact))).size).toBe(2);
+  });
+
+  it("rejects boundary candidates over either byte ceiling", async () => {
+    const dataset = frozenDataset({ catalogEntryId: "cex:bybit" });
+    const currentManifest = v2Manifest(dataset);
+    const directEvents = [event({
+      hash: "a".repeat(64),
+      from: CEX,
+      to: SUBJECT,
+      amountRaw: "10",
+      timestamp: "2026-07-23T12:00:00.000Z"
+    })];
+    const state = initialUnifiedTraversalCheckpointV1({
+      runId: "run-1",
+      manifest: currentManifest,
+      directEvents
+    }).frontier[0]!;
+    const candidate = buildProductionBoundaryCandidateV2({
+      state,
+      labels: dataset.dataset.labels,
+      snapshotHash: currentManifest.snapshotHash,
+      labelDatasetSha256: currentManifest.labelDatasetSha256
+    });
+    const overManifest = coordinatorHarness({
+      manifest: currentManifest,
+      directEvents,
+      dataset,
+      manifestMaxBytes: candidate.canonicalBytes - 1,
+      commitMaxBytes: candidate.canonicalBytes
+    });
+    await expect(overManifest.run()).rejects.toThrow(
+      "unified_v2_boundary_manifest_bytes_exceeded"
+    );
+    const overCommit = coordinatorHarness({
+      manifest: currentManifest,
+      directEvents,
+      dataset,
+      manifestMaxBytes: candidate.canonicalBytes,
+      commitMaxBytes: candidate.canonicalBytes - 1
+    });
+    await expect(overCommit.run()).rejects.toThrow(
+      "unified_v2_boundary_commit_bytes_exceeded"
+    );
+  });
+
   it("rejects swapped valid manifests before either mandatory state mutates", async () => {
     const scenario = twoReadyHistories({ binding: "swapped" });
 

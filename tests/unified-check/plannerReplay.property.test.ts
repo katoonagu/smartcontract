@@ -45,9 +45,11 @@ import type {
 } from "../../src/unifiedCheck/traversalDelta";
 import type {
   AnalysisManifestV1,
-  ChildAttemptArtifactV1
+  ChildAttemptArtifactV1,
+  UnifiedTraversalPolicyVersion
 } from "../../src/unifiedCheck/contracts";
 import { buildUnifiedBranchInput } from "../../src/unifiedCheck/requestService";
+import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
 
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const FIRST_PARENT = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
@@ -95,6 +97,39 @@ const manifest: AnalysisManifestV1 = {
     ])
   ) as Record<"fast" | "where" | "deep", string>
 };
+const EMPTY_FROZEN_LABEL_DATASET = buildFrozenLabelDataset({
+  frozenAt: manifest.confirmedBlockTimestamp,
+  snapshotHash: SNAPSHOT_HASH,
+  labels: [],
+  legacyRows: []
+});
+
+function manifestForPolicy(
+  traversalPolicyVersion: UnifiedTraversalPolicyVersion
+): AnalysisManifestV1 {
+  const versions = {
+    ...VERSIONS,
+    labelDatasetSha256: traversalPolicyVersion === "snapshot-closure-v2"
+      ? EMPTY_FROZEN_LABEL_DATASET.sha256
+      : VERSIONS.labelDatasetSha256,
+    traversalPolicyVersion
+  };
+  return {
+    ...manifest,
+    labelDatasetSha256: versions.labelDatasetSha256,
+    labelCatalogVersion: "unified-label-catalog-v1",
+    boundaryPredicateVersion: "unified-boundary-predicates-v1",
+    traversalPolicyVersion,
+    branchArtifactHashes: Object.fromEntries(
+      (["fast", "where", "deep"] as const).map((branchId) => [
+        branchId,
+        fingerprintCanonicalArtifact(
+          buildUnifiedBranchInput(branchId, SNAPSHOT_HASH, versions)
+        )
+      ])
+    ) as Record<"fast" | "where" | "deep", string>
+  };
+}
 
 function seeded(seed: number): () => number {
   let state = seed >>> 0;
@@ -286,6 +321,7 @@ type ReplayResult = {
   deliveryIntentCount: number;
   artifactSha256: string;
   deltaHeadSha256: string | null;
+  terminalInventorySha256: string;
 };
 
 type ReplayPlannerEntry =
@@ -298,7 +334,9 @@ async function replay(input: {
   seed: number;
   readyBatchSize: number;
   availabilityOrder: "canonical" | "shuffled";
+  traversalPolicyVersion: UnifiedTraversalPolicyVersion;
 }): Promise<ReplayResult> {
+  const replayManifest = manifestForPolicy(input.traversalPolicyVersion);
   const artifacts = new Map<string, unknown>();
   let entries: ReplayPlannerEntry[] = [];
   const committedSequence: number[] = [];
@@ -339,9 +377,11 @@ async function replay(input: {
     manifestMaxBytes: 1_048_576,
     loadContext: async () => ({
       runId: manifest.runId,
-      manifest,
+      manifest: replayManifest,
       directEvents
     }),
+    loadFrozenLabelDataset: async () =>
+      EMPTY_FROZEN_LABEL_DATASET.dataset,
     loadLabels: async () => new Map(),
     loadDurableAddressHistoryKeys: async ({ manifestKeys }) =>
       new Set(manifestKeys.filter((key) =>
@@ -382,7 +422,7 @@ async function replay(input: {
     const result = await handler({
       task: {
         id: "task-traversal",
-        runId: manifest.runId,
+        runId: replayManifest.runId,
         kind: "traversal",
         logicalKey: "main",
         priorityLane: "interactive",
@@ -477,7 +517,7 @@ async function replay(input: {
   if (!completedArtifact) throw new Error("replay_completed_artifact_missing");
   const evidence = buildUnifiedProductionEvidence({
     subjectAddress: SUBJECT,
-    snapshotBlock: manifest.confirmedBlockNumber,
+    snapshotBlock: replayManifest.confirmedBlockNumber,
     events: directEvents,
     knownCounterparties: new Map(),
     hardEvidence: {},
@@ -492,11 +532,11 @@ async function replay(input: {
     (["fast", "where", "deep"] as const).map(async (branchId, index) => {
       const output = await runners[branchId]({
         context: {
-          runId: manifest.runId,
-          manifest,
+          runId: replayManifest.runId,
+          manifest: replayManifest,
           directHistoryArtifactSha256: "8".repeat(64),
           directEvents,
-          labelsDatasetSha256: manifest.labelDatasetSha256,
+          labelsDatasetSha256: replayManifest.labelDatasetSha256,
           deliveryAuthority: false
         },
         analyze: async () => evidence[branchId]
@@ -505,11 +545,11 @@ async function replay(input: {
       const attempt: ChildAttemptArtifactV1 = {
         version: "child-attempt-artifact-v1",
         schemaVersion: 1,
-        runId: manifest.runId,
+        runId: replayManifest.runId,
         branchId,
         attemptId: `attempt-${branchId}`,
         previousAttemptHash: null,
-        inputHash: manifest.branchArtifactHashes[branchId],
+        inputHash: replayManifest.branchArtifactHashes[branchId],
         outputHash,
         status: "COMPLETED",
         createdAt: `2026-07-23T13:01:0${index}.000Z`
@@ -524,7 +564,7 @@ async function replay(input: {
     })
   );
   const candidate = buildUnifiedProductionCompletionCandidate({
-    manifest,
+    manifest: replayManifest,
     directEvents,
     knownCounterparties: new Map(),
     branches,
@@ -568,47 +608,58 @@ async function replay(input: {
     reportSha256: candidate.hashes.report,
     deliveryIntentCount: presented.deliveries.length,
     artifactSha256: completedArtifactSha256,
-    deltaHeadSha256: v2.deltaHeadSha256 ?? null
+    deltaHeadSha256: v2.deltaHeadSha256 ?? null,
+    terminalInventorySha256: fingerprintCanonicalArtifact(
+      completedArtifact.terminalStates
+    )
   };
 }
 
 describe("Unified ordered planner replay", () => {
-  it("matches the canonical oracle across 600 deterministic replay executions", async () => {
-    const oracle = await replay({
-      seed: 1,
-      readyBatchSize: 1,
-      availabilityOrder: "canonical"
-    });
-    expect(oracle.canonicalSequence).toHaveLength(5);
-    expect(oracle.discoveredChildOrdering).toHaveLength(3);
-    expect(oracle.frontier).toEqual([]);
-
+  it("matches the canonical oracle across 1,200 deterministic replay executions", async () => {
     // These batches model only logical result availability before each
     // canonical commit. They do not model admission windows, provider slots,
     // lookahead, or fairness; the active barrier admission policy is outside
     // this harness, and broader scheduling policies belong to Plan 2. Smaller
     // batches expose distinct availability permutations; larger batches can
     // saturate the pending frontier and verify that saturation is conflict-free.
-    for (const readyBatchSize of READY_AVAILABILITY_BATCH_SIZES) {
-      for (let seed = 1; seed <= 100; seed += 1) {
-        let actual: ReplayResult;
-        try {
-          actual = await replay({
-            seed,
-            readyBatchSize,
-            availabilityOrder: "shuffled"
-          });
-        } catch (error) {
-          throw new Error(
-            `seed=${seed} readyBatchSize=${readyBatchSize}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
+    for (const traversalPolicyVersion of [
+      "snapshot-closure-v1",
+      "snapshot-closure-v2"
+    ] as const) {
+      const oracle = await replay({
+        seed: 1,
+        readyBatchSize: 1,
+        availabilityOrder: "canonical",
+        traversalPolicyVersion
+      });
+      expect(oracle.canonicalSequence).toHaveLength(5);
+      expect(oracle.discoveredChildOrdering).toHaveLength(3);
+      expect(oracle.frontier).toEqual([]);
+      for (const readyBatchSize of READY_AVAILABILITY_BATCH_SIZES) {
+        for (let seed = 1; seed <= 100; seed += 1) {
+          let actual: ReplayResult;
+          try {
+            actual = await replay({
+              seed: traversalPolicyVersion === "snapshot-closure-v2"
+                ? seed + 10_000
+                : seed,
+              readyBatchSize,
+              availabilityOrder: "shuffled",
+              traversalPolicyVersion
+            });
+          } catch (error) {
+            throw new Error(
+              `policy=${traversalPolicyVersion} seed=${seed} readyBatchSize=${readyBatchSize}: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
+          expect(
+            actual,
+            `policy=${traversalPolicyVersion} seed=${seed} readyBatchSize=${readyBatchSize}`
+          ).toEqual(oracle);
         }
-        expect(
-          actual,
-          `seed=${seed} readyBatchSize=${readyBatchSize}`
-        ).toEqual(oracle);
       }
     }
   });

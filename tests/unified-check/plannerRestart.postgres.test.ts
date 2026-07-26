@@ -30,6 +30,9 @@ import {
   createPostgresUnifiedRequestStore,
   intakeUnifiedCheck
 } from "../../src/unifiedCheck/requestService";
+import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
+import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
+import type { UnifiedTraversalPolicyVersion } from "../../src/unifiedCheck/contracts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -104,7 +107,11 @@ type Scenario = {
 
 async function withScenario<T>(
   sources: readonly string[],
-  work: (scenario: Scenario) => Promise<T>
+  work: (scenario: Scenario) => Promise<T>,
+  options: {
+    traversalPolicyVersion?: UnifiedTraversalPolicyVersion;
+    custodialAddress?: string;
+  } = {}
 ): Promise<T> {
   const pool = new pg.Pool({ connectionString, max: 1 });
   const client = await pool.connect();
@@ -131,12 +138,52 @@ async function withScenario<T>(
     await client.query(
       await readFile("migrations/036_remove_rollout_authority.sql", "utf8")
     );
-    const labelDataset = {
+    const snapshot = {
+      version: "confirmed-wallet-snapshot-v1" as const,
+      schemaVersion: 1 as const,
+      chain: "tron" as const,
+      subjectAddress: SUBJECT,
+      confirmedBlockNumber: "100",
+      confirmedBlockHash: "a".repeat(64),
+      timestamp: "2026-07-23T13:00:00.000Z",
+      balances: {
+        usdtRaw: null,
+        trxSun: null,
+        source: "fixture",
+        consistency: "unavailable" as const
+      }
+    };
+    const legacyLabelDataset = {
       version: "unified-label-dataset-v1",
       rows: []
     } as const;
-    const labelDatasetSha256 =
-      fingerprintCanonicalArtifact(labelDataset);
+    const frozenLabelDataset = buildFrozenLabelDataset({
+      frozenAt: snapshot.timestamp,
+      snapshotHash: fingerprintCanonicalArtifact(snapshot),
+      labels: options.custodialAddress === undefined
+        ? []
+        : [buildFrozenLabelRecord({
+            address: options.custodialAddress,
+            classifierHint: null,
+            exactRegistryBinding: null,
+            verifiedProviderBinding: {
+              catalogEntryId: "cex:bybit",
+              authority: "tronscan_verified_metadata",
+              sourcePayloadSha256: "7".repeat(64),
+              validFrom: "2025-01-01T00:00:00.000Z",
+              validTo: null
+            }
+          })],
+      legacyRows: []
+    });
+    const labelDataset = options.traversalPolicyVersion ===
+        "snapshot-closure-v2"
+      ? frozenLabelDataset.dataset
+      : legacyLabelDataset;
+    const labelDatasetSha256 = options.traversalPolicyVersion ===
+        "snapshot-closure-v2"
+      ? frozenLabelDataset.sha256
+      : fingerprintCanonicalArtifact(legacyLabelDataset);
     await client.query(
       `insert into unified_label_datasets (sha256, dataset_json)
        values ($1,$2::jsonb)`,
@@ -147,9 +194,9 @@ async function withScenario<T>(
       store: createPostgresUnifiedRequestStore(host()),
       snapshotSource: {
         latestConfirmedBlock: async () => ({
-          number: "100",
-          hash: "a".repeat(64),
-          timestamp: "2026-07-23T13:00:00.000Z"
+          number: snapshot.confirmedBlockNumber,
+          hash: snapshot.confirmedBlockHash,
+          timestamp: snapshot.timestamp
         }),
         snapshotBalances: async () => ({
           usdtRaw: null,
@@ -179,7 +226,8 @@ async function withScenario<T>(
         labelDatasetSha256,
         scoringPolicyVersion: "scoring-signal-matrix-v4",
         attributionPolicyVersion: "selected-attribution-policy-v1",
-        traversalPolicyVersion: "snapshot-closure-v1",
+        traversalPolicyVersion:
+          options.traversalPolicyVersion ?? "snapshot-closure-v1",
         runtimeCommit: "candidate",
         schemaVersion: 36
       },
@@ -240,6 +288,12 @@ async function withScenario<T>(
             pageHash: fingerprintCanonicalArtifact(content)
           };
         },
+        loadFrozenLabelDataset: async ({ labelDatasetSha256 }) => (
+          await client.query(
+            "select dataset_json from unified_label_datasets where sha256 = $1",
+            [labelDatasetSha256]
+          )
+        ).rows[0]?.dataset_json,
         loadCounterpartyLabels: async () => new Map(),
         loadHardEvidence: async () => ({})
       });
@@ -540,6 +594,81 @@ postgresDescribe("Unified planner restart resume", () => {
           task_id: row.task_id
         })));
         await expectNoDuplicateAuthority(client, { addressAttempts: 2 });
+      }
+    );
+  });
+
+  it("resumes after a V2 boundary checkpoint without reopening history", async () => {
+    await withScenario(
+      [SECOND_SOURCE],
+      async ({ client, runtime }) => {
+        const firstProcess = runtime();
+        await expect(firstProcess.runProviderCycle()).resolves.toMatchObject({
+          outcome: "completed",
+          taskId: "task-direct_history"
+        });
+        await expect(firstProcess.runAnalysisCycle()).resolves.toMatchObject({
+          outcome: "checkpointed",
+          taskId: "task-traversal"
+        });
+
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart'`
+        )).rows[0]?.count)).toBe(0);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_tasks
+            where run_id = 'run-restart'
+              and kind = 'address_history'`
+        )).rows[0]?.count)).toBe(0);
+        expect((await client.query(
+          `select kind, schema_version
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind in ('traversal_terminal_evidence', 'traversal_delta')
+            order by kind`
+        )).rows).toEqual([
+          { kind: "traversal_delta", schema_version: "1" },
+          { kind: "traversal_terminal_evidence", schema_version: "2" }
+        ]);
+
+        const restartedProcess = runtime();
+        await expect(restartedProcess.runAnalysisCycle())
+          .resolves.toMatchObject({
+            outcome: "completed",
+            taskId: "task-traversal"
+          });
+        await expect(restartedProcess.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "idle" });
+
+        expect((await client.query(
+          `select kind, count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind in ('traversal_terminal_evidence', 'traversal_delta')
+            group by kind
+            order by kind`
+        )).rows).toEqual([
+          { kind: "traversal_delta", count: 1 },
+          { kind: "traversal_terminal_evidence", count: 1 }
+        ]);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart'`
+        )).rows[0]?.count)).toBe(0);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_tasks
+            where run_id = 'run-restart'
+              and kind = 'address_history'`
+        )).rows[0]?.count)).toBe(0);
+      },
+      {
+        traversalPolicyVersion: "snapshot-closure-v2",
+        custodialAddress: SECOND_SOURCE
       }
     );
   });

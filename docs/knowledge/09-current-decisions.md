@@ -112,7 +112,11 @@ code_refs:
   `custodial_boundary`. Hints, legacy risk rows, unknowns, bridges, DEXes,
   generic contracts, and later-valid labels remain non-terminal. Its terminal
   evidence uses the separate immutable schema-2 discriminator; v1 evidence is
-  unchanged. Coordinator activation follows the durable pre-planning commit.
+  unchanged. Before history planning, the v2 coordinator atomically commits
+  the largest entry- and byte-bounded canonical prefix of terminal evidence
+  and traversal deltas, then checkpoints immediately. Restart resumes from
+  that durable delta head without reopening terminal states; only continuing
+  states can emit address-history work.
 - The active check generation fence is retained only for wallet-delivery
   idempotency between legacy and Unified delivery workers. It does not start,
   stop, authorize, or limit planner/controller execution and does not block an
