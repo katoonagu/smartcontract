@@ -1,6 +1,6 @@
 # Unified Service Boundaries And Check Latency Design
 
-**Статус:** утверждённое направление; письменная версия на проверке
+**Статус:** утверждено пользователем; готово к implementation planning
 
 **Дата:** 2026-07-26
 
