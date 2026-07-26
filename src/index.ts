@@ -264,6 +264,7 @@ import {
   isUnifiedBenchmarkSlowHeadSymptomReady,
   loadUnifiedAdaptiveBenchmarkControl,
   persistUnifiedAdaptiveBenchmarkObservation,
+  persistUnifiedProviderRefillRuntimeSample,
   persistUnifiedAdaptiveBenchmarkScenarioSymptom,
   UNIFIED_BENCHMARK_RESTART_MAX_WAIT_MS,
   type UnifiedAdaptiveBenchmarkRuntimeObservationV1
@@ -1401,6 +1402,31 @@ const runUnifiedControllerCycle = async (
           const scopedRunIds = scopedSnapshots.map((item) =>
             item.plan.runId
           );
+          await persistUnifiedProviderRefillRuntimeSample({
+            db: unifiedTransactionHost,
+            createdByRunId: scopedRunIds[0]!,
+            sample: {
+              version: "unified-provider-refill-runtime-sample-v1",
+              controlSha256: benchmarkControl.sha256,
+              observedAt: new Date().toISOString(),
+              runtimeCommit: runtimeVersion.gitCommitSha,
+              providerConfigurationSha256:
+                unifiedProviderConfiguration.sha256,
+              runIds: scopedRunIds,
+              diagnostics: unifiedProviderRefillDiagnostics.snapshot(),
+              saturationSample: {
+                providerCapacityLimit: result.providerCapacityLimit,
+                eligibleReadyProviderWork:
+                  result.eligibleReadyProviderWork,
+                runtimeState: result.runtimeState,
+                healthyGroupCount: providerGroups.filter((group) =>
+                  group.state === "healthy"
+                ).length,
+                activeSlots: result.actualActiveProviderSlots,
+                limitingReason: result.limitingReason?.code ?? null
+              }
+            }
+          });
           const integrity = (await unifiedTransactionHost.query(
             `select
                (

@@ -75,6 +75,8 @@ export async function runUnifiedWalletCanaryCli(
   args: readonly string[],
   runtime: {
     readonly emitResult?: boolean;
+    readonly traversalPolicyVersion?: import("../src/unifiedCheck/contracts")
+      .UnifiedTraversalPolicyVersion;
     readonly explicitBenchmarkScenarios?: readonly {
       readonly scenarioId: string;
       readonly subjectAddress: string;
@@ -99,6 +101,23 @@ export async function runUnifiedWalletCanaryCli(
       readonly runs: readonly UnifiedWatchdogRunV1[];
       readonly batchIdentitySha256: string;
       readonly benchmarkControlSha256: string | null;
+    }) => Promise<void>;
+    readonly onComplete?: (input: {
+      readonly db: ReturnType<typeof createDb>;
+      readonly runIds: readonly string[];
+      readonly benchmarkControlSha256: string | null;
+      readonly providerConfigurationSha256: string;
+      readonly outcomes: readonly {
+        readonly runId: string;
+        readonly address: string;
+        readonly outcome: string;
+        readonly score: number | null;
+        readonly decision: "ACCEPTABLE" | "REVIEW" | "DECLINE" | null;
+        readonly evidenceBundleSha256: string | null;
+        readonly traversalClosureSha256: string | null;
+        readonly scoringBundleSha256: string | null;
+        readonly reportSha256: string | null;
+      }[];
     }) => Promise<void>;
   } = {}
 ): Promise<{
@@ -142,6 +161,8 @@ export async function runUnifiedWalletCanaryCli(
       await readFile(resolve(options.diagnosticHypothesisPath), "utf8")
     ));
   const config = loadConfig();
+  const traversalPolicyVersion = runtime.traversalPolicyVersion ??
+    config.unifiedTraversalPolicyVersion;
   const providerConfiguration =
     buildUnifiedCanaryProviderConfiguration({
       tronscanBaseUrl: config.tronscanBaseUrl,
@@ -279,12 +300,12 @@ export async function runUnifiedWalletCanaryCli(
               labelDatasetSha256,
               scoringPolicyVersion: SCORING_POLICY_V4.version,
               attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
-              traversalPolicyVersion: config.unifiedTraversalPolicyVersion,
+              traversalPolicyVersion,
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
             },
             freezeLabelDataset:
-              config.unifiedTraversalPolicyVersion === "snapshot-closure-v2"
+              traversalPolicyVersion === "snapshot-closure-v2"
                 ? async ({ snapshotHash, frozenAt }) =>
                     buildProductionFrozenLabelDataset({
                       frozenAt,
@@ -326,6 +347,8 @@ export async function runUnifiedWalletCanaryCli(
         schemaVerification.version ||
       canary.batchIdentity.providerConfiguration.sha256 !==
         providerConfiguration.sha256 ||
+      canary.batchIdentity.traversalPolicyVersion !==
+        traversalPolicyVersion ||
       (
         diagnosticHypothesis !== null &&
         canary.batchIdentity.diagnosticHypothesis?.sha256 !==
@@ -597,6 +620,13 @@ export async function runUnifiedWalletCanaryCli(
         traversalPolicyVersion: canary.batchIdentity.traversalPolicyVersion
       }))
     };
+    await runtime.onComplete?.({
+      db,
+      runIds: canary.runs.map((run) => run.id),
+      benchmarkControlSha256,
+      providerConfigurationSha256: providerConfiguration.sha256,
+      outcomes: result.outcomes
+    });
     if (runtime.emitResult !== false) {
       process.stdout.write(`${JSON.stringify(result)}\n`);
     }

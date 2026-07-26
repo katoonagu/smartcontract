@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyUnifiedAdaptiveBenchmarkControl,
   acknowledgeUnifiedAdaptiveBenchmarkRestartHandoffs,
+  assertUnifiedSelectedDenseRefillEvidence,
   assertUnifiedAdaptiveBenchmarkControlLeaseCurrent,
   captureUnifiedAdaptiveBenchmarkObservationBestEffort,
   createUnifiedAdaptiveBenchmarkProviderTelemetry,
@@ -11,11 +12,19 @@ import {
   installUnifiedAdaptiveBenchmarkControl,
   listUnifiedAdaptiveBenchmarkObservationArtifacts,
   listUnifiedAdaptiveBenchmarkObservations,
+  listUnifiedProviderRefillObservationArtifacts,
+  listUnifiedProviderRefillRuntimeSamples,
   loadUnifiedAdaptiveBenchmarkControl,
   persistUnifiedAdaptiveBenchmarkLatePhaseAck,
   persistUnifiedAdaptiveBenchmarkObservation,
+  persistUnifiedProviderRefillObservation,
+  persistUnifiedProviderRefillRuntimeSample,
   parseUnifiedAdaptiveBenchmarkControlV1,
+  parseUnifiedProviderRefillObservationV1,
   parseUnifiedAdaptiveBenchmarkScenarioSymptomV1,
+  summarizeUnifiedProviderSaturationSamples,
+  type UnifiedProviderRefillObservationV1,
+  type UnifiedProviderRefillRuntimeSampleV1,
   type UnifiedAdaptiveBenchmarkRuntimeObservationV1
 } from "../../src/unifiedCheck/adaptiveBenchmarkControl";
 import type { ProviderRunDemand } from "../../src/unifiedCheck/fairProviderAllocator";
@@ -59,6 +68,294 @@ function demand(runId: string): ProviderRunDemand {
 }
 
 describe("adaptive benchmark leased runtime control", () => {
+  it("seals separate exact refill evidence and enforces control, runtime, provider, and run bindings", async () => {
+    const diagnostics: UnifiedProviderRefillObservationV1["diagnostics"] = {
+      version: "unified-provider-refill-diagnostics-v1",
+      assignments: {
+        proposed: 4,
+        accepted: 4,
+        rejected: 0,
+        rejections: {
+          draining: 0,
+          slotActive: 0,
+          pendingAssignment: 0,
+          staleEpoch: 0
+        }
+      },
+      phases: Object.fromEntries([
+        "chunkToCheckpoint",
+        "checkpointToController",
+        "controllerToPermit",
+        "permitToClaim",
+        "checkpointToClaim"
+      ].map((name) => [name, {
+        p50: 1,
+        p95: 2,
+        max: 2,
+        sampleCount: 1
+      }])) as UnifiedProviderRefillObservationV1["diagnostics"]["phases"],
+      diagnostics: {
+        incomplete: 0,
+        evictedIncomplete: 0,
+        discontinuities: 0,
+        invalidClocks: 0
+      }
+    };
+    const observation: UnifiedProviderRefillObservationV1 = {
+      version: "unified-provider-refill-observation-v1",
+      controlSha256: "a".repeat(64),
+      observedAt: NOW.toISOString(),
+      runtimeCommit: "b".repeat(40),
+      providerConfigurationSha256: "c".repeat(64),
+      diagnostics,
+      saturated: {
+        sampleCount: 2,
+        activeSlotSum: 7,
+        fourOfFourSamples: 1,
+        unexplainedIdleSamples: 0
+      },
+      memoryEvidence: {
+        samplesSha256: "d".repeat(64),
+        summarySha256: "e".repeat(64),
+        diagnosticStatus: "captured"
+      }
+    };
+    const canonical = canonicalizeArtifactJson(observation);
+    expect(parseUnifiedProviderRefillObservationV1(canonical))
+      .toEqual(observation);
+    expect(() => parseUnifiedProviderRefillObservationV1(
+      canonicalizeArtifactJson({ ...observation, unexpected: true })
+    )).toThrow("unified_provider_refill_observation_invalid");
+    expect(() => parseUnifiedProviderRefillObservationV1(
+      canonicalizeArtifactJson({
+        ...observation,
+        memoryEvidence: {
+          samplesSha256: observation.memoryEvidence.samplesSha256,
+          diagnosticStatus: "captured"
+        }
+      })
+    )).toThrow("unified_provider_refill_observation_invalid");
+
+    const query = vi.fn(async () => ({ rows: [] }));
+    const sha256 = await persistUnifiedProviderRefillObservation({
+      db: { query },
+      createdByRunId: "run-txc",
+      observation
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(String((query.mock.calls[0] as unknown[] | undefined)?.[0]))
+      .toContain("'adaptive_benchmark_refill_observation'");
+    const load = (overrides: Partial<{
+      controlSha256: string;
+      runtimeCommit: string;
+      providerConfigurationSha256: string;
+      runIds: readonly string[];
+    }> = {}) => listUnifiedProviderRefillObservationArtifacts({
+      db: {
+        query: vi.fn(async () => ({
+          rows: [{
+            sha256,
+            created_by_run_id: "run-txc",
+            artifact_json: observation
+          }]
+        }))
+      },
+      controlSha256: observation.controlSha256,
+      runtimeCommit: observation.runtimeCommit,
+      providerConfigurationSha256:
+        observation.providerConfigurationSha256,
+      runIds: ["run-txc"],
+      ...overrides
+    });
+    await expect(load()).resolves.toEqual([{
+      sha256,
+      createdByRunId: "run-txc",
+      observation
+    }]);
+    await expect(load({ controlSha256: "f".repeat(64) }))
+      .rejects.toThrow("unified_provider_refill_observation_binding_invalid");
+    await expect(load({ runtimeCommit: "f".repeat(40) }))
+      .rejects.toThrow("unified_provider_refill_observation_binding_invalid");
+    await expect(load({
+      providerConfigurationSha256: "f".repeat(64)
+    })).rejects.toThrow(
+      "unified_provider_refill_observation_binding_invalid"
+    );
+    await expect(load({ runIds: ["run-other"] }))
+      .rejects.toThrow("unified_provider_refill_observation_binding_invalid");
+  });
+
+  it("keeps every truly saturated normal sample in the utilization denominator", () => {
+    expect(summarizeUnifiedProviderSaturationSamples([
+      {
+        providerCapacityLimit: 4,
+        eligibleReadyProviderWork: 4,
+        runtimeState: "normal",
+        healthyGroupCount: 4,
+        activeSlots: 4,
+        limitingReason: null
+      },
+      {
+        providerCapacityLimit: 4,
+        eligibleReadyProviderWork: 8,
+        runtimeState: "normal",
+        healthyGroupCount: 4,
+        activeSlots: 3,
+        limitingReason: "checkpoint_or_commit"
+      },
+      {
+        providerCapacityLimit: 4,
+        eligibleReadyProviderWork: 4,
+        runtimeState: "normal",
+        healthyGroupCount: 4,
+        activeSlots: 3,
+        limitingReason: null
+      },
+      {
+        providerCapacityLimit: 3,
+        eligibleReadyProviderWork: 99,
+        runtimeState: "normal",
+        healthyGroupCount: 4,
+        activeSlots: 0,
+        limitingReason: null
+      },
+      {
+        providerCapacityLimit: 4,
+        eligibleReadyProviderWork: 4,
+        runtimeState: "pressure",
+        healthyGroupCount: 4,
+        activeSlots: 0,
+        limitingReason: "memory_pressure"
+      }
+    ])).toEqual({
+      sampleCount: 3,
+      activeSlotSum: 10,
+      fourOfFourSamples: 1,
+      unexplainedIdleSamples: 1
+    });
+  });
+
+  it("persists separate exact runtime refill samples for final aggregation", async () => {
+    const emptyMetric = {
+      p50: null,
+      p95: null,
+      max: null,
+      sampleCount: 0
+    };
+    const sample: UnifiedProviderRefillRuntimeSampleV1 = {
+      version: "unified-provider-refill-runtime-sample-v1",
+      controlSha256: "a".repeat(64),
+      observedAt: NOW.toISOString(),
+      runtimeCommit: "b".repeat(40),
+      providerConfigurationSha256: "c".repeat(64),
+      runIds: ["run-txc"],
+      diagnostics: {
+        version: "unified-provider-refill-diagnostics-v1",
+        assignments: {
+          proposed: 0,
+          accepted: 0,
+          rejected: 0,
+          rejections: {
+            draining: 0,
+            slotActive: 0,
+            pendingAssignment: 0,
+            staleEpoch: 0
+          }
+        },
+        phases: {
+          chunkToCheckpoint: emptyMetric,
+          checkpointToController: emptyMetric,
+          controllerToPermit: emptyMetric,
+          permitToClaim: emptyMetric,
+          checkpointToClaim: emptyMetric
+        },
+        diagnostics: {
+          incomplete: 0,
+          evictedIncomplete: 0,
+          discontinuities: 0,
+          invalidClocks: 0
+        }
+      },
+      saturationSample: {
+        providerCapacityLimit: 4,
+        eligibleReadyProviderWork: 8,
+        runtimeState: "normal",
+        healthyGroupCount: 4,
+        activeSlots: 4,
+        limitingReason: null
+      }
+    };
+    const write = vi.fn(async () => ({ rows: [] }));
+    const sha256 = await persistUnifiedProviderRefillRuntimeSample({
+      db: { query: write },
+      createdByRunId: "run-txc",
+      sample
+    });
+    expect(String((write.mock.calls[0] as unknown[] | undefined)?.[0]))
+      .toContain("'adaptive_benchmark_refill_sample'");
+    await expect(listUnifiedProviderRefillRuntimeSamples({
+      db: {
+        query: vi.fn(async () => ({
+          rows: [{ sha256, artifact_json: sample }]
+        }))
+      },
+      controlSha256: sample.controlSha256,
+      runtimeCommit: sample.runtimeCommit,
+      providerConfigurationSha256:
+        sample.providerConfigurationSha256,
+      runIds: ["run-txc"]
+    })).resolves.toEqual([sample]);
+    await expect(listUnifiedProviderRefillRuntimeSamples({
+      db: {
+        query: vi.fn(async () => ({
+          rows: [{ sha256, artifact_json: sample }]
+        }))
+      },
+      controlSha256: sample.controlSha256,
+      runtimeCommit: "f".repeat(40),
+      providerConfigurationSha256:
+        sample.providerConfigurationSha256,
+      runIds: ["run-txc"]
+    })).rejects.toThrow("unified_provider_refill_sample_binding_invalid");
+  });
+
+  it("accepts selected dense refill evidence only with four audited dispatch groups and zero side effects, provider failures, or recovery", () => {
+    const saturated = {
+      sampleCount: 4,
+      activeSlotSum: 14,
+      fourOfFourSamples: 2,
+      unexplainedIdleSamples: 0
+    };
+    const input = {
+      saturated,
+      auditedGroupIds: ["g1", "g2", "g3", "g4"],
+      dispatchedGroupIds: ["g4", "g2", "g1", "g3"],
+      providerErrors: 0,
+      rateLimited429: 0,
+      deliveryIntents: 0,
+      externalSends: 0,
+      reconciliationRecoveries: 0
+    };
+    expect(() => assertUnifiedSelectedDenseRefillEvidence(input))
+      .not.toThrow();
+    for (const invalid of [
+      { saturated: { ...saturated, sampleCount: 0, activeSlotSum: 0 } },
+      { saturated: { ...saturated, activeSlotSum: 13 } },
+      { saturated: { ...saturated, unexplainedIdleSamples: 1 } },
+      { dispatchedGroupIds: ["g1", "g2", "g3"] },
+      { providerErrors: 1 },
+      { rateLimited429: 1 },
+      { deliveryIntents: 1 },
+      { externalSends: 1 },
+      { reconciliationRecoveries: 1 }
+    ]) {
+      expect(() => assertUnifiedSelectedDenseRefillEvidence({
+        ...input,
+        ...invalid
+      })).toThrow("unified_provider_refill_selected_dense_rejected");
+    }
+  });
+
   it("requires exact-group resume and multi-group fallback before cooldown evidence", () => {
     const cooldown = {
       controlSha256: "a".repeat(64),

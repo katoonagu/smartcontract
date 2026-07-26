@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateUnifiedBenchmarkPeakConcurrency,
   completedCanaryTraversalPolicy,
+  createUnifiedBenchmarkMemoryCapture,
   isNonterminalCheckpointedBenchmarkRun,
   createUnifiedBenchmarkReleaseOwner,
   parseUnifiedAdaptiveLiveCapacityStateV1,
@@ -116,6 +117,166 @@ function replayOracleRuntime(
 }
 
 describe("runUnifiedAdaptiveBenchmark CLI", () => {
+  it("allows only the registered TXc selected live scenario and binds policy plus sorted scenarios", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-selected-txc-"));
+    const memoryEvidenceDir = join(root, "memory");
+    await mkdir(memoryEvidenceDir);
+    const audit = sealUnifiedProviderGroupAuditV1({
+      auditedAt: "2026-07-24T12:00:00.000Z",
+      groups: Array.from({ length: 4 }, (_, index) => ({
+        opaqueGroupId: `provider-group-${index + 1}`,
+        state: "healthy" as const,
+        concurrencyLimit: 1,
+        independenceEvidenceSha256: String(index + 1).repeat(64)
+      }))
+    });
+    const auditPath = join(root, "provider-audit.json");
+    await writeFile(auditPath, audit.canonicalJson, "utf8");
+    const runIsolatedCanaryBenchmark = vi.fn(async () => {
+      throw new Error("selected_runtime_invoked");
+    });
+    const selectedArgs = [
+      "--mode", "live",
+      "--capacity", "4",
+      "--isolated",
+      "--scenario", "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      "--traversal-policy", "snapshot-closure-v2",
+      "--memory-evidence-dir", memoryEvidenceDir,
+      "--provider-audit", auditPath,
+      "--output", join(root, "selected.json")
+    ] as const;
+    await expect(runUnifiedAdaptiveBenchmarkCli(selectedArgs, {
+      runtimeCommit: "a".repeat(40),
+      runIsolatedCanaryBenchmark
+    })).rejects.toThrow("selected_runtime_invoked");
+    expect(runIsolatedCanaryBenchmark).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traversalPolicy: "snapshot-closure-v2",
+        scenarios: [
+          "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"
+        ],
+        memoryEvidenceDir
+      })
+    );
+
+    for (const invalid of [
+      "isolated:TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
+      "isolated:arbitrary"
+    ]) {
+      await expect(runUnifiedAdaptiveBenchmarkCli([
+        ...selectedArgs.slice(0, 6),
+        invalid,
+        ...selectedArgs.slice(7)
+      ], { runIsolatedCanaryBenchmark })).rejects.toThrow(
+        "unified_benchmark_cli_scenario_invalid"
+      );
+    }
+    await expect(runUnifiedAdaptiveBenchmarkCli([
+      "--mode", "replay",
+      "--capacity", "1",
+      "--seed", "24072026",
+      "--scenario", "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      "--traversal-policy", "snapshot-closure-v1",
+      "--output", join(root, "replay.json")
+    ], replayOracleRuntime())).rejects.toThrow(
+      "unified_benchmark_cli_replay_option_invalid"
+    );
+    await expect(runUnifiedAdaptiveBenchmarkCli([
+      ...selectedArgs,
+      "--scenario", "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"
+    ], { runIsolatedCanaryBenchmark })).rejects.toThrow(
+      "unified_benchmark_cli_duplicate"
+    );
+  });
+
+  it("captures one before/during/after process sample with stable IDs and validates summary bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-memory-capture-"));
+    const calls: Array<{
+      phase: string;
+      runId: string;
+      scenarioId: string;
+      nodePid: number;
+    }> = [];
+    const samples: unknown[] = [];
+    const phaseRunner = vi.fn(async (input: {
+      readonly phase: "before" | "during" | "after";
+      readonly runId: string;
+      readonly scenarioId: string;
+      readonly nodePid: number;
+      readonly samplesPath: string;
+      readonly summaryPath: string;
+    }) => {
+      calls.push(input);
+      samples.push({
+        capturedAt: `2026-07-24T12:00:0${calls.length}.000Z`,
+        localWslDiagnostic: {
+          linuxMemAvailableBytes: 300,
+          linuxSwapFreeBytes: 0,
+          linuxSwapTotalBytes: 0,
+          status: "captured",
+          vmmemWslWorkingSetBytes: 200
+        },
+        nodePid: input.nodePid,
+        phase: input.phase,
+        runId: input.runId,
+        runtime: { heapUsedBytes: 50, rssBytes: 100 },
+        scenarioId: input.scenarioId,
+        version: "unified-memory-sample-v1"
+      });
+      await writeFile(
+        input.samplesPath,
+        JSON.stringify(samples),
+        "utf8"
+      );
+      if (input.phase === "after") {
+        await writeFile(input.summaryPath, JSON.stringify({
+          completedAt: "2026-07-24T12:00:03.000Z",
+          diagnosticStatus: "captured",
+          runId: input.runId,
+          runtimeTrend: {
+            afterRssBytes: 100,
+            beforeRssBytes: 100,
+            peakRssBytes: 100,
+            postRunRssDeltaBytes: 0
+          },
+          scenarioId: input.scenarioId,
+          scope: "local_wsl_diagnostic",
+          verdict: "diagnostic_only",
+          version: "unified-local-wsl-memory-summary-v1",
+          wslTrend: {
+            linuxAvailableDeltaBytes: 0,
+            postRunVmmemDeltaBytes: 0,
+            swapUsedGrowthBytes: 0
+          }
+        }), "utf8");
+      }
+    });
+    const capture = createUnifiedBenchmarkMemoryCapture({
+      directory: root,
+      scenarioId: "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      nodePid: 123,
+      memoryUsage: () => ({ rss: 100, heapUsed: 50 }),
+      phaseRunner
+    });
+    await capture.before("run-txc");
+    await capture.during("run-txc");
+    await capture.during("run-txc");
+    const evidence = await capture.after("run-txc");
+    expect(calls.map((call) => call.phase))
+      .toEqual(["before", "during", "after"]);
+    expect(calls.every((call) =>
+      call.runId === "run-txc" &&
+      call.scenarioId ===
+        "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd" &&
+      call.nodePid === 123
+    )).toBe(true);
+    expect(evidence).toEqual({
+      samplesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      summarySha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      diagnosticStatus: "captured"
+    });
+  });
+
   it("uses the completed canary traversal policy for live performance identity", () => {
     expect(completedCanaryTraversalPolicy([
       { traversalPolicyVersion: "snapshot-closure-v2" },
@@ -808,7 +969,9 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       seed: 1,
       requestedCapacities: [1],
       candidateCommit,
-      sourceIdentitySha256: audit.envelope.auditSha256
+      sourceIdentitySha256: audit.envelope.auditSha256,
+      traversalPolicyVersion: "snapshot-closure-v1",
+      scenarioIds: [...UNIFIED_ADAPTIVE_LIVE_SCENARIOS].sort()
     });
     const artifacts = [];
     let firstObservationPath = "";

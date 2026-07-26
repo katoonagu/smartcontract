@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { freemem } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -8,7 +8,8 @@ import {
   mkdir,
   open,
   readFile,
-  realpath
+  realpath,
+  writeFile
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import {
@@ -37,14 +38,19 @@ import {
 } from "../src/unifiedCheck/adaptiveBenchmarkRunner";
 import {
   assertUnifiedAdaptiveBenchmarkControlLeaseCurrent,
+  assertUnifiedSelectedDenseRefillEvidence,
   installUnifiedAdaptiveBenchmarkControl,
   listUnifiedAdaptiveBenchmarkObservationArtifacts,
+  listUnifiedProviderRefillRuntimeSamples,
+  parseUnifiedProviderRefillObservationV1,
   parseUnifiedAdaptiveBenchmarkRuntimeObservationV1,
   parseUnifiedAdaptiveBenchmarkScenarioSymptomV1,
   persistUnifiedAdaptiveBenchmarkLatePhaseAck,
   persistUnifiedAdaptiveBenchmarkScenarioSymptom,
+  persistUnifiedProviderRefillObservation,
   releaseUnifiedAdaptiveBenchmarkControl,
   renewUnifiedAdaptiveBenchmarkControl,
+  summarizeUnifiedProviderSaturationSamples,
   UNIFIED_BENCHMARK_RESTART_MAX_WAIT_MS,
   type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1
 } from "../src/unifiedCheck/adaptiveBenchmarkControl";
@@ -91,6 +97,10 @@ export const UNIFIED_ADAPTIVE_LIVE_SCENARIOS = [
   "isolated:TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr",
   "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"
 ] as const;
+const SELECTED_LIVE_SCENARIO =
+  "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd" as const;
+type TraversalPolicy =
+  import("../src/unifiedCheck/contracts").UnifiedTraversalPolicyVersion;
 
 export function isNonterminalCheckpointedBenchmarkRun(run: {
   readonly status: string;
@@ -187,6 +197,9 @@ type CliOptions = {
   readonly isolated: boolean;
   readonly providerAuditPath: string | null;
   readonly oracleReceiptPath: string | null;
+  readonly scenario: typeof SELECTED_LIVE_SCENARIO | null;
+  readonly traversalPolicy: TraversalPolicy;
+  readonly memoryEvidenceDir: string | null;
 };
 
 export type UnifiedAdaptiveBenchmarkRuntime = {
@@ -203,7 +216,9 @@ export type UnifiedAdaptiveBenchmarkRuntime = {
     readonly executionIdentitySha256: string;
     readonly providerAudit:
       ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
-    readonly scenarios: typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS;
+    readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
+    readonly traversalPolicy: TraversalPolicy;
+    readonly memoryEvidenceDir: string | null;
   }) => Promise<UnifiedAdaptiveBenchmarkIndexV1>;
 };
 
@@ -481,6 +496,9 @@ function parseCli(args: readonly string[]): CliOptions {
   let isolated = false;
   let providerAuditPath: string | null = null;
   let oracleReceiptPath: string | null = null;
+  let scenario: typeof SELECTED_LIVE_SCENARIO | null = null;
+  let traversalPolicy: TraversalPolicy = "snapshot-closure-v1";
+  let memoryEvidenceDir: string | null = null;
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]!;
@@ -496,7 +514,10 @@ function parseCli(args: readonly string[]): CliOptions {
       "--seed",
       "--output",
       "--provider-audit",
-      "--oracle-receipt"
+      "--oracle-receipt",
+      "--scenario",
+      "--traversal-policy",
+      "--memory-evidence-dir"
     ].includes(flag)) {
       throw new TypeError(`unified_benchmark_cli_unknown:${flag}`);
     }
@@ -527,8 +548,25 @@ function parseCli(args: readonly string[]): CliOptions {
       output = value;
     } else if (flag === "--provider-audit") {
       providerAuditPath = value;
-    } else {
+    } else if (flag === "--oracle-receipt") {
       oracleReceiptPath = value;
+    } else if (flag === "--scenario") {
+      if (value !== SELECTED_LIVE_SCENARIO) {
+        throw new TypeError("unified_benchmark_cli_scenario_invalid");
+      }
+      scenario = value;
+    } else if (flag === "--traversal-policy") {
+      if (
+        value !== "snapshot-closure-v1" &&
+        value !== "snapshot-closure-v2"
+      ) {
+        throw new TypeError(
+          "unified_benchmark_cli_traversal_policy_invalid"
+        );
+      }
+      traversalPolicy = value;
+    } else {
+      memoryEvidenceDir = value;
     }
   }
   if (mode === null || capacities === null || output === null) {
@@ -550,7 +588,12 @@ function parseCli(args: readonly string[]): CliOptions {
     if (seed === null) {
       throw new TypeError("unified_benchmark_cli_seed_required");
     }
-    if (isolated || providerAuditPath !== null) {
+    if (
+      isolated ||
+      providerAuditPath !== null ||
+      scenario !== null ||
+      memoryEvidenceDir !== null
+    ) {
       throw new TypeError("unified_benchmark_cli_replay_option_invalid");
     }
   } else {
@@ -563,6 +606,13 @@ function parseCli(args: readonly string[]): CliOptions {
     if (oracleReceiptPath !== null) {
       throw new TypeError("unified_benchmark_cli_live_option_invalid");
     }
+    if (
+      (scenario === null) !== (memoryEvidenceDir === null)
+    ) {
+      throw new TypeError(
+        "unified_benchmark_live_selected_memory_required"
+      );
+    }
   }
   return {
     mode,
@@ -571,7 +621,10 @@ function parseCli(args: readonly string[]): CliOptions {
     output,
     isolated,
     providerAuditPath,
-    oracleReceiptPath
+    oracleReceiptPath,
+    scenario,
+    traversalPolicy,
+    memoryEvidenceDir
   };
 }
 
@@ -636,6 +689,16 @@ async function mkdirNoFollow(path: string): Promise<void> {
   await rejectSymlink(path);
 }
 
+async function requireExistingDirectoryNoFollow(path: string): Promise<string> {
+  const absolute = resolve(path);
+  await rejectSymlink(absolute);
+  const info = await lstat(absolute);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("unified_benchmark_memory_directory_invalid");
+  }
+  return absolute;
+}
+
 async function writeImmutable(path: string, content: string): Promise<void> {
   await rejectSymlink(path);
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
@@ -659,6 +722,274 @@ async function writeImmutable(path: string, content: string): Promise<void> {
       throw new Error("unified_benchmark_existing_artifact_mismatch");
     }
   }
+}
+
+type UnifiedBenchmarkMemoryPhase = "before" | "during" | "after";
+
+export type UnifiedBenchmarkMemoryPhaseRunner = (input: {
+  readonly phase: UnifiedBenchmarkMemoryPhase;
+  readonly runId: string;
+  readonly scenarioId: string;
+  readonly nodePid: number;
+  readonly runtimeSnapshotPath: string;
+  readonly samplesPath: string;
+  readonly summaryPath: string;
+}) => Promise<void>;
+
+function memoryExactKeys(
+  value: unknown,
+  keys: readonly string[]
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== keys.length ||
+    keys.some((key) => !Object.prototype.hasOwnProperty.call(record, key))
+  ) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  return record;
+}
+
+function memoryPositive(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function memoryNonNegative(value: unknown): value is number {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) && value >= 0;
+}
+
+function validateMemoryEvidenceFiles(input: {
+  readonly samplesBytes: string;
+  readonly summaryBytes: string;
+  readonly runId: string;
+  readonly scenarioId: string;
+  readonly nodePid: number;
+}): "captured" | "skipped" {
+  const samples = JSON.parse(input.samplesBytes) as unknown;
+  if (!Array.isArray(samples) || samples.length !== 3) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  const phases = ["before", "during", "after"] as const;
+  for (const [index, rawSample] of samples.entries()) {
+    const sample = memoryExactKeys(rawSample, [
+      "capturedAt",
+      "localWslDiagnostic",
+      "nodePid",
+      "phase",
+      "runId",
+      "runtime",
+      "scenarioId",
+      "version"
+    ]);
+    const runtime = memoryExactKeys(sample.runtime, [
+      "heapUsedBytes",
+      "rssBytes"
+    ]);
+    const local = memoryExactKeys(sample.localWslDiagnostic, [
+      "linuxMemAvailableBytes",
+      "linuxSwapFreeBytes",
+      "linuxSwapTotalBytes",
+      "status",
+      "vmmemWslWorkingSetBytes"
+    ]);
+    if (
+      sample.version !== "unified-memory-sample-v1" ||
+      sample.runId !== input.runId ||
+      sample.scenarioId !== input.scenarioId ||
+      sample.nodePid !== input.nodePid ||
+      sample.phase !== phases[index] ||
+      typeof sample.capturedAt !== "string" ||
+      !Number.isFinite(Date.parse(sample.capturedAt)) ||
+      !memoryPositive(runtime.rssBytes) ||
+      !memoryPositive(runtime.heapUsedBytes) ||
+      runtime.heapUsedBytes > runtime.rssBytes ||
+      !["captured", "skipped"].includes(String(local.status))
+    ) {
+      throw new Error("unified_benchmark_memory_evidence_invalid");
+    }
+    const localValues = [
+      local.linuxMemAvailableBytes,
+      local.linuxSwapFreeBytes,
+      local.linuxSwapTotalBytes,
+      local.vmmemWslWorkingSetBytes
+    ];
+    if (
+      (local.status === "skipped" &&
+        localValues.some((value) => value !== null)) ||
+      (
+        local.status === "captured" &&
+        (
+          !memoryPositive(local.linuxMemAvailableBytes) ||
+          !memoryNonNegative(local.linuxSwapFreeBytes) ||
+          !memoryNonNegative(local.linuxSwapTotalBytes) ||
+          local.linuxSwapFreeBytes > local.linuxSwapTotalBytes ||
+          !memoryPositive(local.vmmemWslWorkingSetBytes)
+        )
+      )
+    ) {
+      throw new Error("unified_benchmark_memory_evidence_invalid");
+    }
+  }
+  const summary = memoryExactKeys(JSON.parse(input.summaryBytes), [
+    "completedAt",
+    "diagnosticStatus",
+    "runId",
+    "runtimeTrend",
+    "scenarioId",
+    "scope",
+    "verdict",
+    "version",
+    "wslTrend"
+  ]);
+  const runtimeTrend = memoryExactKeys(summary.runtimeTrend, [
+    "afterRssBytes",
+    "beforeRssBytes",
+    "peakRssBytes",
+    "postRunRssDeltaBytes"
+  ]);
+  const wslTrend = memoryExactKeys(summary.wslTrend, [
+    "linuxAvailableDeltaBytes",
+    "postRunVmmemDeltaBytes",
+    "swapUsedGrowthBytes"
+  ]);
+  if (
+    summary.version !== "unified-local-wsl-memory-summary-v1" ||
+    summary.scope !== "local_wsl_diagnostic" ||
+    summary.verdict !== "diagnostic_only" ||
+    summary.runId !== input.runId ||
+    summary.scenarioId !== input.scenarioId ||
+    typeof summary.completedAt !== "string" ||
+    !Number.isFinite(Date.parse(summary.completedAt)) ||
+    !["captured", "skipped"].includes(
+      String(summary.diagnosticStatus)
+    ) ||
+    !memoryPositive(runtimeTrend.afterRssBytes) ||
+    !memoryPositive(runtimeTrend.beforeRssBytes) ||
+    !memoryPositive(runtimeTrend.peakRssBytes) ||
+    typeof runtimeTrend.postRunRssDeltaBytes !== "number" ||
+    !Number.isSafeInteger(runtimeTrend.postRunRssDeltaBytes) ||
+    Object.values(wslTrend).some((value) =>
+      value !== null &&
+      (typeof value !== "number" || !Number.isSafeInteger(value))
+    )
+  ) {
+    throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  return summary.diagnosticStatus as "captured" | "skipped";
+}
+
+const runUnifiedBenchmarkMemoryPowerShell: UnifiedBenchmarkMemoryPhaseRunner =
+  async (input) => {
+    const args = [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", resolve("scripts/captureUnifiedWslMemory.ps1"),
+      "-RunId", input.runId,
+      "-ScenarioId", input.scenarioId,
+      "-Phase", input.phase,
+      "-NodePid", String(input.nodePid),
+      "-RuntimeSnapshotPath", input.runtimeSnapshotPath,
+      "-OutputPath", input.samplesPath
+    ];
+    if (input.phase === "after") {
+      args.push("-SummaryPath", input.summaryPath);
+    }
+    await execFileAsync("powershell.exe", args, { windowsHide: true });
+  };
+
+export function createUnifiedBenchmarkMemoryCapture(input: {
+  readonly directory: string;
+  readonly scenarioId: string;
+  readonly nodePid?: number;
+  readonly memoryUsage?: () => { readonly rss: number; readonly heapUsed: number };
+  readonly phaseRunner?: UnifiedBenchmarkMemoryPhaseRunner;
+}) {
+  const directory = resolve(input.directory);
+  const nodePid = input.nodePid ?? process.pid;
+  const memoryUsage = input.memoryUsage ?? (() => process.memoryUsage());
+  const phaseRunner = input.phaseRunner ??
+    runUnifiedBenchmarkMemoryPowerShell;
+  const runtimeSnapshotPath = resolve(directory, "runtime-memory.json");
+  const samplesPath = resolve(directory, "memory-samples.json");
+  const summaryPath = resolve(directory, "memory-summary.json");
+  let stableRunId: string | null = null;
+  const completed = new Set<UnifiedBenchmarkMemoryPhase>();
+  const capture = async (
+    phase: UnifiedBenchmarkMemoryPhase,
+    runId: string
+  ): Promise<void> => {
+    if (!runId.trim() || !input.scenarioId.trim()) {
+      throw new Error("unified_benchmark_memory_identity_invalid");
+    }
+    if (stableRunId !== null && stableRunId !== runId) {
+      throw new Error("unified_benchmark_memory_identity_mismatch");
+    }
+    stableRunId = runId;
+    if (completed.has(phase)) {
+      if (phase === "during") return;
+      throw new Error("unified_benchmark_memory_phase_duplicate");
+    }
+    if (
+      (phase === "during" && !completed.has("before")) ||
+      (phase === "after" &&
+        (!completed.has("before") || !completed.has("during")))
+    ) {
+      throw new Error("unified_benchmark_memory_phase_order_invalid");
+    }
+    const memory = memoryUsage();
+    if (
+      !memoryPositive(memory.rss) ||
+      !memoryPositive(memory.heapUsed) ||
+      memory.heapUsed > memory.rss
+    ) {
+      throw new Error("unified_benchmark_memory_runtime_invalid");
+    }
+    await writeFile(
+      runtimeSnapshotPath,
+      canonicalizeArtifactJson({
+        heapUsedBytes: memory.heapUsed,
+        rssBytes: memory.rss
+      }),
+      "utf8"
+    );
+    await phaseRunner({
+      phase,
+      runId,
+      scenarioId: input.scenarioId,
+      nodePid,
+      runtimeSnapshotPath,
+      samplesPath,
+      summaryPath
+    });
+    completed.add(phase);
+  };
+  return {
+    before: (runId: string) => capture("before", runId),
+    during: (runId: string) => capture("during", runId),
+    async after(runId: string) {
+      await capture("after", runId);
+      const [samplesBytes, summaryBytes] = await Promise.all([
+        readFile(samplesPath, "utf8"),
+        readFile(summaryPath, "utf8")
+      ]);
+      const diagnosticStatus = validateMemoryEvidenceFiles({
+        samplesBytes,
+        summaryBytes,
+        runId,
+        scenarioId: input.scenarioId,
+        nodePid
+      });
+      return {
+        samplesSha256: createHash("sha256").update(samplesBytes).digest("hex"),
+        summarySha256: createHash("sha256").update(summaryBytes).digest("hex"),
+        diagnosticStatus
+      } as const;
+    }
+  };
 }
 
 export type UnifiedAdaptiveLiveCapacityStateV1 = {
@@ -1013,13 +1344,15 @@ function highestObservedReplayBlock(
   ).toString();
 }
 
-async function loadReplayFixture(): Promise<{
+async function loadReplayFixture(policy: TraversalPolicy): Promise<{
   readonly canonicalJson: string;
   readonly envelope: ReturnType<typeof parseUnifiedProviderReplayV1>;
 }> {
   const path = fileURLToPath(new URL(
     "../tests/fixtures/unified-wallet/" +
-    "adaptive-rolling-provider-replay.json",
+    (policy === "snapshot-closure-v1"
+      ? "adaptive-rolling-provider-replay.json"
+      : "adaptive-rolling-provider-replay-v2.json"),
     import.meta.url
   ));
   const file = await readFile(path, "utf8");
@@ -1267,6 +1600,8 @@ function benchmarkExecutionIdentity(input: {
   readonly capacities: readonly number[];
   readonly candidateCommit: string;
   readonly sourceIdentitySha256: string;
+  readonly traversalPolicy: TraversalPolicy;
+  readonly scenarioIds: readonly string[];
 }): string {
   return fingerprintCanonicalArtifact({
     version: "unified-adaptive-benchmark-execution-identity-v1",
@@ -1274,7 +1609,9 @@ function benchmarkExecutionIdentity(input: {
     seed: input.seed,
     requestedCapacities: input.capacities,
     candidateCommit: input.candidateCommit,
-    sourceIdentitySha256: input.sourceIdentitySha256
+    sourceIdentitySha256: input.sourceIdentitySha256,
+    traversalPolicyVersion: input.traversalPolicy,
+    scenarioIds: [...input.scenarioIds].sort()
   });
 }
 
@@ -1302,7 +1639,7 @@ async function loadCompletedLiveIndex(input: {
   readonly executionIdentitySha256: string;
   readonly providerAudit:
     ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
-  readonly scenarios: typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS;
+  readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
 }): Promise<UnifiedAdaptiveBenchmarkIndexV1 | null> {
   let raw: string;
   try {
@@ -1430,6 +1767,7 @@ async function loadCompletedLiveIndex(input: {
         throw new Error("unified_benchmark_existing_artifact_mismatch");
       }
       const observedRunIds = new Set<string>();
+      const exportedObservations: UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1[] = [];
       for (
         const sha256 of
         evidence.runtimeObservationArtifactSha256s
@@ -1456,6 +1794,7 @@ async function loadCompletedLiveIndex(input: {
           );
         }
         for (const run of observation.runs) observedRunIds.add(run.runId);
+        exportedObservations.push({ sha256, observation });
       }
       const kind = expected.scenarioId.slice(
         `live:c${expected.capacity}:`.length
@@ -1498,6 +1837,47 @@ async function loadCompletedLiveIndex(input: {
             "unified_benchmark_existing_artifact_mismatch"
           );
         }
+      }
+      if (
+        kind === SELECTED_LIVE_SCENARIO &&
+        input.scenarios.length === 1
+      ) {
+        const refillPath = resolve(
+          scenarioDirectory,
+          `refill-${controlSha256}.json`
+        );
+        await rejectSymlink(refillPath);
+        const refillRaw = await readNoFollow(refillPath);
+        const refill = parseUnifiedProviderRefillObservationV1(
+          refillRaw.endsWith("\n")
+            ? refillRaw.slice(0, -1)
+            : refillRaw
+        );
+        const latest = exportedObservations.map((item) => item.observation)
+          .sort((left, right) =>
+            left.provider.requests - right.provider.requests ||
+            Date.parse(left.observedAt) - Date.parse(right.observedAt)
+          ).at(-1);
+        const liveOutcome = evidence.liveOutcomes[0];
+        if (
+          !latest ||
+          !liveOutcome ||
+          refill.controlSha256 !== controlSha256 ||
+          refill.runtimeCommit !== input.candidateCommit
+        ) {
+          throw new Error("unified_benchmark_existing_artifact_mismatch");
+        }
+        assertUnifiedSelectedDenseRefillEvidence({
+          saturated: refill.saturated,
+          auditedGroupIds: liveOutcome.auditedGroupIds,
+          dispatchedGroupIds: liveOutcome.dispatchedGroupIds,
+          providerErrors: evidence.provider.errors,
+          rateLimited429: evidence.provider.rateLimited429,
+          deliveryIntents: evidence.delivery.deliveryIntents,
+          externalSends: evidence.delivery.externalTelegramSends,
+          reconciliationRecoveries:
+            evidence.restartRecovery.reconciliationRecoveries
+        });
       }
       if ([...runIds].some((runId) => !observedRunIds.has(runId))) {
         throw new Error("unified_benchmark_existing_artifact_mismatch");
@@ -1556,6 +1936,409 @@ async function resolveReplayOracleReceipt(
   return verified;
 }
 
+async function runSelectedIsolatedCanaryBenchmark(input: {
+  readonly requestedCapacities: readonly number[];
+  readonly output: string;
+  readonly candidateCommit: string;
+  readonly executionIdentitySha256: string;
+  readonly providerAudit:
+    ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
+  readonly traversalPolicy: TraversalPolicy;
+  readonly memoryEvidenceDir: string;
+  readonly runCanary: typeof import("./runUnifiedWalletCanary")["runUnifiedWalletCanaryCli"];
+}): Promise<UnifiedAdaptiveBenchmarkIndexV1> {
+  if (
+    input.requestedCapacities.length !== 1 ||
+    input.requestedCapacities[0] !== 4
+  ) {
+    throw new Error("unified_benchmark_selected_capacity_invalid");
+  }
+  const capacity = 4;
+  const auditedGroupIds = input.providerAudit.groups
+    .filter((group) =>
+      group.state === "healthy" && group.concurrencyLimit > 0
+    )
+    .sort((left, right) =>
+      left.opaqueGroupId.localeCompare(right.opaqueGroupId)
+    )
+    .slice(0, capacity)
+    .map((group) => group.opaqueGroupId);
+  const outputDirectory = dirname(input.output);
+  const scenarioDirectory = resolve(
+    outputDirectory,
+    `${parse(input.output).name}.scenarios`
+  );
+  await mkdirNoFollow(scenarioDirectory);
+  const memoryCapture = createUnifiedBenchmarkMemoryCapture({
+    directory: input.memoryEvidenceDir,
+    scenarioId: SELECTED_LIVE_SCENARIO
+  });
+  let runId = "";
+  let controlSha256 = "";
+  const refillArtifacts: {
+    readonly sha256: string;
+    readonly observation: import("../src/unifiedCheck/adaptiveBenchmarkControl")
+      .UnifiedProviderRefillObservationV1;
+  }[] = [];
+  const canary = await input.runCanary([
+    "--candidate", input.candidateCommit,
+    "--cutoff", new Date().toISOString(),
+    "--output", resolve(
+      outputDirectory,
+      `${parse(input.output).name}.canary-selected-txc`
+    )
+  ], {
+    emitResult: false,
+    traversalPolicyVersion: input.traversalPolicy,
+    explicitBenchmarkScenarios: [{
+      scenarioId: SELECTED_LIVE_SCENARIO,
+      subjectAddress: SELECTED_LIVE_SCENARIO.slice("isolated:".length),
+      locale: "ru"
+    }],
+    async onBatchReady(batch) {
+      if (batch.runIds.length !== 1) {
+        throw new Error("unified_benchmark_selected_run_count_invalid");
+      }
+      runId = batch.runIds[0]!;
+      await memoryCapture.before(runId);
+      const now = new Date();
+      const installed = await installUnifiedAdaptiveBenchmarkControl({
+        db: createUnifiedPoolTransactionHost(batch.db),
+        leaseOwner: randomUUID(),
+        now,
+        expiresAt: new Date(now.getTime() +
+          UNIFIED_BENCHMARK_CONTROL_LEASE_MS),
+        runtimeCommit: input.candidateCommit,
+        providerConfigurationSha256:
+          batch.providerConfigurationSha256,
+        capacity,
+        auditedGroupIds,
+        runPlans: [{
+          runId,
+          scenarioId: SELECTED_LIVE_SCENARIO,
+          fault: "none",
+          faultUntil: null
+        }]
+      });
+      controlSha256 = installed.sha256;
+      return {
+        benchmarkControlSha256: installed.sha256,
+        release: installed.release
+      };
+    },
+    async onProgress({ runs }) {
+      const providerKinds = new Set([
+        "direct_history",
+        "address_history",
+        "deep_direct"
+      ]);
+      const claimed = runs.some((run) => run.id === runId &&
+        run.tasks.some((task) =>
+          providerKinds.has(task.kind) &&
+          (
+            task.status === "LEASED" ||
+            task.attemptDurations.length > 0
+          )
+        ));
+      if (claimed) await memoryCapture.during(runId);
+    },
+    async onComplete({
+      db,
+      runIds,
+      benchmarkControlSha256,
+      providerConfigurationSha256,
+      outcomes
+    }) {
+      if (
+        runIds.length !== 1 ||
+        runIds[0] !== runId ||
+        benchmarkControlSha256 !== controlSha256 ||
+        outcomes.length !== 1
+      ) {
+        throw new Error("unified_benchmark_selected_binding_invalid");
+      }
+      const memoryEvidence = await memoryCapture.after(runId);
+      const [samples, observations] = await Promise.all([
+        listUnifiedProviderRefillRuntimeSamples({
+          db,
+          controlSha256,
+          runtimeCommit: input.candidateCommit,
+          providerConfigurationSha256,
+          runIds
+        }),
+        listUnifiedAdaptiveBenchmarkObservationArtifacts({
+          db,
+          controlSha256,
+          runIds
+        })
+      ]);
+      if (samples.length < 1 || observations.length < 1) {
+        throw new Error("unified_benchmark_selected_refill_missing");
+      }
+      const saturated = summarizeUnifiedProviderSaturationSamples(
+        samples.map((sample) => sample.saturationSample)
+      );
+      const latestRuntime = observations.map((item) => item.observation)
+        .sort((left, right) =>
+          left.provider.requests - right.provider.requests ||
+          Date.parse(left.observedAt) - Date.parse(right.observedAt)
+        ).at(-1)!;
+      assertUnifiedSelectedDenseRefillEvidence({
+        saturated,
+        auditedGroupIds,
+        dispatchedGroupIds: latestRuntime.provider.dispatchedGroupIds,
+        providerErrors: latestRuntime.provider.errors,
+        rateLimited429: latestRuntime.provider.rateLimited429,
+        deliveryIntents: latestRuntime.integrity.deliveryIntents,
+        externalSends: 0,
+        reconciliationRecoveries:
+          latestRuntime.lifecycle.reconciliationRecoveries
+      });
+      const observation = {
+        version: "unified-provider-refill-observation-v1" as const,
+        controlSha256,
+        observedAt: new Date().toISOString(),
+        runtimeCommit: input.candidateCommit,
+        providerConfigurationSha256,
+        diagnostics: samples.at(-1)!.diagnostics,
+        saturated,
+        memoryEvidence
+      };
+      const sha256 = await persistUnifiedProviderRefillObservation({
+        db,
+        createdByRunId: runId,
+        observation
+      });
+      refillArtifacts.push({ sha256, observation });
+    }
+  });
+  const refillArtifact = refillArtifacts[0];
+  if (refillArtifact === undefined || refillArtifacts.length !== 1) {
+    throw new Error("unified_benchmark_selected_refill_missing");
+  }
+  const outcome = canary.outcomes[0];
+  const result = canary.report.results[0];
+  if (
+    !outcome ||
+    !result ||
+    result.outcome !== "COMPLETED" ||
+    outcome.score === null ||
+    outcome.decision === null ||
+    !outcome.evidenceBundleSha256 ||
+    !outcome.traversalClosureSha256 ||
+    !outcome.scoringBundleSha256 ||
+    !outcome.reportSha256 ||
+    canary.benchmarkObservationArtifacts.length < 1 ||
+    canary.benchmarkScenarioSymptoms.length < 1
+  ) {
+    throw new Error("unified_benchmark_selected_result_incomplete");
+  }
+  const observations = canary.benchmarkObservationArtifacts;
+  const runtimeTelemetry = observations.map((item) => item.observation)
+    .sort((left, right) =>
+      left.provider.requests - right.provider.requests ||
+      Date.parse(left.observedAt) - Date.parse(right.observedAt)
+    ).at(-1)!;
+  const providerKinds = new Set([
+    "direct_history",
+    "address_history",
+    "deep_direct"
+  ]);
+  const attempts = result.childAttempts.filter((attempt) =>
+    providerKinds.has(attempt.kind)
+  );
+  const peak = calculateUnifiedBenchmarkPeakConcurrency(attempts);
+  const eligibleDemand = Math.max(...observations.map((item) =>
+    item.observation.runs.reduce((sum, run) =>
+      sum + run.capacity.eligibleDemand, 0)
+  ));
+  const targetSlots = Math.max(...observations.map((item) =>
+    item.observation.runs.reduce((sum, run) =>
+      sum + run.capacity.targetSlots, 0)
+  ));
+  const actualSlots = Math.max(peak, ...observations.map((item) =>
+    item.observation.runs.reduce((sum, run) =>
+      sum + run.capacity.actualSlots, 0)
+  ));
+  if (
+    targetSlots > capacity ||
+    actualSlots > targetSlots ||
+    targetSlots > eligibleDemand
+  ) {
+    throw new Error("unified_benchmark_selected_capacity_invalid");
+  }
+  const performanceManifest = buildUnifiedPerformanceBenchmarkManifest({
+    version: "unified-performance-benchmark-input-v1",
+    caseId: `live:c4:${SELECTED_LIVE_SCENARIO}`,
+    runId,
+    frozenClockIso: outcome.snapshot.timestamp,
+    snapshot: outcome.snapshot,
+    providerBundleSha256: controlSha256,
+    labelDatasetSha256: outcome.labelDatasetSha256,
+    providerConfigurationSha256:
+      outcome.providerConfigurationSha256,
+    scoringPolicyVersion: "scoring-signal-matrix-v4",
+    attributionPolicyVersion: "selected-attribution-policy-v1",
+    analysisPolicyVersion: completedCanaryTraversalPolicy([outcome]),
+    presentationPolicyVersion: "unified-presentation-v1",
+    locale: "ru",
+    deterministicIdSeed: `live:c4:${SELECTED_LIVE_SCENARIO}`,
+    runtimeCommit: input.candidateCommit,
+    checkpointVersion: "unified-production-traversal-checkpoint-v2",
+    logicalChunkEvents: Math.max(1, attempts.length),
+    providerSlots: capacity,
+    harnessVersion: "unified-adaptive-live-canary-v1"
+  });
+  const scenarioId = `live:c4:${SELECTED_LIVE_SCENARIO}`;
+  const evidence = sealUnifiedAdaptiveBenchmarkEvidenceV1({
+    scenarioId,
+    scenarioKind: SELECTED_LIVE_SCENARIO,
+    completedAt: canary.report.generatedAt,
+    mode: "live",
+    admissionPolicy: "rolling",
+    sideEffectPolicy: "isolated",
+    requestedCapacity: capacity,
+    actualAuditedIndependentGroupCapacity: auditedGroupIds.length,
+    independentGroupAudit: input.providerAudit,
+    performanceManifest,
+    timing: {
+      wallTimeMs: Math.max(0.001, result.parentDurationMs),
+      aggregateThroughputPerSecond:
+        1 / Math.max(0.001, result.parentDurationMs / 1_000)
+    },
+    capacity: {
+      eligibleDemand,
+      targetSlots,
+      actualSlots,
+      utilization: targetSlots === 0 ? 0 : actualSlots / targetSlots
+    },
+    provider: {
+      rollingRps: runtimeTelemetry.provider.requestsPerSecond,
+      requests: runtimeTelemetry.provider.requests,
+      errors: runtimeTelemetry.provider.errors,
+      rateLimited429: runtimeTelemetry.provider.rateLimited429
+    },
+    limiting: {
+      reason: observations.flatMap((item) =>
+        item.observation.runs.map((run) => run.limitingReason)
+      ).find((reason) => reason !== null) ?? null,
+      canonicalHeadAgeMs: Math.max(0, ...observations.flatMap((item) =>
+        item.observation.runs.flatMap((run) =>
+          run.canonicalHeadAgeMs === null ? [] : [run.canonicalHeadAgeMs]
+        )
+      ))
+    },
+    buffer: {
+      readyBytes: Math.max(...observations.map((item) =>
+        item.observation.runs.reduce((sum, run) =>
+          sum + run.buffer.readyBytes, 0)
+      )),
+      reservedBytes: Math.max(...observations.map((item) =>
+        item.observation.runs.reduce((sum, run) =>
+          sum + run.buffer.reservedBytes, 0)
+      ))
+    },
+    database: {
+      latencyMs: Math.max(...observations.map((item) =>
+        item.observation.database.latencyMs
+      )),
+      checkpointLatencyMs: Math.max(...observations.map((item) =>
+        item.observation.database.checkpointLatencyMs
+      )),
+      poolWaitMs: Math.max(...observations.map((item) =>
+        item.observation.database.poolWaitMs
+      ))
+    },
+    memory: {
+      rssBytes: runtimeTelemetry.runtime.rssBytes,
+      heapUsedBytes: runtimeTelemetry.runtime.heapUsedBytes,
+      availableContainerBytes:
+        runtimeTelemetry.runtime.availableContainerBytes,
+      availableHostBytes: runtimeTelemetry.runtime.availableHostBytes
+    },
+    repair: { maxWaitMs: 0, maxWaitChunks: 0 },
+    reuse: runtimeTelemetry.reuse,
+    restartRecovery: {
+      restartCount: 0,
+      recoveryMs: 0,
+      reconciliationRecoveries: 0,
+      duplicateCommits: runtimeTelemetry.integrity.duplicateCommits,
+      duplicateSequences: runtimeTelemetry.integrity.duplicateSequences
+    },
+    oracle: null,
+    runtimeObservationArtifactSha256s: observations.map((item) =>
+      item.sha256
+    ).sort(),
+    scenarioSymptomArtifactSha256s:
+      canary.benchmarkScenarioSymptoms.map((item) => item.sha256).sort(),
+    liveOutcomes: [{
+      runId,
+      subjectAddress: outcome.address,
+      score: outcome.score,
+      decision: outcome.decision,
+      evidenceBundleSha256: outcome.evidenceBundleSha256,
+      traversalClosureSha256: outcome.traversalClosureSha256,
+      scoringBundleSha256: outcome.scoringBundleSha256,
+      reportSha256: outcome.reportSha256,
+      benchmarkControlSha256: controlSha256,
+      auditedGroupIds,
+      dispatchedGroupIds: runtimeTelemetry.provider.dispatchedGroupIds
+    }],
+    measurement: {
+      timing: "observed",
+      provider: "observed",
+      database: "observed",
+      memory: "observed",
+      lifecycle: "observed",
+      delivery: "observed"
+    },
+    delivery: {
+      eligibleRequests: 1,
+      deliveryIntents: runtimeTelemetry.integrity.deliveryIntents,
+      externalTelegramSends: 0
+    }
+  }).envelope;
+  for (const item of observations) {
+    await writeImmutable(
+      resolve(scenarioDirectory, `observation-${item.sha256}.json`),
+      `${canonicalizeArtifactJson(item.observation)}\n`
+    );
+  }
+  for (const item of canary.benchmarkScenarioSymptoms) {
+    await writeImmutable(
+      resolve(scenarioDirectory, `symptom-${item.sha256}.json`),
+      `${canonicalizeArtifactJson(item.symptom)}\n`
+    );
+  }
+  await writeImmutable(
+    resolve(scenarioDirectory, `refill-${controlSha256}.json`),
+    `${canonicalizeArtifactJson(refillArtifact.observation)}\n`
+  );
+  const fileName = scenarioFileName(0, scenarioId);
+  await writeImmutable(
+    resolve(scenarioDirectory, fileName),
+    `${canonicalizeArtifactJson(evidence)}\n`
+  );
+  const index = indexEnvelope({
+    mode: "live",
+    seed: 1,
+    capacities: [capacity],
+    candidateCommit: input.candidateCommit,
+    executionIdentitySha256: input.executionIdentitySha256,
+    generatedAt: canary.report.generatedAt,
+    artifacts: [{
+      scenarioId,
+      relativePath: `${basename(scenarioDirectory)}/${fileName}`,
+      evidenceSha256: evidence.evidenceSha256,
+      candidateCommit: input.candidateCommit,
+      executionIdentitySha256:
+        evidence.performanceManifest.executionIdentitySha256
+    }]
+  });
+  await writeImmutable(input.output, `${canonicalizeArtifactJson(index)}\n`);
+  return index;
+}
+
 async function runExistingIsolatedCanaryBenchmark(input: {
   readonly requestedCapacities: readonly number[];
   readonly output: string;
@@ -1563,12 +2346,27 @@ async function runExistingIsolatedCanaryBenchmark(input: {
   readonly executionIdentitySha256: string;
   readonly providerAudit:
     ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
-  readonly scenarios: typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS;
+  readonly scenarios: readonly (typeof UNIFIED_ADAPTIVE_LIVE_SCENARIOS[number])[];
+  readonly traversalPolicy: TraversalPolicy;
+  readonly memoryEvidenceDir: string | null;
 }): Promise<UnifiedAdaptiveBenchmarkIndexV1> {
   const candidateCommit = input.candidateCommit;
   const { runUnifiedWalletCanaryCli } = await import(
     "./runUnifiedWalletCanary"
   );
+  if (
+    input.scenarios.length === 1 &&
+    input.scenarios[0] === SELECTED_LIVE_SCENARIO
+  ) {
+    if (input.memoryEvidenceDir === null) {
+      throw new Error("unified_benchmark_selected_memory_required");
+    }
+    return runSelectedIsolatedCanaryBenchmark({
+      ...input,
+      memoryEvidenceDir: input.memoryEvidenceDir,
+      runCanary: runUnifiedWalletCanaryCli
+    });
+  }
   const namedWallets = [
     "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
     "TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr",
@@ -1712,6 +2510,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
       )
     ], {
       emitResult: false,
+      traversalPolicyVersion: input.traversalPolicy,
       explicitBenchmarkScenarios: [lateBinding],
       beforeBatchCreate: async ({ db }) => {
         await persistUnifiedAdaptiveBenchmarkLatePhaseAck({
@@ -1826,6 +2625,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
         )
       ], {
         emitResult: false,
+        traversalPolicyVersion: input.traversalPolicy,
         onBatchReady: async (batch) => {
           const transactionHost =
             createUnifiedPoolTransactionHost(batch.db);
@@ -1852,6 +2652,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
         )
       ], {
         emitResult: false,
+        traversalPolicyVersion: input.traversalPolicy,
         onBatchReady: async () => ({
           benchmarkControlSha256: capacityState.lateControlSha256,
           release: async () => undefined
@@ -1874,6 +2675,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
         )
       ], {
         emitResult: false,
+        traversalPolicyVersion: input.traversalPolicy,
         onBatchReady: async (batch) => {
           const transactionHost =
             createUnifiedPoolTransactionHost(batch.db);
@@ -1912,6 +2714,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
       )
     ], {
       emitResult: false,
+      traversalPolicyVersion: input.traversalPolicy,
       explicitBenchmarkScenarios: primaryExecutionBindings,
       async onBatchReady(batch) {
         boundRunIds = [...batch.runIds];
@@ -2121,6 +2924,7 @@ async function runExistingIsolatedCanaryBenchmark(input: {
         )
       ], {
         emitResult: false,
+        traversalPolicyVersion: input.traversalPolicy,
         onBatchReady: async () => ({
           benchmarkControlSha256: lateState.controlSha256,
           release: async () => undefined
@@ -2580,13 +3384,21 @@ export async function runUnifiedAdaptiveBenchmarkCli(
   const output = safeOutputPath(options.output);
   if (options.mode === "live") {
     const providerAudit = await validateLivePrerequisites(options);
+    const memoryEvidenceDir = options.memoryEvidenceDir === null
+      ? null
+      : await requireExistingDirectoryNoFollow(options.memoryEvidenceDir);
+    const scenarios = options.scenario === null
+      ? UNIFIED_ADAPTIVE_LIVE_SCENARIOS
+      : [options.scenario] as const;
     const candidateCommit = await resolveRuntimeCommit(runtime);
     const executionIdentitySha256 = benchmarkExecutionIdentity({
       mode: "live",
       seed: 1,
       capacities: options.capacities,
       candidateCommit,
-      sourceIdentitySha256: providerAudit.auditSha256
+      sourceIdentitySha256: providerAudit.auditSha256,
+      traversalPolicy: options.traversalPolicy,
+      scenarioIds: scenarios
     });
     const completed = await loadCompletedLiveIndex({
       output,
@@ -2594,7 +3406,7 @@ export async function runUnifiedAdaptiveBenchmarkCli(
       candidateCommit,
       executionIdentitySha256,
       providerAudit,
-      scenarios: UNIFIED_ADAPTIVE_LIVE_SCENARIOS
+      scenarios
     });
     if (completed !== null) return completed;
     const runLive = runtime.runIsolatedCanaryBenchmark ??
@@ -2605,10 +3417,14 @@ export async function runUnifiedAdaptiveBenchmarkCli(
       candidateCommit,
       executionIdentitySha256,
       providerAudit,
-      scenarios: UNIFIED_ADAPTIVE_LIVE_SCENARIOS
+      scenarios,
+      traversalPolicy: options.traversalPolicy,
+      memoryEvidenceDir
     });
   }
-  const { canonicalJson, envelope: replay } = await loadReplayFixture();
+  const { canonicalJson, envelope: replay } = await loadReplayFixture(
+    options.traversalPolicy
+  );
   const oracleReceipt = await resolveReplayOracleReceipt(
     options,
     runtime,
@@ -2623,7 +3439,9 @@ export async function runUnifiedAdaptiveBenchmarkCli(
     sourceIdentitySha256: fingerprintCanonicalArtifact({
       replaySha256: replay.expectedReplaySha256,
       receiptSha256: oracleReceipt.receiptSha256
-    })
+    }),
+    traversalPolicy: options.traversalPolicy,
+    scenarioIds: UNIFIED_ADAPTIVE_REPLAY_SCENARIOS
   });
   const outputDirectory = dirname(output);
   const scenarioDirectory = resolve(

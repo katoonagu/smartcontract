@@ -18,6 +18,9 @@ import type {
 import type {
   UnifiedReconciliationResult
 } from "./reconciliation";
+import type {
+  UnifiedProviderRefillDiagnosticsSnapshotV1
+} from "./providerRefillDiagnostics";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const MAX_BENCHMARK_ITEMS = 4_096;
@@ -181,6 +184,52 @@ export type UnifiedAdaptiveBenchmarkRuntimeObservationV1 = {
 export type UnifiedAdaptiveBenchmarkRuntimeObservationArtifactV1 = {
   readonly sha256: string;
   readonly observation: UnifiedAdaptiveBenchmarkRuntimeObservationV1;
+};
+
+export type UnifiedProviderRefillObservationV1 = {
+  readonly version: "unified-provider-refill-observation-v1";
+  readonly controlSha256: string;
+  readonly observedAt: string;
+  readonly runtimeCommit: string;
+  readonly providerConfigurationSha256: string;
+  readonly diagnostics: UnifiedProviderRefillDiagnosticsSnapshotV1;
+  readonly saturated: {
+    readonly sampleCount: number;
+    readonly activeSlotSum: number;
+    readonly fourOfFourSamples: number;
+    readonly unexplainedIdleSamples: number;
+  };
+  readonly memoryEvidence: {
+    readonly samplesSha256: string;
+    readonly summarySha256: string;
+    readonly diagnosticStatus: "captured" | "skipped";
+  };
+};
+
+export type UnifiedProviderRefillObservationArtifactV1 = {
+  readonly sha256: string;
+  readonly createdByRunId: string;
+  readonly observation: UnifiedProviderRefillObservationV1;
+};
+
+export type UnifiedProviderSaturationSample = {
+  readonly providerCapacityLimit: number;
+  readonly eligibleReadyProviderWork: number;
+  readonly runtimeState: "normal" | "pressure" | "critical";
+  readonly healthyGroupCount: number;
+  readonly activeSlots: number;
+  readonly limitingReason: UnifiedDecisionReason["code"] | null;
+};
+
+export type UnifiedProviderRefillRuntimeSampleV1 = {
+  readonly version: "unified-provider-refill-runtime-sample-v1";
+  readonly controlSha256: string;
+  readonly observedAt: string;
+  readonly runtimeCommit: string;
+  readonly providerConfigurationSha256: string;
+  readonly runIds: readonly string[];
+  readonly diagnostics: UnifiedProviderRefillDiagnosticsSnapshotV1;
+  readonly saturationSample: UnifiedProviderSaturationSample;
 };
 
 export type UnifiedAdaptiveBenchmarkScenarioSymptomV1 = {
@@ -2284,6 +2333,447 @@ export async function listUnifiedAdaptiveBenchmarkObservations(input: {
 }): Promise<UnifiedAdaptiveBenchmarkRuntimeObservationV1[]> {
   return (await listUnifiedAdaptiveBenchmarkObservationArtifacts(input))
     .map((artifact) => artifact.observation);
+}
+
+const REFILL_PHASES = [
+  "chunkToCheckpoint",
+  "checkpointToController",
+  "controllerToPermit",
+  "permitToClaim",
+  "checkpointToClaim"
+] as const;
+
+function validateRefillMetric(value: unknown): void {
+  const metric = exactKeys(value, [
+    "p50",
+    "p95",
+    "max",
+    "sampleCount"
+  ], "unified_provider_refill_observation_invalid");
+  safeCount(
+    Number(metric.sampleCount),
+    "unified_provider_refill_observation_invalid"
+  );
+  const sampleCount = Number(metric.sampleCount);
+  const percentiles = [metric.p50, metric.p95, metric.max];
+  if (sampleCount === 0) {
+    if (percentiles.some((item) => item !== null)) {
+      throw new TypeError("unified_provider_refill_observation_invalid");
+    }
+    return;
+  }
+  if (percentiles.some((item) =>
+    typeof item !== "number" || !Number.isFinite(item) || item < 0
+  )) {
+    throw new TypeError("unified_provider_refill_observation_invalid");
+  }
+  const [p50, p95, maximum] = percentiles as number[];
+  if (p50! > p95! || p95! > maximum!) {
+    throw new TypeError("unified_provider_refill_observation_invalid");
+  }
+}
+
+function validateProviderRefillObservation(
+  observation: UnifiedProviderRefillObservationV1
+): void {
+  const raw = exactKeys(observation, [
+    "version",
+    "controlSha256",
+    "observedAt",
+    "runtimeCommit",
+    "providerConfigurationSha256",
+    "diagnostics",
+    "saturated",
+    "memoryEvidence"
+  ], "unified_provider_refill_observation_invalid");
+  const diagnostics = exactKeys(raw.diagnostics, [
+    "version",
+    "assignments",
+    "phases",
+    "diagnostics"
+  ], "unified_provider_refill_observation_invalid");
+  const assignments = exactKeys(diagnostics.assignments, [
+    "proposed",
+    "accepted",
+    "rejected",
+    "rejections"
+  ], "unified_provider_refill_observation_invalid");
+  const rejections = exactKeys(assignments.rejections, [
+    "draining",
+    "slotActive",
+    "pendingAssignment",
+    "staleEpoch"
+  ], "unified_provider_refill_observation_invalid");
+  const phases = exactKeys(
+    diagnostics.phases,
+    REFILL_PHASES,
+    "unified_provider_refill_observation_invalid"
+  );
+  const diagnosticCounts = exactKeys(diagnostics.diagnostics, [
+    "incomplete",
+    "evictedIncomplete",
+    "discontinuities",
+    "invalidClocks"
+  ], "unified_provider_refill_observation_invalid");
+  const saturated = exactKeys(raw.saturated, [
+    "sampleCount",
+    "activeSlotSum",
+    "fourOfFourSamples",
+    "unexplainedIdleSamples"
+  ], "unified_provider_refill_observation_invalid");
+  const memoryEvidence = exactKeys(raw.memoryEvidence, [
+    "samplesSha256",
+    "summarySha256",
+    "diagnosticStatus"
+  ], "unified_provider_refill_observation_invalid");
+  for (const phase of REFILL_PHASES) validateRefillMetric(phases[phase]);
+  for (const value of [
+    assignments.proposed,
+    assignments.accepted,
+    assignments.rejected,
+    ...Object.values(rejections),
+    ...Object.values(diagnosticCounts),
+    ...Object.values(saturated)
+  ]) {
+    if (typeof value !== "number") {
+      throw new TypeError("unified_provider_refill_observation_invalid");
+    }
+    safeCount(value, "unified_provider_refill_observation_invalid");
+  }
+  if (
+    observation.version !== "unified-provider-refill-observation-v1" ||
+    diagnostics.version !== "unified-provider-refill-diagnostics-v1" ||
+    !HASH.test(observation.controlSha256) ||
+    !/^[0-9a-f]{40}$/u.test(observation.runtimeCommit) ||
+    !HASH.test(observation.providerConfigurationSha256) ||
+    !Number.isFinite(Date.parse(observation.observedAt)) ||
+    Number(assignments.proposed) !==
+      Number(assignments.accepted) + Number(assignments.rejected) ||
+    Number(assignments.rejected) !== Object.values(rejections)
+      .reduce<number>((sum, value) => sum + Number(value), 0) ||
+    Number(saturated.activeSlotSum) >
+      Number(saturated.sampleCount) * 4 ||
+    Number(saturated.fourOfFourSamples) >
+      Number(saturated.sampleCount) ||
+    Number(saturated.unexplainedIdleSamples) >
+      Number(saturated.sampleCount) ||
+    !HASH.test(String(memoryEvidence.samplesSha256)) ||
+    !HASH.test(String(memoryEvidence.summarySha256)) ||
+    !["captured", "skipped"].includes(
+      String(memoryEvidence.diagnosticStatus)
+    )
+  ) {
+    throw new TypeError("unified_provider_refill_observation_invalid");
+  }
+}
+
+export function parseUnifiedProviderRefillObservationV1(
+  rawCanonicalJson: string
+): UnifiedProviderRefillObservationV1 {
+  const parsed = JSON.parse(rawCanonicalJson) as
+    UnifiedProviderRefillObservationV1;
+  if (canonicalizeArtifactJson(parsed) !== rawCanonicalJson) {
+    throw new Error("unified_provider_refill_observation_noncanonical");
+  }
+  validateProviderRefillObservation(parsed);
+  return parsed;
+}
+
+export function summarizeUnifiedProviderSaturationSamples(
+  samples: readonly UnifiedProviderSaturationSample[]
+): UnifiedProviderRefillObservationV1["saturated"] {
+  const saturated = samples.filter((sample) => {
+    for (const value of [
+      sample.providerCapacityLimit,
+      sample.eligibleReadyProviderWork,
+      sample.healthyGroupCount,
+      sample.activeSlots
+    ]) {
+      safeCount(value, "unified_provider_saturation_sample_invalid");
+    }
+    if (sample.activeSlots > sample.providerCapacityLimit) {
+      throw new TypeError("unified_provider_saturation_sample_invalid");
+    }
+    return sample.providerCapacityLimit >= 4 &&
+      sample.eligibleReadyProviderWork >= 4 &&
+      sample.runtimeState === "normal" &&
+      sample.healthyGroupCount >= 4;
+  });
+  return {
+    sampleCount: saturated.length,
+    activeSlotSum: saturated.reduce((sum, sample) =>
+      sum + Math.min(sample.activeSlots, 4), 0),
+    fourOfFourSamples: saturated.filter((sample) =>
+      sample.activeSlots >= 4
+    ).length,
+    unexplainedIdleSamples: saturated.filter((sample) =>
+      sample.activeSlots < 4 && sample.limitingReason === null
+    ).length
+  };
+}
+
+export function assertUnifiedSelectedDenseRefillEvidence(input: {
+  readonly saturated: UnifiedProviderRefillObservationV1["saturated"];
+  readonly auditedGroupIds: readonly string[];
+  readonly dispatchedGroupIds: readonly string[];
+  readonly providerErrors: number;
+  readonly rateLimited429: number;
+  readonly deliveryIntents: number;
+  readonly externalSends: number;
+  readonly reconciliationRecoveries: number;
+}): void {
+  for (const value of [
+    ...Object.values(input.saturated),
+    input.providerErrors,
+    input.rateLimited429,
+    input.deliveryIntents,
+    input.externalSends,
+    input.reconciliationRecoveries
+  ]) {
+    safeCount(
+      value,
+      "unified_provider_refill_selected_dense_rejected"
+    );
+  }
+  const audited = [...new Set(input.auditedGroupIds)].sort();
+  const dispatched = [...new Set(input.dispatchedGroupIds)].sort();
+  if (
+    audited.length !== 4 ||
+    input.auditedGroupIds.length !== 4 ||
+    input.dispatchedGroupIds.length !== dispatched.length ||
+    audited.some((groupId) => !groupId.trim()) ||
+    canonicalizeArtifactJson(audited) !==
+      canonicalizeArtifactJson(dispatched) ||
+    input.saturated.sampleCount < 1 ||
+    input.saturated.activeSlotSum * 2 <
+      input.saturated.sampleCount * 7 ||
+    input.saturated.unexplainedIdleSamples !== 0 ||
+    input.providerErrors !== 0 ||
+    input.rateLimited429 !== 0 ||
+    input.deliveryIntents !== 0 ||
+    input.externalSends !== 0 ||
+    input.reconciliationRecoveries !== 0
+  ) {
+    throw new Error("unified_provider_refill_selected_dense_rejected");
+  }
+}
+
+function validateProviderRefillRuntimeSample(
+  sample: UnifiedProviderRefillRuntimeSampleV1
+): void {
+  exactKeys(sample, [
+    "version",
+    "controlSha256",
+    "observedAt",
+    "runtimeCommit",
+    "providerConfigurationSha256",
+    "runIds",
+    "diagnostics",
+    "saturationSample"
+  ], "unified_provider_refill_sample_invalid");
+  exactKeys(sample.saturationSample, [
+    "providerCapacityLimit",
+    "eligibleReadyProviderWork",
+    "runtimeState",
+    "healthyGroupCount",
+    "activeSlots",
+    "limitingReason"
+  ], "unified_provider_refill_sample_invalid");
+  validateProviderRefillObservation({
+    version: "unified-provider-refill-observation-v1",
+    controlSha256: sample.controlSha256,
+    observedAt: sample.observedAt,
+    runtimeCommit: sample.runtimeCommit,
+    providerConfigurationSha256: sample.providerConfigurationSha256,
+    diagnostics: sample.diagnostics,
+    saturated: {
+      sampleCount: 0,
+      activeSlotSum: 0,
+      fourOfFourSamples: 0,
+      unexplainedIdleSamples: 0
+    },
+    memoryEvidence: {
+      samplesSha256: "0".repeat(64),
+      summarySha256: "0".repeat(64),
+      diagnosticStatus: "skipped"
+    }
+  });
+  summarizeUnifiedProviderSaturationSamples([sample.saturationSample]);
+  const runIds = boundedArray(
+    sample.runIds,
+    "unified_provider_refill_sample_invalid"
+  );
+  if (
+    sample.version !== "unified-provider-refill-runtime-sample-v1" ||
+    runIds.length < 1 ||
+    runIds.some((runId) =>
+      typeof runId !== "string" || !runId.trim()
+    ) ||
+    new Set(runIds).size !== runIds.length ||
+    !["normal", "pressure", "critical"].includes(
+      sample.saturationSample.runtimeState
+    ) ||
+    (
+      sample.saturationSample.limitingReason !== null &&
+      ![
+        "no_eligible_work",
+        "fairness_wait",
+        "admission_closed",
+        "provider_rate_paced",
+        "provider_cooldown",
+        "provider_circuit_open",
+        "canonical_head_wait",
+        "merge_buffer_full",
+        "db_pressure",
+        "memory_pressure",
+        "class_capacity_limit",
+        "repair_reserve_reclaim",
+        "background_preempted",
+        "reconciliation_wait",
+        "checkpoint_or_commit"
+      ].includes(sample.saturationSample.limitingReason)
+    )
+  ) {
+    throw new TypeError("unified_provider_refill_sample_invalid");
+  }
+}
+
+export async function persistUnifiedProviderRefillRuntimeSample(input: {
+  readonly db: UnifiedQueryable;
+  readonly createdByRunId: string;
+  readonly sample: UnifiedProviderRefillRuntimeSampleV1;
+}): Promise<string> {
+  validateProviderRefillRuntimeSample(input.sample);
+  if (!input.sample.runIds.includes(input.createdByRunId)) {
+    throw new Error("unified_provider_refill_sample_creator_unbound");
+  }
+  const sha256 = fingerprintCanonicalArtifact(input.sample);
+  await input.db.query(
+    `insert into unified_check_artifacts (
+       sha256, created_by_run_id, kind, schema_version, artifact_json
+     ) values (
+       $1,$2,'adaptive_benchmark_refill_sample','1',$3::jsonb
+     ) on conflict (sha256) do nothing`,
+    [sha256, input.createdByRunId, JSON.stringify(input.sample)]
+  );
+  return sha256;
+}
+
+export async function listUnifiedProviderRefillRuntimeSamples(input: {
+  readonly db: UnifiedQueryable;
+  readonly controlSha256: string;
+  readonly runtimeCommit: string;
+  readonly providerConfigurationSha256: string;
+  readonly runIds: readonly string[];
+}): Promise<UnifiedProviderRefillRuntimeSampleV1[]> {
+  if (
+    !HASH.test(input.controlSha256) ||
+    !/^[0-9a-f]{40}$/u.test(input.runtimeCommit) ||
+    !HASH.test(input.providerConfigurationSha256) ||
+    input.runIds.length < 1 ||
+    input.runIds.some((runId) => !runId.trim())
+  ) {
+    throw new TypeError("unified_provider_refill_sample_query_invalid");
+  }
+  const rows = (await input.db.query(
+    `select sha256, artifact_json
+       from unified_check_artifacts
+      where kind = 'adaptive_benchmark_refill_sample'
+        and artifact_json->>'controlSha256' = $1
+        and created_by_run_id = any($2::text[])
+      order by created_at, sha256`,
+    [input.controlSha256, input.runIds]
+  )).rows;
+  return rows.map((row) => {
+    const sample = row.artifact_json as
+      UnifiedProviderRefillRuntimeSampleV1;
+    validateProviderRefillRuntimeSample(sample);
+    if (
+      sample.controlSha256 !== input.controlSha256 ||
+      sample.runtimeCommit !== input.runtimeCommit ||
+      sample.providerConfigurationSha256 !==
+        input.providerConfigurationSha256 ||
+      sample.runIds.some((runId) => !input.runIds.includes(runId)) ||
+      !HASH.test(String(row.sha256)) ||
+      fingerprintCanonicalArtifact(sample) !== String(row.sha256)
+    ) {
+      throw new Error("unified_provider_refill_sample_binding_invalid");
+    }
+    return sample;
+  });
+}
+
+export async function persistUnifiedProviderRefillObservation(input: {
+  readonly db: UnifiedQueryable;
+  readonly createdByRunId: string;
+  readonly observation: UnifiedProviderRefillObservationV1;
+}): Promise<string> {
+  if (!input.createdByRunId.trim()) {
+    throw new TypeError("unified_provider_refill_observation_creator_invalid");
+  }
+  validateProviderRefillObservation(input.observation);
+  const sha256 = fingerprintCanonicalArtifact(input.observation);
+  await input.db.query(
+    `insert into unified_check_artifacts (
+       sha256, created_by_run_id, kind, schema_version, artifact_json
+     ) values (
+       $1,$2,'adaptive_benchmark_refill_observation','1',$3::jsonb
+     ) on conflict (sha256) do nothing`,
+    [
+      sha256,
+      input.createdByRunId,
+      JSON.stringify(input.observation)
+    ]
+  );
+  return sha256;
+}
+
+export async function listUnifiedProviderRefillObservationArtifacts(input: {
+  readonly db: UnifiedQueryable;
+  readonly controlSha256: string;
+  readonly runtimeCommit: string;
+  readonly providerConfigurationSha256: string;
+  readonly runIds: readonly string[];
+}): Promise<UnifiedProviderRefillObservationArtifactV1[]> {
+  if (
+    !HASH.test(input.controlSha256) ||
+    !/^[0-9a-f]{40}$/u.test(input.runtimeCommit) ||
+    !HASH.test(input.providerConfigurationSha256) ||
+    input.runIds.length < 1 ||
+    input.runIds.some((runId) => !runId.trim())
+  ) {
+    throw new TypeError("unified_provider_refill_observation_query_invalid");
+  }
+  const rows = (await input.db.query(
+    `select sha256, created_by_run_id, artifact_json
+       from unified_check_artifacts
+      where kind = 'adaptive_benchmark_refill_observation'
+        and artifact_json->>'controlSha256' = $1
+        and created_by_run_id = any($2::text[])
+      order by created_at, sha256`,
+    [input.controlSha256, input.runIds]
+  )).rows;
+  return rows.map((row) => {
+    const observation = row.artifact_json as
+      UnifiedProviderRefillObservationV1;
+    validateProviderRefillObservation(observation);
+    const sha256 = String(row.sha256);
+    const createdByRunId = String(row.created_by_run_id);
+    if (
+      observation.controlSha256 !== input.controlSha256 ||
+      observation.runtimeCommit !== input.runtimeCommit ||
+      observation.providerConfigurationSha256 !==
+        input.providerConfigurationSha256 ||
+      !input.runIds.includes(createdByRunId) ||
+      !HASH.test(sha256) ||
+      fingerprintCanonicalArtifact(observation) !== sha256
+    ) {
+      throw new Error(
+        "unified_provider_refill_observation_binding_invalid"
+      );
+    }
+    return { sha256, createdByRunId, observation };
+  });
 }
 
 export async function captureUnifiedAdaptiveBenchmarkObservationBestEffort<T>(
