@@ -135,7 +135,10 @@ independent ready work. Any idle slot must have an observable reason.
 The default isolated-canary safety deadline is 120 minutes. It protects against
 abandoned work and is not an SLO; do not shorten it to the ten-minute benchmark
 marker. A run that reaches this guard is a blocked result, not a completed
-wallet report.
+wallet report. For an exceptional cold traversal known to exceed the default,
+set `UNIFIED_CANARY_DEADLINE_MINUTES` to an integer from 1 through 1440 before
+starting both the isolated worker and canary harness. The setting is
+startup-only and must be reset to 120 after the benchmark.
 
 ## WSL And Linux Memory Capture
 

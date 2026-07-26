@@ -418,6 +418,12 @@ ten-minute comparison marker, log the guard explicitly, and treat a reached
 guard as a blocked benchmark result rather than evidence about scheduler
 correctness or provider capacity.
 
+Operational refinement: a frozen 120-minute guard can still be shorter than a
+real cold traversal with more than a thousand discovered histories. Keep 120
+as the default, but allow a bounded startup-only override for an explicitly
+observed isolated benchmark; do not mutate run timestamps or reinterpret a
+deadline failure as a scheduler result.
+
 ## 2026-07-26: Wall Clock Is Not A Monotonic Planner Clock
 
 Live admission exposed a timestamp-order constraint failure when PostgreSQL's

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
-import { assertUnifiedWriteAllowed } from "../../src/unifiedCheck/contracts";
+import {
+  assertUnifiedWriteAllowed,
+  resolveUnifiedCanaryDeadlineMinutes
+} from "../../src/unifiedCheck/contracts";
 import type { UnifiedWatchdogRunV1 } from "../../src/unifiedCheck/watchdog";
 import {
   buildUnifiedCanaryProviderConfiguration,
@@ -342,6 +345,16 @@ describe("Unified eight-wallet release canary", () => {
       sideEffectPolicy: "isolated",
       namespace: "run_scoped_artifact"
     })).not.toThrow();
+  });
+
+  it("keeps the canary safety guard bounded while allowing a heavier isolated benchmark", () => {
+    expect(resolveUnifiedCanaryDeadlineMinutes(undefined)).toBe(120);
+    expect(resolveUnifiedCanaryDeadlineMinutes("360")).toBe(360);
+    for (const invalid of ["0", "1441", "1.5", "not-a-number"]) {
+      expect(() => resolveUnifiedCanaryDeadlineMinutes(invalid)).toThrow(
+        "unified_canary_deadline_minutes_invalid"
+      );
+    }
   });
 
   it("cancels at run.createdAt + 35m and records a concrete blocker once", async () => {

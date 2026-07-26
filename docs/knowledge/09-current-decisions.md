@@ -144,9 +144,11 @@ expanding frontier has no percent or ETA.
   consistency, closure, errors, throughput, and bounded resources.
 - Ten minutes is a comparison marker, not a timeout, ceiling, or completion
   rule. The system uses all safe capacity provided there is independent work.
-- Isolated canaries have a 120-minute abandoned-run safety guard. It is not a
-  performance target: dense live checks continue beyond the ten-minute marker,
-  and an explicitly supplied earlier watchdog deadline remains authoritative.
+- Isolated canaries default to a 120-minute abandoned-run safety guard. It is
+  not a performance target: dense live checks continue beyond the ten-minute
+  marker, and an explicitly supplied earlier watchdog deadline remains
+  authoritative. Exceptional cold benchmarks may raise the startup-only
+  `UNIFIED_CANARY_DEADLINE_MINUTES` guard (1..1440); restart is required.
 - Local WSL samples are diagnostics. Record vmmemWSL, Linux available memory,
   swap, process RSS/heap, DB latency, and checkpoint latency before/during/after.
   Sustained growth across equivalent completed runs is the leak signal; a

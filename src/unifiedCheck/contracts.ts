@@ -23,9 +23,26 @@ export type UnifiedRunPurpose =
 
 export type UnifiedSideEffectPolicy = "authoritative" | "isolated";
 
-// ponytail: this is a safety guard for abandoned isolated canaries, not a
-// performance SLO. Keep every SQL/runtime deadline derived from this value.
-export const UNIFIED_CANARY_DEADLINE_MINUTES = 120;
+export const DEFAULT_UNIFIED_CANARY_DEADLINE_MINUTES = 120;
+
+export function resolveUnifiedCanaryDeadlineMinutes(
+  raw = process.env.UNIFIED_CANARY_DEADLINE_MINUTES
+): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_UNIFIED_CANARY_DEADLINE_MINUTES;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 1_440) {
+    throw new TypeError("unified_canary_deadline_minutes_invalid");
+  }
+  return value;
+}
+
+// ponytail: one startup-only value keeps every SQL/runtime guard aligned;
+// changing it requires restart, and 24 hours is the ceiling for exceptional
+// isolated benchmarks rather than an unbounded abandoned-run lifetime.
+export const UNIFIED_CANARY_DEADLINE_MINUTES =
+  resolveUnifiedCanaryDeadlineMinutes();
 
 export type UnifiedWriteNamespace =
   | "run_scoped_artifact"
