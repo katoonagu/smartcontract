@@ -229,6 +229,15 @@ expanding frontier has no percent or ETA.
   Resume verifies that chain without another capture or canary. Missing WSL is
   a diagnostic `skipped`, but missing/invalid/tampered process phases fail
   closed.
+- Selected saturation and limiting evidence is scoped to the controlled run.
+  Foreign active permits create a failing contamination sample, retained refill
+  diagnostics reset at the control boundary, and real reconciliation recovery
+  events are counted for the active control/run. Process-global work cannot
+  satisfy the selected utilization gate.
+- The selected harness writes an exclusive journal before invoking the canary.
+  Partial journal state without a completed index blocks a second invocation;
+  it is never treated as permission to create another run. Memory evidence uses
+  a fresh exclusive capture directory and rejects linked/preexisting children.
 - `checkpoint_or_commit` is a stable pool/run/task reason code but is not
   emitted by diagnostic V1. Existing state cannot prove that the transition
   holds the last otherwise-fillable slot; emission remains pending a direct

@@ -9,6 +9,7 @@ import type {
   UnifiedProviderSlotSnapshot
 } from "./providerPool";
 import type {
+  UnifiedAdaptiveEvent,
   UnifiedDecisionReason
 } from "./adaptiveObservability";
 import type {
@@ -2351,11 +2352,11 @@ function validateRefillMetric(value: unknown): void {
     "max",
     "sampleCount"
   ], "unified_provider_refill_observation_invalid");
-  safeCount(
-    Number(metric.sampleCount),
-    "unified_provider_refill_observation_invalid"
-  );
-  const sampleCount = Number(metric.sampleCount);
+  if (typeof metric.sampleCount !== "number") {
+    throw new TypeError("unified_provider_refill_observation_invalid");
+  }
+  safeCount(metric.sampleCount, "unified_provider_refill_observation_invalid");
+  const sampleCount = metric.sampleCount;
   const percentiles = [metric.p50, metric.p95, metric.max];
   if (sampleCount === 0) {
     if (percentiles.some((item) => item !== null)) {
@@ -2512,6 +2513,105 @@ export function summarizeUnifiedProviderSaturationSamples(
     unexplainedIdleSamples: saturated.filter((sample) =>
       sample.activeSlots < 4 && sample.limitingReason === null
     ).length
+  };
+}
+
+export function buildUnifiedScopedProviderSaturationSample(input: {
+  readonly controlledRunIds: readonly string[];
+  readonly providerCapacityLimit: number;
+  readonly runtimeState: "normal" | "pressure" | "critical";
+  readonly healthyGroupCount: number;
+  readonly runs: readonly {
+    readonly runId: string;
+    readonly eligibleDemand: number;
+    readonly actualSlots: number;
+    readonly limitingReason: UnifiedDecisionReason | null;
+  }[];
+  readonly activeProviderRunIds: readonly string[];
+}): UnifiedProviderSaturationSample {
+  const controlled = new Set(input.controlledRunIds);
+  if (
+    controlled.size < 1 ||
+    input.controlledRunIds.some((runId) => !runId.trim()) ||
+    input.runs.some((run) => !controlled.has(run.runId))
+  ) {
+    throw new TypeError("unified_provider_refill_scope_invalid");
+  }
+  const foreignActive = input.activeProviderRunIds.some((runId) =>
+    !controlled.has(runId)
+  );
+  if (foreignActive) {
+    // ponytail: V1 has no contamination bit, so force one saturated idle
+    // marker that the existing gate must reject. A V2 sample can add an exact
+    // contamination field if more failure detail becomes operationally useful.
+    return {
+      providerCapacityLimit: input.providerCapacityLimit,
+      eligibleReadyProviderWork: Math.max(4, input.providerCapacityLimit),
+      runtimeState: "normal",
+      healthyGroupCount: Math.max(4, input.healthyGroupCount),
+      activeSlots: 0,
+      limitingReason: null
+    };
+  }
+  const eligibleReadyProviderWork = input.runs.reduce((sum, run) =>
+    sum + run.eligibleDemand, 0
+  );
+  const activeSlots = input.runs.reduce((sum, run) =>
+    sum + run.actualSlots, 0
+  );
+  return {
+    providerCapacityLimit: input.providerCapacityLimit,
+    eligibleReadyProviderWork,
+    runtimeState: input.runtimeState,
+    healthyGroupCount: input.healthyGroupCount,
+    activeSlots,
+    limitingReason: activeSlots > 0
+      ? null
+      : input.runs.find((run) => run.limitingReason !== null)
+        ?.limitingReason?.code ?? null
+  };
+}
+
+export function createUnifiedSelectedReconciliationCounter() {
+  let activeControlSha256: string | null = null;
+  let activeRunIds = new Set<string>();
+  const counts = new Map<string, number>();
+  return {
+    activate(controlSha256: string | null, runIds: readonly string[]): void {
+      if (controlSha256 === null) {
+        activeControlSha256 = null;
+        activeRunIds = new Set();
+        counts.clear();
+        return;
+      }
+      if (
+        !HASH.test(controlSha256) ||
+        runIds.length < 1 ||
+        runIds.some((runId) => !runId.trim())
+      ) {
+        throw new TypeError("unified_benchmark_reconciliation_scope_invalid");
+      }
+      if (activeControlSha256 === controlSha256) return;
+      activeControlSha256 = controlSha256;
+      activeRunIds = new Set(runIds);
+      counts.clear();
+    },
+    record(event: UnifiedAdaptiveEvent): void {
+      if (
+        activeControlSha256 === null ||
+        event.type !== "reconciliation_recovered_work"
+      ) return;
+      for (const runId of activeRunIds) {
+        counts.set(runId, (counts.get(runId) ?? 0) + 1);
+      }
+    },
+    count(controlSha256: string, runId: string): number {
+      if (
+        activeControlSha256 !== controlSha256 ||
+        !activeRunIds.has(runId)
+      ) return 0;
+      return counts.get(runId) ?? 0;
+    }
   };
 }
 

@@ -148,6 +148,24 @@ describe("Unified provider refill diagnostics", () => {
     );
   });
 
+  it("resets retained diagnostics at a new benchmark control boundary", () => {
+    const diagnostics = createUnifiedProviderRefillDiagnostics();
+    completeSample({ diagnostics });
+    diagnostics.reset();
+
+    expect(diagnostics.snapshot()).toMatchObject({
+      assignments: { proposed: 0, accepted: 0, rejected: 0 },
+      diagnostics: {
+        incomplete: 0,
+        evictedIncomplete: 0,
+        discontinuities: 0,
+        invalidClocks: 0
+      }
+    });
+    expect(diagnostics.snapshot().phases.checkpointToClaim.sampleCount)
+      .toBe(0);
+  });
+
   it("aggregates every rejection reason including stale epochs", () => {
     const diagnostics = createUnifiedProviderRefillDiagnostics();
     const assignments = ["draining", "slot_active", "pending_assignment",

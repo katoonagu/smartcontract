@@ -259,7 +259,9 @@ import {
   applyUnifiedAdaptiveBenchmarkControl,
   acknowledgeUnifiedAdaptiveBenchmarkRestartHandoffs,
   captureUnifiedAdaptiveBenchmarkObservationBestEffort,
+  buildUnifiedScopedProviderSaturationSample,
   createUnifiedAdaptiveBenchmarkProviderTelemetry,
+  createUnifiedSelectedReconciliationCounter,
   isUnifiedBenchmarkCooldownSymptomReady,
   isUnifiedBenchmarkSlowHeadSymptomReady,
   loadUnifiedAdaptiveBenchmarkControl,
@@ -544,13 +546,15 @@ const unifiedProviderConfiguration =
     }))
   });
 let wakeUnifiedController: () => void = () => undefined;
-const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
-  logger.info("unified_adaptive_event", { ...event });
-};
 const unifiedCheckpointLatencySampler =
   createUnifiedCheckpointLatencySampler();
 const unifiedProviderRefillDiagnostics =
   createUnifiedProviderRefillDiagnostics();
+const unifiedSelectedReconciliationCounter =
+  createUnifiedSelectedReconciliationCounter();
+const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
+  logger.info("unified_adaptive_event", { ...event });
+};
 const loadUnifiedFrozenLabelDataset = createFrozenLabelDatasetLoader({
   loadBySha256: async (labelDatasetSha256) => (
     await db.query(
@@ -1021,6 +1025,13 @@ const runUnifiedControllerCycle = async (
       })
     );
     const nextControlSha256 = benchmarkControl?.sha256 ?? null;
+    if (activeUnifiedBenchmarkControlSha256 !== nextControlSha256) {
+      unifiedProviderRefillDiagnostics.reset();
+      unifiedSelectedReconciliationCounter.activate(
+        nextControlSha256,
+        benchmarkControl?.control.runPlans.map((plan) => plan.runId) ?? []
+      );
+    }
     if (
       activeUnifiedBenchmarkControlSha256 !== null &&
       activeUnifiedBenchmarkControlSha256 !== nextControlSha256
@@ -1279,6 +1290,12 @@ const runUnifiedControllerCycle = async (
     }
   });
   unifiedProviderRampState = result.rampState;
+  if (benchmarkControl !== null && result.eligibleReadyProviderWork > 0) {
+    unifiedSelectedReconciliationCounter.record({
+      type: "reconciliation_recovered_work",
+      occurredAt: new Date(startedAtMs).toISOString()
+    });
+  }
 
   if (unifiedCooldownWake !== null) {
     clearTimeout(unifiedCooldownWake);
@@ -1353,13 +1370,6 @@ const runUnifiedControllerCycle = async (
         if (snapshots.some((item) => item.snapshot === null)) {
           throw new Error("unified_benchmark_observation_run_missing");
         }
-        const lifecycle: UnifiedAdaptiveBenchmarkRuntimeObservationV1["lifecycle"] = {
-          restartRunId: null,
-          checkpointObservationSha256: null,
-          restartCount: 0,
-          recoveryMs: 0,
-          reconciliationRecoveries: 0
-        };
         const processMemory = process.memoryUsage();
         const runObservations = snapshots.map(({ plan, snapshot }) => {
           const value = snapshot!;
@@ -1402,6 +1412,45 @@ const runUnifiedControllerCycle = async (
           const scopedRunIds = scopedSnapshots.map((item) =>
             item.plan.runId
           );
+          const scopedRuns = runObservations.filter((run) =>
+            scopedRunIds.includes(run.runId)
+          );
+          const scopedSaturation =
+            benchmarkControl.control.runPlans.length === 1
+              ? buildUnifiedScopedProviderSaturationSample({
+                  controlledRunIds: scopedRunIds,
+                  providerCapacityLimit:
+                    benchmarkControl.control.capacity,
+                  runtimeState: result.runtimeState,
+                  healthyGroupCount: providerGroups.filter((group) =>
+                    group.state === "healthy"
+                  ).length,
+                  runs: scopedRuns.map((run) => ({
+                    runId: run.runId,
+                    eligibleDemand: run.capacity.eligibleDemand,
+                    actualSlots: run.capacity.actualSlots,
+                    limitingReason: run.limitingReason
+                  })),
+                  activeProviderRunIds: unifiedProviderPool.slotSnapshots()
+                    .flatMap((slot) =>
+                      slot.active && slot.activePermit !== null
+                        ? [slot.activePermit.runId]
+                        : []
+                    ).concat(result.acceptedClaimAssignments.map(
+                      (assignment) => assignment.permit.runId
+                    ))
+                })
+              : {
+                  providerCapacityLimit: result.providerCapacityLimit,
+                  eligibleReadyProviderWork:
+                    result.eligibleReadyProviderWork,
+                  runtimeState: result.runtimeState,
+                  healthyGroupCount: providerGroups.filter((group) =>
+                    group.state === "healthy"
+                  ).length,
+                  activeSlots: result.actualActiveProviderSlots,
+                  limitingReason: result.limitingReason?.code ?? null
+                };
           await persistUnifiedProviderRefillRuntimeSample({
             db: unifiedTransactionHost,
             createdByRunId: scopedRunIds[0]!,
@@ -1414,17 +1463,7 @@ const runUnifiedControllerCycle = async (
                 unifiedProviderConfiguration.sha256,
               runIds: scopedRunIds,
               diagnostics: unifiedProviderRefillDiagnostics.snapshot(),
-              saturationSample: {
-                providerCapacityLimit: result.providerCapacityLimit,
-                eligibleReadyProviderWork:
-                  result.eligibleReadyProviderWork,
-                runtimeState: result.runtimeState,
-                healthyGroupCount: providerGroups.filter((group) =>
-                  group.state === "healthy"
-                ).length,
-                activeSlots: result.actualActiveProviderSlots,
-                limitingReason: result.limitingReason?.code ?? null
-              }
+              saturationSample: scopedSaturation
             }
           });
           const integrity = (await unifiedTransactionHost.query(
@@ -1501,20 +1540,21 @@ const runUnifiedControllerCycle = async (
               checkpointLatencyMs: resources.checkpointLatencyMs,
               poolWaitMs
             },
-            lifecycle:
-              lifecycle.restartRunId !== null &&
-              scopedRunIds.includes(lifecycle.restartRunId)
-                ? lifecycle
-                : {
-                    restartRunId: null,
-                    checkpointObservationSha256: null,
-                    restartCount: 0,
-                    recoveryMs: 0,
-                    reconciliationRecoveries: 0
-                  },
-            runs: runObservations.filter((run) =>
-              scopedRunIds.includes(run.runId)
-            )
+            lifecycle: {
+              restartRunId: null,
+              checkpointObservationSha256: null,
+              restartCount: 0,
+              recoveryMs: 0,
+              reconciliationRecoveries: scopedRunIds.reduce(
+                (sum, runId) => sum +
+                  unifiedSelectedReconciliationCounter.count(
+                    benchmarkControl.sha256,
+                    runId
+                  ),
+                0
+              )
+            },
+            runs: scopedRuns
           };
           const observationSha256 =
             await persistUnifiedAdaptiveBenchmarkObservation({

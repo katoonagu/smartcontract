@@ -121,6 +121,20 @@ export function createUnifiedProviderRefillDiagnostics() {
   };
 
   return {
+    reset(): void {
+      incomplete.clear();
+      for (const values of Object.values(phases)) values.splice(0);
+      assignments.proposed = 0;
+      assignments.accepted = 0;
+      assignments.rejected = 0;
+      assignments.rejections.draining = 0;
+      assignments.rejections.slotActive = 0;
+      assignments.rejections.pendingAssignment = 0;
+      assignments.rejections.staleEpoch = 0;
+      evictedIncomplete = 0;
+      discontinuities = 0;
+      invalidClocks = 0;
+    },
     recordChunkFinished(event: {
       readonly slotId: number;
       readonly epoch: number;

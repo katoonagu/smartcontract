@@ -207,6 +207,16 @@ same output/policy/scenario; resume verifies the schema-V2 index, sealed export
 sidecar, refill creator/hash, control/runtime/configuration/run bindings, and
 the exact bytes and hashes of all memory files without recapture. A changed
 policy/scenario or replaced sidecar, refill, or memory file fails closed.
+The command creates a fresh exclusive capture subdirectory; do not pre-create
+its children. It also writes `selected-canary-journal.json` before invoking the
+canary. If that journal exists without a valid completed index, the command
+stops with `unified_benchmark_selected_partial_state` and must not be rerun or
+have the journal deleted merely to obtain another canary. Inspect the recorded
+run/control and adjudicate the orphan first.
+
+Selected utilization comes only from the controlled run. Any foreign active
+provider permit is a contamination failure, and any counted
+`reconciliation_recovered_work` event rejects the gate.
 
 ## WSL And Linux Memory Capture
 

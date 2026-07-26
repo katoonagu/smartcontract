@@ -46,6 +46,12 @@ utilization. The selected isolated TXc canary, independent-group dispatch,
 zero-error saturated refill, and target Linux memory gate remain outstanding;
 until they pass, user checks and rollout stay on V1.
 
+A selected-canary journal left without a completed index is intentionally
+fail-closed: automatic retry would create a second batch. Recovery currently
+requires operator investigation of the recorded run/control and an explicit
+decision about the orphan; automatic continuation is deferred until a durable
+phase-resume protocol can prove ownership of every phase.
+
 ## Dense Traversal Performance
 
 Durable ordered commit intentionally permits head-of-line blocking. Canonical

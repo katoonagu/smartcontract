@@ -210,6 +210,20 @@ second canary; any replacement or mismatch fails closed. Runtime samples and
 refill observations never participate in task claim, acceptance, traversal
 commit, scoring, or delivery.
 
+Selected runtime saturation uses only the controlled run's eligible demand,
+accepted/active slots, and limiting reason. A foreign active provider permit is
+persisted as a failing contamination sample; it can never contribute four slots
+to TXc utilization. Retained refill diagnostics reset at the new control
+boundary, and actual `reconciliation_recovered_work` events are counted for the
+active control/run and bound into lifecycle evidence. One recovery rejects the
+selected gate.
+
+Before the selected canary is invoked, the harness writes an exclusive sealed
+journal in its scenario directory. If execution stops before the completed
+index exists, the journal blocks every later invocation from creating another
+batch or canary. Memory capture creates a fresh exclusive per-execution child
+directory and rejects preexisting or linked child files.
+
 Traversal policy remains owned by the persisted analysis manifest. V1 resumes
 with its historical identities and evidence bytes. V2 resumes only with its
 bound label dataset, catalog, and boundary predicate versions. The one-way

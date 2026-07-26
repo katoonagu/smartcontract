@@ -637,6 +637,60 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     expect(memoryCapture.after).not.toHaveBeenCalled();
   });
 
+  it("fails closed on restart after selected canary partial state instead of creating a second batch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-selected-partial-"));
+    const input = {
+      requestedCapacities: [4] as const,
+      output: join(root, "selected.json"),
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      providerAudit: sealUnifiedProviderGroupAuditV1({
+        auditedAt: "2026-07-24T12:00:00.000Z",
+        groups: Array.from({ length: 4 }, (_, index) => ({
+          opaqueGroupId: `provider-group-${index + 1}`,
+          state: "healthy" as const,
+          concurrencyLimit: 1,
+          independenceEvidenceSha256: String(index + 1).repeat(64)
+        }))
+      }).envelope,
+      traversalPolicy: "snapshot-closure-v2" as const,
+      memoryEvidenceDir: root,
+      memoryCapture: {
+        before: vi.fn(async () => {
+          throw new Error("simulated_process_crash");
+        }),
+        during: vi.fn(async () => undefined),
+        after: vi.fn(async () => {
+          throw new Error("after_not_reached");
+        })
+      } as never
+    };
+    const runCanary = vi.fn(async (_args: readonly string[], hooks: {
+      readonly onBatchReady?: (batch: {
+        readonly runIds: readonly string[];
+        readonly providerConfigurationSha256: string;
+        readonly db: { query(): Promise<{ rows: readonly unknown[] }> };
+      }) => Promise<unknown>;
+    }) => {
+      await hooks.onBatchReady?.({
+        runIds: ["run-txc"],
+        providerConfigurationSha256: "5".repeat(64),
+        db: { query: async () => ({ rows: [] }) }
+      });
+      throw new Error("canary_continued_after_crash");
+    });
+
+    await expect(runSelectedIsolatedCanaryBenchmark({
+      ...input,
+      runCanary: runCanary as never
+    })).rejects.toThrow("simulated_process_crash");
+    await expect(runSelectedIsolatedCanaryBenchmark({
+      ...input,
+      runCanary: runCanary as never
+    })).rejects.toThrow("unified_benchmark_selected_partial_state");
+    expect(runCanary).toHaveBeenCalledOnce();
+  });
+
   it("resumes selected evidence without recapture and rejects replaced refill or memory bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "unified-selected-resume-"));
     const fixture = await writeSelectedLiveResumeBundle(root);
@@ -753,6 +807,75 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       samplesBytes: expect.any(String),
       summaryBytes: expect.any(String)
     });
+  });
+
+  it("uses a fresh capture directory and never follows a preexisting child symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-memory-link-"));
+    const external = join(root, "external.json");
+    await writeFile(external, "unchanged", "utf8");
+    await symlink(external, join(root, "memory-samples.json"), "file");
+    const phaseRunner = vi.fn(async (input: {
+      readonly phase: "before" | "during" | "after";
+      readonly samplesPath: string;
+      readonly summaryPath: string;
+    }) => {
+      const samples = ["before", "during", "after"]
+        .slice(0, ["before", "during", "after"].indexOf(input.phase) + 1)
+        .map((phase, index) => ({
+          capturedAt: `2026-07-24T12:00:0${index + 1}.000Z`,
+          localWslDiagnostic: {
+            linuxMemAvailableBytes: null,
+            linuxSwapFreeBytes: null,
+            linuxSwapTotalBytes: null,
+            status: "skipped",
+            vmmemWslWorkingSetBytes: null
+          },
+          nodePid: 123,
+          phase,
+          runId: "run-txc",
+          runtime: { heapUsedBytes: 50, rssBytes: 100 },
+          scenarioId: "selected",
+          version: "unified-memory-sample-v1"
+        }));
+      await writeFile(input.samplesPath, JSON.stringify(samples), "utf8");
+      if (input.phase === "after") {
+        await writeFile(input.summaryPath, JSON.stringify({
+          completedAt: "2026-07-24T12:00:03.000Z",
+          diagnosticStatus: "skipped",
+          runId: "run-txc",
+          runtimeTrend: {
+            afterRssBytes: 100,
+            beforeRssBytes: 100,
+            peakRssBytes: 100,
+            postRunRssDeltaBytes: 0
+          },
+          scenarioId: "selected",
+          scope: "local_wsl_diagnostic",
+          verdict: "diagnostic_only",
+          version: "unified-local-wsl-memory-summary-v1",
+          wslTrend: {
+            linuxAvailableDeltaBytes: null,
+            postRunVmmemDeltaBytes: null,
+            swapUsedGrowthBytes: null
+          }
+        }), "utf8");
+      }
+    });
+    const capture = createUnifiedBenchmarkMemoryCapture({
+      directory: root,
+      scenarioId: "selected",
+      nodePid: 123,
+      memoryUsage: () => ({ rss: 100, heapUsed: 50 }),
+      phaseRunner
+    });
+
+    await capture.before("run-txc");
+    await capture.during("run-txc");
+    await capture.after("run-txc");
+
+    expect(await readFile(external, "utf8")).toBe("unchanged");
+    expect(phaseRunner.mock.calls[0]?.[0].samplesPath)
+      .not.toBe(join(root, "memory-samples.json"));
   });
 
   it("seals the refill artifact creator, runtime, provider configuration, policy, execution, and exact memory files", () => {

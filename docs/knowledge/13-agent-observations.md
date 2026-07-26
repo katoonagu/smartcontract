@@ -456,3 +456,17 @@ Correct rule: boundary evidence is proved only when the production runtime
 loads the hash-bound dataset and the production coordinator materially changes
 traversal. Keep scheduler replay receipts as a separate deterministic scale
 contract.
+
+## 2026-07-26: Process Totals Are Not Selected-Run Evidence
+
+Agent mistake: a selected TXc artifact copied process-global demand, active
+slots, refill history, and a hardcoded zero reconciliation count under the
+selected control identity. Unrelated work could therefore satisfy utilization,
+and a real recovery could disappear.
+
+Correct rule: scope selected capacity and limiting values to the controlled
+run, reset retained diagnostics at the control boundary, mark foreign active
+permits as contamination, and count actual recovery events. Write an exclusive
+journal before the one authorized canary so partial state blocks a duplicate;
+capture memory only in a fresh exclusive directory and never follow child
+links.

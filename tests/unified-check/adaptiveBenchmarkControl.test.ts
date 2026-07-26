@@ -6,6 +6,8 @@ import {
   assertUnifiedAdaptiveBenchmarkControlLeaseCurrent,
   captureUnifiedAdaptiveBenchmarkObservationBestEffort,
   createUnifiedAdaptiveBenchmarkProviderTelemetry,
+  createUnifiedSelectedReconciliationCounter,
+  buildUnifiedScopedProviderSaturationSample,
   isDistinctUnifiedBenchmarkRuntimeStartup,
   isUnifiedBenchmarkCooldownSymptomReady,
   isUnifiedBenchmarkSlowHeadSymptomReady,
@@ -138,6 +140,21 @@ describe("adaptive benchmark leased runtime control", () => {
         memoryEvidence: {
           samplesSha256: observation.memoryEvidence.samplesSha256,
           diagnosticStatus: "captured"
+        }
+      })
+    )).toThrow("unified_provider_refill_observation_invalid");
+    expect(() => parseUnifiedProviderRefillObservationV1(
+      canonicalizeArtifactJson({
+        ...observation,
+        diagnostics: {
+          ...diagnostics,
+          phases: {
+            ...diagnostics.phases,
+            permitToClaim: {
+              ...diagnostics.phases.permitToClaim,
+              sampleCount: "1"
+            }
+          }
         }
       })
     )).toThrow("unified_provider_refill_observation_invalid");
@@ -395,6 +412,65 @@ describe("adaptive benchmark leased runtime control", () => {
         ...invalid
       })).toThrow(error);
     }
+  });
+
+  it("does not let another run's four active slots satisfy the selected TXc gate", () => {
+    const sample = buildUnifiedScopedProviderSaturationSample({
+      controlledRunIds: ["run-txc"],
+      providerCapacityLimit: 4,
+      runtimeState: "pressure",
+      healthyGroupCount: 0,
+      runs: [{
+        runId: "run-txc",
+        eligibleDemand: 0,
+        actualSlots: 0,
+        limitingReason: null
+      }],
+      activeProviderRunIds: ["other", "other", "other", "other"]
+    });
+    expect(sample).toEqual(expect.objectContaining({
+      eligibleReadyProviderWork: 4,
+      runtimeState: "normal",
+      healthyGroupCount: 4,
+      activeSlots: 0,
+      limitingReason: null
+    }));
+    expect(() => assertUnifiedSelectedDenseRefillEvidence({
+      saturated: summarizeUnifiedProviderSaturationSamples([sample]),
+      auditedGroupIds: ["g1", "g2", "g3", "g4"],
+      dispatchedGroupIds: ["g1", "g2", "g3", "g4"],
+      providerErrors: 0,
+      rateLimited429: 0,
+      deliveryIntents: 0,
+      externalSends: 0,
+      reconciliationRecoveries: 0
+    })).toThrow("unified_fast_fix_utilization_below_gate");
+  });
+
+  it("counts actual reconciliation recovery events only for the active selected control", () => {
+    const counter = createUnifiedSelectedReconciliationCounter();
+    counter.activate("a".repeat(64), ["run-txc"]);
+    counter.record({
+      type: "reconciliation_recovered_work",
+      occurredAt: NOW.toISOString()
+    });
+    expect(counter.count("a".repeat(64), "run-txc")).toBe(1);
+    expect(() => assertUnifiedSelectedDenseRefillEvidence({
+      saturated: {
+        sampleCount: 1,
+        activeSlotSum: 4,
+        fourOfFourSamples: 1,
+        unexplainedIdleSamples: 0
+      },
+      auditedGroupIds: ["g1", "g2", "g3", "g4"],
+      dispatchedGroupIds: ["g1", "g2", "g3", "g4"],
+      providerErrors: 0,
+      rateLimited429: 0,
+      deliveryIntents: 0,
+      externalSends: 0,
+      reconciliationRecoveries:
+        counter.count("a".repeat(64), "run-txc")
+    })).toThrow("unified_fast_fix_reconciliation_observed");
   });
 
   it("requires exact-group resume and multi-group fallback before cooldown evidence", () => {

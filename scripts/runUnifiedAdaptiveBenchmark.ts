@@ -1011,6 +1011,35 @@ async function writeImmutable(path: string, content: string): Promise<void> {
   }
 }
 
+async function writeExclusiveState(
+  path: string,
+  content: string,
+  existsCode: string
+): Promise<void> {
+  await rejectSymlink(path);
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  try {
+    const handle = await open(
+      path,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        noFollow,
+      0o600
+    );
+    try {
+      await handle.writeFile(content, "utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(existsCode);
+    }
+    throw error;
+  }
+}
+
 type UnifiedBenchmarkMemoryPhase = "before" | "during" | "after";
 
 export type UnifiedBenchmarkMemoryPhaseRunner = (input: {
@@ -1196,19 +1225,29 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
   readonly phaseRunner?: UnifiedBenchmarkMemoryPhaseRunner;
 }) {
   const directory = resolve(input.directory);
+  const captureDirectory = resolve(
+    directory,
+    `selected-capture-${randomUUID()}`
+  );
   const nodePid = input.nodePid ?? process.pid;
   const memoryUsage = input.memoryUsage ?? (() => process.memoryUsage());
   const phaseRunner = input.phaseRunner ??
     runUnifiedBenchmarkMemoryPowerShell;
-  const runtimeSnapshotPath = resolve(directory, "runtime-memory.json");
-  const samplesPath = resolve(directory, "memory-samples.json");
-  const summaryPath = resolve(directory, "memory-summary.json");
+  const samplesPath = resolve(captureDirectory, "memory-samples.json");
+  const summaryPath = resolve(captureDirectory, "memory-summary.json");
   let stableRunId: string | null = null;
+  let initialized = false;
   const completed = new Set<UnifiedBenchmarkMemoryPhase>();
   const capture = async (
     phase: UnifiedBenchmarkMemoryPhase,
     runId: string
   ): Promise<void> => {
+    if (!initialized) {
+      await rejectSymlink(directory);
+      await mkdir(captureDirectory);
+      await rejectSymlink(captureDirectory);
+      initialized = true;
+    }
     if (!runId.trim() || !input.scenarioId.trim()) {
       throw new Error("unified_benchmark_memory_identity_invalid");
     }
@@ -1235,14 +1274,38 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
     ) {
       throw new Error("unified_benchmark_memory_runtime_invalid");
     }
-    await writeFile(
+    const runtimeSnapshotPath = resolve(
+      captureDirectory,
+      `runtime-memory-${phase}.json`
+    );
+    await writeExclusiveState(
       runtimeSnapshotPath,
       canonicalizeArtifactJson({
         heapUsedBytes: memory.heapUsed,
         rssBytes: memory.rss
       }),
-      "utf8"
+      "unified_benchmark_memory_child_exists"
     );
+    if (phase === "before") {
+      for (const path of [samplesPath, summaryPath]) {
+        try {
+          await lstat(path);
+          throw new Error("unified_benchmark_memory_child_exists");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    } else {
+      await rejectSymlink(samplesPath);
+      if (phase === "after") {
+        try {
+          await lstat(summaryPath);
+          throw new Error("unified_benchmark_memory_child_exists");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
     await phaseRunner({
       phase,
       runId,
@@ -1260,8 +1323,8 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
     async after(runId: string) {
       await capture("after", runId);
       const [samplesBytes, summaryBytes] = await Promise.all([
-        readFile(samplesPath, "utf8"),
-        readFile(summaryPath, "utf8")
+        readNoFollow(samplesPath),
+        readNoFollow(summaryPath)
       ]);
       const diagnosticStatus = validateMemoryEvidenceFiles({
         samplesBytes,
@@ -2381,6 +2444,22 @@ export async function runSelectedIsolatedCanaryBenchmark(input: {
     `${parse(input.output).name}.scenarios`
   );
   await mkdirNoFollow(scenarioDirectory);
+  const journalWithoutHash = {
+    version: "unified-selected-canary-journal-v1" as const,
+    candidateCommit: input.candidateCommit,
+    executionIdentitySha256: input.executionIdentitySha256,
+    traversalPolicyVersion: input.traversalPolicy,
+    scenarioId: `live:c4:${SELECTED_LIVE_SCENARIO}`,
+    createdAt: new Date().toISOString()
+  };
+  await writeExclusiveState(
+    resolve(scenarioDirectory, "selected-canary-journal.json"),
+    `${canonicalizeArtifactJson({
+      ...journalWithoutHash,
+      journalSha256: fingerprintCanonicalArtifact(journalWithoutHash)
+    })}\n`,
+    "unified_benchmark_selected_partial_state"
+  );
   const memoryCapture = input.memoryCapture ??
     createUnifiedBenchmarkMemoryCapture({
       directory: input.memoryEvidenceDir,
