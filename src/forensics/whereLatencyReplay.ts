@@ -38,11 +38,27 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const FORBIDDEN_FIELD = /(?:api[_-]?key|authorization|database[_-]?url|chat[_-]?id|telegram(?:[_-]?id)?|cookie|headers?)/i;
 
 function sha256(value: unknown): string {
-  return createHash("sha256").update(canonicalizeArtifactJson(value)).digest("hex");
+  return createHash("sha256").update(canonicalizeArtifactJson(normalizeReplayValue(value))).digest("hex");
 }
 
 function requestKey(method: string, args: unknown[]): string {
-  return sha256({ method, args });
+  return sha256({ method, args: normalizeReplayValue(args) });
+}
+
+function normalizeReplayValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(normalizeReplayValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizeReplayValue(child)]));
+}
+
+function sanitizeReplayValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(sanitizeReplayValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !FORBIDDEN_FIELD.test(key))
+    .map(([key, child]) => [key, sanitizeReplayValue(child)]));
 }
 
 function fail(code: string): never {
@@ -71,18 +87,41 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     fail("where_latency_replay_baseline_binding_missing");
   }
   if (!Number.isFinite(Date.parse(envelope.frozenClockIso))) fail("where_latency_replay_clock_invalid");
+  const job = asObject(envelope.job, "where_latency_replay_job_invalid");
+  if (typeof job.sourceAddress !== "string" || !Number.isFinite(Date.parse(String(job.windowStart)))
+    || !Number.isFinite(Date.parse(String(job.windowEnd))) || Date.parse(String(job.windowStart)) >= Date.parse(String(job.windowEnd))
+    || !job.options || typeof job.options !== "object" || Array.isArray(job.options)) {
+    fail("where_latency_replay_job_invalid");
+  }
   const requestKeys = new Set<string>();
   for (const dependency of envelope.dependencies) {
     if (!dependency || typeof dependency.method !== "string" || !Array.isArray(dependency.args)) {
       fail("where_latency_replay_request_invalid");
     }
     if (!("response" in dependency)) fail("where_latency_replay_response_missing");
+    if (dependency.origin !== undefined && dependency.origin !== "legacy_observed" && dependency.origin !== "supplemental_stage_b_fixture") {
+      fail("where_latency_replay_request_origin_invalid");
+    }
     if (!SHA256.test(dependency.payloadSha256) || dependency.payloadSha256 !== sha256(dependency.response)) {
       fail("where_latency_replay_payload_sha256_mismatch");
     }
     const key = requestKey(dependency.method, dependency.args);
     if (requestKeys.has(key)) fail("where_latency_replay_request_duplicate");
     requestKeys.add(key);
+  }
+  const movementKeys = new Set<string>();
+  for (const movement of envelope.indexedMovements) {
+    const key = requestKey("indexedMovements", movement.txHashes);
+    if (movementKeys.has(key)) fail("where_latency_replay_indexed_movement_duplicate");
+    movementKeys.add(key);
+    for (const row of movement.rows) {
+      const required = ["transferId", "txHash", "eventIndex", "providerRowOrdinalInTx", "callerAddress", "contractRet", "finalResult", "reverted", "confirmed"];
+      if (required.some((field) => !(field in row))) fail("where_latency_replay_indexed_movement_incomplete");
+      if (!movement.txHashes.includes(String(row.txHash))) fail("where_latency_replay_indexed_movement_binding_mismatch");
+    }
+    if (movement.txHashes.some((txHash) => !movement.rows.some((row) => row.txHash === txHash))) {
+      fail("where_latency_replay_indexed_movement_missing");
+    }
   }
   const movementHashes = new Set(envelope.indexedMovements.flatMap((entry) => entry.txHashes));
   if (movementHashes.size === 0 || envelope.indexedMovements.some((entry) => entry.rows.length === 0)) {
@@ -92,13 +131,26 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     const raw = envelope.rawTransactions.find((entry) => entry.txHash === txHash);
     if (!raw || raw.payloadSha256 !== sha256(raw.response)) fail("where_latency_replay_raw_transaction_missing");
     const response = asObject(raw.response, "where_latency_replay_raw_transaction_invalid");
-    if (response.txID !== txHash) fail("where_latency_replay_raw_transaction_binding_mismatch");
-    if (!requestKeys.has(requestKey("getTransaction", [txHash]))) {
+    if (typeof response.txID !== "string" || response.txID.toLowerCase() !== txHash.toLowerCase()) {
+      fail("where_latency_replay_raw_transaction_binding_mismatch");
+    }
+    const full = envelope.dependencies.find((entry) => requestKey(entry.method, entry.args) === requestKey("getTransaction", [txHash]));
+    if (!full || (full.origin !== "legacy_observed" && full.origin !== "supplemental_stage_b_fixture")) {
       fail("where_latency_replay_transaction_info_missing");
     }
   }
+  if (envelope.assertionQueries.length === 0) fail("where_latency_replay_assertion_query_missing");
+  const assertionKeys = new Set<string>();
   for (const query of envelope.assertionQueries) {
     if (query.chain !== "tron" || !Array.isArray(query.addresses) || !Array.isArray(query.txHashes) || !Array.isArray(query.rows)) {
+      fail("where_latency_replay_assertion_query_missing");
+    }
+    const key = requestKey("assertionQuery", [query.chain, query.addresses, query.txHashes]);
+    if (assertionKeys.has(key)) fail("where_latency_replay_assertion_query_duplicate");
+    assertionKeys.add(key);
+  }
+  for (const txHash of movementHashes) {
+    if (!envelope.assertionQueries.some((query) => query.txHashes.includes(txHash))) {
       fail("where_latency_replay_assertion_query_missing");
     }
   }
@@ -108,11 +160,21 @@ export function buildWhereLatencyReplayV1(input: BuildWhereLatencyReplayV1Input)
   envelope: WhereLatencyReplayV1;
   canonicalJson: string;
 } {
-  const envelope: WhereLatencyReplayV1 = {
+  const envelope = sanitizeReplayValue({
     ...input,
-    dependencies: input.dependencies.map((entry) => ({ ...entry, payloadSha256: sha256(entry.response) })),
-    rawTransactions: input.rawTransactions.map((entry) => ({ ...entry, payloadSha256: sha256(entry.response) }))
-  };
+    job: normalizeReplayValue(input.job) as Record<string, unknown>,
+    dependencies: input.dependencies.map((entry) => ({
+      ...entry,
+      args: sanitizeReplayValue(entry.args) as unknown[],
+      response: sanitizeReplayValue(entry.response),
+      payloadSha256: sha256(sanitizeReplayValue(entry.response))
+    })),
+    rawTransactions: input.rawTransactions.map((entry) => ({
+      ...entry,
+      response: sanitizeReplayValue(entry.response),
+      payloadSha256: sha256(sanitizeReplayValue(entry.response))
+    }))
+  }) as WhereLatencyReplayV1;
   assertEnvelope(envelope);
   return { envelope, canonicalJson: canonicalizeArtifactJson(envelope) };
 }
@@ -136,9 +198,19 @@ export function projectStableWhereFacts(report: WhereIsMoneyReport): StableWhere
   return facts as StableWhereFactsV1;
 }
 
+export function assertExpectedStableWhereFacts(replay: WhereLatencyReplayV1, report: WhereIsMoneyReport): void {
+  if (canonicalizeArtifactJson(projectStableWhereFacts(report)) !== canonicalizeArtifactJson(replay.expectedStableFacts)) {
+    fail("where_latency_replay_stable_fact_mismatch");
+  }
+}
+
 /** Conservative fixture prefetch: only transaction identities already present in the legacy report. */
 export function collectRouteCriticalTransactionHashes(report: Pick<WhereIsMoneyReport,
-  "balanceFormingTransfers" | "originPaths" | "approvalDrainProvenanceProfiles" | "contractDrivenTransferProfiles">): string[] {
+  "balanceFormingTransfers" | "originPaths" | "approvalDrainProvenanceProfiles" | "contractDrivenTransferProfiles">,
+input: {
+  unresolvedEconomicRoleInputs?: Array<{ txHash?: string | null }>;
+  legacyObservedTransactionHashes?: string[];
+} = {}): string[] {
   const hashes = new Set<string>();
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -155,6 +227,12 @@ export function collectRouteCriticalTransactionHashes(report: Pick<WhereIsMoneyR
     }
   };
   visit(report);
+  for (const item of input.unresolvedEconomicRoleInputs ?? []) {
+    if (item.txHash) hashes.add(item.txHash);
+  }
+  for (const hash of input.legacyObservedTransactionHashes ?? []) {
+    if (hash.length > 0) hashes.add(hash);
+  }
   return [...hashes];
 }
 
@@ -164,6 +242,7 @@ export function createWhereReplayDeps(replay: WhereLatencyReplayV1): WhereIsMone
   return new Proxy({}, {
     get(_target, property) {
       if (typeof property !== "string") return undefined;
+      if (!replay.dependencies.some((entry) => entry.method === property)) return undefined;
       return async (...args: unknown[]) => {
         const entry = tape.get(requestKey(property, args));
         if (!entry) fail("where_latency_replay_request_missing");

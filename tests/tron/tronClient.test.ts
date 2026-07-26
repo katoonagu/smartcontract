@@ -105,6 +105,18 @@ function blacklistContractEvent(
 
 describe("TronscanClient", () => {
   it("gets raw fullnode transactions with hash-bound scheduler dedupe", async () => {
+    const scheduled: unknown[] = [];
+    const pending = new Map<string, Promise<unknown>>();
+    const scheduler = {
+      schedule: (request: any, work: (context: { apiKey: string | null; apiKeyIndex: number | null }) => Promise<unknown>) => {
+        scheduled.push(request);
+        const existing = request.cacheKey ? pending.get(request.cacheKey) : undefined;
+        if (existing) return existing;
+        const task = work({ apiKey: null, apiKeyIndex: null });
+        if (request.cacheKey) pending.set(request.cacheKey, task);
+        return task;
+      }
+    } as any;
     let resolveFirst: ((response: Response) => void) | undefined;
     const fetchFn = vi.fn((input: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((resolve) => {
       if (!resolveFirst) resolveFirst = resolve;
@@ -114,20 +126,21 @@ describe("TronscanClient", () => {
       baseUrl: "https://apilist.tronscanapi.com",
       fullNodeBaseUrl: "https://api.trongrid.io",
       fullNodeApiKey: "fullnode-secret",
-      fetchFn
+      fetchFn,
+      scheduler
     });
 
     const first = client.getRawTransaction("a".repeat(64));
     const same = client.getRawTransaction("a".repeat(64));
     const different = client.getRawTransaction("b".repeat(64));
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
     const [url, init] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.pathname).toBe("/wallet/gettransactionbyid");
     expect(JSON.parse(String(init.body))).toEqual({ value: "a".repeat(64) });
+    expect(scheduled[0]).toMatchObject({ endpointBucket: "fullnode", cacheKey: `default:tron:raw_transaction:v1:${"a".repeat(64)}` });
     resolveFirst!(jsonResponse({ txID: "a".repeat(64) }));
     await expect(first).resolves.toEqual({ txID: "a".repeat(64) });
     await expect(same).resolves.toEqual({ txID: "a".repeat(64) });
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
     await expect(different).resolves.toEqual({ txID: "b".repeat(64) });
   });
   it("requests incoming confirmed official USDT transfers", async () => {

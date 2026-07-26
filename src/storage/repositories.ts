@@ -5562,6 +5562,8 @@ export async function listActiveAddressLabelAssertionsForRoute(
            jsonb_typeof(assertions.evidence_json) = 'object'
            and (
              assertions.evidence_json ->> 'txHash' = any($3)
+             or assertions.evidence_json ->> 'approvalTxHash' = any($3)
+             or assertions.evidence_json ->> 'drainTxHash' = any($3)
              or (
                jsonb_typeof(assertions.evidence_json -> 'txHashes') = 'array'
                and exists (
@@ -5569,6 +5571,15 @@ export async function listActiveAddressLabelAssertionsForRoute(
                  from jsonb_array_elements_text(assertions.evidence_json -> 'txHashes') as route_hash(value)
                  where route_hash.value = any($3)
                )
+             )
+             or exists (
+               select 1
+               from jsonb_array_elements_text(
+                 case when jsonb_typeof(assertions.evidence_json -> 'pathTxHashes') = 'array'
+                   then assertions.evidence_json -> 'pathTxHashes'
+                   else '[]'::jsonb end
+               ) as path_hash(value)
+               where path_hash.value = any($3)
              )
            )
          )

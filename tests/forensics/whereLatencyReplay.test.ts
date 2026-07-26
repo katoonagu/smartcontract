@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWhereLatencyReplayV1,
+  assertExpectedStableWhereFacts,
   collectRouteCriticalTransactionHashes,
   createWhereReplayDeps,
   parseWhereLatencyReplayV1,
@@ -14,13 +15,13 @@ const base = {
   baselineGitCommit: "4861f22e697652c688489ef4be6ab9698cd6ef9f",
   resolvedConfigHash: "a".repeat(64),
   frozenClockIso: "2026-07-26T00:00:00.000Z",
-  job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" },
+  job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z", options: { maxDepth: 20 } },
   dependencies: [
     { method: "getTrc20Balance", args: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", "TR7"], response: "1" },
     { method: "getTransaction", args: ["a".repeat(64)], response: { txID: "a".repeat(64) }, origin: "supplemental_stage_b_fixture" as const }
   ],
-  indexedMovements: [{ txHashes: ["a".repeat(64)], rows: [{ txHash: "a".repeat(64), eventIndex: 0, transferId: "t-1" }] }],
-  assertionQueries: [{ chain: "tron", addresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"], txHashes: [], rows: [] }],
+  indexedMovements: [{ txHashes: ["a".repeat(64)], rows: [{ txHash: "a".repeat(64), eventIndex: 0, transferId: "t-1", providerRowOrdinalInTx: 0, callerAddress: null, contractRet: "SUCCESS", finalResult: "SUCCESS", reverted: false, confirmed: true }] }],
+  assertionQueries: [{ chain: "tron", addresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"], txHashes: ["a".repeat(64)], rows: [] }],
   rawTransactions: [{ txHash: "a".repeat(64), response: { txID: "a".repeat(64) } }],
   baselineRequestCounts: { getTrc20Balance: 1 },
   expectedStableFacts: { subjectAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd" } as any
@@ -37,7 +38,10 @@ describe("where latency replay v1", () => {
       originPaths: [{ txHashes: ["b".repeat(64)], steps: [{ txHash: "c".repeat(64) }] }],
       approvalDrainProvenanceProfiles: [{ drainTxHash: "d".repeat(64) }],
       contractDrivenTransferProfiles: [{ txHash: "e".repeat(64) }]
-    } as any)).toEqual(["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64), "e".repeat(64)]);
+    } as any, {
+      unresolvedEconomicRoleInputs: [{ txHash: "f".repeat(64) }],
+      legacyObservedTransactionHashes: ["g".repeat(64)]
+    })).toEqual(["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64), "e".repeat(64), "f".repeat(64), "g".repeat(64)]);
   });
   it("round-trips canonical, hash-bound envelope and replays a recorded dependency", async () => {
     const { canonicalJson } = built();
@@ -67,10 +71,39 @@ describe("where latency replay v1", () => {
     const noMovement = structuredClone(built().envelope) as any;
     noMovement.indexedMovements = [];
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noMovement))).toThrow("where_latency_replay_indexed_movement_missing");
+    const noAssertions = structuredClone(built().envelope) as any;
+    noAssertions.assertionQueries = [];
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noAssertions))).toThrow("where_latency_replay_assertion_query_missing");
+  });
+
+  it("replays Date arguments and leaves absent optional dependencies absent", async () => {
+    const replay = parseWhereLatencyReplayV1(buildWhereLatencyReplayV1({
+      ...base,
+      dependencies: [{ method: "fetchEdgesForAddress", args: [base.job.sourceAddress, { latestTimestamp: new Date("2026-01-02T00:00:00.000Z") }], response: [] }, {
+        method: "getTransaction", args: ["a".repeat(64)], response: { txID: "a".repeat(64) }, origin: "legacy_observed"
+      }]
+    } as any).canonicalJson);
+    const deps = createWhereReplayDeps(replay);
+    await expect(deps.fetchEdgesForAddress(base.job.sourceAddress, { latestTimestamp: new Date("2026-01-02T00:00:00.000Z") })).resolves.toEqual([]);
+    expect(deps.getFastWalletRisk).toBeUndefined();
+  });
+
+  it("redacts forbidden identifiers from captured dependency responses before hashing", () => {
+    const { envelope } = buildWhereLatencyReplayV1({
+      ...base,
+      dependencies: [...base.dependencies, { method: "getLabelsForAddress", args: [base.job.sourceAddress], response: [{ address: base.job.sourceAddress, createdByTelegramId: "9001" }] }]
+    } as any);
+    expect(envelope.dependencies.at(-1)?.response).toEqual([{ address: base.job.sourceAddress }]);
   });
 
   it("fails closed for an unrecorded request", async () => {
     await expect(createWhereReplayDeps(parseWhereLatencyReplayV1(built().canonicalJson))
       .getTrc20Balance("Tother", "TR7")).rejects.toThrow("where_latency_replay_request_missing");
+  });
+
+  it("compares every stable report fact exactly", () => {
+    const replay = parseWhereLatencyReplayV1(built().canonicalJson);
+    expect(() => assertExpectedStableWhereFacts(replay, { subjectAddress: "different" } as any)).toThrow("where_latency_replay_stable_fact_mismatch");
+    expect(() => assertExpectedStableWhereFacts(replay, { subjectAddress: base.job.sourceAddress } as any)).not.toThrow();
   });
 });

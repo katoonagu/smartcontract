@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import pg from "pg";
 import {
   listActiveAddressLabelAssertionsForRoute,
   listActiveRiskLabelsForAddress,
@@ -56,7 +57,9 @@ describe("address label assertions", () => {
     })).resolves.toEqual([]);
     expect(queries[0].sql).toContain("assertions.status = 'active'");
     expect(queries[0].sql).toContain("jsonb_typeof(assertions.evidence_json) = 'object'");
-    expect(queries[0].sql).toContain("jsonb_array_elements_text(assertions.evidence_json -> 'txHashes')");
+    expect(queries[0].sql).toContain("case when jsonb_typeof(assertions.evidence_json -> 'pathTxHashes') = 'array'");
+    expect(queries[0].sql).toContain("else '[]'::jsonb end");
+    expect(queries[0].sql).toContain("assertions.evidence_json ->> 'approvalTxHash' = any($3)");
     expect(queries[0].params).toEqual(["tron", ["TSubject111111111111111111111111111111"], ["a".repeat(64)]]);
   });
   it("upserts a confirmed darknet exchange assertion and derives an active flat label", async () => {
@@ -231,5 +234,44 @@ describe("address label assertions", () => {
       "system",
       null
     ]);
+  });
+});
+
+const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
+
+postgresDescribe("address label assertion route query (PostgreSQL)", () => {
+  it("selects active scalar and path arrays, excludes inactive and malformed evidence, and preserves exact empty", async () => {
+    const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query(`create temporary table address_label_assertions (
+        id text primary key, chain text, address text, label text, entity_name text, category text,
+        confidence text, severity text, status text, source_name text, source_url text, notes text,
+        evidence_json jsonb, created_by_telegram_id text, first_seen_at timestamptz, last_seen_at timestamptz,
+        created_at timestamptz, updated_at timestamptz
+      ) on commit preserve rows`);
+      const hash = "a".repeat(64);
+      const now = new Date();
+      for (const [id, status, evidence] of [
+        ["scalar", "active", { approvalTxHash: hash }], ["array", "active", { pathTxHashes: [hash] }],
+        ["inactive", "inactive", { drainTxHash: hash }], ["malformed", "active", { pathTxHashes: { hash } }],
+        ["null", "active", null]
+      ] as const) {
+        await client.query(`insert into address_label_assertions values ($1, 'tron', 'TSubject111111111111111111111111111111', 'exchange', null, 'exchange', 'high', 'high', $2, 'test', null, null, $3, null, $4, $4, $4, $4)`, [id, status, evidence, now]);
+      }
+    } finally {
+      client.release();
+    }
+    try {
+      const rows = await listActiveAddressLabelAssertionsForRoute(pool as any, {
+        chain: "tron", addresses: ["TSubject111111111111111111111111111111"], txHashes: ["a".repeat(64)]
+      });
+      expect(rows.map((row) => row.id)).toEqual(["scalar", "array"]);
+      await expect(listActiveAddressLabelAssertionsForRoute(pool as any, {
+        chain: "tron", addresses: ["TNoMatch111111111111111111111111111111"], txHashes: ["a".repeat(64)]
+      })).resolves.toEqual([]);
+    } finally {
+      await pool.end();
+    }
   });
 });
