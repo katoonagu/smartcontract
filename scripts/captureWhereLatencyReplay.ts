@@ -4,6 +4,7 @@ import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runWhereIsMoneyCheck, type WhereIsMoneyDeps } from "../src/check/whereIsMoneyCheck";
 import { loadConfig } from "../src/config";
+import { resolveLegacyWhereIsMoneyRunInput } from "../src/forensics/deepForensicJob";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { normalizeTransfer } from "../src/forensics/routeSearch";
@@ -11,11 +12,13 @@ import {
   assertExpectedStableWhereFacts,
   buildWhereLatencyReplayV1,
   collectRouteCriticalTransactionHashes,
+  LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
   projectStableWhereFacts
 } from "../src/forensics/whereLatencyReplay";
 import { whereIsMoneyIndexedFetchLimit, whereIsMoneyLatestFallbackCacheKey, whereIsMoneyLiveFallbackLimit } from "../src/forensics/whereIsMoneyFetchLimits";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../src/parser/transactionParser";
+import { deepForensicRuntimeOptions } from "../src/runtime/deepForensicRuntimeOptions";
 import { evaluateAddressRisk } from "../src/risk/evaluation";
 import { closeDb, createDb } from "../src/storage/db";
 import {
@@ -31,7 +34,7 @@ import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
 import type { ForensicRouteEdge, IndexedTronUsdtTransfer, RiskReport, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../src/types";
 
 type JsonRecord = Record<string, unknown>;
-type TapeEntry = { method: string; args: unknown[]; response: unknown; origin?: "legacy_observed" | "supplemental_stage_b_fixture" };
+type TapeEntry = { method: string; args: unknown[]; response: unknown; origin?: "legacy_observed" | "supplemental_stage_b_fixture"; invocationCount?: number };
 
 function argument(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -158,12 +161,6 @@ try {
   const result = recordField(job.result_json);
   const savedReport = result.whereIsMoneyReport as WhereIsMoneyReport | undefined;
   if (!savedReport) throw new Error("where_latency_replay_completed_report_missing");
-  const exactCapture = recordField(progress.whereLatencyReplayExactV1);
-  const exactOptions = recordField(exactCapture.options);
-  const frozenClockIso = typeof exactCapture.frozenClockIso === "string" ? exactCapture.frozenClockIso : null;
-  if (Object.keys(exactOptions).length === 0 || !frozenClockIso || !Number.isFinite(Date.parse(frozenClockIso))) {
-    throw new Error("where_latency_replay_exact_options_unavailable");
-  }
   const jobSource = requiredString(job.subject_address, "where_latency_replay_job_source_missing");
   const windowStart = new Date(requiredString(job.window_start, "where_latency_replay_job_window_missing"));
   const windowEnd = new Date(requiredString(job.window_end, "where_latency_replay_job_window_missing"));
@@ -207,8 +204,12 @@ try {
   const baselineRequestCounts: Record<string, number> = {};
   const record = async <T>(method: string, args: unknown[], operation: () => Promise<T>, origin: TapeEntry["origin"] = "legacy_observed"): Promise<T> => {
     const request = canonicalizeArtifactJson({ method, args: JSON.parse(JSON.stringify(args)) });
+    baselineRequestCounts[method] = (baselineRequestCounts[method] ?? 0) + 1;
     const existing = tapeByRequest.get(request);
-    if (existing) return structuredClone(existing.response) as T;
+    if (existing) {
+      existing.invocationCount = (existing.invocationCount ?? 1) + 1;
+      return structuredClone(existing.response) as T;
+    }
     const response = await operation();
     if (method === "getTransaction" && typeof args[0] === "string") {
       const identity = recordField(response).txID ?? recordField(response).hash ?? recordField(response).id;
@@ -216,10 +217,9 @@ try {
         throw new Error("where_latency_replay_transaction_info_identity_mismatch");
       }
     }
-    const entry = { method, args: JSON.parse(JSON.stringify(args)), response: JSON.parse(JSON.stringify(response)), origin };
+    const entry = { method, args: JSON.parse(JSON.stringify(args)), response: JSON.parse(JSON.stringify(response)), origin, invocationCount: 1 };
     tape.push(entry);
     tapeByRequest.set(request, entry);
-    baselineRequestCounts[method] = (baselineRequestCounts[method] ?? 0) + 1;
     if (method === "getTransaction" && typeof args[0] === "string") observedTransactions.add(args[0]);
     return response;
   };
@@ -283,11 +283,12 @@ try {
     getContractIntelligenceProfile: (address) => record("getContractIntelligenceProfile", [address], async () =>
       await getContractIntelligenceProfile(db, address, new Date(windowEnd)) ?? tronClient.getContractIntelligenceProfile(address, { now: new Date(windowEnd), requireComplete: true }))
   };
-  const options = JSON.parse(JSON.stringify(exactOptions, (_key, value) => value)) as Record<string, unknown>;
-  if (options.sourceAddress !== jobSource || options.windowStart !== windowStart.toISOString() || options.windowEnd !== windowEnd.toISOString()) {
-    throw new Error("where_latency_replay_exact_options_unavailable");
-  }
-  const runOptions = { ...options, windowStart, windowEnd } as Parameters<typeof runWhereIsMoneyCheck>[1];
+  const runtimeOptions = deepForensicRuntimeOptions(config, config.tronscanApiKeys.length > 0);
+  const runOptions = resolveLegacyWhereIsMoneyRunInput({
+    subjectAddress: jobSource, windowStart, windowEnd, progressJson: progress
+  } as any, runtimeOptions);
+  const frozenClockIso = completedAt.toISOString();
+  const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
   const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(deps, runOptions));
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   assertExpectedStableWhereFacts({ expectedStableFacts } as any, rerun);
@@ -322,7 +323,7 @@ try {
     rawTransactions.push({ txHash, response: raw });
   }
   const complete = buildWhereLatencyReplayV1({
-    schema: "where-latency-replay-v1", version: 1, baselineGitCommit: "4861f22e697652c688489ef4be6ab9698cd6ef9f",
+    schema: "where-latency-replay-v1", version: 1, baselineGitCommit: LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
     resolvedConfigHash: nonSecretConfigHash(config as unknown as Record<string, unknown>, options),
     resolvedConfig: nonSecretConfig(config as unknown as Record<string, unknown>), resolvedOptions: options,
     frozenClockIso,

@@ -4,7 +4,7 @@ import {
   type DeepAddressForensicDeps,
   type DeepAddressForensicReport
 } from "../check/deepForensicCheck";
-import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest } from "../check/whereIsMoneyCheck";
+import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest, type RunWhereIsMoneyCheckInput } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import {
@@ -211,6 +211,31 @@ export type DeepForensicJobRunnerOptions = {
   sourceProvenanceExactWindowRepairLimit?: number;
   localIndexMaterializationMaxRows?: number;
 };
+
+/** The legacy worker and replay capture must resolve this input identically. */
+export function resolveLegacyWhereIsMoneyRunInput(
+  job: ForensicCheckJob,
+  options: DeepForensicJobRunnerOptions
+): Omit<RunWhereIsMoneyCheckInput, "onProgress" | "abortSignal"> {
+  return {
+    mode: whereIsMoneyJobModeField(job.progressJson.mode),
+    sourceAddress: job.subjectAddress,
+    requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
+    seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd,
+    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
+    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
+    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
+    maxEdgesPerAddress: options.maxEdgesPerAddress ?? 100,
+    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
+    contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
+    crossChainStage2Enabled: shouldRunCrossChainStage2ForJob(job, options),
+    crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
+    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
+  };
+}
 
 type DerivedLabelResult = {
   label: "darknet_exchange_proximity" | "approval_drain_proximity";
@@ -1555,7 +1580,7 @@ async function runWhereIsMoneyJob(
       })
     : undefined;
 
-  const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
+  const resolvedWhereInput = resolveLegacyWhereIsMoneyRunInput(job, options);
   let report: WhereIsMoneyReport;
   try {
     const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
@@ -1582,22 +1607,7 @@ async function runWhereIsMoneyJob(
       crossChainContinuationProviders: deps.crossChainContinuationProviders,
       evmEvidenceProvider: deps.evmEvidenceProvider
     }, {
-      mode: whereIsMoneyJobModeField(job.progressJson.mode),
-      sourceAddress: job.subjectAddress,
-      requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
-      seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
-      windowStart: job.windowStart,
-      windowEnd: job.windowEnd,
-      maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
-      beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
-      maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
-      maxEdgesPerAddress,
-      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
-      recentFallbackTransferLimit,
-      contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
-      crossChainStage2Enabled,
-      crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
-      crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
+      ...resolvedWhereInput,
       onProgress: async (patch) => {
         await persistProgress(patch);
       }

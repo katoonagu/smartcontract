@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
+import { resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
 import {
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
@@ -36,6 +37,17 @@ function built() {
 }
 
 describe("where latency replay v1", () => {
+  it("uses the same resolved legacy input contract as the production worker", () => {
+    const input = resolveLegacyWhereIsMoneyRunInput({
+      subjectAddress: base.job.sourceAddress,
+      windowStart: new Date(base.job.windowStart), windowEnd: new Date(base.job.windowEnd),
+      progressJson: { mode: "where_is_money", requestedAmountRaw: "7" }
+    } as any, { maxEdgesPerAddress: 77 });
+    expect(input).toMatchObject({
+      sourceAddress: base.job.sourceAddress, maxEdgesPerAddress: 77,
+      contractTransactionInfoMinIntervalMs: 1000, requestedAmountRaw: "7"
+    });
+  });
   it("collects a conservative route-critical transaction superset", () => {
     expect(collectRouteCriticalTransactionHashes({
       balanceFormingTransfers: [{ txHash: "a".repeat(64) }],
@@ -58,6 +70,7 @@ describe("where latency replay v1", () => {
     const noRouteList = structuredClone(built().envelope) as any;
     delete noRouteList.routeCriticalTxHashes;
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noRouteList))).toThrow("where_latency_replay_route_critical_hash_missing");
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, baselineGitCommit: "b".repeat(40) }))).toThrow("where_latency_replay_baseline_binding_missing");
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, version: 2 }))).toThrow("where_latency_replay_version_unsupported");
     expect(() => parseWhereLatencyReplayV1(JSON.stringify(built().envelope, null, 2))).toThrow("where_latency_replay_json_not_canonical");
     const tampered = structuredClone(built().envelope) as any;
@@ -102,6 +115,16 @@ describe("where latency replay v1", () => {
       dependencies: [...base.dependencies, { method: "getLabelsForAddress", args: [base.job.sourceAddress], response: [{ address: base.job.sourceAddress, createdByTelegramId: "9001" }] }]
     } as any);
     expect(envelope.dependencies.at(-1)?.response).toEqual([{ address: base.job.sourceAddress }]);
+  });
+
+  it("keeps one canonical tape entry while preserving repeated legacy invocation counts", () => {
+    const { envelope } = buildWhereLatencyReplayV1({
+      ...base,
+      baselineRequestCounts: { getTrc20Balance: 2 },
+      dependencies: [{ ...base.dependencies[0], invocationCount: 2 }, base.dependencies[1]]
+    } as any);
+    expect(envelope.dependencies).toHaveLength(2);
+    expect(envelope.baselineRequestCounts).toEqual({ getTrc20Balance: 2 });
   });
 
   it("fails closed for an unrecorded request", async () => {

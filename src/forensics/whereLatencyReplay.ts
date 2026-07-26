@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type { WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
+import { runWhereIsMoneyCheck, type RunWhereIsMoneyCheckInput, type WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
 import type { WhereIsMoneyReport } from "../types";
 import { canonicalizeArtifactJson } from "./canonicalJson";
 
 export type StableWhereFactsV1 = Omit<WhereIsMoneyReport, "transactionInfoEnrichment">;
+export const LEGACY_WHERE_REPLAY_BASELINE_COMMIT = "4861f22e697652c688489ef4be6ab9698cd6ef9f";
 
 type ReplayDependency = {
   method: string;
@@ -11,6 +12,7 @@ type ReplayDependency = {
   response: unknown;
   payloadSha256: string;
   origin?: "legacy_observed" | "supplemental_stage_b_fixture";
+  invocationCount?: number;
 };
 
 export type WhereLatencyReplayV1 = {
@@ -104,7 +106,7 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
   if (envelope.schema !== "where-latency-replay-v1" || envelope.version !== 1) {
     fail("where_latency_replay_version_unsupported");
   }
-  if (!COMMIT.test(envelope.baselineGitCommit) || !SHA256.test(envelope.resolvedConfigHash)
+  if (!COMMIT.test(envelope.baselineGitCommit) || envelope.baselineGitCommit !== LEGACY_WHERE_REPLAY_BASELINE_COMMIT || !SHA256.test(envelope.resolvedConfigHash)
     || sha256({ config: envelope.resolvedConfig, options: envelope.resolvedOptions }) !== envelope.resolvedConfigHash) {
     fail("where_latency_replay_baseline_binding_missing");
   }
@@ -134,7 +136,10 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
   const countedLegacy = new Map<string, number>();
   for (const dependency of envelope.dependencies) {
     if (dependency.origin === "legacy_observed") {
-      countedLegacy.set(dependency.method, (countedLegacy.get(dependency.method) ?? 0) + 1);
+      if (dependency.invocationCount !== undefined && (!Number.isSafeInteger(dependency.invocationCount) || dependency.invocationCount < 1)) {
+        fail("where_latency_replay_baseline_request_count_mismatch");
+      }
+      countedLegacy.set(dependency.method, (countedLegacy.get(dependency.method) ?? 0) + (dependency.invocationCount ?? 1));
     }
   }
   for (const [method, count] of Object.entries(envelope.baselineRequestCounts)) {
@@ -262,6 +267,28 @@ export function projectStableWhereFacts(report: WhereIsMoneyReport): StableWhere
 export function assertExpectedStableWhereFacts(replay: WhereLatencyReplayV1, report: WhereIsMoneyReport): void {
   if (canonicalizeArtifactJson(projectStableWhereFacts(report)) !== canonicalizeArtifactJson(replay.expectedStableFacts)) {
     fail("where_latency_replay_stable_fact_mismatch");
+  }
+}
+
+export async function runWhereLatencyReplay(replay: WhereLatencyReplayV1): Promise<WhereIsMoneyReport> {
+  const fixed = new Date(replay.frozenClockIso).getTime();
+  if (!Number.isFinite(fixed)) fail("where_latency_replay_clock_invalid");
+  const RealDate = Date;
+  class FrozenDate extends RealDate {
+    constructor(value?: string | number | Date) {
+      super(value === undefined ? fixed : value);
+    }
+    static now(): number { return fixed; }
+  }
+  Object.setPrototypeOf(FrozenDate, RealDate);
+  globalThis.Date = FrozenDate as DateConstructor;
+  try {
+    const options = reviveReplayValue(replay.job.options) as RunWhereIsMoneyCheckInput;
+    const report = await runWhereIsMoneyCheck(createWhereReplayDeps(replay), options);
+    assertExpectedStableWhereFacts(replay, report);
+    return report;
+  } finally {
+    globalThis.Date = RealDate;
   }
 }
 
