@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildFrozenLabelDataset,
+  validateFrozenLabelDatasetV1,
   type FrozenLabelRecordV1
 } from "../../src/unifiedCheck/frozenLabels";
 
@@ -83,5 +85,72 @@ describe("Unified frozen label dataset", () => {
     });
     expect(result.dataset.legacyRows).toHaveLength(1);
     expect(result.dataset.labels).toHaveLength(1);
+  });
+
+  it("validates an exact persisted artifact against its hash and bindings", () => {
+    const built = buildFrozenLabelDataset({
+      frozenAt: "2026-07-24T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      labels: [label],
+      legacyRows: []
+    });
+
+    expect(validateFrozenLabelDatasetV1({
+      dataset: built.dataset,
+      expectedSha256: built.sha256,
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toEqual(built.dataset);
+    expect(() => validateFrozenLabelDatasetV1({
+      dataset: built.dataset,
+      expectedSha256: "f".repeat(64),
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toThrow("unified_frozen_label_dataset_hash_mismatch");
+  });
+
+  it.each([
+    ["snapshot", { snapshotHash: "f".repeat(64) }],
+    ["catalog", { catalogVersion: "wrong-catalog" }],
+    ["predicate", { boundaryPredicateVersion: "wrong-predicate" }]
+  ])("rejects a persisted artifact with the wrong %s binding", (_name, change) => {
+    const built = buildFrozenLabelDataset({
+      frozenAt: "2026-07-24T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      labels: [label],
+      legacyRows: []
+    });
+    expect(() => validateFrozenLabelDatasetV1({
+      dataset: { ...built.dataset, ...change },
+      expectedSha256: fingerprintCanonicalArtifact({
+        ...built.dataset,
+        ...change
+      }),
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toThrow("unified_frozen_label_dataset_binding_mismatch");
+  });
+
+  it("rejects a malformed persisted label instead of trusting a cast", () => {
+    const malformed = buildFrozenLabelDataset({
+      frozenAt: "2026-07-24T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      labels: [label],
+      legacyRows: []
+    }).dataset;
+    const dataset = {
+      ...malformed,
+      labels: [{ ...label, terminalEligible: "yes" }]
+    };
+    expect(() => validateFrozenLabelDatasetV1({
+      dataset,
+      expectedSha256: fingerprintCanonicalArtifact(dataset),
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toThrow("unified_frozen_label_dataset_invalid");
   });
 });

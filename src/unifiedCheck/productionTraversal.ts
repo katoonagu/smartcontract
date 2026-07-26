@@ -24,6 +24,10 @@ import {
   type TraversalTerminalReason
 } from "./traversal";
 import type { UnifiedChunkHandler } from "./worker";
+import type {
+  ProductionBoundaryDecisionV2,
+  ProductionBoundaryEvidenceV2
+} from "./productionBoundary";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const IDENTIFIED_SERVICE_LABELS = new Set([
@@ -228,6 +232,31 @@ export function buildUnifiedTraversalTerminalRecord(input: {
     evidenceHash: input.evidenceHash,
     labels: [...new Set(input.labels)].sort(),
     sourceEventIds: [...new Set(input.state.sourceEventIds)].sort()
+  };
+}
+
+export function buildUnifiedTraversalBoundaryCommitV2(input: {
+  readonly state: TraversalStateV1;
+  readonly decision: Extract<
+    ProductionBoundaryDecisionV2,
+    { readonly terminal: true }
+  >;
+  readonly evidenceHash: string;
+}): {
+  readonly evidence: ProductionBoundaryEvidenceV2;
+  readonly terminal: UnifiedTraversalTerminalV1;
+} {
+  if (!HASH.test(input.evidenceHash)) {
+    throw new TypeError("unified_v2_boundary_evidence_hash_invalid");
+  }
+  return {
+    evidence: input.decision.evidence,
+    terminal: buildUnifiedTraversalTerminalRecord({
+      state: input.state,
+      reason: input.decision.reason,
+      labels: [input.decision.evidence.labelCatalogEntryId],
+      evidenceHash: input.evidenceHash
+    })
   };
 }
 

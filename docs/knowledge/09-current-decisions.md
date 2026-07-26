@@ -107,6 +107,12 @@ code_refs:
   request, analysis, and canary identities.
 - Newly created manifests bind the current label catalog and boundary predicate
   versions. Only historical v1 manifests may omit those fields; v2 fails closed.
+- The production v2 boundary evaluator accepts only an exact frozen label
+  record that is valid at the state's event time and whose catalog policy is
+  `custodial_boundary`. Hints, legacy risk rows, unknowns, bridges, DEXes,
+  generic contracts, and later-valid labels remain non-terminal. Its terminal
+  evidence uses the separate immutable schema-2 discriminator; v1 evidence is
+  unchanged. Coordinator activation follows the durable pre-planning commit.
 - The active check generation fence is retained only for wallet-delivery
   idempotency between legacy and Unified delivery workers. It does not start,
   stop, authorize, or limit planner/controller execution and does not block an
