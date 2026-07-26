@@ -51,11 +51,15 @@ function numberField(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
-function nonSecretConfigHash(config: Record<string, unknown>): string {
+function nonSecretConfig(config: Record<string, unknown>): Record<string, unknown> {
   const visible = Object.fromEntries(Object.entries(config).filter(([key]) =>
     !/(?:api[_-]?key|database|chat|telegram|token|secret|password)/i.test(key)
   ));
-  return createHash("sha256").update(canonicalizeArtifactJson(visible)).digest("hex");
+  return visible;
+}
+
+function nonSecretConfigHash(config: Record<string, unknown>, options: Record<string, unknown>): string {
+  return createHash("sha256").update(canonicalizeArtifactJson({ config: nonSecretConfig(config), options })).digest("hex");
 }
 
 function indexedSnapshotRow(row: IndexedTronUsdtTransfer): Record<string, unknown> {
@@ -81,12 +85,54 @@ function indexedSnapshotRow(row: IndexedTronUsdtTransfer): Record<string, unknow
   };
 }
 
+function routeAddressSet(report: WhereIsMoneyReport, unresolved: Array<{ txHash: string }>): string[] {
+  const addresses = new Set<string>([report.subjectAddress]);
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (typeof child === "string" && /(?:^|[A-Z_])address$/i.test(key) && child.startsWith("T")) addresses.add(child);
+      else if (key === "pathAddresses" && Array.isArray(child)) child.forEach((address) => {
+        if (typeof address === "string" && address.startsWith("T")) addresses.add(address);
+      });
+      else visit(child);
+    }
+  };
+  visit({
+    balanceFormingTransfers: report.balanceFormingTransfers,
+    originPaths: report.originPaths,
+    approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+    contractDrivenReceiverProfile: report.contractDrivenReceiverProfile,
+    contractDrivenTransferProfiles: report.contractDrivenTransferProfiles,
+    unresolved
+  });
+  return [...addresses].sort();
+}
+
 async function writeReplayExclusive(path: string, bytes: string): Promise<void> {
   const file = await open(resolve(path), "wx");
   try {
     await file.writeFile(bytes, "utf8");
   } finally {
     await file.close();
+  }
+}
+
+async function withFrozenClock<T>(iso: string, operation: () => Promise<T>): Promise<T> {
+  const fixed = new Date(iso).getTime();
+  const RealDate = Date;
+  class FrozenDate extends RealDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      super(args.length === 0 ? fixed : args[0] as string | number | Date);
+    }
+    static now(): number { return fixed; }
+  }
+  Object.setPrototypeOf(FrozenDate, RealDate);
+  globalThis.Date = FrozenDate as DateConstructor;
+  try {
+    return await operation();
+  } finally {
+    globalThis.Date = RealDate;
   }
 }
 
@@ -112,6 +158,12 @@ try {
   const result = recordField(job.result_json);
   const savedReport = result.whereIsMoneyReport as WhereIsMoneyReport | undefined;
   if (!savedReport) throw new Error("where_latency_replay_completed_report_missing");
+  const exactCapture = recordField(progress.whereLatencyReplayExactV1);
+  const exactOptions = recordField(exactCapture.options);
+  const frozenClockIso = typeof exactCapture.frozenClockIso === "string" ? exactCapture.frozenClockIso : null;
+  if (Object.keys(exactOptions).length === 0 || !frozenClockIso || !Number.isFinite(Date.parse(frozenClockIso))) {
+    throw new Error("where_latency_replay_exact_options_unavailable");
+  }
   const jobSource = requiredString(job.subject_address, "where_latency_replay_job_source_missing");
   const windowStart = new Date(requiredString(job.window_start, "where_latency_replay_job_window_missing"));
   const windowEnd = new Date(requiredString(job.window_end, "where_latency_replay_job_window_missing"));
@@ -158,6 +210,12 @@ try {
     const existing = tapeByRequest.get(request);
     if (existing) return structuredClone(existing.response) as T;
     const response = await operation();
+    if (method === "getTransaction" && typeof args[0] === "string") {
+      const identity = recordField(response).txID ?? recordField(response).hash ?? recordField(response).id;
+      if (typeof identity !== "string" || identity.toLowerCase() !== args[0].toLowerCase()) {
+        throw new Error("where_latency_replay_transaction_info_identity_mismatch");
+      }
+    }
     const entry = { method, args: JSON.parse(JSON.stringify(args)), response: JSON.parse(JSON.stringify(response)), origin };
     tape.push(entry);
     tapeByRequest.set(request, entry);
@@ -225,36 +283,36 @@ try {
     getContractIntelligenceProfile: (address) => record("getContractIntelligenceProfile", [address], async () =>
       await getContractIntelligenceProfile(db, address, new Date(windowEnd)) ?? tronClient.getContractIntelligenceProfile(address, { now: new Date(windowEnd), requireComplete: true }))
   };
-  const options = {
-    mode: progress.mode === "transaction_check" || progress.mode === "wallet_profile" ? progress.mode : "where_is_money" as const,
-    sourceAddress: jobSource,
-    requestedAmountRaw: typeof progress.requestedAmountRaw === "string" ? progress.requestedAmountRaw : null,
-    seedTransfers: Array.isArray(progress.seedTransfers) ? progress.seedTransfers : undefined,
-    windowStart, windowEnd,
-    maxDepth: numberField(progress.maxDepth, 20), beamWidth: numberField(progress.beamWidth, 12),
-    maxAddressFetches: numberField(progress.maxAddressFetches, 150), maxEdgesPerAddress: numberField(progress.maxEdgesPerAddress, 100),
-    approvalEnrichmentMode: progress.approvalEnrichmentMode === "off" || progress.approvalEnrichmentMode === "always" ? progress.approvalEnrichmentMode : "triggered" as const,
-    maxApprovalCandidates: numberField(progress.maxApprovalCandidates, 30),
-    maxContractTransactionInfoFetches: numberField(progress.maxContractTransactionInfoFetches, 2000),
-    contractTransactionInfoMinIntervalMs: numberField(progress.contractTransactionInfoMinIntervalMs, 0),
-    crossChainStage2Enabled: progress.crossChainStage2Enabled === true,
-    crossChainManualDeepMode: progress.crossChainManualDeepMode === true,
-    crossChainMaxProviderCalls: numberField(progress.crossChainMaxProviderCalls, 200)
-  };
-  const rerun = await runWhereIsMoneyCheck(deps, options);
+  const options = JSON.parse(JSON.stringify(exactOptions, (_key, value) => value)) as Record<string, unknown>;
+  if (options.sourceAddress !== jobSource || options.windowStart !== windowStart.toISOString() || options.windowEnd !== windowEnd.toISOString()) {
+    throw new Error("where_latency_replay_exact_options_unavailable");
+  }
+  const runOptions = { ...options, windowStart, windowEnd } as Parameters<typeof runWhereIsMoneyCheck>[1];
+  const rerun = await withFrozenClock(frozenClockIso, () => runWhereIsMoneyCheck(deps, runOptions));
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   assertExpectedStableWhereFacts({ expectedStableFacts } as any, rerun);
-  const routeHashes = collectRouteCriticalTransactionHashes(rerun, { legacyObservedTransactionHashes: [...observedTransactions] });
+  const unresolvedEconomicRoleInputs = rerun.originPaths.flatMap((path) => (path.sourceProvenance ?? [])
+    .filter((item) => item.proofClass === "unresolved")
+    .map((item) => ({ txHash: item.targetTxHash })));
+  const routeHashes = collectRouteCriticalTransactionHashes(rerun, {
+    unresolvedEconomicRoleInputs,
+    legacyObservedTransactionHashes: [...observedTransactions]
+  });
+  const routeAddresses = routeAddressSet(rerun, unresolvedEconomicRoleInputs as Array<{ txHash: string }>);
   if (routeHashes.length === 0) throw new Error("where_latency_replay_route_critical_hash_missing");
   const indexedRows = await listIndexedTronUsdtTransfersByHashes(db, routeHashes);
   if (indexedRows.length === 0 || routeHashes.some((txHash) => !indexedRows.some((row) => row.txHash === txHash))) {
     throw new Error("where_latency_replay_indexed_movement_missing");
   }
-  const assertions = await listActiveAddressLabelAssertionsForRoute(db, { chain: "tron", addresses: [jobSource, ...rerun.originPaths.flatMap((path) => path.pathAddresses)], txHashes: routeHashes });
+  const assertions = await listActiveAddressLabelAssertionsForRoute(db, { chain: "tron", addresses: routeAddresses, txHashes: routeHashes });
   const rawTransactions = [];
   for (const txHash of routeHashes) {
     if (!observedTransactions.has(txHash)) {
       const response = await tronClient.getTransaction(txHash);
+      const identity = recordField(response).txID ?? recordField(response).hash ?? recordField(response).id;
+      if (typeof identity !== "string" || identity.toLowerCase() !== txHash.toLowerCase()) {
+        throw new Error("where_latency_replay_transaction_info_identity_mismatch");
+      }
       tape.push({ method: "getTransaction", args: [txHash], response, origin: "supplemental_stage_b_fixture" });
     }
     const raw = await tronClient.getRawTransaction(txHash) as JsonRecord;
@@ -265,12 +323,14 @@ try {
   }
   const complete = buildWhereLatencyReplayV1({
     schema: "where-latency-replay-v1", version: 1, baselineGitCommit: "4861f22e697652c688489ef4be6ab9698cd6ef9f",
-    resolvedConfigHash: nonSecretConfigHash(config as unknown as Record<string, unknown>),
-    frozenClockIso: completedAt.toISOString(),
+    resolvedConfigHash: nonSecretConfigHash(config as unknown as Record<string, unknown>, options),
+    resolvedConfig: nonSecretConfig(config as unknown as Record<string, unknown>), resolvedOptions: options,
+    frozenClockIso,
     job: { sourceAddress: jobSource, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), options },
+    routeCriticalTxHashes: routeHashes,
     dependencies: tape,
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],
-    assertionQueries: [{ chain: "tron", addresses: [jobSource, ...rerun.originPaths.flatMap((path) => path.pathAddresses)], txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],
+    assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],
     rawTransactions, baselineRequestCounts, expectedStableFacts
   } as any);
   await writeReplayExclusive(output, complete.canonicalJson);
