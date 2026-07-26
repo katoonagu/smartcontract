@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   createIndexedTronUsdtTransferClient,
   forensicRouteEdgeIdentity,
+  indexedTransferToRawTronscanTransfer,
   indexedTransferToRouteEdge,
   materializeIndexedTransferWindow
 } from "../../src/forensics/localTronUsdtIndex";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
+import { normalizeTransfer } from "../../src/forensics/routeSearch";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
 
 const transfer: IndexedTronUsdtTransfer = {
@@ -76,7 +78,19 @@ describe("local TRON USDT index adapter", () => {
       confirmed: true,
       contractRet: "SUCCESS"
     });
+    expect(normalizeTransfer(rows[0])).toMatchObject({ contractRet: "SUCCESS", finalResult: "SUCCESS" });
     expect((rows[0].trigger_info as Record<string, unknown>).methodName).toBe("transferFrom");
+  });
+
+  it("preserves unknown execution status through raw conversion and normalization", () => {
+    const raw = indexedTransferToRawTronscanTransfer({
+      ...transfer,
+      contractRet: null,
+      finalResult: null
+    });
+
+    expect(raw.contractRet).toBeNull();
+    expect(normalizeTransfer(raw)).toMatchObject({ contractRet: null, finalResult: null });
   });
 });
 

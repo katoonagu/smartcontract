@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TronWeb } from "tronweb";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
+import { normalizeTransfer } from "../../src/forensics/routeSearch";
 import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
 import {
   createFixtureCrossChainDiscoveryProvider,
@@ -1649,7 +1650,10 @@ describe("runWhereIsMoneyCheck", () => {
     const funder = "TRecentOverfundSource11111111111111111";
     const sourceEdges = [
       edge("recent-out-100", lowBalanceSubject, "TRecentReceiver", "100000000", "2026-07-12T12:08:00.000Z"),
-      edge("recent-in-200", funder, lowBalanceSubject, "200000000", "2026-07-12T12:07:00.000Z")
+      {
+        ...edge("recent-in-200", funder, lowBalanceSubject, "200000000", "2026-07-12T12:07:00.000Z"),
+        transferId: "tronscan:recent-in-200:0"
+      }
     ];
 
     const report = await runWhereIsMoneyCheck({
@@ -1691,7 +1695,8 @@ describe("runWhereIsMoneyCheck", () => {
     const sharedTxHash = "shared-multi-event-transaction";
     const exactEvent = {
       ...edge("exact-event-id", exactSender, duplicateSubject, "1000000", "2026-07-12T12:00:00.000Z"),
-      txHash: sharedTxHash
+      txHash: sharedTxHash,
+      transferId: `tronscan:${sharedTxHash}:0`
     };
     const incompleteEvent = {
       ...edge("incomplete-event-id", incompleteSender, duplicateSubject, "1000000", "2026-07-12T12:00:00.000Z"),
@@ -1763,10 +1768,43 @@ describe("runWhereIsMoneyCheck", () => {
       "indexed-event-1",
       "indexed-event-2"
     ]);
+    expect(distinctReport.coverageV2?.tracedAmountRaw).toBe("2000000");
 
     const duplicate = indexedMovement(1);
     const duplicateReport = await run([duplicate, { ...duplicate }]);
     expect(duplicateReport.balanceFormingTransfers.map((transfer) => transfer.evidenceId)).toEqual(["indexed-event-1"]);
+  });
+
+  it("does not count a legacy live tuple as exact one-movement provenance", async () => {
+    const legacySubject = "TLegacySubject111111111111111111111111";
+    const legacyEdge = normalizeTransfer({
+      transaction_id: "legacy-live-tuple",
+      from_address: cleanSender,
+      to_address: legacySubject,
+      quant: "1000000",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      confirmed: true,
+      contractRet: "SUCCESS",
+      block_ts: Date.parse("2026-07-12T12:00:00.000Z")
+    });
+    if (!legacyEdge) throw new Error("test fixture must normalize");
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => address === legacySubject ? [legacyEdge] : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === cleanSender ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: legacySubject,
+      requestedAmountRaw: "1000000",
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.originPaths[0]?.rootSourceType).toBe("allowlist_cex");
+    expect(report.coverageV2?.tracedAmountRaw).toBe("0");
   });
 
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {

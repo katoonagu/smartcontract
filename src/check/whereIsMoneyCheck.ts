@@ -1,6 +1,6 @@
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import { forensicRouteEdgeIdentity } from "../forensics/localTronUsdtIndex";
+import { forensicRouteEdgeHasExactMovementIdentity, forensicRouteEdgeIdentity } from "../forensics/localTronUsdtIndex";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
 import { buildForensicCoverageV2 } from "../forensics/forensicCoverageV2";
@@ -1216,7 +1216,8 @@ function coverageV2ForSelection(input: {
 
 function exactWhereTracedAmountRaw(
   selection: BalanceFormingSelection,
-  paths: MoneyOriginPath[]
+  paths: MoneyOriginPath[],
+  exactMovementEvidenceIds: ReadonlySet<string>
 ): string {
   const selectedByTxHash = new Map<string, BalanceFormingTransfer[]>();
   const pathsByTxHash = new Map<string, MoneyOriginPath[]>();
@@ -1241,6 +1242,7 @@ function exactWhereTracedAmountRaw(
     }
   }
   return selection.transfers.reduce((sum, transfer) => {
+    if (!transfer.evidenceId || !exactMovementEvidenceIds.has(transfer.evidenceId)) return sum;
     const path = transfer.evidenceId &&
       selectedEvidenceCounts.get(transfer.evidenceId) === 1 &&
       pathEvidenceCounts.get(transfer.evidenceId) === 1
@@ -2152,7 +2154,11 @@ export async function runWhereIsMoneyCheck(
     .filter(({ evidenceId }) => !existingCoverageEvidenceIds.has(evidenceId));
   const coverageV2 = coverageV2ForSelection({
     selection: provenanceSelection,
-    tracedAmountRaw: exactWhereTracedAmountRaw(provenanceSelection, provenanceOriginPaths),
+    tracedAmountRaw: exactWhereTracedAmountRaw(
+      provenanceSelection,
+      provenanceOriginPaths,
+      new Set(sourceEdges.filter(forensicRouteEdgeHasExactMovementIdentity).map((edge) => edge.id))
+    ),
     limitations: coverageLimitations,
     exclusions: exactFeeTransfers.length === 0
       ? []

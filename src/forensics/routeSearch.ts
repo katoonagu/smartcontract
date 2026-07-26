@@ -83,6 +83,14 @@ function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function nullableStringField(value: unknown): string | null | undefined {
+  return value === null ? null : stringField(value) ?? undefined;
+}
+
+function nullableBooleanField(value: unknown): boolean | null | undefined {
+  return value === null ? null : typeof value === "boolean" ? value : undefined;
+}
+
 type RawRouteIdentityTransfer = RawTronscanTrc20Transfer & {
   transferId?: unknown;
   eventIndex?: unknown;
@@ -128,6 +136,7 @@ export function normalizeTransfer(transfer: RawTronscanTrc20Transfer): ForensicR
   if (Number.isNaN(timestamp.getTime())) return null;
   const method = transferMethod(transfer);
   const indexedTransfer = transfer as RawRouteIdentityTransfer;
+  const rawFields = transfer as unknown as Record<string, unknown>;
   const trigger = isObjectRecord(transfer.trigger_info) ? transfer.trigger_info : {};
   const edge: ForensicRouteEdge = {
     id: "",
@@ -144,10 +153,10 @@ export function normalizeTransfer(transfer: RawTronscanTrc20Transfer): ForensicR
     providerRowOrdinalInTx: optionalEventIndex(indexedTransfer.providerRowOrdinalInTx),
     callerAddress: stringField(trigger.callerAddress) ?? undefined,
     contractAddress: stringField(transfer.contract_address) ?? stringField(transfer.tokenInfo?.tokenId) ?? undefined,
-    contractRet: stringField(transfer.contractRet) ?? undefined,
-    finalResult: stringField(transfer.finalResult) ?? undefined,
-    confirmed: transfer.confirmed,
-    reverted: typeof transfer.revert === "boolean" ? transfer.revert : undefined
+    contractRet: nullableStringField(rawFields.contractRet),
+    finalResult: nullableStringField(rawFields.finalResult),
+    confirmed: nullableBooleanField(rawFields.confirmed),
+    reverted: nullableBooleanField(rawFields.revert)
   };
   edge.id = stableId(["forensic_route_edge", forensicRouteEdgeIdentity(edge)]);
   return edge;

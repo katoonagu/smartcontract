@@ -130,6 +130,12 @@ export function forensicRouteEdgeIdentity(edge: ForensicRouteEdge): string {
   return `legacy:${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
 }
 
+export function forensicRouteEdgeHasExactMovementIdentity(edge: ForensicRouteEdge): boolean {
+  return Boolean(edge.transferId) ||
+    (edge.eventIndex !== null && edge.eventIndex !== undefined) ||
+    Boolean(edge.provider) && edge.providerRowOrdinalInTx !== null && edge.providerRowOrdinalInTx !== undefined;
+}
+
 export function indexedTransferToRouteEdge(transfer: IndexedTronUsdtTransfer): ForensicRouteEdge {
   return {
     id: stableId([
@@ -168,9 +174,9 @@ export function indexedTransferToRawTronscanTransfer(transfer: IndexedTronUsdtTr
     quant: transfer.amountRaw,
     contract_address: TRON_USDT_CONTRACT_ADDRESS,
     confirmed: transfer.confirmed,
-    contractRet: transfer.contractRet ?? "SUCCESS",
-    finalResult: transfer.finalResult ?? undefined,
-    revert: transfer.reverted ?? undefined,
+    contractRet: transfer.contractRet,
+    finalResult: transfer.finalResult,
+    revert: transfer.reverted,
     tokenInfo: {
       tokenId: TRON_USDT_CONTRACT_ADDRESS,
       tokenAbbr: "USDT",
