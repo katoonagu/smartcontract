@@ -2,16 +2,42 @@ import { describe, expect, it } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildFrozenLabelDataset,
+  buildProductionFrozenLabelDataset,
   createFrozenLabelDatasetLoader,
   MAX_FROZEN_LABEL_DATASET_BYTES,
   MAX_FROZEN_LABEL_DATASET_ENTRIES,
   validateFrozenLabelDatasetV1,
   type FrozenLabelRecordV1
 } from "../../src/unifiedCheck/frozenLabels";
+import {
+  decideTronScanProviderServiceAssertion,
+  type AcceptedProviderServiceAssertionV1
+} from "../../src/unifiedCheck/providerServiceBindings";
 
 const SNAPSHOT = "a".repeat(64);
 const SOURCE = "b".repeat(64);
 const ADDRESS = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+
+function acceptedProvider(
+  address: string,
+  tag: "Bybit" | "Binance"
+): AcceptedProviderServiceAssertionV1 {
+  const decision = decideTronScanProviderServiceAssertion({
+    metadata: {
+      address,
+      source: "tronscan",
+      name: null,
+      tag,
+      verified: false,
+      rawJson: { address, tag },
+      fetchedAt: new Date("2026-07-24T00:00:00.000Z"),
+      expiresAt: new Date("2026-07-27T00:00:00.000Z")
+    },
+    frozenAt: "2026-07-26T00:00:00.000Z"
+  });
+  if (!decision.accepted) throw new Error("expected accepted provider");
+  return decision;
+}
 
 const label: FrozenLabelRecordV1 = {
   address: ADDRESS,
@@ -27,6 +53,45 @@ const label: FrozenLabelRecordV1 = {
 };
 
 describe("Unified frozen label dataset", () => {
+  it("freezes provider assertions canonically without changing V1", () => {
+    const assertions = [
+      acceptedProvider("TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP", "Bybit"),
+      acceptedProvider("TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", "Binance")
+    ];
+    const first = buildProductionFrozenLabelDataset({
+      frozenAt: "2026-07-26T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      legacyRows: [],
+      providerAssertions: assertions
+    });
+    const reordered = buildProductionFrozenLabelDataset({
+      frozenAt: "2026-07-26T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      legacyRows: [],
+      providerAssertions: [...assertions].reverse()
+    });
+
+    expect(reordered.sha256).toBe(first.sha256);
+    expect(first.dataset.labels).toContainEqual(expect.objectContaining({
+      address: "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      catalogEntryId: "cex:bybit",
+      strength: "verified_provider",
+      authority: "tronscan_verified_metadata",
+      validFrom: "2026-07-24T00:00:00.000Z",
+      validTo: null,
+      terminalEligible: true
+    }));
+    expect(first.dataset.legacyRows).toEqual([]);
+
+    expect(buildProductionFrozenLabelDataset({
+      frozenAt: "2026-07-24T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      legacyRows: []
+    }).sha256).toBe(
+      "0328a9b8517294df15030bb9dbb25601063570ff03133c2e26f73aff58220e36"
+    );
+  });
+
   it("sorts evidence deterministically and binds snapshot and policy versions", () => {
     const first = buildFrozenLabelDataset({
       frozenAt: "2026-07-24T00:00:00.000Z",

@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
+import {
+  buildFrozenLabelDataset,
+  buildProductionFrozenLabelDataset
+} from "../../src/unifiedCheck/frozenLabels";
 import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
 import { evaluateProductionBoundaryV2 } from "../../src/unifiedCheck/productionBoundary";
 import { buildUnifiedTraversalBoundaryCommitV2 } from "../../src/unifiedCheck/productionTraversal";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import {
+  decideTronScanProviderServiceAssertion
+} from "../../src/unifiedCheck/providerServiceBindings";
 
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const COUNTERPARTY = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
@@ -54,7 +60,51 @@ function decide(labels: readonly ReturnType<typeof verified>[]) {
   });
 }
 
+function providerDecision(fetchedAt: string) {
+  const assertion = decideTronScanProviderServiceAssertion({
+    metadata: {
+      address: COUNTERPARTY,
+      source: "tronscan",
+      name: null,
+      tag: "Bybit",
+      verified: false,
+      rawJson: { address: COUNTERPARTY, tag: "Bybit" },
+      fetchedAt: new Date(fetchedAt),
+      expiresAt: new Date("2026-07-24T00:00:00.000Z")
+    },
+    frozenAt: "2026-07-23T13:00:00.000Z"
+  });
+  if (!assertion.accepted) throw new Error("expected accepted provider");
+  const frozen = buildProductionFrozenLabelDataset({
+    frozenAt: "2026-07-23T13:00:00.000Z",
+    snapshotHash: SNAPSHOT,
+    legacyRows: [],
+    providerAssertions: [assertion]
+  });
+  return evaluateProductionBoundaryV2({
+    state,
+    eventTimestamp: AT,
+    labels: frozen.dataset.labels,
+    snapshotHash: SNAPSHOT,
+    labelDatasetSha256: frozen.sha256
+  });
+}
+
 describe("Unified production boundary v2", () => {
+  it("uses the frozen provider observation interval at event time", () => {
+    expect(providerDecision("2026-07-23T11:59:59.999Z")).toMatchObject({
+      terminal: true,
+      evidence: {
+        labelCatalogEntryId: "cex:bybit",
+        labelAuthority: "tronscan_verified_metadata",
+        eventTimestamp: AT
+      }
+    });
+    expect(providerDecision("2026-07-23T12:00:00.001Z")).toEqual({
+      terminal: false
+    });
+  });
+
   it("terminates only a verified custodial record valid at event time", () => {
     const decision = decide([verified("cex:bybit")]);
     expect(decision).toMatchObject({

@@ -110,6 +110,14 @@ export type FrozenLabelRecordV1 = {
   readonly terminalEligible: boolean;
 };
 
+export type FrozenLabelResolutionV1 =
+  | {
+      readonly kind: "eligible";
+      readonly entry: SupportedLabelCatalogEntryV1;
+    }
+  | { readonly kind: "label_not_valid_at_event" }
+  | { readonly kind: "hint_not_terminal" };
+
 type EvidenceBinding = {
   readonly catalogEntryId: string;
   readonly authority: string;
@@ -128,11 +136,20 @@ function entryById(id: string): SupportedLabelCatalogEntryV1 {
 
 function timestamp(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
+  exactTimestamp(value, "unified_label_validity_invalid");
+  return value;
+}
+
+function exactTimestamp(value: string, code: string): number {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
-    throw new TypeError("unified_label_validity_invalid");
+    throw new TypeError(code);
   }
-  return value;
+  return parsed;
+}
+
+export function parseBoundaryTimestampV1(value: string): number {
+  return exactTimestamp(value, "unified_boundary_timestamp_invalid");
 }
 
 function recordFromBinding(
@@ -141,6 +158,12 @@ function recordFromBinding(
   strength: "exact_registry" | "verified_provider"
 ): FrozenLabelRecordV1 {
   const entry = entryById(binding.catalogEntryId);
+  const requiredAuthority = strength === "exact_registry"
+    ? "internal_service_registry"
+    : "tronscan_verified_metadata";
+  if (binding.authority !== requiredAuthority) {
+    throw new TypeError("unified_label_authority_unsupported");
+  }
   if (!entry.acceptedAuthorities.includes(binding.authority)) {
     throw new TypeError("unified_label_authority_unsupported");
   }
@@ -174,6 +197,73 @@ function recordFromBinding(
     sourcePayloadSha256: binding.sourcePayloadSha256,
     terminalEligible: true
   };
+}
+
+export function resolveFrozenLabelAtEventV1(input: {
+  readonly label: FrozenLabelRecordV1;
+  readonly eventTimestamp: string;
+}): FrozenLabelResolutionV1 {
+  const eventAt = parseBoundaryTimestampV1(input.eventTimestamp);
+  const label = input.label;
+  const entry = SUPPORTED_LABEL_CATALOG_V1.entries.find(
+    (candidate) => candidate.id === label.catalogEntryId
+  );
+  if (
+    entry === undefined ||
+    entry.identity !== label.identity ||
+    entry.category !== label.category
+  ) {
+    throw new TypeError("unified_frozen_label_catalog_binding_invalid");
+  }
+  const hint = label.strength === "hint";
+  if (hint) {
+    if (
+      label.authority !== "classifier_hint" ||
+      label.terminalEligible
+    ) {
+      throw new TypeError("unified_frozen_label_catalog_binding_invalid");
+    }
+  } else {
+    if (
+      label.strength !== "exact_registry" &&
+      label.strength !== "verified_provider"
+    ) {
+      throw new TypeError("unified_frozen_label_catalog_binding_invalid");
+    }
+    if (
+      label.strength === "exact_registry" &&
+      !entry.addressBindings.includes(label.address)
+    ) {
+      throw new TypeError("unified_frozen_label_catalog_binding_invalid");
+    }
+    const expectedAuthority = label.strength === "exact_registry"
+      ? "internal_service_registry"
+      : "tronscan_verified_metadata";
+    if (
+      label.authority !== expectedAuthority ||
+      !entry.acceptedAuthorities.includes(expectedAuthority) ||
+      !label.terminalEligible
+    ) {
+      throw new TypeError("unified_frozen_label_catalog_binding_invalid");
+    }
+  }
+  const validFrom = label.validFrom === null
+    ? null
+    : exactTimestamp(label.validFrom, "unified_label_validity_invalid");
+  const validTo = label.validTo === null
+    ? null
+    : exactTimestamp(label.validTo, "unified_label_validity_invalid");
+  if (validFrom !== null && validTo !== null && validFrom > validTo) {
+    throw new TypeError("unified_label_validity_invalid");
+  }
+  if (hint) return { kind: "hint_not_terminal" };
+  if (
+    (validFrom !== null && eventAt < validFrom) ||
+    (validTo !== null && eventAt > validTo)
+  ) {
+    return { kind: "label_not_valid_at_event" };
+  }
+  return { kind: "eligible", entry };
 }
 
 export function buildFrozenLabelRecord(input: {

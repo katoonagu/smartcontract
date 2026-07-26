@@ -7,6 +7,9 @@ import {
   buildFrozenLabelRecord,
   SUPPORTED_LABEL_CATALOG_V1
 } from "./labelCatalog";
+import type {
+  AcceptedProviderServiceAssertionV1
+} from "./providerServiceBindings";
 
 export type { FrozenLabelRecordV1 } from "./labelCatalog";
 
@@ -266,6 +269,7 @@ export function buildProductionFrozenLabelDataset(input: {
   readonly frozenAt: string;
   readonly snapshotHash: string;
   readonly legacyRows: readonly LegacyFrozenLabelRowV1[];
+  readonly providerAssertions?: readonly AcceptedProviderServiceAssertionV1[];
 }) {
   const exactLabels = SUPPORTED_LABEL_CATALOG_V1.entries.flatMap((entry) =>
     entry.addressBindings.map((address) => buildFrozenLabelRecord({
@@ -281,6 +285,20 @@ export function buildProductionFrozenLabelDataset(input: {
       },
       verifiedProviderBinding: null
     }))
+  );
+  const providerLabels = (input.providerAssertions ?? []).map((assertion) =>
+    buildFrozenLabelRecord({
+      address: assertion.address,
+      classifierHint: null,
+      exactRegistryBinding: null,
+      verifiedProviderBinding: {
+        catalogEntryId: assertion.catalogEntryId,
+        authority: assertion.authority,
+        sourcePayloadSha256: assertion.source.sourcePayloadSha256,
+        validFrom: assertion.validity.validFrom,
+        validTo: assertion.validity.validTo
+      }
+    })
   );
   const hintLabels = input.legacyRows.flatMap((row) => {
     const normalized = [row.label, row.category]
@@ -307,7 +325,7 @@ export function buildProductionFrozenLabelDataset(input: {
   return buildFrozenLabelDataset({
     frozenAt: input.frozenAt,
     snapshotHash: input.snapshotHash,
-    labels: [...exactLabels, ...hintLabels],
+    labels: [...exactLabels, ...providerLabels, ...hintLabels],
     legacyRows: input.legacyRows
   });
 }

@@ -1,6 +1,7 @@
 import type { FrozenLabelRecordV1 } from "./frozenLabels";
 import {
-  SUPPORTED_LABEL_CATALOG_V1,
+  parseBoundaryTimestampV1,
+  resolveFrozenLabelAtEventV1,
   type SupportedLabelCatalogEntryV1
 } from "./labelCatalog";
 import {
@@ -77,28 +78,6 @@ export type BoundaryDecisionV1 =
       readonly contextEvidence: readonly BoundaryContextEvidenceV1[];
     };
 
-function timestamp(value: string): number {
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
-    throw new TypeError("unified_boundary_timestamp_invalid");
-  }
-  return parsed;
-}
-
-function labelValidAt(label: FrozenLabelRecordV1, eventAt: number): boolean {
-  return (
-    (label.validFrom === null || timestamp(label.validFrom) <= eventAt) &&
-    (label.validTo === null || eventAt <= timestamp(label.validTo))
-  );
-}
-
-function catalogEntry(label: FrozenLabelRecordV1):
-  SupportedLabelCatalogEntryV1 | null {
-  return SUPPORTED_LABEL_CATALOG_V1.entries.find(
-    (entry) => entry.id === label.catalogEntryId
-  ) ?? null;
-}
-
 function terminalEvidence(input: {
   state: TraversalStateV1;
   eventTimestamp: string;
@@ -141,7 +120,7 @@ function terminal(
 export function evaluateBoundaryV1(
   input: BoundaryPredicateInputV1
 ): BoundaryDecisionV1 {
-  const eventAt = timestamp(input.eventTimestamp);
+  parseBoundaryTimestampV1(input.eventTimestamp);
   if (input.state.address.length === 0) {
     throw new TypeError("unified_boundary_state_invalid");
   }
@@ -162,28 +141,27 @@ export function evaluateBoundaryV1(
   }> = [];
   for (const label of input.labels) {
     if (label.address !== input.state.address) continue;
-    if (!labelValidAt(label, eventAt)) {
+    const resolution = resolveFrozenLabelAtEventV1({
+      label,
+      eventTimestamp: input.eventTimestamp
+    });
+    if (resolution.kind === "label_not_valid_at_event") {
       context.push({
-        kind: "label_not_valid_at_event",
+        kind: resolution.kind,
         catalogEntryId: label.catalogEntryId,
         evidenceSha256: label.sourcePayloadSha256
       });
       continue;
     }
-    const entry = catalogEntry(label);
-    if (
-      entry === null ||
-      !label.terminalEligible ||
-      label.strength === "hint"
-    ) {
+    if (resolution.kind === "hint_not_terminal") {
       context.push({
-        kind: "hint_not_terminal",
+        kind: resolution.kind,
         catalogEntryId: label.catalogEntryId,
         evidenceSha256: label.sourcePayloadSha256
       });
       continue;
     }
-    eligible.push({ label, entry });
+    eligible.push({ label, entry: resolution.entry });
   }
 
   const custodial = eligible.find(

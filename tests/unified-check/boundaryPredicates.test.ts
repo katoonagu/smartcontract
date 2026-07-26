@@ -4,6 +4,7 @@ import {
   type BoundaryPredicateInputV1
 } from "../../src/unifiedCheck/boundaryPredicates";
 import type { FrozenLabelRecordV1 } from "../../src/unifiedCheck/frozenLabels";
+import { resolveFrozenLabelAtEventV1 } from "../../src/unifiedCheck/labelCatalog";
 
 const ADDRESS = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const AT = "2026-07-23T12:00:00.000Z";
@@ -135,6 +136,7 @@ describe("Unified evidence-only boundary predicates V1", () => {
       terminalEligible: false
     })]],
     ["generic contract metadata", [label({
+      identity: "USDD PSM/GemJoin",
       category: "protocol",
       catalogEntryId: "protocol:usdd-psm"
     })]]
@@ -145,14 +147,76 @@ describe("Unified evidence-only boundary predicates V1", () => {
   });
 
   it("keeps a label created after the transfer as context only", () => {
-    const decision = evaluateBoundaryV1(input([label({
+    const record = label({
       validFrom: "2026-07-24T00:00:00.000Z"
-    })]));
+    });
+    const decision = evaluateBoundaryV1(input([record]));
     expect(decision).toMatchObject({ terminal: false });
     if (decision.terminal) return;
-    expect(decision.contextEvidence).toContainEqual(
-      expect.objectContaining({ kind: "label_not_valid_at_event" })
-    );
+    const resolution = resolveFrozenLabelAtEventV1({
+      label: record,
+      eventTimestamp: AT
+    });
+    expect(resolution).toEqual({ kind: "label_not_valid_at_event" });
+    expect(decision.contextEvidence).toContainEqual({
+      kind: resolution.kind,
+      catalogEntryId: record.catalogEntryId,
+      evidenceSha256: record.sourcePayloadSha256
+    });
+  });
+
+  it.each([
+    ["2026-07-23T12:00:00.000Z", "2026-07-24T00:00:00.000Z"],
+    ["2025-01-01T00:00:00.000Z", "2026-07-23T12:00:00.000Z"]
+  ])("uses the shared resolver for inclusive interval %s to %s", (validFrom, validTo) => {
+    const record = label({ validFrom, validTo });
+    expect(resolveFrozenLabelAtEventV1({
+      label: record,
+      eventTimestamp: AT
+    })).toMatchObject({ kind: "eligible" });
+    expect(evaluateBoundaryV1(input([record]))).toMatchObject({
+      terminal: true,
+      reason: "identified_service_boundary"
+    });
+  });
+
+  it("uses the shared resolver for hint context", () => {
+    const record = label({
+      strength: "hint",
+      authority: "classifier_hint",
+      terminalEligible: false
+    });
+    const resolution = resolveFrozenLabelAtEventV1({
+      label: record,
+      eventTimestamp: AT
+    });
+    expect(resolution).toEqual({ kind: "hint_not_terminal" });
+    expect(evaluateBoundaryV1(input([record]))).toEqual({
+      terminal: false,
+      contextEvidence: [{
+        kind: resolution.kind,
+        catalogEntryId: record.catalogEntryId,
+        evidenceSha256: record.sourcePayloadSha256
+      }]
+    });
+  });
+
+  it.each([
+    ["empty labels", input([])],
+    ["only unrelated-address labels", input([
+      label({ address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd" })
+    ])],
+    ["restriction terminal evidence", input([], {
+      restriction: {
+        validAtEvent: true,
+        evidenceSha256: "d".repeat(64)
+      }
+    })]
+  ])("rejects a malformed event timestamp with %s", (_name, value) => {
+    expect(() => evaluateBoundaryV1({
+      ...value,
+      eventTimestamp: "2026-07-23T12:00:00Z"
+    })).toThrow("unified_boundary_timestamp_invalid");
   });
 
   it("does not accept runtime budgets as predicate inputs", () => {
