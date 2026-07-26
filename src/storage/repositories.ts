@@ -2995,6 +2995,28 @@ export async function getAddressMetadata(db: Db, address: string, now = new Date
   return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
 }
 
+// ponytail: This scans all fresh non-empty provider tags. If candidate volume
+// materially approaches the metadata table size, add a separately reviewed
+// indexed exact-tag lookup without changing the decoder contract.
+export async function listFreshTaggedAddressMetadataAt(
+  db: Db,
+  frozenAt: Date
+): Promise<AddressMetadata[]> {
+  const result = await db.query(
+    `select address, source, name, tag, is_contract, verified,
+       account_type, raw_json, fetched_at, expires_at
+     from address_metadata
+     where source = 'tronscan'
+       and tag is not null
+       and btrim(tag) <> ''
+       and fetched_at <= $1
+       and expires_at > $1
+     order by address`,
+    [frozenAt]
+  );
+  return result.rows.map(mapAddressMetadataRow);
+}
+
 export async function getStaleAddressMetadata(db: Db, address: string): Promise<AddressMetadata | null> {
   const result = await db.query(
     `select address, source, name, tag, is_contract, verified, account_type, raw_json, fetched_at, expires_at

@@ -14,6 +14,7 @@ import {
   completeForensicCheckJob,
   getApprovalPollState,
   getAddressMetadata,
+  listFreshTaggedAddressMetadataAt,
   getStaleAddressMetadata,
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
@@ -609,6 +610,48 @@ describe("forensic check job repositories", () => {
 });
 
 describe("approval guard repositories", () => {
+  it("lists fresh non-empty TronScan tags at the freeze time", async () => {
+    const frozenAt = new Date("2026-07-26T12:00:00.000Z");
+    const fetchedAt = new Date("2026-07-26T11:00:00.000Z");
+    const expiresAt = new Date("2026-07-26T13:00:00.000Z");
+    const rawJson = { address: "TQrNK...", tag: "Bybit" };
+    const { db, queries } = createMockDb(1, [
+      {
+        address: "TQrNK...",
+        source: "tronscan",
+        name: null,
+        tag: "Bybit",
+        is_contract: false,
+        verified: null,
+        account_type: 0,
+        raw_json: rawJson,
+        fetched_at: fetchedAt,
+        expires_at: expiresAt
+      }
+    ]);
+
+    const metadata = await listFreshTaggedAddressMetadataAt(db, frozenAt);
+
+    expect(metadata).toEqual([{
+      address: "TQrNK...",
+      source: "tronscan",
+      name: null,
+      tag: "Bybit",
+      isContract: false,
+      verified: null,
+      accountType: 0,
+      rawJson,
+      fetchedAt,
+      expiresAt
+    }]);
+    expect(queries[0].sql).toContain("source = 'tronscan'");
+    expect(queries[0].sql).toContain("tag is not null");
+    expect(queries[0].sql).toContain("btrim(tag) <> ''");
+    expect(queries[0].sql).toContain("fetched_at <= $1");
+    expect(queries[0].sql).toContain("expires_at > $1");
+    expect(queries[0].params).toEqual([frozenAt]);
+  });
+
   it("gets fresh cached address metadata", async () => {
     const fetchedAt = new Date("2026-05-23T00:00:00.000Z");
     const expiresAt = new Date("2026-05-24T00:00:00.000Z");

@@ -12,6 +12,8 @@ import { UNIFIED_CANARY_DEADLINE_MINUTES } from
   "../src/unifiedCheck/contracts";
 import { SCORING_POLICY_V4 } from "../src/risk/scoringPolicyV4.generated";
 import { closeDb, createDb } from "../src/storage/db";
+import { listFreshTaggedAddressMetadataAt } from
+  "../src/storage/repositories";
 import {
   checksumMigrationBytes,
   SCHEMA_032_FILENAME,
@@ -50,8 +52,8 @@ import type { UnifiedWalletDossierV1 } from "../src/unifiedCheck/report";
 import { SELECTED_ATTRIBUTION_POLICY } from "../src/unifiedCheck/selectedAttributionPolicy.generated";
 import { createTronConfirmedSnapshotSource } from "../src/unifiedCheck/snapshot";
 import type { UnifiedWatchdogRunV1 } from "../src/unifiedCheck/watchdog";
-import { buildProductionFrozenLabelDataset } from
-  "../src/unifiedCheck/frozenLabels";
+import { createProductionLabelDatasetFreezer } from
+  "../src/unifiedCheck/productionLabelFreeze";
 import {
   captureUnifiedAdaptiveBenchmarkObservationBestEffort,
   listUnifiedAdaptiveBenchmarkObservationArtifacts,
@@ -273,6 +275,19 @@ export async function runUnifiedWalletCanaryCli(
             provider: String(row.provider),
             observedAt: new Date(String(row.observed_at)).toISOString()
           }));
+          const freezeCanaryLabelDataset =
+            createProductionLabelDatasetFreezer({
+              traversalPolicyVersion,
+              legacyRows: labelRows,
+              loadFreshProviderMetadata: (frozenAt) =>
+                listFreshTaggedAddressMetadataAt(db, frozenAt),
+              observe: (diagnostic) => {
+                process.stderr.write(`${JSON.stringify({
+                  event: "unified_provider_service_freeze",
+                  ...diagnostic
+                })}\n`);
+              }
+            });
           const labelDataset = {
             version: "unified-label-dataset-v1" as const,
             rows: labelRows
@@ -304,15 +319,9 @@ export async function runUnifiedWalletCanaryCli(
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
             },
-            freezeLabelDataset:
-              traversalPolicyVersion === "snapshot-closure-v2"
-                ? async ({ snapshotHash, frozenAt }) =>
-                    buildProductionFrozenLabelDataset({
-                      frozenAt,
-                      snapshotHash,
-                      legacyRows: labelRows
-                    })
-                : undefined,
+            freezeLabelDataset: traversalPolicyVersion === "snapshot-closure-v2"
+              ? freezeCanaryLabelDataset
+              : undefined,
             rolloutPolicy: {
               stage: config.unifiedRollingRolloutStage,
               boundedUserCheckBasisPoints:

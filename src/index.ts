@@ -93,6 +93,7 @@ import {
   claimUserAlertsForRetry,
   getApprovalPollState,
   getAddressMetadata,
+  listFreshTaggedAddressMetadataAt,
   getForensicCheckJob,
   getTelegramUserProfile,
   getTheftReport,
@@ -285,10 +286,10 @@ import {
   loadOrFetchProviderPage
 } from "./unifiedCheck/providerRequest";
 import {
-  buildProductionFrozenLabelDataset,
-  createFrozenLabelDatasetLoader,
-  type FrozenLabelDatasetV1
+  createFrozenLabelDatasetLoader
 } from "./unifiedCheck/frozenLabels";
+import { createProductionLabelDatasetFreezer } from
+  "./unifiedCheck/productionLabelFreeze";
 
 const config = loadConfig();
 const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
@@ -481,6 +482,14 @@ const unifiedLabelRows = (
   provider: String(row.provider),
   observedAt: new Date(String(row.observed_at)).toISOString()
 }));
+const freezeProductionLabelDataset = createProductionLabelDatasetFreezer({
+  traversalPolicyVersion: config.unifiedTraversalPolicyVersion,
+  legacyRows: unifiedLabelRows,
+  loadFreshProviderMetadata: (frozenAt) =>
+    listFreshTaggedAddressMetadataAt(db, frozenAt),
+  observe: (diagnostic) =>
+    logger.info("unified_provider_service_freeze", diagnostic)
+});
 const unifiedLabelSnapshot = {
   version: "unified-label-dataset-v1" as const,
   rows: unifiedLabelRows
@@ -2372,17 +2381,7 @@ const bot = createBot(config, db, tronClient, {
         providerCapacityCeiling:
           unifiedRolloutPolicy.providerCapacityCeiling
       },
-      freezeLabelDataset: async ({
-        snapshotHash,
-        frozenAt
-      }): Promise<{
-        readonly sha256: string;
-        readonly dataset: FrozenLabelDatasetV1;
-      }> => buildProductionFrozenLabelDataset({
-        frozenAt,
-        snapshotHash,
-        legacyRows: unifiedLabelRows
-      }),
+      freezeLabelDataset: freezeProductionLabelDataset,
       now: () => now
     });
     wakeUnifiedController();

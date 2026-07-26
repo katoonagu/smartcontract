@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildFrozenLabelDataset,
@@ -507,6 +507,31 @@ describe("Unified Check request intake", () => {
     expect(store.labelDatasets.has(
       result.run.analysisManifest.labelDatasetSha256
     )).toBe(true);
+  });
+
+  it("does not freeze labels again for an already attached request", async () => {
+    const store = new MemoryStore();
+    await intakeUnifiedCheck(input(
+      store,
+      source(),
+      "action-1",
+      "request-1",
+      "run-first"
+    ));
+    const repeated = input(
+      store,
+      source(),
+      "action-1",
+      "request-1",
+      "run-second"
+    );
+    const freezeLabelDataset = vi.fn();
+    Object.assign(repeated, { freezeLabelDataset });
+
+    const result = await intakeUnifiedCheck(repeated);
+
+    expect(result.kind).toBe("attached");
+    expect(freezeLabelDataset).not.toHaveBeenCalled();
   });
 
   it("pins block/hash and leaves the old manifest immutable when a newer block arrives", async () => {
