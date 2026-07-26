@@ -175,6 +175,8 @@ function twoReadyHistories(input: {
   binding: "correct" | "swapped";
   taskKind?: string;
   mutateFirstKey?: string;
+  commitMaxBytes?: number;
+  manifestMaxBytes?: number;
 }) {
   const directEvents = [
     event({
@@ -245,8 +247,8 @@ function twoReadyHistories(input: {
   });
   const handler = createUnifiedTraversalCoordinatorHandler({
     commitMaxEntries: 2,
-    commitMaxBytes: 8_388_608,
-    manifestMaxBytes: 1_048_576,
+    commitMaxBytes: input.commitMaxBytes ?? 8_388_608,
+    manifestMaxBytes: input.manifestMaxBytes ?? 1_048_576,
     loadContext: async () => ({ runId: "run-1", manifest, directEvents }),
     loadLabels: async () => new Map(),
     loadDurableAddressHistoryKeys: async ({ manifestKeys }) =>
@@ -288,6 +290,32 @@ function twoReadyHistories(input: {
 }
 
 describe("Unified address-centric traversal coordinator", () => {
+  it("rejects an unknown persisted traversal policy before mutation", async () => {
+    const scenario = coordinatorHarness({
+      manifest: {
+        ...manifest,
+        traversalPolicyVersion: "snapshot-closure-v3"
+      } as never,
+      directEvents: [],
+      dataset: frozenDataset()
+    });
+
+    await expect(scenario.run()).rejects.toThrow(
+      "unified_traversal_policy_version_invalid"
+    );
+    expect(scenario.artifacts.size).toBe(0);
+    expect(scenario.loadLabels).not.toHaveBeenCalled();
+    expect(scenario.loadFrozenLabelDataset).not.toHaveBeenCalled();
+  });
+
+  it("rejects a commit ceiling below the manifest ceiling before v1 ready work", () => {
+    expect(() => twoReadyHistories({
+      binding: "correct",
+      commitMaxBytes: 1_024,
+      manifestMaxBytes: 2_048
+    })).toThrow("unified_traversal_commit_bytes_too_small");
+  });
+
   it("commits only the state-valid v2 boundary before discovering one reusable address history", async () => {
     const dataset = frozenDataset({
       catalogEntryId: "cex:htx-huobi",
@@ -528,7 +556,7 @@ describe("Unified address-centric traversal coordinator", () => {
     ).map((artifact) => fingerprintCanonicalArtifact(artifact))).size).toBe(2);
   });
 
-  it("rejects boundary candidates over either byte ceiling", async () => {
+  it("rejects boundary candidates over the manifest byte ceiling", async () => {
     const dataset = frozenDataset({ catalogEntryId: "cex:bybit" });
     const currentManifest = v2Manifest(dataset);
     const directEvents = [event({
@@ -558,16 +586,6 @@ describe("Unified address-centric traversal coordinator", () => {
     });
     await expect(overManifest.run()).rejects.toThrow(
       "unified_v2_boundary_manifest_bytes_exceeded"
-    );
-    const overCommit = coordinatorHarness({
-      manifest: currentManifest,
-      directEvents,
-      dataset,
-      manifestMaxBytes: candidate.canonicalBytes,
-      commitMaxBytes: candidate.canonicalBytes - 1
-    });
-    await expect(overCommit.run()).rejects.toThrow(
-      "unified_v2_boundary_commit_bytes_exceeded"
     );
   });
 

@@ -144,6 +144,12 @@ export function assertUnifiedTraversalPolicyManifest(
   manifest: AnalysisManifestV1
 ): void {
   if (
+    manifest.traversalPolicyVersion !== "snapshot-closure-v1" &&
+    manifest.traversalPolicyVersion !== "snapshot-closure-v2"
+  ) {
+    throw new Error("unified_traversal_policy_version_invalid");
+  }
+  if (
     manifest.traversalPolicyVersion === "snapshot-closure-v2" &&
     (
       manifest.labelCatalogVersion === undefined ||
@@ -151,6 +157,16 @@ export function assertUnifiedTraversalPolicyManifest(
     )
   ) {
     throw new Error("unified_v2_boundary_versions_missing");
+  }
+  if (
+    manifest.traversalPolicyVersion === "snapshot-closure-v2" &&
+    (
+      manifest.labelCatalogVersion !== UNIFIED_LABEL_CATALOG_VERSION ||
+      manifest.boundaryPredicateVersion !==
+        UNIFIED_BOUNDARY_PREDICATE_VERSION
+    )
+  ) {
+    throw new Error("unified_v2_boundary_versions_mismatch");
   }
 }
 

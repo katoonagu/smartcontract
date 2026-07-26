@@ -347,6 +347,9 @@ export function createUnifiedProductionRuntime(input: {
       throw new TypeError(code);
     }
   }
+  if (commitMaxBytes < manifestMaxBytes) {
+    throw new TypeError("unified_production_commit_max_bytes_too_small");
+  }
   const cooperate = async (runId: string): Promise<void> => {
     if (!await cooperateUnifiedCanaryRun(input.db, { runId })) {
       throw new Error("unified_canary_deadline_or_cancellation_reached");

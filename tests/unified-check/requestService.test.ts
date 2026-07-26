@@ -232,6 +232,21 @@ describe("Unified Check request intake", () => {
       traversalPolicyVersion: "snapshot-closure-v2"
     })).toThrow("unified_v2_boundary_versions_missing");
   });
+
+  it("rejects an unknown traversal policy from persisted manifest data", () => {
+    expect(() => assertUnifiedTraversalPolicyManifest({
+      traversalPolicyVersion: "snapshot-closure-v3"
+    } as never)).toThrow("unified_traversal_policy_version_invalid");
+  });
+
+  it("rejects stale v2 boundary policy versions", () => {
+    expect(() => assertUnifiedTraversalPolicyManifest({
+      traversalPolicyVersion: "snapshot-closure-v2",
+      labelCatalogVersion: "unified-label-catalog-v0",
+      boundaryPredicateVersion: "unified-boundary-predicates-v0"
+    } as never)).toThrow("unified_v2_boundary_versions_mismatch");
+  });
+
   it("freezes rollout policy on run creation while later runs use new authority", async () => {
     const store = new MemoryStore();
     const firstInput = {

@@ -113,12 +113,14 @@ planner row remains idempotently reusable after it is admitted or leased.
 
 For `snapshot-closure-v2`, the traversal coordinator first evaluates the
 canonical frontier against the exact frozen label dataset bound by the run
-manifest. It atomically persists the largest bounded prefix of terminal
-evidence and traversal deltas, then checkpoints before planning any history.
-Restart replays that durable delta head, so terminal states do not reopen or
-emit duplicate evidence. Only the remaining non-terminal states can become
-new mandatory address-history work. `snapshot-closure-v1` keeps its historical
-label behavior unchanged.
+manifest. It persists the largest bounded prefix of terminal evidence and its
+traversal delta as idempotent content-addressed artifacts, then commits the
+checkpoint before planning any history. A crash can leave reusable unreferenced
+artifacts, but cannot expose contradictory traversal state. Restart replays the
+durable delta head, so terminal states do not reopen or emit duplicate
+evidence. Only the remaining non-terminal states can become new mandatory
+address-history work. `snapshot-closure-v1` keeps its historical label behavior
+unchanged.
 
 The traversal coordinator emits every newly mandatory address-history task
 with its canonical parent sequence. The run-locked

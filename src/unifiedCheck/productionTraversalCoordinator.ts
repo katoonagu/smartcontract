@@ -635,13 +635,16 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
   ) {
     throw new TypeError("unified_traversal_manifest_bytes_invalid");
   }
+  if (input.commitMaxBytes < input.manifestMaxBytes) {
+    throw new TypeError("unified_traversal_commit_bytes_too_small");
+  }
   return async ({ task, heartbeat }) => {
     if (task.kind !== "traversal") {
       return { kind: "blocked", reason: "unified_traversal_kind_invalid" };
     }
     const context = await input.loadContext(task.runId);
+    assertUnifiedTraversalPolicyManifest(context.manifest);
     if (context.manifest.traversalPolicyVersion === "snapshot-closure-v2") {
-      assertUnifiedTraversalPolicyManifest(context.manifest);
       if (
         context.manifest.labelCatalogVersion !==
           UNIFIED_LABEL_CATALOG_VERSION ||
