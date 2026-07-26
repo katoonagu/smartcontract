@@ -113,7 +113,10 @@ export function createUnifiedProviderPool(input: {
       });
       if (!result.claimed) return "idle";
       if (input.yieldAfterClaim === true) return "idle";
-      if (slotId >= targetSlots || activeCount() > targetSlots) {
+      if (
+        (input.requiresPermit !== true && slotId >= targetSlots) ||
+        activeCount() > targetSlots
+      ) {
         return "retired";
       }
     }
@@ -122,7 +125,10 @@ export function createUnifiedProviderPool(input: {
   const start = (slotId: number) => {
     if (
       draining ||
-      slotId >= targetSlots ||
+      (
+        input.requiresPermit !== true &&
+        slotId >= targetSlots
+      ) ||
       active[slotId] !== null ||
       activeCount() >= targetSlots ||
       (
@@ -171,9 +177,12 @@ export function createUnifiedProviderPool(input: {
   };
   const fill = () => {
     if (draining) return;
+    const slotLimit = input.requiresPermit === true
+      ? input.configuredLimit
+      : targetSlots;
     for (
       let slotId = 0;
-      slotId < targetSlots && activeCount() < targetSlots;
+      slotId < slotLimit && activeCount() < targetSlots;
       slotId += 1
     ) {
       if (active[slotId] === null) start(slotId);
@@ -207,7 +216,10 @@ export function createUnifiedProviderPool(input: {
       targetSlots = target;
       for (let slotId = target; slotId < pendingWake.length; slotId += 1) {
         pendingWake[slotId] = false;
-        if (pendingAssignments[slotId] !== null) {
+        if (
+          input.requiresPermit !== true &&
+          pendingAssignments[slotId] !== null
+        ) {
           pendingAssignments[slotId] = null;
           epochs[slotId] = epochs[slotId]! + 1;
         }

@@ -14,6 +14,9 @@ import {
 } from "../../src/unifiedCheck/plannerRepository";
 import type { ProviderCapacityRampState } from "../../src/unifiedCheck/providerCapacityController";
 import {
+  createUnifiedProviderPool
+} from "../../src/unifiedCheck/providerPool";
+import {
   runUnifiedTaskCycle,
   type UnifiedAcceptedArtifact,
   type UnifiedProviderClaimPermit,
@@ -740,19 +743,62 @@ async function runReplay(capacity: number, runCount: number) {
 
 describe("deterministic provider scale replay", () => {
   it("refills one stale epoch at logical capacity 100 without duplicate or starved permits", async () => {
-    const remaining = new Set(Array.from(
-      { length: 100 },
-      (_unused, index) => `run-${index}`
-    ));
-    const claimed = new Set<string>();
+    let releaseActive!: (value: { claimed: boolean }) => void;
+    const active = new Promise<{ claimed: boolean }>((resolve) => {
+      releaseActive = resolve;
+    });
+    let bumpingEpoch = true;
+    const pool = createUnifiedProviderPool({
+      configuredLimit: 100,
+      requiresPermit: true,
+      yieldAfterClaim: true,
+      runCycle: async () => {
+        if (bumpingEpoch) {
+          bumpingEpoch = false;
+          return { claimed: false };
+        }
+        return active;
+      },
+      onError(error) {
+        throw error;
+      }
+    });
+    const staleSnapshot = pool.slotSnapshots();
+    pool.assignPermits([{
+      slotId: 0,
+      expectedEpoch: 0,
+      permit: {
+        runId: "epoch-bump",
+        ownerId: "epoch-bump",
+        lane: "interactive",
+        canonicalHeadPreferred: false
+      }
+    }]);
+    pool.setTargetSlots(1);
+    pool.wake();
+    await pool.waitForIdle();
+
     const targets: number[] = [];
     const requestControllerWake = vi.fn();
-    let rejectOneStale = true;
     let rampState: ProviderCapacityRampState = {
       target: 100,
       lastIncreaseAtMs: 0
     };
-    const cycle = async () => {
+    const demand = Array.from({ length: 100 }, (_unused, index) => ({
+      runId: `run-${index}`,
+      ownerId: `owner-${index}`,
+      lane: "interactive" as const,
+      eligibleReadyWork: 1,
+      ownerLastServedAtMs: 0,
+      lastServedAtMs: 0,
+      mergeBufferFull: false,
+      providerAvailable: true,
+      resourceGuarded: false,
+      canonicalHeadEligible: true
+    }));
+    const cycle = async (
+      providerSlots: ReturnType<typeof pool.slotSnapshots>
+    ) => {
       const result = await runUnifiedAdaptiveControllerCycle({
         nowMs: 1,
         rampState,
@@ -766,44 +812,20 @@ describe("deterministic provider scale replay", () => {
         resources,
         thresholds,
         config: config(100, 0),
-        demand: [...remaining].map((runId) => ({
-          runId,
-          ownerId: `owner-${runId}`,
-          lane: "interactive" as const,
-          eligibleReadyWork: 1,
-          ownerLastServedAtMs: 0,
-          lastServedAtMs: 0,
-          mergeBufferFull: false,
-          providerAvailable: true,
-          resourceGuarded: false,
-          canonicalHeadEligible: true
-        })),
+        providerSlots,
+        demand,
         refill: async () => ({
           admittedTaskIds: [],
           deAdmittedTaskIds: [],
           blocker: null
         }),
-        assignProviderPermits(assignments) {
-          const rejected = rejectOneStale ? assignments.slice(0, 1) : [];
-          const accepted = assignments.slice(rejected.length);
-          rejectOneStale = false;
-          for (const assignment of accepted) {
-            expect(claimed.has(assignment.permit.runId)).toBe(false);
-            claimed.add(assignment.permit.runId);
-            remaining.delete(assignment.permit.runId);
-          }
-          return {
-            accepted,
-            rejected: rejected.map((assignment) => ({
-              assignment,
-              reason: "stale_epoch" as const
-            }))
-          };
-        },
+        assignProviderPermits: (assignments) =>
+          pool.assignPermits(assignments),
         setPoolTarget(target) {
           targets.push(target);
+          pool.setTargetSlots(target);
         },
-        wakePool() {},
+        wakePool: () => pool.wake(),
         requestControllerWake
       });
       rampState = result.rampState;
@@ -811,15 +833,40 @@ describe("deterministic provider scale replay", () => {
       return result;
     };
 
-    const stale = await cycle();
+    const stale = await cycle(staleSnapshot);
     expect(stale.acceptedClaimAssignments).toHaveLength(99);
+    expect(stale.assignmentResult.rejected).toEqual([
+      expect.objectContaining({ reason: "stale_epoch" })
+    ]);
+    expect(stale.actionableProviderSlots).toBe(99);
+    expect(pool.snapshot()).toMatchObject({
+      targetSlots: 99,
+      activeSlots: 99
+    });
+    expect(pool.slotSnapshots()[99]).toMatchObject({
+      active: true,
+      activePermit: expect.any(Object)
+    });
+    expect(stale.acceptedClaimAssignments.every((assignment) =>
+      pool.slotSnapshots()[assignment.slotId]?.activePermit ===
+        assignment.permit
+    )).toBe(true);
     expect(requestControllerWake).toHaveBeenCalledOnce();
-    const fresh = await cycle();
+    const fresh = await cycle(pool.slotSnapshots());
     expect(fresh.acceptedClaimAssignments).toHaveLength(1);
-    expect(targets).toEqual([99, 1]);
-    expect(claimed.size).toBe(100);
-    expect(remaining.size).toBe(0);
+    expect(fresh.actionableProviderSlots).toBe(100);
+    expect(targets).toEqual([99, 100]);
+    expect(pool.snapshot()).toMatchObject({
+      targetSlots: 100,
+      activeSlots: 100
+    });
+    expect(new Set(pool.slotSnapshots().map((slot) =>
+      slot.activePermit?.runId
+    )).size).toBe(100);
     expect(requestControllerWake).toHaveBeenCalledOnce();
+
+    releaseActive({ claimed: false });
+    await pool.waitForIdle();
   });
 
   it("uses the real controller and worker claim lifecycle through capacity, cooldown, repair, buffer and restart scenarios", async () => {
