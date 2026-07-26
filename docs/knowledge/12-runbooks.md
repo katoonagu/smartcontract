@@ -117,12 +117,27 @@ node --import tsx scripts/runUnifiedAdaptiveBenchmark.ts `
   --mode replay `
   --capacity 1,4,8,16,32,100 `
   --seed 24072026 `
-  --oracle-receipt <oracle-receipt.json> `
-  --output <artifact-root>/unified-adaptive/replay.json
+  --traversal-policy snapshot-closure-v1 `
+  --oracle-receipt artifacts/unified-adaptive/plan3-b2-oracle.json `
+  --output <artifact-root>/unified-adaptive/replay-v1.json
+
+node --import tsx scripts/runUnifiedAdaptiveBenchmark.ts `
+  --mode replay `
+  --capacity 1,4,8,16,32,100 `
+  --seed 24072026 `
+  --traversal-policy snapshot-closure-v2 `
+  --oracle-receipt artifacts/unified-adaptive/fast-fix-v2-oracle.json `
+  --output <artifact-root>/unified-adaptive/replay-v2.json
 ```
 
 Logical capacity above the live pool proves scheduler behavior only. It does
-not prove real provider RPS or speedup.
+not prove real provider RPS or speedup. Scheduler simulation does not replace
+the exact within-policy PostgreSQL oracle:
+
+```powershell
+$env:TEST_DATABASE_URL = "<temporary-postgresql-url>"
+npm.cmd test -- tests/unified-check/rollingOracleEquivalence.postgres.test.ts tests/unified-check/plannerRestart.postgres.test.ts tests/unified-check/orderedCommit.postgres.test.ts tests/unified-check/productionRuntime.postgres.test.ts
+```
 
 ## Isolated Live Canary
 
@@ -158,9 +173,36 @@ set `UNIFIED_CANARY_DEADLINE_MINUTES` to an integer from 1 through 1440 before
 starting both the isolated worker and canary harness. The setting is
 startup-only and must be reset to 120 after the benchmark.
 
+### Selected TXc refill and memory gate
+
+First verify that the provider-audit artifact proves four independent healthy
+groups. Key strings, names, and observed traffic are not enough. Create an
+existing, non-symlink directory for the memory files, then run exactly one
+isolated TXc binding with direct Node:
+
+```powershell
+node --import tsx scripts/runUnifiedAdaptiveBenchmark.ts `
+  --mode live `
+  --capacity 4 `
+  --isolated `
+  --scenario isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd `
+  --traversal-policy snapshot-closure-v2 `
+  --memory-evidence-dir <existing-memory-evidence-directory> `
+  --provider-audit <four-independent-groups-audit.json> `
+  --output <artifact-root>/unified-adaptive/selected-txc-v2.json
+```
+
+The command passes the traversal policy directly to the canary; it does not
+mutate the process environment. It captures before/during/after process phases
+within this same canary and writes no passing index until the refill and memory
+artifact validates. Do not start a second memory-only canary. Resume the exact
+same output/policy/scenario; a changed policy or scenario fails closed.
+
 ## WSL And Linux Memory Capture
 
-Capture each local phase from the runtime metrics snapshot:
+The selected TXc command above captures each local phase automatically. For a
+manual diagnostic outside that gate, capture one phase from the runtime metrics
+snapshot with direct PowerShell:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `

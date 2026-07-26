@@ -819,6 +819,57 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     }
   });
 
+  it("selects the policy-matched built-in replay and refuses cross-policy resume", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-replay-policy-"));
+    const output = join(root, "policy-index.json");
+    const v1Runtime = replayOracleRuntime();
+    const v1 = await runUnifiedAdaptiveBenchmarkCli([
+      "--mode", "replay",
+      "--capacity", "1,4,8,16,32,100",
+      "--seed", "24072026",
+      "--traversal-policy", "snapshot-closure-v1",
+      "--output", output
+    ], v1Runtime);
+    const v1Fixture = parseUnifiedProviderReplayV1(
+      (await readFile(
+        "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
+        "utf8"
+      )).trimEnd()
+    );
+    expect(v1Runtime.resolveReplayOracleReceipt)
+      .toHaveBeenCalledWith(expect.objectContaining({
+        replaySha256: v1Fixture.expectedReplaySha256
+      }));
+
+    const v2Runtime = replayOracleRuntime();
+    const v2Args = [
+      "--mode", "replay",
+      "--capacity", "1,4,8,16,32,100",
+      "--seed", "24072026",
+      "--traversal-policy", "snapshot-closure-v2",
+      "--output", join(root, "policy-v2-index.json")
+    ] as const;
+    const v2 = await runUnifiedAdaptiveBenchmarkCli(v2Args, v2Runtime);
+    await expect(runUnifiedAdaptiveBenchmarkCli([
+      ...v2Args.slice(0, -1),
+      output
+    ], v2Runtime)).rejects.toThrow(
+      "unified_benchmark_existing_artifact_mismatch"
+    );
+    const v2Fixture = parseUnifiedProviderReplayV1(
+      (await readFile(
+        "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
+        "utf8"
+      )).trimEnd()
+    );
+    expect(v2Runtime.resolveReplayOracleReceipt)
+      .toHaveBeenCalledWith(expect.objectContaining({
+        replaySha256: v2Fixture.expectedReplaySha256
+      }));
+    expect(v1.executionIdentitySha256)
+      .not.toBe(v2.executionIdentitySha256);
+  });
+
   it("fails rather than adopting a mismatched existing scenario artifact", async () => {
     const root = await mkdtemp(join(tmpdir(), "unified-adaptive-mismatch-"));
     const output = join(root, "replay-index.json");

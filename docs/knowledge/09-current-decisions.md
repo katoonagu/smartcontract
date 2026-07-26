@@ -174,7 +174,14 @@ expanding frontier has no percent or ETA.
 ## Benchmark And Memory Evidence
 
 - Frozen replay is the exact barrier-versus-rolling oracle and exercises
-  logical capacities 1, 4, 8, 16, 32, and 100 with reproducible seeds.
+  logical capacities 1, 4, 8, 16, 32, and 100 with reproducible seeds. V1 and
+  V2 have separate immutable fixtures and PostgreSQL receipts. Each receipt
+  binds its own replay hash, barrier facts, policy fixture, and capacity rows;
+  exact equality is required within a policy, not across policies.
+- Scheduler replay proves deterministic admission behavior at logical scale.
+  The PostgreSQL barrier-versus-rolling oracle is the exact traversal,
+  terminal/frontier, canonical-fact, closure, score, decision, evidence,
+  report, presentation, restart/retry, and delivery-idempotency proof.
 - Live claims are limited to the independent groups actually configured and
   observed. Capacity above that is simulation evidence only.
 - Exact hashes are compared on one frozen provider replay. Separate live runs
@@ -197,12 +204,33 @@ expanding frontier has no percent or ETA.
 - Provider refill diagnostics are a separate best-effort V1 aggregate. They
   retain at most 512 incomplete slot/epoch correlations and 512 durations per
   phase, drop discontinuities, and export no run/task/provider identities.
+  Proposed, accepted, and rejected assignments retain the pool's current-epoch
+  result; rejected proposals never count as active capacity.
   They do not mutate the historical adaptive benchmark observation V1 shape;
-  a release evidence artifact that consumes them remains later work.
+  the current release path persists separate control/run-bound runtime samples
+  and one `unified-provider-refill-observation-v1` artifact.
+- A saturated sample enters the selected dense denominator only when provider
+  capacity is at least four, eligible ready provider work is at least four,
+  runtime resources are normal, and at least four healthy groups exist. Short
+  checkpoint/commit pauses remain in the denominator. Overall average is
+  reported, but the selected gate requires a non-empty denominator, at least
+  3.5 active slots per sample, zero unexplained idle samples, all four audited
+  groups dispatched, zero provider errors/429, zero delivery intents/external
+  sends, and zero reconciliation recovery during normal saturation.
+- The selected TXc benchmark is exactly one isolated canary. The command
+  captures process memory before execution, once after the first provider
+  claim, and after completion; it hashes the exact sample and summary files
+  before persisting passing refill evidence or the index. Missing WSL is a
+  diagnostic `skipped`, but missing/invalid process phases fail closed.
 - `checkpoint_or_commit` is a stable pool/run/task reason code but is not
   emitted by diagnostic V1. Existing state cannot prove that the transition
   holds the last otherwise-fillable slot; emission remains pending a direct
   causal signal and is never reconstructed after the fact.
+- The four-group provider audit is a precondition, not evidence manufactured
+  from key names, account names, or traffic. Live utilization, Linux target
+  memory, and rollout remain unverified until the isolated TXc canary and
+  adjudication gates pass. There is no ETA or completion percentage for an
+  expanding traversal frontier.
 
 ## Separate Decisions
 

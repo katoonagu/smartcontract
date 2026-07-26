@@ -50,6 +50,9 @@ import {
   buildUnifiedBranchInput,
   type AnalysisRunRecord
 } from "../../src/unifiedCheck/requestService";
+import {
+  buildProductionFrozenLabelDataset
+} from "../../src/unifiedCheck/frozenLabels";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -58,17 +61,31 @@ const CAPACITIES = [1, 4, 8, 16, 32, 100] as const;
 const BASE_SEED = 24_072_026;
 const RUN_ID = "rolling-oracle-run";
 const RESERVATION_BYTES = 4_096;
+const POLICY_FIXTURES = [{
+  policy: "snapshot-closure-v1" as const,
+  path: "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
+  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_V1_OUTPUT"
+}, {
+  policy: "snapshot-closure-v2" as const,
+  path: "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
+  receiptOutputEnv: "UNIFIED_ROLLING_ORACLE_RECEIPT_V2_OUTPUT"
+}] as const;
 
 type OracleFacts = {
   readonly canonicalFacts: unknown;
   readonly finalFrontier: readonly unknown[];
-  readonly closureCertificate: unknown;
+  readonly terminalEvidenceSha256s: readonly string[];
+  readonly closureCertificate: {
+    readonly analysisManifestHash: string;
+    readonly [key: string]: unknown;
+  };
   readonly score: number;
   readonly decision: "ACCEPTABLE" | "REVIEW" | "DECLINE";
   readonly evidenceBundleSha256: string;
   readonly traversalClosureSha256: string;
   readonly scoringBundleSha256: string;
   readonly reportSha256: string;
+  readonly presentationSha256s: readonly string[];
   readonly eligibleDeliveryIntentCount: number;
   readonly externalTelegramSends: number;
   readonly providerResponseArtifactSha256s: readonly string[];
@@ -172,7 +189,32 @@ function deterministicOrder<T>(
   return output;
 }
 
-function runRecord(): AnalysisRunRecord {
+function oracleFrozenLabelDataset(
+  replay: UnifiedProviderReplayV1,
+  snapshotHash: string
+) {
+  const frozen = buildProductionFrozenLabelDataset({
+    frozenAt: replay.frozenAt,
+    snapshotHash,
+    legacyRows: [{
+      address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      label: "fixture-service-boundary",
+      category: "fixture-service-boundary",
+      provider: "frozen-replay",
+      observedAt: replay.frozenAt
+    }]
+  });
+  if (
+    replay.deterministic.traversalPolicyVersion ===
+      "snapshot-closure-v2" &&
+    frozen.sha256 !== replay.deterministic.labelDatasetSha256
+  ) {
+    throw new Error("rolling_oracle_frozen_label_dataset_mismatch");
+  }
+  return frozen;
+}
+
+function runRecord(replay?: UnifiedProviderReplayV1): AnalysisRunRecord {
   const snapshot = {
     version: "confirmed-wallet-snapshot-v1",
     schemaVersion: 1,
@@ -189,11 +231,23 @@ function runRecord(): AnalysisRunRecord {
     }
   } as const;
   const snapshotHash = fingerprintCanonicalJson(snapshot);
+  const replayPolicy = replay?.deterministic.traversalPolicyVersion ??
+    "snapshot-closure-v1";
+  if (
+    replayPolicy !== "snapshot-closure-v1" &&
+    replayPolicy !== "snapshot-closure-v2"
+  ) {
+    throw new Error("rolling_oracle_traversal_policy_invalid");
+  }
+  const traversalPolicyVersion:
+    "snapshot-closure-v1" | "snapshot-closure-v2" =
+      replayPolicy;
   const branchVersions = {
-    labelDatasetSha256: "c".repeat(64),
+    labelDatasetSha256: replay?.deterministic.labelDatasetSha256 ??
+      "c".repeat(64),
     scoringPolicyVersion: "scoring-signal-matrix-v4",
     attributionPolicyVersion: "selected-attribution-policy-v1",
-    traversalPolicyVersion: "snapshot-closure-v1" as const,
+    traversalPolicyVersion,
     runtimeCommit: "candidate",
     schemaVersion: 34
   };
@@ -219,7 +273,11 @@ function runRecord(): AnalysisRunRecord {
     labelDatasetSha256: branchVersions.labelDatasetSha256,
     scoringPolicyVersion: branchVersions.scoringPolicyVersion,
     attributionPolicyVersion: branchVersions.attributionPolicyVersion,
-    traversalPolicyVersion: "snapshot-closure-v1",
+    traversalPolicyVersion,
+    ...(traversalPolicyVersion === "snapshot-closure-v2" ? {
+      labelCatalogVersion: "unified-label-catalog-v1" as const,
+      boundaryPredicateVersion: "unified-boundary-predicates-v1" as const
+    } : {}),
     runtimeCommit: branchVersions.runtimeCommit,
     databaseSchemaVersion: 34,
     paginationCutoffBlockNumber: snapshot.confirmedBlockNumber,
@@ -252,7 +310,17 @@ async function seedRuntime(
   host: UnifiedTransactionalQueryable,
   replay: UnifiedProviderReplayV1
 ): Promise<AnalysisRunRecord> {
-  const run = runRecord();
+  const run = runRecord(replay);
+  if (
+    replay.deterministic.traversalPolicyVersion === "snapshot-closure-v2"
+  ) {
+    const frozen = oracleFrozenLabelDataset(replay, run.snapshotHash);
+    await client.query(
+      `insert into unified_label_datasets (sha256, dataset_json)
+       values ($1,$2::jsonb)`,
+      [frozen.sha256, JSON.stringify(frozen.dataset)]
+    );
+  }
   await client.query(
     `insert into unified_check_runs (
        id, analysis_key_sha256, subject_address, status, run_purpose,
@@ -797,11 +865,20 @@ async function finalizeOracleFacts(input: {
       [input.run.id]
     )
   ).rows[0]!;
+  const terminalEvidenceSha256s = (await input.client.query(
+    `select sha256
+       from unified_check_artifacts
+      where created_by_run_id = $1
+        and kind = 'traversal_terminal_evidence'
+      order by sha256`,
+    [input.run.id]
+  )).rows.map((row) => String(row.sha256));
   return {
     canonicalFacts: completed.artifacts.get(
       completed.evidence.canonicalFactsHash
     ),
     finalFrontier: completed.frontier,
+    terminalEvidenceSha256s,
     closureCertificate: completed.closure,
     score: completed.scoring.score,
     decision: completed.scoring.decision,
@@ -809,6 +886,9 @@ async function finalizeOracleFacts(input: {
     traversalClosureSha256: completed.hashes.closure,
     scoringBundleSha256: completed.hashes.scoring,
     reportSha256: presented.reportHash,
+    presentationSha256s: presented.deliveries.map((delivery) =>
+      delivery.presentation.presentationHash
+    ).sort(),
     eligibleDeliveryIntentCount: deliveryCount,
     externalTelegramSends:
       isolatedFakeTransport.externalTelegramSends,
@@ -866,7 +946,67 @@ function mismatchMessage(input: {
   ].join(" ");
 }
 
+function receiptFacts(facts: OracleFacts): UnifiedRollingOracleFactsV1 {
+  const {
+    presentationSha256s: _presentationSha256s,
+    terminalEvidenceSha256s: _terminalEvidenceSha256s,
+    ...receipt
+  } = facts;
+  return JSON.parse(
+    canonicalizeArtifactJson(receipt)
+  ) as UnifiedRollingOracleFactsV1;
+}
+
 describe("Unified rolling oracle comparison harness", () => {
+  it("binds separate v1 and v2 fixtures to the same frozen provider snapshot and a real v2 label dataset", async () => {
+    const [v1Bytes, v2Bytes] = await Promise.all([
+      readFile(
+        "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
+        "utf8"
+      ),
+      readFile(
+        "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
+        "utf8"
+      )
+    ]);
+    const parse = (bytes: string) => parseUnifiedProviderReplayV1(
+      bytes.endsWith("\n") ? bytes.slice(0, -1) : bytes
+    );
+    const v1 = parse(v1Bytes);
+    const v2 = parse(v2Bytes);
+    const snapshotHash = fingerprintCanonicalJson(runRecord().snapshot);
+    const frozen = buildProductionFrozenLabelDataset({
+      frozenAt: v2.frozenAt,
+      snapshotHash,
+      legacyRows: [{
+        address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+        label: "fixture-service-boundary",
+        category: "fixture-service-boundary",
+        provider: "frozen-replay",
+        observedAt: v2.frozenAt
+      }]
+    });
+    expect(v1.deterministic.traversalPolicyVersion)
+      .toBe("snapshot-closure-v1");
+    expect(v2.deterministic.traversalPolicyVersion)
+      .toBe("snapshot-closure-v2");
+    expect(v2.deterministic.labelDatasetSha256).toBe(frozen.sha256);
+    expect(v2.expectedReplaySha256).not.toBe(v1.expectedReplaySha256);
+    expect({
+      frozenAt: v2.frozenAt,
+      frozenClockIso: v2.frozenClockIso,
+      sourceSnapshotSha256: v2.sourceSnapshotSha256,
+      requests: v2.requests,
+      responses: v2.responses
+    }).toEqual({
+      frozenAt: v1.frozenAt,
+      frozenClockIso: v1.frozenClockIso,
+      sourceSnapshotSha256: v1.sourceSnapshotSha256,
+      requests: v1.requests,
+      responses: v1.responses
+    });
+  });
+
   it("uses the durable PostgreSQL checkpoint head and ignores a stale alias", () => {
     const durableHead = "c".repeat(64);
     const claimed = oracleClaimedTask({
@@ -915,9 +1055,11 @@ describe("Unified rolling oracle comparison harness", () => {
 });
 
 postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () => {
-  it("keeps exact canonical outputs through capacities, retry, restart, lost wake, slow head, cooldown, and delivery idempotency", async () => {
+  it.each(POLICY_FIXTURES)(
+    "keeps $policy exact canonical outputs through capacities, retry, restart, lost wake, slow head, cooldown, and delivery idempotency",
+    async ({ policy, path, receiptOutputEnv }) => {
     const fixtureBytes = await readFile(
-      "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay.json",
+      path,
       "utf8"
     );
     const replay = parseUnifiedProviderReplayV1(
@@ -940,6 +1082,10 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
     expect(barrier.externalTelegramSends).toBe(0);
     expect(barrier.duplicateCommitCount).toBe(0);
     expect(barrier.duplicateSequenceCount).toBe(0);
+    expect(barrier.presentationSha256s).toHaveLength(1);
+    expect(barrier.terminalEvidenceSha256s).toEqual([]);
+    expect(barrier.closureCertificate.analysisManifestHash)
+      .toBe(runRecord(replay).analysisManifestSha256);
 
     const receiptRollingFacts: Array<{
       readonly capacity: number;
@@ -971,9 +1117,7 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       receiptRollingFacts.push({
         capacity,
         seed,
-        facts: JSON.parse(
-          canonicalizeArtifactJson(rolling)
-        ) as UnifiedRollingOracleFactsV1
+        facts: receiptFacts(rolling)
       });
     }
 
@@ -983,13 +1127,14 @@ postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () =>
       schemaVersion: 34,
       replaySha256: replay.expectedReplaySha256,
       seed: BASE_SEED,
-      barrierFacts: JSON.parse(
-        canonicalizeArtifactJson(barrier)
-      ) as UnifiedRollingOracleFactsV1,
+      barrierFacts: receiptFacts(barrier),
       rollingFacts: receiptRollingFacts
     });
-    const receiptOutput =
-      process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT;
+    const receiptOutput = process.env[receiptOutputEnv] ?? (
+      policy === "snapshot-closure-v1"
+        ? process.env.UNIFIED_ROLLING_ORACLE_RECEIPT_OUTPUT
+        : undefined
+    );
     if (receiptOutput) {
       const output = resolve(receiptOutput);
       if (

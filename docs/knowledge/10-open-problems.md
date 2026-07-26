@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-26
 owner_area: docs
 code_refs:
   - scripts/runUnifiedWalletCanary.ts
@@ -39,6 +39,12 @@ Before raising a configured production ceiling:
 Local WSL measurements remain diagnostic. The real production ceiling needs an
 equivalent Linux container/cgroup or host-memory run.
 
+The policy-specific PostgreSQL oracle and scheduler replay are complete for
+logical capacities 1, 4, 8, 16, 32, and 100. They do not verify live
+utilization. The selected isolated TXc canary, independent-group dispatch,
+zero-error saturated refill, and target Linux memory gate remain outstanding;
+until they pass, user checks and rollout stay on V1.
+
 ## Dense Traversal Performance
 
 Durable ordered commit intentionally permits head-of-line blocking. Canonical
@@ -51,6 +57,11 @@ tests.
 The next saturation component after provider capacity—DB, CPU analysis,
 checkpoint throughput, or memory—must be determined from measurements. Full
 feedback control for analysis/finalization is not justified until then.
+
+`checkpoint_or_commit` still lacks a direct causal signal proving that the
+transition holds the last otherwise-fillable provider slot. Do not reconstruct
+that explanation after the fact; add it only when the runtime emits the direct
+signal with tests.
 
 ## Product Follow-Ups
 

@@ -193,14 +193,35 @@ does not emit it: current lifecycle state cannot prove that a checkpoint or
 commit holds the last otherwise-fillable slot. Emission waits for a direct
 causal signal rather than inferring the blocker after the fact.
 
+Release evidence does not change that historical runtime-observation shape.
+While a benchmark control is active, the runtime persists separate exact
+`unified-provider-refill-runtime-sample-v1` artifacts bound to the control,
+runtime commit, provider configuration, and run set. The benchmark command
+aggregates only the selected run's samples, validates the three process-memory
+phases, and then persists one
+`unified-provider-refill-observation-v1` artifact. A passing benchmark index is
+written only after that artifact passes its control/run bindings and dense
+acceptance checks. Runtime samples and refill observations never participate in
+task claim, acceptance, traversal commit, scoring, or delivery.
+
+Traversal policy remains owned by the persisted analysis manifest. V1 resumes
+with its historical identities and evidence bytes. V2 resumes only with its
+bound label dataset, catalog, and boundary predicate versions. The one-way
+runtime fallback changes rolling admission to barrier execution; it does not
+rewrite either traversal policy or reopen a terminal V2 state.
+
 ## Remaining Operational Work
 
 The schema-036 startup verifier, planner, adaptive capacity, structured slot
 assignment outcomes, bounded refill diagnostics, reconciliation,
 staged policy, barrier fallback, and memory diagnostics are implemented.
 Configuration defaults to `global_barrier`; isolated or broader rolling is an
-ordinary validated configuration choice. Deterministic replay covers logical
-capacities through 100, while actual live capacity and the next DB/CPU/memory
-bottleneck must be measured with real independent groups. P1 boundary
+ordinary validated configuration choice. Policy-specific PostgreSQL replay
+covers logical capacities through 100 for snapshot-closure-v1 and
+snapshot-closure-v2. Scheduler simulation is useful scale evidence, but the
+PostgreSQL barrier-versus-rolling oracle is the exact lifecycle/hash proof
+within each policy; cross-policy hashes need not match. Actual live capacity
+and the next DB/CPU/memory bottleneck must be measured with real independent
+groups. P1 boundary
 activation still waits for blind review/adjudication, and exact performance
 comparison waits for frozen TPCP/TFWG/TXc provider bundles.
