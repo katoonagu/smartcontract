@@ -210,13 +210,14 @@ sidecar, refill creator/hash, control/runtime/configuration/run bindings, and
 the exact bytes and hashes of all memory files without recapture. A changed
 policy/scenario or replaced sidecar, refill, or memory file fails closed.
 The command creates a fresh exclusive capture subdirectory; do not pre-create
-its children. It also writes `selected-canary-journal.json` before invoking the
-canary, syncs the journal file, and syncs its parent directory where supported.
-If required sync fails, no canary starts and the persisted journal remains the
-restart fence. If that journal exists without a valid completed index, the command
-stops with `unified_benchmark_selected_partial_state` and must not be rerun or
-have the journal deleted merely to obtain another canary. Inspect the recorded
-run/control and adjudicate the orphan first.
+its children. Before accessing output paths or invoking the canary, it commits a
+stable PostgreSQL selected-authorization marker. This is a terminal isolated
+maintenance request with no run, not a canary result. It must remain outside
+worker claims, user/delivery counts, Admin active runs, reconciliation work, and
+automatic cleanup. A marker without a valid completed index stops with
+`unified_benchmark_selected_partial_state`; changing output directories cannot
+bypass it. Inspect the marker and any recorded run/control, then adjudicate the
+orphan. Do not delete the marker merely to obtain another canary.
 
 Selected utilization comes only from the controlled run. Any foreign active
 provider permit is a contamination failure; foreign accepted/rejected
@@ -235,17 +236,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/captureUnifiedWslMemory.ps1 `
   -RunId <run-id> -ScenarioId <scenario-id> `
   -Phase before -NodePid <node-pid> `
-  -RuntimeSnapshotPath <runtime-memory.json>
+  -RuntimeRssBytes <node-rss-bytes> `
+  -RuntimeHeapUsedBytes <node-heap-used-bytes>
 ```
 
-The script emits one canonical sample on stdout and never writes an output
-pathname. The selected harness captures that stdout, validates all three
-phases, builds the summary, and exclusively creates/syncs its final files from
-Node. For a manual diagnostic, preserve each phase's stdout separately; it is
-not selected-gate evidence. Record vmmemWSL, Linux available memory/swap, and
-process RSS/heap. A missing WSL process is a diagnostic skip. Local WSL is not
-evidence of server capacity; repeat capacity gates under the target Linux
-container/cgroup or host limit.
+The script emits one canonical sample on stdout and receives no runtime or
+output pathname. The selected harness compares returned RSS/heap exactly with
+the Node-captured argument values, validates all three phases, builds the
+summary, and exclusively creates/syncs its final files from Node. For a manual
+diagnostic, preserve each phase's stdout separately; it is not selected-gate
+evidence. Record vmmemWSL, Linux available memory/swap, and process RSS/heap. A
+missing WSL process is a diagnostic skip. Local WSL is not evidence of server
+capacity; repeat capacity gates under the target Linux container/cgroup or host
+limit.
 
 ## Delivery Recovery
 

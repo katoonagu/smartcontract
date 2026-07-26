@@ -13,8 +13,10 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateUnifiedBenchmarkPeakConcurrency,
+  buildUnifiedSelectedCanaryAuthorizationMarker,
   completedCanaryTraversalPolicy,
   createUnifiedBenchmarkMemoryCapture,
+  createPostgresSelectedCanaryAuthorizationStore,
   isNonterminalCheckpointedBenchmarkRun,
   createUnifiedBenchmarkReleaseOwner,
   parseUnifiedAdaptiveLiveCapacityStateV1,
@@ -49,6 +51,18 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+function createMemorySelectedAuthorizationStore() {
+  const markers = new Set<string>();
+  return {
+    markers,
+    async authorize(marker: { readonly authorizationSha256: string }) {
+      if (markers.has(marker.authorizationSha256)) return "exists" as const;
+      markers.add(marker.authorizationSha256);
+      return "created" as const;
+    }
+  };
+}
 
 function oracleFacts(tag = "postgres-lifecycle-fact-1") {
   return {
@@ -628,6 +642,7 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       providerAudit: audit,
       traversalPolicy: "snapshot-closure-v2",
       memoryEvidenceDir: root,
+      authorizationStore: createMemorySelectedAuthorizationStore(),
       runCanary: runCanary as never,
       memoryCapture: memoryCapture as never
     })).rejects.toThrow("memory_capture_failed");
@@ -635,6 +650,118 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     expect(memoryCapture.before).toHaveBeenCalledOnce();
     expect(memoryCapture.during).not.toHaveBeenCalled();
     expect(memoryCapture.after).not.toHaveBeenCalled();
+  });
+
+  it("persists an isolated failed maintenance request marker without creating run, task, delivery, or cleanup state", async () => {
+    const query = vi.fn(async (
+      _sql: string,
+      _values?: readonly unknown[]
+    ) => ({
+      rows: [{ id: "selected-canary-authorization" }]
+    }));
+    const db = {
+      query,
+      transaction: async <T>(work: (client: { query: typeof query }) =>
+        Promise<T>) => work({ query })
+    };
+    const marker = buildUnifiedSelectedCanaryAuthorizationMarker({
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      traversalPolicyVersion: "snapshot-closure-v2"
+    });
+
+    await expect(createPostgresSelectedCanaryAuthorizationStore(
+      db as never
+    ).authorize(marker)).resolves.toBe("created");
+
+    expect(query).toHaveBeenCalledOnce();
+    const [sql, values] = query.mock.calls[0]!;
+    expect(sql).toContain("insert into unified_check_requests");
+    expect(sql).toContain("'maintenance','isolated','FAILED_TECHNICAL'");
+    expect(sql).not.toMatch(/unified_check_(runs|tasks|deliveries)/u);
+    expect(sql).not.toMatch(/delete\s+from/iu);
+    expect(values).toContain(marker.authorizationSha256);
+    expect(values).toContain(canonicalizeArtifactJson(marker));
+  });
+
+  it("fails closed when an existing authorization row does not exactly match canonical marker bytes", async () => {
+    const marker = buildUnifiedSelectedCanaryAuthorizationMarker({
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      traversalPolicyVersion: "snapshot-closure-v2"
+    });
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: `selected-canary-authorization:${marker.authorizationSha256}`,
+          request_correlation_id:
+            `selected-canary-authorization:${marker.authorizationSha256}`,
+          run_id: null,
+          subject_address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+          chat_id: "selected-canary-authorization",
+          message_thread_id: marker.authorizationSha256,
+          locale: "ru",
+          run_purpose: "maintenance",
+          side_effect_policy: "isolated",
+          status: "FAILED_TECHNICAL",
+          status_reason: "{}"
+        }]
+      });
+    const db = {
+      query,
+      transaction: async <T>(work: (client: { query: typeof query }) =>
+        Promise<T>) => work({ query })
+    };
+
+    await expect(createPostgresSelectedCanaryAuthorizationStore(
+      db as never
+    ).authorize(marker)).rejects.toThrow(
+      "unified_benchmark_selected_authorization_mismatch"
+    );
+  });
+
+  it("returns exists from the PostgreSQL fence after the first transactional marker insert", async () => {
+    const marker = buildUnifiedSelectedCanaryAuthorizationMarker({
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      traversalPolicyVersion: "snapshot-closure-v2"
+    });
+    const id = `selected-canary-authorization:${
+      marker.authorizationSha256
+    }`;
+    let persisted = false;
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("insert into unified_check_requests")) {
+        if (persisted) return { rows: [] };
+        persisted = true;
+        return { rows: [{ id }] };
+      }
+      return {
+        rows: [{
+          id,
+          request_correlation_id: id,
+          run_id: null,
+          subject_address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+          chat_id: "selected-canary-authorization",
+          message_thread_id: marker.authorizationSha256,
+          locale: "ru",
+          run_purpose: "maintenance",
+          side_effect_policy: "isolated",
+          status: "FAILED_TECHNICAL",
+          status_reason: canonicalizeArtifactJson(marker)
+        }]
+      };
+    });
+    const db = {
+      query,
+      transaction: async <T>(work: (client: { query: typeof query }) =>
+        Promise<T>) => work({ query })
+    };
+    const store = createPostgresSelectedCanaryAuthorizationStore(db as never);
+
+    await expect(store.authorize(marker)).resolves.toBe("created");
+    await expect(store.authorize(marker)).resolves.toBe("exists");
   });
 
   it("fails closed on restart after selected canary partial state instead of creating a second batch", async () => {
@@ -655,6 +782,7 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       }).envelope,
       traversalPolicy: "snapshot-closure-v2" as const,
       memoryEvidenceDir: root,
+      authorizationStore: createMemorySelectedAuthorizationStore(),
       memoryCapture: {
         before: vi.fn(async () => {
           throw new Error("simulated_process_crash");
@@ -691,8 +819,8 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
     expect(runCanary).toHaveBeenCalledOnce();
   });
 
-  it("does not start the canary when durable journal sync fails and the journal blocks restart", async () => {
-    const root = await mkdtemp(join(tmpdir(), "unified-selected-sync-fail-"));
+  it("does not start the canary when PostgreSQL marker persistence fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-selected-db-fail-"));
     const runCanary = vi.fn(async () => {
       throw new Error("canary_must_not_start");
     });
@@ -712,21 +840,70 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       }).envelope,
       traversalPolicy: "snapshot-closure-v2" as const,
       memoryEvidenceDir: root,
+      authorizationStore: {
+        async authorize() {
+          throw new Error("selected_marker_persistence_failed");
+        }
+      },
       runCanary: runCanary as never
     };
 
-    const syncFile = vi.fn(async () => undefined);
-    const syncDirectory = vi.fn(async () => {
-      throw new Error("journal_sync_failed");
-    });
-    await expect(runSelectedIsolatedCanaryBenchmark({
-      ...input,
-      journalDurability: { syncFile, syncDirectory }
-    })).rejects.toThrow("journal_sync_failed");
-    expect(syncFile).toHaveBeenCalledOnce();
-    expect(syncDirectory).toHaveBeenCalledOnce();
     await expect(runSelectedIsolatedCanaryBenchmark(input))
-      .rejects.toThrow("unified_benchmark_selected_partial_state");
+      .rejects.toThrow("selected_marker_persistence_failed");
+    expect(runCanary).not.toHaveBeenCalled();
+  });
+
+  it("blocks restart after an ancestor pathname swap when the DB marker committed before runner", async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), "unified-selected-db-first-"));
+    const secondRoot = await mkdtemp(join(tmpdir(), "unified-selected-db-second-"));
+    const swappedAncestor = join(firstRoot, "output");
+    const durableMarkers = new Set<string>();
+    let crash = true;
+    const authorizationStore = {
+      async authorize(marker: { readonly authorizationSha256: string }) {
+        if (durableMarkers.has(marker.authorizationSha256)) {
+          return "exists" as const;
+        }
+        durableMarkers.add(marker.authorizationSha256);
+        if (crash) {
+          crash = false;
+          throw new Error("simulated_crash_after_marker_commit");
+        }
+        return "created" as const;
+      }
+    };
+    const runCanary = vi.fn(async () => {
+      throw new Error("canary_must_not_start");
+    });
+    const common = {
+      requestedCapacities: [4] as const,
+      candidateCommit: "1".repeat(40),
+      executionIdentitySha256: "2".repeat(64),
+      providerAudit: sealUnifiedProviderGroupAuditV1({
+        auditedAt: "2026-07-24T12:00:00.000Z",
+        groups: Array.from({ length: 4 }, (_, index) => ({
+          opaqueGroupId: `provider-group-${index + 1}`,
+          state: "healthy" as const,
+          concurrencyLimit: 1,
+          independenceEvidenceSha256: String(index + 1).repeat(64)
+        }))
+      }).envelope,
+      traversalPolicy: "snapshot-closure-v2" as const,
+      authorizationStore,
+      runCanary: runCanary as never
+    };
+
+    await expect(runSelectedIsolatedCanaryBenchmark({
+      ...common,
+      output: join(swappedAncestor, "selected.json"),
+      memoryEvidenceDir: firstRoot
+    })).rejects.toThrow("simulated_crash_after_marker_commit");
+    await symlink(secondRoot, swappedAncestor, "junction");
+    await expect(runSelectedIsolatedCanaryBenchmark({
+      ...common,
+      output: join(swappedAncestor, "selected.json"),
+      memoryEvidenceDir: secondRoot
+    })).rejects.toThrow("unified_benchmark_selected_partial_state");
     expect(runCanary).not.toHaveBeenCalled();
   });
 
@@ -816,6 +993,49 @@ describe("runUnifiedAdaptiveBenchmark CLI", () => {
       samplesBytes: expect.any(String),
       summaryBytes: expect.any(String)
     });
+  });
+
+  it("rejects a phase response whose runtime values differ from Node-captured input", async () => {
+    const root = await mkdtemp(join(tmpdir(), "unified-memory-runtime-swap-"));
+    const capture = createUnifiedBenchmarkMemoryCapture({
+      directory: root,
+      scenarioId: "selected",
+      nodePid: 123,
+      memoryUsage: () => ({ rss: 100, heapUsed: 50 }),
+      phaseRunner: async (input: {
+        readonly phase: "before" | "during" | "after";
+        readonly runId: string;
+        readonly scenarioId: string;
+        readonly nodePid: number;
+        readonly runtime: {
+          readonly rssBytes: number;
+          readonly heapUsedBytes: number;
+        };
+      }) => ({
+        sampleBytes: canonicalizeArtifactJson({
+          capturedAt: "2026-07-24T12:00:01.000Z",
+          localWslDiagnostic: {
+            linuxMemAvailableBytes: null,
+            linuxSwapFreeBytes: null,
+            linuxSwapTotalBytes: null,
+            status: "skipped",
+            vmmemWslWorkingSetBytes: null
+          },
+          nodePid: input.nodePid,
+          phase: input.phase,
+          runId: input.runId,
+          runtime: {
+            heapUsedBytes: input.runtime.heapUsedBytes,
+            rssBytes: input.runtime.rssBytes + 1
+          },
+          scenarioId: input.scenarioId,
+          version: "unified-memory-sample-v1"
+        })
+      })
+    });
+
+    await expect(capture.before("run-txc"))
+      .rejects.toThrow("unified_benchmark_memory_runtime_mismatch");
   });
 
   it("uses a fresh capture directory and never follows a preexisting child symlink", async () => {

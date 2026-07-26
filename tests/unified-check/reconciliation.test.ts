@@ -43,6 +43,39 @@ describe("Unified reconciliation", () => {
     });
   });
 
+  it("lets a coalesced event wake dominate a timer tick without reporting recovery", async () => {
+    const releases: Array<() => void> = [];
+    const onAdaptiveEvent = vi.fn();
+    const onResult = vi.fn();
+    const runCycle = vi.fn(async () => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return {
+        actionableWorkFound: true,
+        admitted: 1,
+        wokenSlots: 1
+      };
+    });
+    const reconciliation = createUnifiedReconciliation({
+      intervalMs: 30_000,
+      runCycle,
+      onResult,
+      onAdaptiveEvent
+    });
+
+    reconciliation.wake();
+    await flush();
+    reconciliation.wake();
+    const timerTick = reconciliation.tick();
+    releases.shift()?.();
+    await flush();
+    releases.shift()?.();
+    await timerTick;
+
+    expect(runCycle).toHaveBeenCalledTimes(2);
+    expect(onResult).not.toHaveBeenCalled();
+    expect(onAdaptiveEvent).not.toHaveBeenCalled();
+  });
+
   it("keeps an empty tick mutation-free and ignores observability failures", async () => {
     const runCycle = vi.fn(async () => ({
       actionableWorkFound: false,
@@ -88,6 +121,7 @@ describe("Unified reconciliation", () => {
     expect(onAdaptiveEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "reconciliation_recovered_work"
     }));
+    expect(onAdaptiveEvent).toHaveBeenCalledOnce();
   });
 
   it("does not call a normal event wake a reconciliation recovery", async () => {

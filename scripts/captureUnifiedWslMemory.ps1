@@ -16,8 +16,12 @@ param(
   [int]$NodePid,
 
   [Parameter(Mandatory = $true)]
-  [ValidateNotNullOrEmpty()]
-  [string]$RuntimeSnapshotPath
+  [ValidateRange(1, 9223372036854775807)]
+  [long]$RuntimeRssBytes,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateRange(1, 9223372036854775807)]
+  [long]$RuntimeHeapUsedBytes
 )
 
 Set-StrictMode -Version Latest
@@ -62,17 +66,9 @@ function Require-NonNegativeInt64 {
   return $parsed
 }
 
-$runtimePath = [System.IO.Path]::GetFullPath($RuntimeSnapshotPath)
-if (-not [System.IO.File]::Exists($runtimePath)) {
-  throw "unified_memory_runtime_snapshot_missing"
-}
 [void](Get-Process -Id $NodePid -ErrorAction Stop)
-$runtime = Get-Content -Raw -Encoding UTF8 $runtimePath |
-  ConvertFrom-Json
-$rssBytes = Require-NonNegativeInt64 $runtime.rssBytes "rssBytes"
-$heapUsedBytes = Require-NonNegativeInt64 `
-  $runtime.heapUsedBytes `
-  "heapUsedBytes"
+$rssBytes = Require-NonNegativeInt64 $RuntimeRssBytes "rssBytes"
+$heapUsedBytes = Require-NonNegativeInt64 $RuntimeHeapUsedBytes "heapUsedBytes"
 if ($rssBytes -lt 1 -or $heapUsedBytes -lt 1 -or $heapUsedBytes -gt $rssBytes) {
   throw "unified_memory_runtime_snapshot_invalid"
 }

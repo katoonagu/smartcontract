@@ -30,7 +30,7 @@ export function createUnifiedReconciliation(input: {
   if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 1) {
     throw new TypeError("unified_reconciliation_interval_invalid");
   }
-  let pending = false;
+  let pendingEventWake = false;
   let pendingTimerTick = false;
   let running: Promise<void> | null = null;
   let interval: NodeJS.Timeout | null = null;
@@ -40,7 +40,7 @@ export function createUnifiedReconciliation(input: {
   const idleWaiters = new Set<() => void>();
 
   const notifyIdle = () => {
-    if (running !== null || pending) return;
+    if (running !== null || pendingEventWake || pendingTimerTick) return;
     for (const resolve of idleWaiters) resolve();
     idleWaiters.clear();
   };
@@ -52,9 +52,13 @@ export function createUnifiedReconciliation(input: {
     }
   };
   const startPending = () => {
-    if (stopped || running !== null || !pending) return;
-    pending = false;
-    const timerTick = pendingTimerTick;
+    if (
+      stopped ||
+      running !== null ||
+      (!pendingEventWake && !pendingTimerTick)
+    ) return;
+    const timerTick = pendingTimerTick && !pendingEventWake;
+    pendingEventWake = false;
     pendingTimerTick = false;
     running = (async () => {
       try {
@@ -77,7 +81,7 @@ export function createUnifiedReconciliation(input: {
         }
       } finally {
         running = null;
-        if (pending && !stopped) {
+        if ((pendingEventWake || pendingTimerTick) && !stopped) {
           startPending();
         } else {
           notifyIdle();
@@ -87,7 +91,7 @@ export function createUnifiedReconciliation(input: {
   };
   const wake = (cause: "event" | "timer" = "event") => {
     if (stopped) return;
-    if (running !== null || pending) {
+    if (running !== null || pendingEventWake || pendingTimerTick) {
       try {
         input.onWait?.(
           createUnifiedDecisionReason("pool", "reconciliation_wait")
@@ -96,12 +100,17 @@ export function createUnifiedReconciliation(input: {
         // ponytail: a wait observer cannot affect the coalesced durable retry.
       }
     }
-    pending = true;
-    if (cause === "timer") pendingTimerTick = true;
+    if (cause === "timer") {
+      pendingTimerTick = true;
+    } else {
+      pendingEventWake = true;
+    }
     queueMicrotask(startPending);
   };
   const waitForIdle = (): Promise<void> => {
-    if (running === null && !pending) return Promise.resolve();
+    if (running === null && !pendingEventWake && !pendingTimerTick) {
+      return Promise.resolve();
+    }
     return new Promise((resolve) => idleWaiters.add(resolve));
   };
 
@@ -119,7 +128,7 @@ export function createUnifiedReconciliation(input: {
     },
     async stop() {
       stopped = true;
-      pending = false;
+      pendingEventWake = false;
       pendingTimerTick = false;
       if (interval !== null) {
         clearInterval(interval);

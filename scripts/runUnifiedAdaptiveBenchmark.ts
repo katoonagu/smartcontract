@@ -22,6 +22,8 @@ import {
   resolve
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "../src/config";
+import { closeDb, createDb } from "../src/storage/db";
 import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
@@ -101,6 +103,133 @@ const SELECTED_LIVE_SCENARIO =
   "isolated:TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd" as const;
 type TraversalPolicy =
   import("../src/unifiedCheck/contracts").UnifiedTraversalPolicyVersion;
+
+export type UnifiedSelectedCanaryAuthorizationMarkerV1 = {
+  readonly version: "unified-selected-canary-authorization-v1";
+  readonly candidateCommit: string;
+  readonly executionIdentitySha256: string;
+  readonly scenarioId: `live:c4:${typeof SELECTED_LIVE_SCENARIO}`;
+  readonly traversalPolicyVersion: TraversalPolicy;
+  readonly capacity: 4;
+  readonly authorizationSha256: string;
+};
+
+export type UnifiedSelectedCanaryAuthorizationStore = {
+  authorize(
+    marker: UnifiedSelectedCanaryAuthorizationMarkerV1
+  ): Promise<"created" | "exists">;
+};
+
+export function buildUnifiedSelectedCanaryAuthorizationMarker(input: {
+  readonly candidateCommit: string;
+  readonly executionIdentitySha256: string;
+  readonly traversalPolicyVersion: TraversalPolicy;
+}): UnifiedSelectedCanaryAuthorizationMarkerV1 {
+  const marker = {
+    version: "unified-selected-canary-authorization-v1" as const,
+    candidateCommit: input.candidateCommit,
+    executionIdentitySha256: input.executionIdentitySha256,
+    scenarioId: `live:c4:${SELECTED_LIVE_SCENARIO}` as const,
+    traversalPolicyVersion: input.traversalPolicyVersion,
+    capacity: 4 as const
+  };
+  if (
+    !/^[0-9a-f]{40}$/u.test(marker.candidateCommit) ||
+    !/^[0-9a-f]{64}$/u.test(marker.executionIdentitySha256) ||
+    !["snapshot-closure-v1", "snapshot-closure-v2"].includes(
+      marker.traversalPolicyVersion
+    )
+  ) {
+    throw new TypeError("unified_benchmark_selected_authorization_invalid");
+  }
+  return {
+    ...marker,
+    authorizationSha256: fingerprintCanonicalArtifact(marker)
+  };
+}
+
+function validateSelectedCanaryAuthorizationMarker(
+  marker: UnifiedSelectedCanaryAuthorizationMarkerV1
+): void {
+  const expected = buildUnifiedSelectedCanaryAuthorizationMarker({
+    candidateCommit: marker.candidateCommit,
+    executionIdentitySha256: marker.executionIdentitySha256,
+    traversalPolicyVersion: marker.traversalPolicyVersion
+  });
+  if (
+    canonicalizeArtifactJson(expected) !== canonicalizeArtifactJson(marker)
+  ) {
+    throw new TypeError("unified_benchmark_selected_authorization_invalid");
+  }
+}
+
+export function createPostgresSelectedCanaryAuthorizationStore(
+  db: UnifiedTransactionalQueryable
+): UnifiedSelectedCanaryAuthorizationStore {
+  return {
+    authorize(marker) {
+      validateSelectedCanaryAuthorizationMarker(marker);
+      const canonicalMarker = canonicalizeArtifactJson(marker);
+      const id = `selected-canary-authorization:${
+        marker.authorizationSha256
+      }`;
+      return db.transaction(async (client) => {
+        // ponytail: schema 036 has no standalone execution-marker table. A
+        // terminal maintenance request is durable but has no run, tasks, or
+        // delivery surface; add a dedicated table only if request cleanup is
+        // ever introduced.
+        const inserted = await client.query(
+          `insert into unified_check_requests (
+             id, request_correlation_id, subject_address, chat_id,
+             message_thread_id, locale, run_purpose, side_effect_policy,
+             status, status_reason, accepted_at
+           ) values (
+             $1,$1,$2,'selected-canary-authorization',$3,
+             'ru','maintenance','isolated','FAILED_TECHNICAL',$4,
+             statement_timestamp()
+           ) on conflict (request_correlation_id) do nothing
+           returning id`,
+          [
+            id,
+            SELECTED_LIVE_SCENARIO.slice("isolated:".length),
+            marker.authorizationSha256,
+            canonicalMarker
+          ]
+        );
+        if (inserted.rows.length === 1) return "created" as const;
+        const existing = (await client.query(
+          `select id, request_correlation_id, run_id, subject_address,
+                  chat_id, message_thread_id, locale, run_purpose,
+                  side_effect_policy, status, status_reason
+             from unified_check_requests
+            where request_correlation_id = $1`,
+          [id]
+        )).rows[0];
+        if (
+          !existing ||
+          String(existing.id) !== id ||
+          String(existing.request_correlation_id) !== id ||
+          existing.run_id !== null ||
+          String(existing.subject_address) !==
+            SELECTED_LIVE_SCENARIO.slice("isolated:".length) ||
+          String(existing.chat_id) !== "selected-canary-authorization" ||
+          String(existing.message_thread_id) !==
+            marker.authorizationSha256 ||
+          String(existing.locale) !== "ru" ||
+          String(existing.run_purpose) !== "maintenance" ||
+          String(existing.side_effect_policy) !== "isolated" ||
+          String(existing.status) !== "FAILED_TECHNICAL" ||
+          String(existing.status_reason) !== canonicalMarker
+        ) {
+          throw new Error(
+            "unified_benchmark_selected_authorization_mismatch"
+          );
+        }
+        return "exists" as const;
+      });
+    }
+  };
+}
 
 export function isNonterminalCheckpointedBenchmarkRun(run: {
   readonly status: string;
@@ -1014,11 +1143,7 @@ async function writeImmutable(path: string, content: string): Promise<void> {
 async function writeExclusiveState(
   path: string,
   content: string,
-  existsCode: string,
-  durability?: {
-    syncFile?(handle: { sync(): Promise<void> }): Promise<void>;
-    syncDirectory?(handle: { sync(): Promise<void> }): Promise<void>;
-  }
+  existsCode: string
 ): Promise<void> {
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   try {
@@ -1032,7 +1157,7 @@ async function writeExclusiveState(
     );
     try {
       await handle.writeFile(content, "utf8");
-      await (durability?.syncFile?.(handle) ?? handle.sync());
+      await handle.sync();
     } finally {
       await handle.close();
     }
@@ -1041,26 +1166,6 @@ async function writeExclusiveState(
       throw new Error(existsCode);
     }
     throw error;
-  }
-  let directoryHandle: Awaited<ReturnType<typeof open>> | null = null;
-  try {
-    directoryHandle = await open(dirname(path), fsConstants.O_RDONLY);
-    await (
-      durability?.syncDirectory?.(directoryHandle) ?? directoryHandle.sync()
-    );
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (
-      durability?.syncDirectory !== undefined ||
-      process.platform !== "win32" ||
-      !["EINVAL", "ENOTSUP", "EPERM", "EISDIR"].includes(String(code))
-    ) {
-      throw error;
-    }
-    // ponytail: Windows filesystems may reject directory fsync; the journal
-    // file itself is still synced. Unix directory-sync failures stay fatal.
-  } finally {
-    await directoryHandle?.close();
   }
 }
 
@@ -1071,7 +1176,10 @@ export type UnifiedBenchmarkMemoryPhaseRunner = (input: {
   readonly runId: string;
   readonly scenarioId: string;
   readonly nodePid: number;
-  readonly runtimeSnapshotPath: string;
+  readonly runtime: {
+    readonly rssBytes: number;
+    readonly heapUsedBytes: number;
+  };
   readonly samplesPath: string;
   readonly summaryPath: string;
 }) => Promise<{ readonly sampleBytes: string }>;
@@ -1232,7 +1340,8 @@ const runUnifiedBenchmarkMemoryPowerShell: UnifiedBenchmarkMemoryPhaseRunner =
       "-ScenarioId", input.scenarioId,
       "-Phase", input.phase,
       "-NodePid", String(input.nodePid),
-      "-RuntimeSnapshotPath", input.runtimeSnapshotPath
+      "-RuntimeRssBytes", String(input.runtime.rssBytes),
+      "-RuntimeHeapUsedBytes", String(input.runtime.heapUsedBytes)
     ];
     const { stdout } = await execFileAsync(
       "powershell.exe",
@@ -1268,6 +1377,10 @@ function parseMemoryPhaseSample(input: {
   readonly runId: string;
   readonly scenarioId: string;
   readonly nodePid: number;
+  readonly runtime: {
+    readonly rssBytes: number;
+    readonly heapUsedBytes: number;
+  };
 }): UnifiedBenchmarkMemorySample {
   const sample = memoryExactKeys(JSON.parse(input.sampleBytes), [
     "capturedAt",
@@ -1320,6 +1433,12 @@ function parseMemoryPhaseSample(input: {
     ))
   ) {
     throw new Error("unified_benchmark_memory_evidence_invalid");
+  }
+  if (
+    runtime.rssBytes !== input.runtime.rssBytes ||
+    runtime.heapUsedBytes !== input.runtime.heapUsedBytes
+  ) {
+    throw new Error("unified_benchmark_memory_runtime_mismatch");
   }
   return sample as UnifiedBenchmarkMemorySample;
 }
@@ -1428,24 +1547,16 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
     ) {
       throw new Error("unified_benchmark_memory_runtime_invalid");
     }
-    const runtimeSnapshotPath = resolve(
-      captureDirectory,
-      `runtime-memory-${phase}.json`
-    );
-    await writeExclusiveState(
-      runtimeSnapshotPath,
-      canonicalizeArtifactJson({
-        heapUsedBytes: memory.heapUsed,
-        rssBytes: memory.rss
-      }),
-      "unified_benchmark_memory_child_exists"
-    );
+    const runtime = {
+      heapUsedBytes: memory.heapUsed,
+      rssBytes: memory.rss
+    };
     const result = await phaseRunner({
       phase,
       runId,
       scenarioId: input.scenarioId,
       nodePid,
-      runtimeSnapshotPath,
+      runtime,
       samplesPath,
       summaryPath
     });
@@ -1454,7 +1565,8 @@ export function createUnifiedBenchmarkMemoryCapture(input: {
       phase,
       runId,
       scenarioId: input.scenarioId,
-      nodePid
+      nodePid,
+      runtime
     }));
     completed.add(phase);
   };
@@ -2567,15 +2679,12 @@ export async function runSelectedIsolatedCanaryBenchmark(input: {
     ReturnType<typeof parseUnifiedProviderGroupAuditV1>;
   readonly traversalPolicy: TraversalPolicy;
   readonly memoryEvidenceDir: string;
+  readonly authorizationStore: UnifiedSelectedCanaryAuthorizationStore;
   readonly runCanary: typeof import("./runUnifiedWalletCanary")["runUnifiedWalletCanaryCli"];
   readonly memoryCapture?: Pick<
     ReturnType<typeof createUnifiedBenchmarkMemoryCapture>,
     "before" | "during" | "after"
   >;
-  readonly journalDurability?: {
-    syncFile?(handle: { sync(): Promise<void> }): Promise<void>;
-    syncDirectory?(handle: { sync(): Promise<void> }): Promise<void>;
-  };
 }): Promise<UnifiedSelectedAdaptiveBenchmarkIndexV2> {
   if (
     input.requestedCapacities.length !== 1 ||
@@ -2593,29 +2702,21 @@ export async function runSelectedIsolatedCanaryBenchmark(input: {
     )
     .slice(0, capacity)
     .map((group) => group.opaqueGroupId);
+  const authorization =
+    buildUnifiedSelectedCanaryAuthorizationMarker({
+      candidateCommit: input.candidateCommit,
+      executionIdentitySha256: input.executionIdentitySha256,
+      traversalPolicyVersion: input.traversalPolicy
+    });
+  if (await input.authorizationStore.authorize(authorization) !== "created") {
+    throw new Error("unified_benchmark_selected_partial_state");
+  }
   const outputDirectory = dirname(input.output);
   const scenarioDirectory = resolve(
     outputDirectory,
     `${parse(input.output).name}.scenarios`
   );
   await mkdirNoFollow(scenarioDirectory);
-  const journalWithoutHash = {
-    version: "unified-selected-canary-journal-v1" as const,
-    candidateCommit: input.candidateCommit,
-    executionIdentitySha256: input.executionIdentitySha256,
-    traversalPolicyVersion: input.traversalPolicy,
-    scenarioId: `live:c4:${SELECTED_LIVE_SCENARIO}`,
-    createdAt: new Date().toISOString()
-  };
-  await writeExclusiveState(
-    resolve(scenarioDirectory, "selected-canary-journal.json"),
-    `${canonicalizeArtifactJson({
-      ...journalWithoutHash,
-      journalSha256: fingerprintCanonicalArtifact(journalWithoutHash)
-    })}\n`,
-    "unified_benchmark_selected_partial_state",
-    input.journalDurability
-  );
   const memoryCapture = input.memoryCapture ??
     createUnifiedBenchmarkMemoryCapture({
       directory: input.memoryEvidenceDir,
@@ -3082,11 +3183,19 @@ async function runExistingIsolatedCanaryBenchmark(input: {
     if (input.memoryEvidenceDir === null) {
       throw new Error("unified_benchmark_selected_memory_required");
     }
-    return runSelectedIsolatedCanaryBenchmark({
-      ...input,
-      memoryEvidenceDir: input.memoryEvidenceDir,
-      runCanary: runUnifiedWalletCanaryCli
-    });
+    const authorizationDb = createDb(loadConfig().databaseUrl);
+    try {
+      return await runSelectedIsolatedCanaryBenchmark({
+        ...input,
+        memoryEvidenceDir: input.memoryEvidenceDir,
+        authorizationStore: createPostgresSelectedCanaryAuthorizationStore(
+          createUnifiedPoolTransactionHost(authorizationDb)
+        ),
+        runCanary: runUnifiedWalletCanaryCli
+      });
+    } finally {
+      await closeDb(authorizationDb);
+    }
   }
   const namedWallets = [
     "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",

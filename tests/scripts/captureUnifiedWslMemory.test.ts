@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
-  rmSync,
-  writeFileSync
+  rmSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -48,12 +47,7 @@ describe("Unified WSL and target-Linux memory evidence", () => {
   it("captures a real local sample and skips cleanly when WSL diagnostics are unavailable", () => {
     const root = mkdtempSync(join(tmpdir(), "unified-wsl-memory-"));
     try {
-      const runtimePath = join(root, "runtime.json");
       const memory = process.memoryUsage();
-      writeFileSync(runtimePath, JSON.stringify({
-        rssBytes: memory.rss,
-        heapUsedBytes: memory.heapUsed
-      }));
 
       const rawSample = execFileSync("powershell.exe", [
         "-NoProfile",
@@ -69,8 +63,10 @@ describe("Unified WSL and target-Linux memory evidence", () => {
         "before",
         "-NodePid",
         String(process.pid),
-        "-RuntimeSnapshotPath",
-        runtimePath
+        "-RuntimeRssBytes",
+        String(memory.rss),
+        "-RuntimeHeapUsedBytes",
+        String(memory.heapUsed)
       ], {
         cwd: resolve("."),
         encoding: "utf8",

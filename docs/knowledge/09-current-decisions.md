@@ -236,13 +236,19 @@ expanding frontier has no percent or ETA.
   and only timer-originated reconciliation recovery events are counted for the
   active control/run. Process-global work cannot satisfy the selected
   utilization gate.
-- The selected harness writes an exclusive journal before invoking the canary.
-  It syncs the file and, where supported, its parent directory before canary
-  execution. A required sync failure and any partial journal state without a
-  completed index block a second invocation; neither is permission to create
-  another run. Memory evidence uses a fresh exclusive capture directory;
-  PowerShell emits phase bytes on stdout and Node alone writes/syncs final
-  children through exclusive no-follow handles.
+- The selected harness uses PostgreSQL, not the filesystem, as restart
+  authority. Before any output-path access or canary call it transactionally
+  inserts one stable canonical authorization marker scoped to the allowlisted
+  scenario, policy, candidate, and execution identity. The schema-036
+  no-migration representation is a terminal isolated maintenance request with
+  no run; it is technical fence state, not a canary result, and is excluded from
+  worker claims, user/delivery counts, Admin active runs, reconciliation work,
+  and automatic cleanup. Existing/mismatched marker state or persistence
+  failure blocks a canary. A completed bundle resumes before authorization.
+  Memory evidence uses a fresh exclusive capture directory; Node passes exact
+  RSS/heap values as validated arguments, compares the returned stdout sample
+  to them, and alone writes/syncs final children through exclusive no-follow
+  handles.
 - `checkpoint_or_commit` is a stable pool/run/task reason code but is not
   emitted by diagnostic V1. Existing state cannot prove that the transition
   holds the last otherwise-fillable slot; emission remains pending a direct

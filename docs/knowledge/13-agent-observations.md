@@ -466,9 +466,12 @@ and a real recovery could disappear.
 
 Correct rule: scope selected capacity and limiting values to the controlled
 run, reset and scope every retained diagnostic event at the control boundary,
-mark foreign active permits as contamination, and count only timer-originated
-recovery events. A generic event-woken controller cycle is not reconciliation.
-Write and durably sync an exclusive journal before the one authorized canary so
-partial state blocks a duplicate. Capture phase bytes through stdout and let
-Node exclusively create/sync final memory children; a pathname check before an
-external writer is not a write boundary.
+mark foreign active permits as contamination, and count only isolated
+timer-originated recovery cycles. Event and timer causes remain separate, and
+event dominates when both coalesce; a generic event-woken controller cycle is
+not reconciliation. A filesystem journal cannot authorize a unique execution
+across Windows durability gaps or ancestor swaps. Commit a stable PostgreSQL
+technical maintenance fence before canary invocation, keep it out of product
+results/work/cleanup, and fail closed on any prior marker. Capture phase bytes
+through stdout, pass runtime values without a pathname, compare them exactly,
+and let Node exclusively create/sync final memory children.

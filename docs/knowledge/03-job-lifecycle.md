@@ -171,7 +171,8 @@ Controller wakes coalesce after durable intake, provider lifecycle changes,
 planning/commit, and cooldown expiry. A rare reconciliation tick invokes the
 same cycle after restart or a lost signal. It reconstructs nothing from
 process memory, and a no-action tick mutates no task. The coalescer retains
-whether a timer tick is pending; an event/intake/slot wake never emits
+event and timer pending causes separately. If both are pending for the same
+next cycle, the event cause dominates; an event/intake/slot wake never emits
 `reconciliation_recovered_work`, even when its ordinary cycle sees eligible
 work. Only an actual timer tick that finds actionable work emits recovery.
 Provider, analysis, and
@@ -224,15 +225,23 @@ timer-originated `reconciliation_recovered_work` events are counted for the
 active control/run and bound into lifecycle evidence. One recovery rejects the
 selected gate.
 
-Before the selected canary is invoked, the harness writes an exclusive sealed
-journal, syncs the file, closes it, and syncs the scenario directory where the
-platform supports directory fsync. A required sync failure stops before the
-canary and leaves the journal to block restart. If execution stops before the
-completed index exists, that journal blocks every later invocation from
-creating another batch or canary. Memory capture creates a fresh exclusive
-per-execution child directory. PowerShell returns one exact phase sample on
-stdout; Node validates the bytes, builds the summary, and creates/syncs the
-final sample and summary children with exclusive no-follow handles.
+Before touching output paths or invoking the selected canary, the harness
+transactionally inserts a deterministic PostgreSQL authorization marker for
+the exact allowlisted scenario, traversal policy, candidate, and execution
+identity. Schema 036 has no marker table, so the no-migration fence is an exact
+canonical `maintenance` + `isolated` + `FAILED_TECHNICAL` request with no run.
+It is technical authorization state, not a canary result. It creates no task,
+delivery, active Admin run, user-check count, or reconciliation work and must
+never be removed by automatic cleanup. Any existing exact marker means the
+execution may already have started and blocks another batch/canary; a mismatched
+row or persistence failure also fails closed. A completed sealed index resumes
+before this authorization path.
+
+Memory capture creates a fresh exclusive per-execution child directory. Node
+passes its captured RSS/heap values directly as validated PowerShell arguments;
+PowerShell returns one exact phase sample on stdout. Node requires the returned
+runtime values to match exactly, builds the summary, and creates/syncs the final
+sample and summary children with exclusive no-follow handles.
 
 Traversal policy remains owned by the persisted analysis manifest. V1 resumes
 with its historical identities and evidence bytes. V2 resumes only with its
