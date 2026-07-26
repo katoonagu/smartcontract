@@ -118,6 +118,12 @@ The canary can run with legacy or Unified delivery ownership because isolated
 runs create no delivery intent. It requires the same committed runtime SHA and
 schema 036, but no release generation or signed rollout receipt.
 
+When `UNIFIED_TRAVERSAL_POLICY_VERSION=snapshot-closure-v2`, preparation freezes
+and persists the production label dataset separately for each confirmed
+snapshot. The schema-2 batch identity records every subject, snapshot hash, and
+dataset hash. Resume by that identity; do not substitute the current live label
+rows or reuse the legacy schema-1 canary identity.
+
 For the three-wallet operational check:
 
 - select the latest three unique eligible addresses without score/outcome

@@ -278,12 +278,8 @@ import {
   loadOrFetchProviderPage
 } from "./unifiedCheck/providerRequest";
 import {
-  SUPPORTED_LABEL_CATALOG_V1,
-  buildFrozenLabelRecord
-} from "./unifiedCheck/labelCatalog";
-import {
-  buildFrozenLabelDataset,
-  validateFrozenLabelDatasetV1,
+  buildProductionFrozenLabelDataset,
+  createFrozenLabelDatasetLoader,
   type FrozenLabelDatasetV1
 } from "./unifiedCheck/frozenLabels";
 
@@ -478,43 +474,6 @@ const unifiedLabelRows = (
   provider: String(row.provider),
   observedAt: new Date(String(row.observed_at)).toISOString()
 }));
-const unifiedExactLabelRecords =
-  SUPPORTED_LABEL_CATALOG_V1.entries.flatMap((entry) =>
-    entry.addressBindings.map((address) => buildFrozenLabelRecord({
-      address,
-      classifierHint: null,
-      exactRegistryBinding: {
-        catalogEntryId: entry.id,
-        authority: "internal_service_registry",
-        sourcePayloadSha256: fingerprintCanonicalArtifact({
-          version: SUPPORTED_LABEL_CATALOG_V1.version,
-          entry
-        })
-      },
-      verifiedProviderBinding: null
-    }))
-  );
-const unifiedHintLabelRecords = unifiedLabelRows.flatMap((row) => {
-  const normalizedCandidates = [row.label, row.category]
-    .map((value) => value.trim().toLowerCase());
-  const entry = SUPPORTED_LABEL_CATALOG_V1.entries.find((candidate) =>
-    normalizedCandidates.includes(candidate.identity.toLowerCase())
-  );
-  if (!entry) return [];
-  return [buildFrozenLabelRecord({
-    address: row.address,
-    classifierHint: {
-      identity: entry.identity,
-      category: entry.category,
-      sourcePayloadSha256: fingerprintCanonicalArtifact({
-        version: "unified-label-source-row-v1",
-        ...row
-      })
-    },
-    exactRegistryBinding: null,
-    verifiedProviderBinding: null
-  })];
-});
 const unifiedLabelSnapshot = {
   version: "unified-label-dataset-v1" as const,
   rows: unifiedLabelRows
@@ -585,6 +544,14 @@ const emitUnifiedAdaptiveEvent = (event: UnifiedAdaptiveEvent) => {
 };
 const unifiedCheckpointLatencySampler =
   createUnifiedCheckpointLatencySampler();
+const loadUnifiedFrozenLabelDataset = createFrozenLabelDatasetLoader({
+  loadBySha256: async (labelDatasetSha256) => (
+    await db.query(
+      "select dataset_json from unified_label_datasets where sha256 = $1",
+      [labelDatasetSha256]
+    )
+  ).rows[0]?.dataset_json
+});
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
   runtimeCommit: runtimeVersion.gitCommitSha,
@@ -792,17 +759,10 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     labelCatalogVersion,
     boundaryPredicateVersion
   }) {
-    const stored = (
-      await db.query(
-        "select dataset_json from unified_label_datasets where sha256 = $1",
-        [labelDatasetSha256]
-      )
-    ).rows[0]?.dataset_json;
-    return validateFrozenLabelDatasetV1({
-      dataset: stored,
-      expectedSha256: labelDatasetSha256,
+    return loadUnifiedFrozenLabelDataset({
+      labelDatasetSha256,
       snapshotHash,
-      catalogVersion: labelCatalogVersion,
+      labelCatalogVersion,
       boundaryPredicateVersion
     });
   },
@@ -2336,13 +2296,9 @@ const bot = createBot(config, db, tronClient, {
       }): Promise<{
         readonly sha256: string;
         readonly dataset: FrozenLabelDatasetV1;
-      }> => buildFrozenLabelDataset({
+      }> => buildProductionFrozenLabelDataset({
         frozenAt,
         snapshotHash,
-        labels: [
-          ...unifiedExactLabelRecords,
-          ...unifiedHintLabelRecords
-        ],
         legacyRows: unifiedLabelRows
       }),
       now: () => now

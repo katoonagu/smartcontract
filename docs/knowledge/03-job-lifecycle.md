@@ -115,12 +115,16 @@ For `snapshot-closure-v2`, the traversal coordinator first evaluates the
 canonical frontier against the exact frozen label dataset bound by the run
 manifest. It persists the largest bounded prefix of terminal evidence and its
 traversal delta as idempotent content-addressed artifacts, then commits the
-checkpoint before planning any history. A crash can leave reusable unreferenced
-artifacts, but cannot expose contradictory traversal state. Restart replays the
-durable delta head, so terminal states do not reopen or emit duplicate
-evidence. Only the remaining non-terminal states can become new mandatory
-address-history work. `snapshot-closure-v1` keeps its historical label behavior
-unchanged.
+checkpoint before planning any history. The byte ceiling counts the exact
+canonical UTF-8 bytes of every persisted evidence artifact plus the actual
+delta artifact; the individual manifest ceiling applies to each evidence
+artifact. The same boundary partition runs again immediately after every
+accepted history expands the frontier, before discoveries can create another
+address-history task. A crash can leave reusable unreferenced artifacts, but
+cannot expose contradictory traversal state. Restart replays the durable delta
+head, so terminal states do not reopen or emit duplicate evidence. Only the
+remaining non-terminal states can become new mandatory address-history work.
+`snapshot-closure-v1` keeps its historical label behavior unchanged.
 
 The traversal coordinator emits every newly mandatory address-history task
 with its canonical parent sequence. The run-locked

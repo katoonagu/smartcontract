@@ -10,6 +10,9 @@ import {
   prepareUnifiedCanaryBatch
 } from "../../src/unifiedCheck/canary";
 import {
+  buildProductionFrozenLabelDataset
+} from "../../src/unifiedCheck/frozenLabels";
+import {
   auditUnifiedCanaryIsolation,
   claimUnifiedTask,
   checkpointUnifiedTask,
@@ -124,6 +127,12 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
           runtimeCommit: "a".repeat(40),
           schemaVersion: 36
         },
+        freezeLabelDataset: async ({ snapshotHash, frozenAt }) =>
+          buildProductionFrozenLabelDataset({
+            frozenAt,
+            snapshotHash,
+            legacyRows: []
+          }),
         providerConfiguration: PROVIDER_CONFIGURATION,
         repository: {
           createBatch: (input) =>
@@ -147,6 +156,17 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
       expect(resumed.runs).toHaveLength(3);
       expect(resumed.batchIdentity.traversalPolicyVersion)
         .toBe("snapshot-closure-v2");
+      expect(resumed.batchIdentity.version)
+        .toBe("unified-canary-batch-identity-v2");
+      expect(Number((await pool.query(
+        "select count(*)::int as count from unified_label_datasets"
+      )).rows[0]!.count)).toBe(1);
+      const identityArtifact = (await pool.query(
+        `select schema_version from unified_check_artifacts
+          where sha256 = $1 and kind = 'canary_batch_identity'`,
+        [batch.batchIdentitySha256]
+      )).rows[0];
+      expect(identityArtifact?.schema_version).toBe("2");
       expect(new Set(resumed.runs.map((run) => run.subjectAddress)))
         .toEqual(new Set([ADDRESSES[7]]));
     } finally {

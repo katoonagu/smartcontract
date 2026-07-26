@@ -50,6 +50,8 @@ import type { UnifiedWalletDossierV1 } from "../src/unifiedCheck/report";
 import { SELECTED_ATTRIBUTION_POLICY } from "../src/unifiedCheck/selectedAttributionPolicy.generated";
 import { createTronConfirmedSnapshotSource } from "../src/unifiedCheck/snapshot";
 import type { UnifiedWatchdogRunV1 } from "../src/unifiedCheck/watchdog";
+import { buildProductionFrozenLabelDataset } from
+  "../src/unifiedCheck/frozenLabels";
 import {
   captureUnifiedAdaptiveBenchmarkObservationBestEffort,
   listUnifiedAdaptiveBenchmarkObservationArtifacts,
@@ -281,6 +283,15 @@ export async function runUnifiedWalletCanaryCli(
               runtimeCommit: options.candidateCommit,
               schemaVersion: schemaVerification.version
             },
+            freezeLabelDataset:
+              config.unifiedTraversalPolicyVersion === "snapshot-closure-v2"
+                ? async ({ snapshotHash, frozenAt }) =>
+                    buildProductionFrozenLabelDataset({
+                      frozenAt,
+                      snapshotHash,
+                      legacyRows: labelRows
+                    })
+                : undefined,
             rolloutPolicy: {
               stage: config.unifiedRollingRolloutStage,
               boundedUserCheckBasisPoints:

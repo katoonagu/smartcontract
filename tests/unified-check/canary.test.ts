@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import { buildProductionFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
 import {
   assertUnifiedWriteAllowed,
   resolveUnifiedCanaryDeadlineMinutes
@@ -288,6 +289,15 @@ describe("Unified eight-wallet release canary", () => {
         runtimeCommit: CANDIDATE,
         schemaVersion: 33
       },
+      freezeLabelDataset: async ({
+        snapshotHash,
+        frozenAt
+      }: { snapshotHash: string; frozenAt: string }) =>
+        buildProductionFrozenLabelDataset({
+          frozenAt,
+          snapshotHash,
+          legacyRows: []
+        }),
       providerConfiguration: PROVIDER_CONFIGURATION,
       diagnosticHypothesis,
       repository: { createBatch },
@@ -312,14 +322,37 @@ describe("Unified eight-wallet release canary", () => {
     expect(new Set(input.runs.map((item: {
       candidateRun: { analysisKeySha256: string };
     }) => item.candidateRun.analysisKeySha256)).size).toBe(8);
+    expect(input.runs.every((item: {
+      labelDataset?: { sha256: string; dataset: { snapshotHash: string } };
+      candidateRun: {
+        snapshotHash: string;
+        analysisManifest: { labelDatasetSha256: string };
+      };
+    }) =>
+      item.labelDataset?.dataset.snapshotHash ===
+        item.candidateRun.snapshotHash &&
+      item.labelDataset.sha256 ===
+        item.candidateRun.analysisManifest.labelDatasetSha256
+    )).toBe(true);
     expect(result.runs).toHaveLength(8);
     expect(result.batchIdentity).toMatchObject({
+      version: "unified-canary-batch-identity-v2",
       candidateCommit: CANDIDATE,
       traversalPolicyVersion: "snapshot-closure-v2",
       providerSchemaVersion: "tronscan-transfer-page-v1",
       providerConfiguration: PROVIDER_CONFIGURATION,
       diagnosticHypothesis
     });
+    expect(result.batchIdentity.version)
+      .toBe("unified-canary-batch-identity-v2");
+    if (result.batchIdentity.version !== "unified-canary-batch-identity-v2") {
+      return;
+    }
+    expect(result.batchIdentity.labelDatasets).toHaveLength(8);
+    await expect(prepareUnifiedCanaryBatch({
+      ...prepareInput,
+      freezeLabelDataset: undefined
+    })).rejects.toThrow("unified_canary_v2_frozen_dataset_required");
     await expect(prepareUnifiedCanaryBatch({
       ...prepareInput,
       diagnosticHypothesis: {

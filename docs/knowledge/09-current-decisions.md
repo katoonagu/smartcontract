@@ -103,8 +103,9 @@ code_refs:
   selected policy in the run creation transaction.
 - `UNIFIED_TRAVERSAL_POLICY_VERSION` selects `snapshot-closure-v1` or
   `snapshot-closure-v2` for new runs. Existing runs always resume the traversal
-  policy frozen in their analysis manifest; v1 and v2 use distinct branch,
-  request, analysis, and canary identities.
+  policy frozen in their analysis manifest. Historical v1 branch, request,
+  analysis, and canary identity material remains byte-for-byte compatible;
+  only v2 uses the new policy-discriminated identities.
 - Newly created manifests bind the current label catalog and boundary predicate
   versions. Only historical v1 manifests may omit those fields; v2 fails closed.
 - The production v2 boundary evaluator accepts only an exact frozen label
@@ -118,7 +119,16 @@ code_refs:
   references the durable delta head. A crash may leave reusable unreferenced
   artifacts, but cannot expose contradictory traversal state. Restart resumes
   without reopening terminal states; only continuing states can emit
-  address-history work.
+  address-history work. The partition is repeated for frontier states generated
+  by every accepted history before discovery. Commit byte limits count the
+  exact persisted evidence artifacts plus the exact persisted delta, not a
+  synthetic estimate.
+- A v2 isolated canary freezes one label dataset per confirmed snapshot during
+  preparation, persists each content-addressed dataset in the batch
+  transaction, and binds all snapshot/dataset hashes in a schema-2 batch
+  identity. V1 canary identity bytes remain unchanged. V2 rollout is not
+  authorized merely by this plumbing; the existing frozen replay, live canary,
+  adjudication, and capacity gates still apply.
 - The active check generation fence is retained only for wallet-delivery
   idempotency between legacy and Unified delivery workers. It does not start,
   stop, authorize, or limit planner/controller execution and does not block an

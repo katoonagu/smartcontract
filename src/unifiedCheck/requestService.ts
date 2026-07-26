@@ -7,7 +7,7 @@ import type {
   UnifiedTraversalPolicyVersion
 } from "./contracts";
 import {
-  assertUnifiedTraversalPolicyManifest,
+  parseAnalysisManifestV1,
   UNIFIED_BOUNDARY_PREDICATE_VERSION,
   UNIFIED_LABEL_CATALOG_VERSION
 } from "./contracts";
@@ -115,8 +115,19 @@ async function runRecord(
     )
   ).rows[0];
   if (!artifact) throw new Error("unified_analysis_manifest_missing");
-  const manifest = artifact.artifact_json as AnalysisManifestV1;
-  assertUnifiedTraversalPolicyManifest(manifest);
+  const rawManifest = artifact.artifact_json;
+  const rawSnapshotHash = rawManifest !== null &&
+      typeof rawManifest === "object" &&
+      !Array.isArray(rawManifest) &&
+      typeof (rawManifest as { snapshotHash?: unknown }).snapshotHash ===
+        "string"
+    ? (rawManifest as { snapshotHash: string }).snapshotHash
+    : "";
+  const manifest = parseAnalysisManifestV1(rawManifest, {
+    runId: String(row.id),
+    subjectAddress: String(row.subject_address),
+    snapshotHash: rawSnapshotHash
+  });
   if (fingerprintCanonicalArtifact(manifest) !== row.analysis_manifest_sha256) {
     throw new Error("unified_analysis_manifest_hash_mismatch");
   }
@@ -499,28 +510,34 @@ export function buildUnifiedBranchInput(
   snapshotHash: string,
   versions: UnifiedAnalysisVersions
 ): {
-  readonly version: "unified-branch-input-v1";
+  readonly version: "unified-branch-input-v1" | "unified-branch-input-v2";
   readonly branch: "fast" | "deep" | "where";
   readonly snapshotHash: string;
   readonly labelDatasetSha256: string;
   readonly labelCatalogVersion: typeof UNIFIED_LABEL_CATALOG_VERSION;
   readonly boundaryPredicateVersion:
     typeof UNIFIED_BOUNDARY_PREDICATE_VERSION;
-  readonly traversalPolicyVersion: UnifiedTraversalPolicyVersion;
+  readonly traversalPolicyVersion?: "snapshot-closure-v2";
   readonly runtimeCommit: string;
   readonly schemaVersion: number;
 } {
-  return {
+  const legacy = {
     version: "unified-branch-input-v1",
     branch,
     snapshotHash,
     labelDatasetSha256: versions.labelDatasetSha256,
     labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
     boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
-    traversalPolicyVersion: versions.traversalPolicyVersion,
     runtimeCommit: versions.runtimeCommit,
     schemaVersion: versions.schemaVersion
-  };
+  } as const;
+  return versions.traversalPolicyVersion === "snapshot-closure-v1"
+    ? legacy
+    : {
+        ...legacy,
+        version: "unified-branch-input-v2",
+        traversalPolicyVersion: "snapshot-closure-v2"
+      };
 }
 
 function branchInputHash(
@@ -540,8 +557,8 @@ export function buildUnifiedAnalysisIdentity(input: {
   versions: UnifiedAnalysisVersions;
   reuseScope: "shared" | string;
 }): { requestHash: string; analysisKeySha256: string } {
-  const sharedMaterial = {
-    version: "unified-analysis-key-v1",
+  const legacySharedMaterial = {
+    version: "unified-analysis-key-v1" as const,
     chain: "tron",
     subjectAddress: input.subjectAddress,
     confirmedBlockNumber: input.snapshot.confirmedBlockNumber,
@@ -550,12 +567,19 @@ export function buildUnifiedAnalysisIdentity(input: {
     labelDatasetSha256: input.versions.labelDatasetSha256,
     labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
     boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
-    traversalPolicyVersion: input.versions.traversalPolicyVersion,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
     runtimeCommit: input.versions.runtimeCommit,
     schemaVersion: input.versions.schemaVersion
   };
+  const sharedMaterial = input.versions.traversalPolicyVersion ===
+      "snapshot-closure-v1"
+    ? legacySharedMaterial
+    : {
+        ...legacySharedMaterial,
+        version: "unified-analysis-key-v2" as const,
+        traversalPolicyVersion: "snapshot-closure-v2" as const
+      };
   const material = { ...sharedMaterial, reuseScope: input.reuseScope };
   return {
     requestHash: fingerprintCanonicalArtifact(sharedMaterial),

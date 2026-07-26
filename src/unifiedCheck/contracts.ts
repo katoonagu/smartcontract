@@ -170,6 +170,109 @@ export function assertUnifiedTraversalPolicyManifest(
   }
 }
 
+const ANALYSIS_MANIFEST_HASH = /^[0-9a-f]{64}$/u;
+const ANALYSIS_MANIFEST_BLOCK = /^(?:0|[1-9][0-9]*)$/u;
+const ANALYSIS_MANIFEST_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/u;
+
+export function parseAnalysisManifestV1(
+  value: unknown,
+  binding: {
+    readonly runId: string;
+    readonly subjectAddress: string;
+    readonly snapshotHash: string;
+  }
+): AnalysisManifestV1 {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("unified_analysis_manifest_invalid");
+  }
+  const row = value as Record<string, unknown>;
+  const optional = new Set([
+    "labelCatalogVersion",
+    "boundaryPredicateVersion"
+  ]);
+  const required = [
+    "version", "schemaVersion", "runId", "requestHash", "snapshotHash",
+    "chain", "subjectAddress", "confirmedBlockNumber",
+    "confirmedBlockHash", "confirmedBlockTimestamp", "labelDatasetSha256",
+    "scoringPolicyVersion", "attributionPolicyVersion",
+    "traversalPolicyVersion", "runtimeCommit", "databaseSchemaVersion",
+    "paginationCutoffBlockNumber", "paginationCutoffBlockHash",
+    "branchArtifactHashes"
+  ] as const;
+  const allowed = new Set<string>([...required, ...optional]);
+  const branches = row.branchArtifactHashes;
+  const branchRow = branches !== null && typeof branches === "object" &&
+      !Array.isArray(branches)
+    ? branches as Record<string, unknown>
+    : null;
+  const exactBranches = branchRow !== null &&
+    Object.keys(branchRow).sort().join(",") === "deep,fast,where" &&
+    Object.values(branchRow).every((hash) =>
+      typeof hash === "string" && ANALYSIS_MANIFEST_HASH.test(hash)
+    );
+  const exactTimestamp = typeof row.confirmedBlockTimestamp === "string" &&
+    Number.isFinite(Date.parse(row.confirmedBlockTimestamp)) &&
+    new Date(Date.parse(row.confirmedBlockTimestamp)).toISOString() ===
+      row.confirmedBlockTimestamp;
+  const hashFields = [
+    row.requestHash,
+    row.snapshotHash,
+    row.confirmedBlockHash,
+    row.labelDatasetSha256,
+    row.paginationCutoffBlockHash
+  ];
+  const textFields = [
+    row.runId,
+    row.scoringPolicyVersion,
+    row.attributionPolicyVersion,
+    row.runtimeCommit
+  ];
+  if (
+    Object.keys(row).some((key) => !allowed.has(key)) ||
+    required.some((key) => !(key in row)) ||
+    row.version !== "analysis-manifest-v1" ||
+    row.schemaVersion !== 1 ||
+    row.chain !== "tron" ||
+    typeof row.subjectAddress !== "string" ||
+    !ANALYSIS_MANIFEST_ADDRESS.test(row.subjectAddress) ||
+    hashFields.some((hash) =>
+      typeof hash !== "string" || !ANALYSIS_MANIFEST_HASH.test(hash)
+    ) ||
+    typeof row.confirmedBlockNumber !== "string" ||
+    !ANALYSIS_MANIFEST_BLOCK.test(row.confirmedBlockNumber) ||
+    typeof row.paginationCutoffBlockNumber !== "string" ||
+    !ANALYSIS_MANIFEST_BLOCK.test(row.paginationCutoffBlockNumber) ||
+    row.confirmedBlockNumber !== row.paginationCutoffBlockNumber ||
+    row.confirmedBlockHash !== row.paginationCutoffBlockHash ||
+    !exactTimestamp ||
+    textFields.some((text) =>
+      typeof text !== "string" || text.length < 1 || text.length > 512
+    ) ||
+    !Number.isSafeInteger(row.databaseSchemaVersion) ||
+    (row.databaseSchemaVersion as number) < 1 ||
+    !exactBranches ||
+    (
+      row.labelCatalogVersion !== undefined &&
+      row.labelCatalogVersion !== UNIFIED_LABEL_CATALOG_VERSION
+    ) ||
+    (
+      row.boundaryPredicateVersion !== undefined &&
+      row.boundaryPredicateVersion !== UNIFIED_BOUNDARY_PREDICATE_VERSION
+    )
+  ) {
+    throw new TypeError("unified_analysis_manifest_invalid");
+  }
+  assertUnifiedTraversalPolicyManifest(row as AnalysisManifestV1);
+  if (
+    row.runId !== binding.runId ||
+    row.subjectAddress !== binding.subjectAddress ||
+    row.snapshotHash !== binding.snapshotHash
+  ) {
+    throw new Error("unified_analysis_manifest_binding_mismatch");
+  }
+  return row as AnalysisManifestV1;
+}
+
 export type ChildAttemptArtifactV1 = {
   readonly version: "child-attempt-artifact-v1";
   readonly schemaVersion: 1;

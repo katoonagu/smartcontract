@@ -111,6 +111,7 @@ async function withScenario<T>(
   options: {
     traversalPolicyVersion?: UnifiedTraversalPolicyVersion;
     custodialAddress?: string;
+    upstreamCustodialAddress?: string;
   } = {}
 ): Promise<T> {
   const pool = new pg.Pool({ connectionString, max: 1 });
@@ -248,6 +249,19 @@ async function withScenario<T>(
       ),
       block: 90 - index
     } as RawTronscanTrc20Transfer));
+    const upstreamTransfers = options.upstreamCustodialAddress === undefined
+      ? []
+      : [{
+        transaction_id: "8".repeat(64),
+        from_address: options.upstreamCustodialAddress,
+        to_address: FIRST_SOURCE,
+        quant: "10000000",
+        contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        confirmed: true,
+        contractRet: "SUCCESS",
+        block_ts: Date.parse("2026-07-23T11:00:00.000Z"),
+        block: 80
+      } as RawTronscanTrc20Transfer];
 
     const runtime = (
       options: {
@@ -266,12 +280,17 @@ async function withScenario<T>(
         now: () => new Date("2026-07-23T13:01:00.000Z"),
         createId: () => `restart-${processId}-id-${++id}`,
         async loadProviderPage({ address }) {
-          const content = address === SUBJECT
+          const transfers = address === SUBJECT
+            ? rawTransfers
+            : address === FIRST_SOURCE
+            ? upstreamTransfers
+            : [];
+          const content = transfers.length > 0 || address === SUBJECT
             ? {
                 kind: "page" as const,
                 cursor: null,
                 nextCursor: null,
-                transfers: rawTransfers,
+                transfers,
                 reachedAccountCreation: true,
                 provider: "tronscan" as const
               }
@@ -671,6 +690,111 @@ postgresDescribe("Unified planner restart resume", () => {
         custodialAddress: SECOND_SOURCE
       }
     );
+  });
+
+  it("partitions a generated V2 boundary before discovery and resumes once", async () => {
+    await withScenario(
+      [FIRST_SOURCE],
+      async ({ client, runtime, preparePlannedState }) => {
+        const firstProcess = runtime();
+        await preparePlannedState(firstProcess);
+        await expect(firstProcess.runProviderCycle())
+          .resolves.toMatchObject({ outcome: "completed" });
+        await expect(firstProcess.runAnalysisCycle())
+          .resolves.toMatchObject({
+            outcome: "checkpointed",
+            taskId: "task-traversal"
+          });
+
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_planner_entries
+            where run_id = 'run-restart'`
+        )).rows[0]?.count)).toBe(1);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_tasks
+            where run_id = 'run-restart' and kind = 'address_history'`
+        )).rows[0]?.count)).toBe(1);
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind = 'traversal_terminal_evidence'`
+        )).rows[0]?.count)).toBe(1);
+
+        const restartedProcess = runtime();
+        await expect(restartedProcess.runAnalysisCycle())
+          .resolves.toMatchObject({
+            outcome: "completed",
+            taskId: "task-traversal"
+          });
+        await expect(restartedProcess.runAnalysisCycle())
+          .resolves.toMatchObject({ outcome: "idle" });
+        expect(Number((await client.query(
+          `select count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = 'run-restart'
+              and kind = 'traversal_terminal_evidence'`
+        )).rows[0]?.count)).toBe(1);
+        await expectNoDuplicateAuthority(client, { addressAttempts: 1 });
+      },
+      {
+        traversalPolicyVersion: "snapshot-closure-v2",
+        custodialAddress: SECOND_SOURCE,
+        upstreamCustodialAddress: SECOND_SOURCE
+      }
+    );
+  });
+
+  it("rejects a malformed persisted analysis manifest before handler writes", async () => {
+    await withScenario([FIRST_SOURCE], async ({ client, runtime }) => {
+      const current = (await client.query(
+        `select run.analysis_manifest_sha256, artifact.artifact_json
+           from unified_check_runs run
+           join unified_check_artifacts artifact
+             on artifact.sha256 = run.analysis_manifest_sha256
+          where run.id = 'run-restart'`
+      )).rows[0]!;
+      const malformed = {
+        ...current.artifact_json,
+        unexpectedPersistedField: true
+      };
+      const malformedSha256 = fingerprintCanonicalArtifact(malformed);
+      await client.query(
+        `insert into unified_check_artifacts (
+          sha256, created_by_run_id, kind, schema_version, artifact_json
+        ) values ($1,'run-restart','analysis_manifest','1',$2::jsonb)`,
+        [malformedSha256, JSON.stringify(malformed)]
+      );
+      await client.query(
+        `update unified_check_runs
+            set analysis_manifest_sha256 = $1
+          where id = 'run-restart'`,
+        [malformedSha256]
+      );
+
+      await expect(runtime().runProviderCycle()).resolves.toMatchObject({
+        outcome: "failed",
+        taskId: "task-direct_history"
+      });
+      expect(Number((await client.query(
+        `select count(*)::int as count
+           from unified_check_artifacts
+          where created_by_run_id = 'run-restart'
+            and kind not in ('confirmed_snapshot', 'analysis_manifest')`
+      )).rows[0]?.count)).toBe(0);
+      expect(Number((await client.query(
+        `select count(*)::int as count
+           from unified_check_planner_entries
+          where run_id = 'run-restart'`
+      )).rows[0]?.count)).toBe(0);
+      expect(Number((await client.query(
+        `select count(*)::int as count
+           from unified_check_tasks
+          where run_id = 'run-restart' and kind = 'address_history'`
+      )).rows[0]?.count)).toBe(0);
+    });
   });
 
   it("returns the accepted attempt for a stable retry after the DB commit response is lost", async () => {

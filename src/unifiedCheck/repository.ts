@@ -5,7 +5,7 @@ import {
 } from "../forensics/canonicalJson";
 import { addressHistoryManifestKey } from "./addressHistory";
 import type {
-  UnifiedCanaryBatchIdentityV1,
+  UnifiedCanaryBatchIdentity,
   UnifiedCanaryExecutionBlockedV1,
   UnifiedCanaryIsolationAuditV1,
   UnifiedCanarySelectionManifestV1
@@ -821,39 +821,7 @@ export async function createUnifiedCanaryBatch(
         sourceRowId: string;
       }[];
     };
-    batchIdentity: {
-      version: "unified-canary-batch-identity-v1";
-      schemaVersion: 1;
-      selectedSourceSetSha256: string;
-      snapshots: readonly {
-        subjectAddress: string;
-        snapshotSha256: string;
-      }[];
-      candidateCommit: string;
-      labelDatasetSha256: string;
-      scoringPolicyVersion: string;
-      attributionPolicyVersion: string;
-      traversalPolicyVersion: import("./contracts").UnifiedTraversalPolicyVersion;
-      providerSchemaVersion: "tronscan-transfer-page-v1";
-      providerConfiguration: {
-        sha256: string;
-        artifact: unknown;
-      };
-      databaseSchemaVersion: number;
-      databaseSchemaChecksumSha256: string;
-      schema032ChecksumSha256: string;
-      diagnosticHypothesis: {
-        sha256: string;
-        artifact: {
-          version: "unified-canary-diagnostic-hypothesis-v1";
-          schemaVersion: 1;
-          hypothesisId: string;
-          reason: string;
-          changedInputs: readonly string[];
-          createdAt: string;
-        };
-      } | null;
-    };
+    batchIdentity: UnifiedCanaryBatchIdentity;
     runs: readonly {
       request: {
         id: string;
@@ -887,6 +855,10 @@ export async function createUnifiedCanaryBatch(
           admissionPolicy: "barrier" | "rolling";
           providerCapacityCeiling: number;
         };
+      };
+      labelDataset?: {
+        sha256: string;
+        dataset: unknown;
       };
       reuseAllowed: false;
       initialTasks: readonly {
@@ -932,6 +904,32 @@ export async function createUnifiedCanaryBatch(
   ) {
     throw new Error("unified_canary_batch_contract_invalid");
   }
+  const v2BatchIdentity = input.batchIdentity.version ===
+      "unified-canary-batch-identity-v2"
+    ? input.batchIdentity
+    : null;
+  if (
+    v2BatchIdentity !== null &&
+    (
+      v2BatchIdentity.labelDatasets.length !== expectedRunCount ||
+      input.runs.some((item) => {
+        const manifest = item.candidateRun.analysisManifest as {
+          labelDatasetSha256?: unknown;
+        };
+        const binding = v2BatchIdentity.labelDatasets.find((candidate) =>
+          candidate.subjectAddress === item.candidateRun.subjectAddress &&
+          candidate.snapshotSha256 === item.candidateRun.snapshotHash
+        );
+        return item.labelDataset === undefined ||
+          binding?.labelDatasetSha256 !== item.labelDataset.sha256 ||
+          manifest.labelDatasetSha256 !== item.labelDataset.sha256 ||
+          fingerprintCanonicalArtifact(item.labelDataset.dataset) !==
+            item.labelDataset.sha256;
+      })
+    )
+  ) {
+    throw new Error("unified_canary_v2_label_dataset_invalid");
+  }
   const selectionManifestSha256 = fingerprintCanonicalArtifact(
     input.selectionManifest
   );
@@ -973,6 +971,27 @@ export async function createUnifiedCanaryBatch(
     }
     const runs: { id: string; createdAt: string }[] = [];
     for (const item of input.runs) {
+      if (item.labelDataset !== undefined) {
+        await client.query(
+          `insert into unified_label_datasets (sha256, dataset_json)
+           values ($1,$2::jsonb)
+           on conflict (sha256) do nothing`,
+          [item.labelDataset.sha256, JSON.stringify(item.labelDataset.dataset)]
+        );
+        const persisted = requiredRow(
+          await client.query(
+            "select dataset_json from unified_label_datasets where sha256 = $1",
+            [item.labelDataset.sha256]
+          ),
+          "unified_canary_v2_label_dataset_missing"
+        );
+        if (
+          fingerprintCanonicalArtifact(persisted.dataset_json) !==
+            item.labelDataset.sha256
+        ) {
+          throw new Error("unified_canary_v2_label_dataset_mismatch");
+        }
+      }
       const run = requiredRow(
         await client.query(
           `insert into unified_check_runs (
@@ -1063,7 +1082,7 @@ export async function createUnifiedCanaryBatch(
       sha256: batchIdentitySha256,
       createdByRunId: runs[0]!.id,
       kind: "canary_batch_identity",
-      schemaVersion: "1",
+      schemaVersion: String(input.batchIdentity.schemaVersion),
       artifact: input.batchIdentity
     });
     return { selectionManifestSha256, batchIdentitySha256, runs };
@@ -1075,7 +1094,7 @@ export async function loadUnifiedCanaryBatchByIdentity(
   input: { batchIdentitySha256: string }
 ): Promise<{
   batchIdentitySha256: string;
-  batchIdentity: UnifiedCanaryBatchIdentityV1;
+  batchIdentity: UnifiedCanaryBatchIdentity;
   selectionManifestSha256: string;
   selectionManifest: UnifiedCanarySelectionManifestV1;
   runs: readonly {
@@ -1104,7 +1123,7 @@ export async function loadUnifiedCanaryBatchByIdentity(
     throw new Error("unified_canary_resume_identity_missing");
   }
   const batchIdentity =
-    identityRow.artifact_json as UnifiedCanaryBatchIdentityV1;
+    identityRow.artifact_json as UnifiedCanaryBatchIdentity;
   const runRows = (
     await db.query(
       `select run.id, run.created_at, request.subject_address, request.locale,

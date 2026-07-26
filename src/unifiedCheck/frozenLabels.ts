@@ -3,12 +3,17 @@ import {
   fingerprintCanonicalArtifact
 } from "../forensics/canonicalJson";
 import type { FrozenLabelRecordV1 } from "./labelCatalog";
-import { buildFrozenLabelRecord } from "./labelCatalog";
+import {
+  buildFrozenLabelRecord,
+  SUPPORTED_LABEL_CATALOG_V1
+} from "./labelCatalog";
 
 export type { FrozenLabelRecordV1 } from "./labelCatalog";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/u;
+export const MAX_FROZEN_LABEL_DATASET_ENTRIES = 10_000;
+export const MAX_FROZEN_LABEL_DATASET_BYTES = 8_388_608;
 
 export type LegacyFrozenLabelRowV1 = {
   readonly address: string;
@@ -115,6 +120,24 @@ function persistedRecord(value: unknown): Record<string, unknown> {
     throw new TypeError("unified_frozen_label_dataset_invalid");
   }
   return value as Record<string, unknown>;
+}
+
+function assertFrozenDatasetBounds(value: unknown): void {
+  const row = persistedRecord(value);
+  if (
+    Array.isArray(row.labels) &&
+    Array.isArray(row.legacyRows) &&
+    row.labels.length + row.legacyRows.length >
+      MAX_FROZEN_LABEL_DATASET_ENTRIES
+  ) {
+    throw new TypeError("unified_frozen_label_dataset_entries_exceeded");
+  }
+  if (
+    Buffer.byteLength(canonicalizeArtifactJson(value), "utf8") >
+      MAX_FROZEN_LABEL_DATASET_BYTES
+  ) {
+    throw new TypeError("unified_frozen_label_dataset_bytes_exceeded");
+  }
 }
 
 function persistedLabel(value: unknown): FrozenLabelRecordV1 {
@@ -232,10 +255,61 @@ export function buildFrozenLabelDataset(input: {
       canonicalUnique(input.legacyRows.map(validateLegacyRow))
     )
   });
+  assertFrozenDatasetBounds(dataset);
   return {
     dataset,
     sha256: fingerprintCanonicalArtifact(dataset)
   };
+}
+
+export function buildProductionFrozenLabelDataset(input: {
+  readonly frozenAt: string;
+  readonly snapshotHash: string;
+  readonly legacyRows: readonly LegacyFrozenLabelRowV1[];
+}) {
+  const exactLabels = SUPPORTED_LABEL_CATALOG_V1.entries.flatMap((entry) =>
+    entry.addressBindings.map((address) => buildFrozenLabelRecord({
+      address,
+      classifierHint: null,
+      exactRegistryBinding: {
+        catalogEntryId: entry.id,
+        authority: "internal_service_registry",
+        sourcePayloadSha256: fingerprintCanonicalArtifact({
+          version: SUPPORTED_LABEL_CATALOG_V1.version,
+          entry
+        })
+      },
+      verifiedProviderBinding: null
+    }))
+  );
+  const hintLabels = input.legacyRows.flatMap((row) => {
+    const normalized = [row.label, row.category]
+      .map((value) => value.trim().toLowerCase());
+    const entry = SUPPORTED_LABEL_CATALOG_V1.entries.find((candidate) =>
+      normalized.includes(candidate.identity.toLowerCase())
+    );
+    return entry === undefined
+      ? []
+      : [buildFrozenLabelRecord({
+          address: row.address,
+          classifierHint: {
+            identity: entry.identity,
+            category: entry.category,
+            sourcePayloadSha256: fingerprintCanonicalArtifact({
+              version: "unified-label-source-row-v1",
+              ...row
+            })
+          },
+          exactRegistryBinding: null,
+          verifiedProviderBinding: null
+        })];
+  });
+  return buildFrozenLabelDataset({
+    frozenAt: input.frozenAt,
+    snapshotHash: input.snapshotHash,
+    labels: [...exactLabels, ...hintLabels],
+    legacyRows: input.legacyRows
+  });
 }
 
 export function validateFrozenLabelDatasetV1(input: {
@@ -246,6 +320,7 @@ export function validateFrozenLabelDatasetV1(input: {
   readonly boundaryPredicateVersion: "unified-boundary-predicates-v1";
 }): FrozenLabelDatasetV1 {
   const row = persistedRecord(input.dataset);
+  assertFrozenDatasetBounds(row);
   if (!exactKeys(row, [
     "version",
     "schemaVersion",
@@ -294,4 +369,52 @@ export function validateFrozenLabelDatasetV1(input: {
     rebuilt.sha256 !== input.expectedSha256
   ) throw new Error("unified_frozen_label_dataset_hash_mismatch");
   return rebuilt.dataset;
+}
+
+export function createFrozenLabelDatasetLoader(input: {
+  readonly loadBySha256: (sha256: string) => Promise<unknown>;
+  readonly maxCachedDatasets?: number;
+}) {
+  const maxCachedDatasets = input.maxCachedDatasets ?? 16;
+  if (
+    !Number.isSafeInteger(maxCachedDatasets) ||
+    maxCachedDatasets < 1 ||
+    maxCachedDatasets > 64
+  ) {
+    throw new TypeError("unified_frozen_label_cache_size_invalid");
+  }
+  const cache = new Map<string, FrozenLabelDatasetV1>();
+  return async (binding: {
+    readonly labelDatasetSha256: string;
+    readonly snapshotHash: string;
+    readonly labelCatalogVersion: "unified-label-catalog-v1";
+    readonly boundaryPredicateVersion: "unified-boundary-predicates-v1";
+  }): Promise<FrozenLabelDatasetV1> => {
+    const cached = cache.get(binding.labelDatasetSha256);
+    if (cached !== undefined) {
+      if (
+        cached.snapshotHash !== binding.snapshotHash ||
+        cached.catalogVersion !== binding.labelCatalogVersion ||
+        cached.boundaryPredicateVersion !== binding.boundaryPredicateVersion
+      ) {
+        throw new Error("unified_frozen_label_dataset_binding_mismatch");
+      }
+      cache.delete(binding.labelDatasetSha256);
+      cache.set(binding.labelDatasetSha256, cached);
+      return cached;
+    }
+    const validated = validateFrozenLabelDatasetV1({
+      dataset: await input.loadBySha256(binding.labelDatasetSha256),
+      expectedSha256: binding.labelDatasetSha256,
+      snapshotHash: binding.snapshotHash,
+      catalogVersion: binding.labelCatalogVersion,
+      boundaryPredicateVersion: binding.boundaryPredicateVersion
+    });
+    if (cache.size >= maxCachedDatasets) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(binding.labelDatasetSha256, validated);
+    return validated;
+  };
 }

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildFrozenLabelDataset,
+  createFrozenLabelDatasetLoader,
+  MAX_FROZEN_LABEL_DATASET_BYTES,
+  MAX_FROZEN_LABEL_DATASET_ENTRIES,
   validateFrozenLabelDatasetV1,
   type FrozenLabelRecordV1
 } from "../../src/unifiedCheck/frozenLabels";
@@ -152,5 +155,74 @@ describe("Unified frozen label dataset", () => {
       catalogVersion: "unified-label-catalog-v1",
       boundaryPredicateVersion: "unified-boundary-predicates-v1"
     })).toThrow("unified_frozen_label_dataset_invalid");
+  });
+
+  it("rejects persisted datasets over the entry and byte ceilings", () => {
+    const built = buildFrozenLabelDataset({
+      frozenAt: "2026-07-24T00:00:00.000Z",
+      snapshotHash: SNAPSHOT,
+      labels: [label],
+      legacyRows: []
+    });
+    expect(() => validateFrozenLabelDatasetV1({
+      dataset: {
+        ...built.dataset,
+        labels: Array(MAX_FROZEN_LABEL_DATASET_ENTRIES + 1).fill(label)
+      },
+      expectedSha256: built.sha256,
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toThrow("unified_frozen_label_dataset_entries_exceeded");
+    expect(() => validateFrozenLabelDatasetV1({
+      dataset: {
+        ...built.dataset,
+        padding: "x".repeat(MAX_FROZEN_LABEL_DATASET_BYTES)
+      },
+      expectedSha256: built.sha256,
+      snapshotHash: SNAPSHOT,
+      catalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    })).toThrow("unified_frozen_label_dataset_bytes_exceeded");
+  });
+
+  it("validates once per hash while binding and bounding the loader cache", async () => {
+    const snapshots = [SNAPSHOT, "c".repeat(64), "d".repeat(64)];
+    const datasets = snapshots.map((snapshotHash, index) =>
+      buildFrozenLabelDataset({
+        frozenAt: `2026-07-24T00:00:0${index}.000Z`,
+        snapshotHash,
+        labels: [label],
+        legacyRows: []
+      })
+    );
+    const byHash = new Map(datasets.map((item) => [item.sha256, item.dataset]));
+    let loads = 0;
+    const load = createFrozenLabelDatasetLoader({
+      maxCachedDatasets: 2,
+      loadBySha256: async (sha256) => {
+        loads += 1;
+        return byHash.get(sha256);
+      }
+    });
+    const binding = (index: number) => ({
+      labelDatasetSha256: datasets[index]!.sha256,
+      snapshotHash: snapshots[index]!,
+      labelCatalogVersion: "unified-label-catalog-v1" as const,
+      boundaryPredicateVersion: "unified-boundary-predicates-v1" as const
+    });
+
+    await load(binding(0));
+    await load(binding(0));
+    expect(loads).toBe(1);
+    await expect(load({
+      ...binding(0),
+      snapshotHash: "e".repeat(64)
+    })).rejects.toThrow("unified_frozen_label_dataset_binding_mismatch");
+    expect(loads).toBe(1);
+    await load(binding(1));
+    await load(binding(2));
+    await load(binding(0));
+    expect(loads).toBe(4);
   });
 });

@@ -18,6 +18,8 @@ import {
   UNIFIED_CANARY_SELECTION_QUERY_VERSION
 } from "./repository";
 import type { SnapshotSource } from "./snapshot";
+import type { ConfirmedWalletSnapshotV1 } from "./snapshot";
+import type { FrozenLabelDatasetV1 } from "./frozenLabels";
 import type { UnifiedWatchdogRunV1 } from "./watchdog";
 import type {
   UnifiedRollingRolloutStage
@@ -336,6 +338,10 @@ type PreparedCanaryRun = {
   readonly candidateRun: AnalysisRunRecord;
   readonly reuseAllowed: false;
   readonly initialTasks: readonly UnifiedInitialTask[];
+  readonly labelDataset?: {
+    readonly sha256: string;
+    readonly dataset: FrozenLabelDatasetV1;
+  };
 };
 
 export type UnifiedCanaryBatchIdentityV1 = {
@@ -364,6 +370,24 @@ export type UnifiedCanaryBatchIdentityV1 = {
     readonly artifact: UnifiedCanaryDiagnosticHypothesisV1;
   } | null;
 };
+
+export type UnifiedCanaryBatchIdentityV2 = Omit<
+  UnifiedCanaryBatchIdentityV1,
+  "version" | "schemaVersion" | "labelDatasetSha256"
+> & {
+  readonly version: "unified-canary-batch-identity-v2";
+  readonly schemaVersion: 2;
+  readonly traversalPolicyVersion: "snapshot-closure-v2";
+  readonly labelDatasets: readonly {
+    readonly subjectAddress: string;
+    readonly snapshotSha256: string;
+    readonly labelDatasetSha256: string;
+  }[];
+};
+
+export type UnifiedCanaryBatchIdentity =
+  | UnifiedCanaryBatchIdentityV1
+  | UnifiedCanaryBatchIdentityV2;
 
 export type UnifiedCanaryProviderConfigurationV1 = {
   readonly version: "unified-canary-provider-configuration-v1";
@@ -537,7 +561,7 @@ export function verifyUnifiedCanaryDiagnosticHypothesis(
 export type UnifiedCanaryBatchRepository = {
   createBatch(input: {
     readonly selectionManifest: UnifiedCanarySelectionManifestV1;
-    readonly batchIdentity: UnifiedCanaryBatchIdentityV1;
+    readonly batchIdentity: UnifiedCanaryBatchIdentity;
     readonly runs: readonly PreparedCanaryRun[];
   }): Promise<{
     readonly selectionManifestSha256: string;
@@ -580,6 +604,14 @@ export async function prepareUnifiedCanaryBatch(input: {
   readonly selectionManifest: UnifiedCanarySelectionManifestV1;
   readonly snapshotSource: SnapshotSource;
   readonly versions: UnifiedAnalysisVersions;
+  readonly freezeLabelDataset?: (input: {
+    readonly snapshot: ConfirmedWalletSnapshotV1;
+    readonly snapshotHash: string;
+    readonly frozenAt: string;
+  }) => Promise<{
+    readonly sha256: string;
+    readonly dataset: FrozenLabelDatasetV1;
+  }>;
   readonly rolloutPolicy?: {
     readonly stage: UnifiedRollingRolloutStage;
     readonly boundedUserCheckBasisPoints: number;
@@ -599,7 +631,7 @@ export async function prepareUnifiedCanaryBatch(input: {
 }): Promise<{
   readonly selectionManifestSha256: string;
   readonly batchIdentitySha256: string;
-  readonly batchIdentity: UnifiedCanaryBatchIdentityV1;
+  readonly batchIdentity: UnifiedCanaryBatchIdentity;
   readonly runs: readonly {
     readonly id: string;
     readonly createdAt: string;
@@ -626,6 +658,12 @@ export async function prepareUnifiedCanaryBatch(input: {
       input.selectionManifest.source.databaseSchemaVersion
   ) {
     throw new Error("unified_canary_batch_provenance_mismatch");
+  }
+  if (
+    input.versions.traversalPolicyVersion === "snapshot-closure-v2" &&
+    input.freezeLabelDataset === undefined
+  ) {
+    throw new Error("unified_canary_v2_frozen_dataset_required");
   }
   const now = input.now ?? (() => new Date());
   const acceptedAt = timestamp(
@@ -677,7 +715,8 @@ export async function prepareUnifiedCanaryBatch(input: {
         request: attached,
         candidateRun: attachment.candidateRun,
         reuseAllowed: false,
-        initialTasks: attachment.initialTasks ?? []
+        initialTasks: attachment.initialTasks ?? [],
+        labelDataset: attachment.labelDataset
       });
       return {
         request: attached,
@@ -729,6 +768,7 @@ export async function prepareUnifiedCanaryBatch(input: {
       candidateRunId: runId,
       initialTasks,
       versions: input.versions,
+      freezeLabelDataset: input.freezeLabelDataset,
       rolloutPolicy: input.rolloutPolicy,
       now: () => new Date(acceptedAt)
     });
@@ -753,9 +793,7 @@ export async function prepareUnifiedCanaryBatch(input: {
     version: "unified-canary-selected-source-set-v1",
     selected: input.selectionManifest.selected
   });
-  const batchIdentity: UnifiedCanaryBatchIdentityV1 = {
-    version: "unified-canary-batch-identity-v1",
-    schemaVersion: 1,
+  const commonBatchIdentity = {
     selectedSourceSetSha256,
     snapshots: staged.map((item) => ({
       subjectAddress: item.candidateRun.subjectAddress,
@@ -764,7 +802,6 @@ export async function prepareUnifiedCanaryBatch(input: {
       left.subjectAddress.localeCompare(right.subjectAddress)
     ),
     candidateCommit: input.selectionManifest.source.candidateCommit,
-    labelDatasetSha256: input.versions.labelDatasetSha256,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
     traversalPolicyVersion: input.versions.traversalPolicyVersion,
@@ -776,7 +813,29 @@ export async function prepareUnifiedCanaryBatch(input: {
     schema032ChecksumSha256:
       input.selectionManifest.source.schema032ChecksumSha256,
     diagnosticHypothesis: input.diagnosticHypothesis ?? null
-  };
+  } as const;
+  const batchIdentity: UnifiedCanaryBatchIdentity =
+    input.versions.traversalPolicyVersion === "snapshot-closure-v1"
+      ? {
+          version: "unified-canary-batch-identity-v1",
+          schemaVersion: 1,
+          ...commonBatchIdentity,
+          labelDatasetSha256: input.versions.labelDatasetSha256
+        }
+      : {
+          version: "unified-canary-batch-identity-v2",
+          schemaVersion: 2,
+          ...commonBatchIdentity,
+          traversalPolicyVersion: "snapshot-closure-v2",
+          labelDatasets: staged.map((item) => ({
+            subjectAddress: item.candidateRun.subjectAddress,
+            snapshotSha256: item.candidateRun.snapshotHash,
+            labelDatasetSha256:
+              item.candidateRun.analysisManifest.labelDatasetSha256
+          })).sort((left, right) =>
+            left.subjectAddress.localeCompare(right.subjectAddress)
+          )
+        };
   const batchHash = fingerprintCanonicalArtifact(batchIdentity);
   const persistedRuns = staged.map((item, index) => ({
     ...item,

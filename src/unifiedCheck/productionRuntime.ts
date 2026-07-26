@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type { IndexedTronUsdtTransfer } from "../types";
-import type { AnalysisManifestV1 } from "./contracts";
+import {
+  parseAnalysisManifestV1,
+  type AnalysisManifestV1
+} from "./contracts";
 import type {
   DirectHistoryPage,
   DirectHistoryProviderWait
@@ -73,6 +76,7 @@ import {
 import type {
   UnifiedProviderSlotIdentity
 } from "./providerPool";
+import type { FrozenLabelDatasetV1 } from "./frozenLabels";
 
 type LoadedRun = {
   readonly id: string;
@@ -123,12 +127,23 @@ async function loadRun(
     "unified_production_runtime_run_missing"
   );
   const manifestHash = String(row.analysis_manifest_sha256);
-  const manifest = await artifact<AnalysisManifestV1>(
+  const rawManifest = await artifact<unknown>(
     db,
     runId,
     manifestHash,
     "analysis_manifest"
   );
+  const manifest = parseAnalysisManifestV1(rawManifest, {
+    runId,
+    subjectAddress: String(row.subject_address),
+    snapshotHash: rawManifest !== null &&
+        typeof rawManifest === "object" &&
+        !Array.isArray(rawManifest) &&
+        typeof (rawManifest as { snapshotHash?: unknown }).snapshotHash ===
+          "string"
+      ? (rawManifest as { snapshotHash: string }).snapshotHash
+      : ""
+  });
   return {
     id: runId,
     subjectAddress: String(row.subject_address),
@@ -304,7 +319,7 @@ export function createUnifiedProductionRuntime(input: {
     snapshotHash: string;
     labelCatalogVersion: "unified-label-catalog-v1";
     boundaryPredicateVersion: "unified-boundary-predicates-v1";
-  }): Promise<unknown>;
+  }): Promise<FrozenLabelDatasetV1>;
   loadHardEvidence(input: {
     subjectAddress: string;
     snapshotBlockNumber: string;

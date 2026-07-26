@@ -18,7 +18,7 @@ import {
   UNIFIED_LABEL_CATALOG_VERSION
 } from "./contracts";
 import {
-  validateFrozenLabelDatasetV1,
+  type FrozenLabelDatasetV1,
   type FrozenLabelRecordV1
 } from "./frozenLabels";
 import {
@@ -89,7 +89,6 @@ export type ProductionBoundaryCandidateV2 = {
   readonly evidence: ProductionBoundaryEvidenceV2;
   readonly evidenceHash: string;
   readonly deltaEntry: ProductionBoundaryDeltaEntryV2;
-  readonly canonicalBytes: number;
 };
 
 export function buildProductionBoundaryCandidateV2(input: {
@@ -123,11 +122,7 @@ export function buildProductionBoundaryCandidateV2(input: {
     state: input.state,
     evidence: commit.evidence,
     evidenceHash,
-    deltaEntry,
-    canonicalBytes: Buffer.byteLength(
-      canonicalizeArtifactJson({ evidence: commit.evidence, deltaEntry }),
-      "utf8"
-    )
+    deltaEntry
   };
 }
 
@@ -325,9 +320,14 @@ type TraversalApplicationInput = {
   }): Promise<void>;
 };
 
-async function persistTraversalApplication(
+function buildTraversalApplication(
   input: TraversalApplicationInput
-): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+): {
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  deltaArtifact: TraversalDeltaArtifactV1;
+  deltaSha256: string;
+} {
   const first = input.group[0]!;
   const groupIds = new Set(input.group.map(traversalStateId));
   const remaining = input.state.frontier.filter((item) =>
@@ -381,14 +381,10 @@ async function persistTraversalApplication(
       code: `address-group:${first.direction}`
     }
   });
-  await input.persistArtifact({
-    runId: input.runId,
-    kind: "traversal_delta",
-    sha256: appended.sha256,
-    artifact: appended.artifact
-  });
   return {
     checkpoint: appended.checkpoint,
+    deltaArtifact: appended.artifact,
+    deltaSha256: appended.sha256,
     state: {
       ...input.state,
       frontier: nextFrontier,
@@ -422,6 +418,19 @@ async function persistTraversalApplication(
       ])].sort()
     }
   };
+}
+
+async function persistTraversalApplication(
+  input: TraversalApplicationInput
+): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+  const built = buildTraversalApplication(input);
+  await input.persistArtifact({
+    runId: input.runId,
+    kind: "traversal_delta",
+    sha256: built.deltaSha256,
+    artifact: built.deltaArtifact
+  });
+  return { checkpoint: built.checkpoint, state: built.state };
 }
 
 async function applyAcceptedAddressHistory(input: {
@@ -583,7 +592,7 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     snapshotHash: string;
     labelCatalogVersion: "unified-label-catalog-v1";
     boundaryPredicateVersion: "unified-boundary-predicates-v1";
-  }): Promise<unknown>;
+  }): Promise<FrozenLabelDatasetV1>;
   loadDurableAddressHistoryKeys(args: {
     runId: string;
     manifestKeys: readonly string[];
@@ -735,36 +744,90 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     }
     const persistedDeltaHeadSha256 = v2.deltaHeadSha256;
     const eventCache = new Map<string, IndexedTronUsdtTransfer[]>();
+    let frozenLabelsByAddress:
+      ReadonlyMap<string, readonly FrozenLabelRecordV1[]> = new Map();
+
+    const persistV2BoundaryPrefix = async (
+      candidates: readonly ProductionBoundaryCandidateV2[]
+    ): Promise<boolean> => {
+      const evidenceBytes = candidates.map((candidate) =>
+        Buffer.byteLength(canonicalizeArtifactJson(candidate.evidence), "utf8")
+      );
+      if (evidenceBytes.some((bytes) => bytes > input.manifestMaxBytes)) {
+        throw new Error("unified_v2_boundary_manifest_bytes_exceeded");
+      }
+      let selected: readonly ProductionBoundaryCandidateV2[] = [];
+      let selectedApplication: ReturnType<
+        typeof buildTraversalApplication
+      > | null = null;
+      const candidateCount = Math.min(
+        candidates.length,
+        input.commitMaxEntries
+      );
+      // ponytail: the configured bounded prefix uses an O(n²) preview rebuild;
+      // replace with incremental delta sizing before raising buffer ceilings.
+      for (let length = 1; length <= candidateCount; length += 1) {
+        const prefix = candidates.slice(0, length);
+        const application = buildTraversalApplication({
+          runId: task.runId,
+          context,
+          checkpoint: v2,
+          state,
+          group: prefix.map((candidate) => candidate.state),
+          generated: [],
+          addedExpandedStateIds: [],
+          addedEligibleEventIds: [],
+          addedExpandedStateKeys: [],
+          addedSupersededStateIds: [],
+          addedTerminals: prefix.map((candidate) =>
+            candidate.deltaEntry.terminal
+          ),
+          persistArtifact: input.persistArtifact
+        });
+        const actualBytes = evidenceBytes.slice(0, length)
+          .reduce((sum, bytes) => sum + bytes, 0) +
+          Buffer.byteLength(
+            canonicalizeArtifactJson(application.deltaArtifact),
+            "utf8"
+          );
+        if (actualBytes > input.commitMaxBytes) {
+          if (length === 1) {
+            throw new Error("unified_v2_boundary_commit_bytes_exceeded");
+          }
+          break;
+        }
+        selected = prefix;
+        selectedApplication = application;
+      }
+      if (selectedApplication === null) return false;
+      for (const candidate of selected) {
+        await input.persistArtifact({
+          runId: task.runId,
+          kind: "traversal_terminal_evidence",
+          sha256: candidate.evidenceHash,
+          artifact: candidate.evidence
+        });
+      }
+      await input.persistArtifact({
+        runId: task.runId,
+        kind: "traversal_delta",
+        sha256: selectedApplication.deltaSha256,
+        artifact: selectedApplication.deltaArtifact
+      });
+      v2 = selectedApplication.checkpoint;
+      state = selectedApplication.state;
+      await heartbeat();
+      return true;
+    };
 
     if (context.manifest.traversalPolicyVersion === "snapshot-closure-v2") {
       const labelCatalogVersion = context.manifest.labelCatalogVersion!;
       const boundaryPredicateVersion =
         context.manifest.boundaryPredicateVersion!;
-      const rawDataset = await input.loadFrozenLabelDataset!({
+      const frozen = await input.loadFrozenLabelDataset!({
         labelDatasetSha256: context.manifest.labelDatasetSha256,
         snapshotHash: context.manifest.snapshotHash,
         labelCatalogVersion,
-        boundaryPredicateVersion
-      });
-      const rawRecord = rawDataset !== null &&
-          typeof rawDataset === "object" &&
-          !Array.isArray(rawDataset)
-        ? rawDataset as Record<string, unknown>
-        : null;
-      if (
-        rawRecord !== null &&
-        (
-          rawRecord.catalogVersion !== labelCatalogVersion ||
-          rawRecord.boundaryPredicateVersion !== boundaryPredicateVersion
-        )
-      ) {
-        throw new Error("unified_v2_boundary_versions_mismatch");
-      }
-      const frozen = validateFrozenLabelDatasetV1({
-        dataset: rawDataset,
-        expectedSha256: context.manifest.labelDatasetSha256,
-        snapshotHash: context.manifest.snapshotHash,
-        catalogVersion: labelCatalogVersion,
         boundaryPredicateVersion
       });
       const labelsByAddress = new Map<string, FrozenLabelRecordV1[]>();
@@ -773,6 +836,7 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         labels.push(label);
         labelsByAddress.set(label.address, labels);
       }
+      frozenLabelsByAddress = labelsByAddress;
       const candidates: ProductionBoundaryCandidateV2[] = [];
       for (const frontierState of [...state.frontier].sort((left, right) =>
         traversalStateId(left).localeCompare(traversalStateId(right))
@@ -793,53 +857,37 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
           labelDatasetSha256: context.manifest.labelDatasetSha256
         }));
       }
-      for (const candidate of candidates) {
-        if (candidate.canonicalBytes > input.manifestMaxBytes) {
-          throw new Error("unified_v2_boundary_manifest_bytes_exceeded");
-        }
-      }
-      const prefix: ProductionBoundaryCandidateV2[] = [];
-      let prefixBytes = 0;
-      for (const candidate of candidates) {
-        if (prefix.length >= input.commitMaxEntries) break;
-        if (prefixBytes + candidate.canonicalBytes > input.commitMaxBytes) {
-          if (prefix.length === 0) {
-            throw new Error("unified_v2_boundary_commit_bytes_exceeded");
-          }
-          break;
-        }
-        prefix.push(candidate);
-        prefixBytes += candidate.canonicalBytes;
-      }
-      if (prefix.length > 0) {
-        for (const candidate of prefix) {
-          await input.persistArtifact({
-            runId: task.runId,
-            kind: "traversal_terminal_evidence",
-            sha256: candidate.evidenceHash,
-            artifact: candidate.evidence
-          });
-        }
-        const applied = await persistTraversalApplication({
-          runId: task.runId,
-          context,
-          checkpoint: v2,
-          state,
-          group: prefix.map((candidate) => candidate.state),
-          generated: [],
-          addedExpandedStateIds: [],
-          addedEligibleEventIds: [],
-          addedExpandedStateKeys: [],
-          addedSupersededStateIds: [],
-          addedTerminals: prefix.map((candidate) =>
-            candidate.deltaEntry.terminal
-          ),
-          persistArtifact: input.persistArtifact
-        });
-        await heartbeat();
-        return { kind: "checkpoint", checkpoint: applied.checkpoint };
+      if (await persistV2BoundaryPrefix(candidates)) {
+        return { kind: "checkpoint", checkpoint: v2 };
       }
     }
+
+    const partitionGeneratedV2Boundaries = async (): Promise<boolean> => {
+      if (context.manifest.traversalPolicyVersion !== "snapshot-closure-v2") {
+        return false;
+      }
+      const candidates: ProductionBoundaryCandidateV2[] = [];
+      for (const frontierState of [...state.frontier].sort((left, right) =>
+        traversalStateId(left).localeCompare(traversalStateId(right))
+      )) {
+        const labels = frozenLabelsByAddress.get(frontierState.address) ?? [];
+        const decision = evaluateProductionBoundaryV2({
+          state: frontierState,
+          eventTimestamp: frontierState.anchorTimestamp,
+          labels,
+          snapshotHash: context.manifest.snapshotHash,
+          labelDatasetSha256: context.manifest.labelDatasetSha256
+        });
+        if (!decision.terminal) continue;
+        candidates.push(buildProductionBoundaryCandidateV2({
+          state: frontierState,
+          labels,
+          snapshotHash: context.manifest.snapshotHash,
+          labelDatasetSha256: context.manifest.labelDatasetSha256
+        }));
+      }
+      return persistV2BoundaryPrefix(candidates);
+    };
 
     type MandatoryHistory = {
       manifestKey: string;
@@ -1031,7 +1079,9 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         state = applied.state;
         await heartbeat();
       }
-      await collectDiscoveries(entry.canonicalSequence);
+      if (!await partitionGeneratedV2Boundaries()) {
+        await collectDiscoveries(entry.canonicalSequence);
+      }
     };
     const committedHistories = await input.loadCommittedAddressHistories({
       runId: task.runId,

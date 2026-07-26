@@ -19,7 +19,6 @@ import type {
   ChildAttemptArtifactV1
 } from "../../src/unifiedCheck/contracts";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
-import { buildUnifiedBranchInput } from "../../src/unifiedCheck/requestService";
 import {
   buildTraversalCoverage,
   traversalStateId,
@@ -51,23 +50,11 @@ const manifest = {
   databaseSchemaVersion: 33,
   paginationCutoffBlockNumber: "100",
   paginationCutoffBlockHash: "c".repeat(64),
-  branchArtifactHashes: Object.fromEntries(
-    (["fast", "where", "deep"] as const).map((branch) => [
-      branch,
-      fingerprintCanonicalArtifact(buildUnifiedBranchInput(
-        branch,
-        "b".repeat(64),
-        {
-          labelDatasetSha256: "d".repeat(64),
-          scoringPolicyVersion: "scoring-signal-matrix-v4",
-          attributionPolicyVersion: "selected-attribution-policy-v1",
-          traversalPolicyVersion: "snapshot-closure-v1",
-          runtimeCommit: "candidate",
-          schemaVersion: 33
-        }
-      ))
-    ])
-  ) as Record<"fast" | "where" | "deep", string>
+  branchArtifactHashes: {
+    fast: "eb52657ea33755d8c8f26cc9854dba7ad17f4fe132b9bfae414b2b75c352148b",
+    where: "2cd9821d5c2b4e5b7a65ee076b1183c82c8cd51f992b76c97ac3871969ce1e91",
+    deep: "3799de4cae231bac7cde8260ca83a7b46eaf6645040de5eb04ee687ced9f97a6"
+  }
 } as AnalysisManifestV1;
 const event: IndexedTronUsdtTransfer = {
   txHash: "2".repeat(64),

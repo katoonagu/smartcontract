@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildFrozenLabelDataset,
   type FrozenLabelDatasetV1
 } from "../../src/unifiedCheck/frozenLabels";
 import type { SnapshotSource } from "../../src/unifiedCheck/snapshot";
-import { assertUnifiedTraversalPolicyManifest } from "../../src/unifiedCheck/contracts";
+import {
+  assertUnifiedTraversalPolicyManifest,
+  parseAnalysisManifestV1
+} from "../../src/unifiedCheck/contracts";
 import {
   buildUnifiedAnalysisIdentity,
   buildUnifiedBranchInput,
@@ -155,7 +159,7 @@ function input(
 }
 
 describe("Unified Check request intake", () => {
-  it("binds traversal policy into branch and reusable analysis identities", () => {
+  it("preserves frozen historical v1 identities while separating v2", () => {
     const snapshot = {
       version: "confirmed-wallet-snapshot-v1" as const,
       schemaVersion: 1 as const,
@@ -173,17 +177,39 @@ describe("Unified Check request intake", () => {
     };
     const v2 = { ...versions, traversalPolicyVersion: "snapshot-closure-v2" as const };
 
-    expect(buildUnifiedBranchInput("where", HASH_A, versions))
-      .toMatchObject({ traversalPolicyVersion: "snapshot-closure-v1" });
+    const legacyBranch = buildUnifiedBranchInput("where", HASH_A, versions);
+    expect(legacyBranch).toEqual({
+      version: "unified-branch-input-v1",
+      branch: "where",
+      snapshotHash: HASH_A,
+      labelDatasetSha256: "c".repeat(64),
+      labelCatalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1",
+      runtimeCommit: "candidate-commit",
+      schemaVersion: 34
+    });
+    expect(fingerprintCanonicalArtifact(legacyBranch)).toBe(
+      "3a6a72ce4bec4831f6460b48c02dda2cccef43fae7d5a27feb9259ae4e3040cc"
+    );
     expect(buildUnifiedBranchInput("where", HASH_A, v2))
-      .toMatchObject({ traversalPolicyVersion: "snapshot-closure-v2" });
-    expect(buildUnifiedAnalysisIdentity({
+      .toMatchObject({
+        version: "unified-branch-input-v2",
+        traversalPolicyVersion: "snapshot-closure-v2"
+      });
+    const legacyIdentity = buildUnifiedAnalysisIdentity({
       subjectAddress: ADDRESS,
       snapshot,
       snapshotHash: HASH_A,
       versions,
       reuseScope: "shared"
-    })).not.toEqual(buildUnifiedAnalysisIdentity({
+    });
+    expect(legacyIdentity).toEqual({
+      requestHash:
+        "f02c7106067f1c3b3b96421d1ace54b8ee257c0fa1856470eec27dba28c82e9a",
+      analysisKeySha256:
+        "67054e46df51324584d05f87a45ce65272dacf5310f22cf1d4efc0e517c431f9"
+    });
+    expect(legacyIdentity).not.toEqual(buildUnifiedAnalysisIdentity({
       subjectAddress: ADDRESS,
       snapshot,
       snapshotHash: HASH_A,
@@ -227,6 +253,11 @@ describe("Unified Check request intake", () => {
       ...historical
     } = structuredClone(result.run.analysisManifest);
     expect(() => assertUnifiedTraversalPolicyManifest(historical)).not.toThrow();
+    expect(parseAnalysisManifestV1(historical, {
+      runId: historical.runId,
+      subjectAddress: historical.subjectAddress,
+      snapshotHash: historical.snapshotHash
+    })).toEqual(historical);
     expect(() => assertUnifiedTraversalPolicyManifest({
       ...historical,
       traversalPolicyVersion: "snapshot-closure-v2"
@@ -245,6 +276,39 @@ describe("Unified Check request intake", () => {
       labelCatalogVersion: "unified-label-catalog-v0",
       boundaryPredicateVersion: "unified-boundary-predicates-v0"
     } as never)).toThrow("unified_v2_boundary_versions_mismatch");
+  });
+
+  it("rejects malformed complete manifests and binding mismatches", async () => {
+    const result = await intakeUnifiedCheck(input(
+      new MemoryStore(),
+      source(),
+      "manifest-parse",
+      "request-manifest-parse",
+      "run-manifest-parse"
+    ));
+    expect(result.kind).toBe("attached");
+    if (result.kind !== "attached") return;
+    const valid = result.run.analysisManifest;
+    const binding = {
+      runId: valid.runId,
+      subjectAddress: valid.subjectAddress,
+      snapshotHash: valid.snapshotHash
+    };
+    for (const malformed of [
+      { ...valid, unexpected: true },
+      { ...valid, requestHash: "not-a-hash" },
+      { ...valid, confirmedBlockTimestamp: "yesterday" },
+      { ...valid, databaseSchemaVersion: 0 },
+      { ...valid, branchArtifactHashes: { fast: HASH_A } }
+    ]) {
+      expect(() => parseAnalysisManifestV1(malformed, binding)).toThrow(
+        "unified_analysis_manifest_invalid"
+      );
+    }
+    expect(() => parseAnalysisManifestV1(valid, {
+      ...binding,
+      runId: "different-run"
+    })).toThrow("unified_analysis_manifest_binding_mismatch");
   });
 
   it("freezes rollout policy on run creation while later runs use new authority", async () => {
