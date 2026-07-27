@@ -76,6 +76,12 @@ Successful, failed, and reverted final results remain distinct. Transient,
 empty, unbound, partial, pending, and unconfirmed responses are never saved
 under the permanent identity. Policy conclusions are separate
 `detector_output` rows; they never masquerade as provider responses.
+Raw evidence also binds one rich indexed movement identity and its exact
+finality fields to the production raw-preflight projection. Its witness hash is
+recomputed from those canonical fields on save and read; an arbitrary supplied
+hash or a payload shaped for the other endpoint fails closed. A persisted
+`plain_usdt_raw_proven` decision references exactly one successful compatible
+raw row and cannot also reference failed, reverted, or full-response evidence.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,

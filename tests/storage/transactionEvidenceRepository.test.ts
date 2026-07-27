@@ -1,21 +1,80 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
+import { TronWeb } from "tronweb";
 import type { Db } from "../../src/storage/db";
 import {
   getTransactionProviderEvidence,
   saveTransactionEnrichmentDecisionEvidence,
   saveTransactionProviderEvidence,
+  transactionProviderFinalityWitnessSha256,
   transactionProviderEvidenceId,
   type TransactionEnrichmentDecisionEvidenceV1,
+  type TransactionProviderMovementWitnessV1,
   type TransactionProviderEvidenceIdentityV1,
   type TronTransactionProviderEvidenceV1
 } from "../../src/storage/transactionEvidenceRepository";
 import { canonicalizeArtifactJson } from "../../src/forensics/canonicalJson";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const WITNESS = createHash("sha256").update("movement-witness").digest("hex");
+const CALLER = "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm";
+const RECIPIENT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
+
+function addressWord(address: string): string {
+  return TronWeb.address.toHex(address).slice(2).padStart(64, "0").toLowerCase();
+}
+
+function uintWord(value: bigint): string {
+  return value.toString(16).padStart(64, "0");
+}
+
+function rawPayload(txHash: string, contractRet: string): Record<string, unknown> {
+  return {
+    txID: txHash,
+    raw_data: {
+      contract: [{
+        type: "TriggerSmartContract",
+        parameter: {
+          type_url: "type.googleapis.com/protocol.TriggerSmartContract",
+          value: {
+            owner_address: TronWeb.address.toHex(CALLER),
+            contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
+            data: `a9059cbb${addressWord(RECIPIENT)}${uintWord(12_345_678n)}`
+          }
+        }
+      }]
+    },
+    ret: [{ contractRet }]
+  };
+}
+
+function movementWitness(
+  txHash: string,
+  status: TronTransactionProviderEvidenceV1["finality"]["status"]
+): TransactionProviderMovementWitnessV1 {
+  const result = status === "confirmed_success"
+    ? "SUCCESS"
+    : status === "confirmed_reverted" ? "REVERT" : "FAILED";
+  return {
+    txHash,
+    transferId: `transfer-${txHash}`,
+    eventIndex: 0,
+    provider: "tronscan",
+    providerRowOrdinalInTx: 0,
+    contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+    callerAddress: CALLER,
+    fromAddress: CALLER,
+    toAddress: RECIPIENT,
+    amountRaw: "12345678",
+    confirmed: true,
+    reverted: status === "confirmed_reverted",
+    contractRet: result,
+    finalResult: result
+  };
+}
 
 function rawIdentity(txHash = HASH_A): TransactionProviderEvidenceIdentityV1 {
   return {
@@ -38,18 +97,23 @@ function rawEvidence(input: {
   const contractRet = status === "confirmed_success"
     ? "SUCCESS"
     : status === "confirmed_reverted" ? "REVERT" : "FAILED";
-  const payload = input.payload ?? {
-    txID: txHash,
-    raw_data: { contract: [{ type: "TriggerSmartContract" }] },
-    ret: [{ contractRet }]
-  };
+  const payload = input.payload ?? rawPayload(txHash, contractRet);
+  const identity = rawIdentity(txHash);
+  const movement = movementWitness(txHash, status);
+  let witnessSha256 = WITNESS;
+  try {
+    witnessSha256 = transactionProviderFinalityWitnessSha256({ identity, status, payload, movement });
+  } catch {
+    // Deliberately malformed fixtures reach the repository's fail-closed validation.
+  }
   return {
-    ...rawIdentity(txHash),
+    ...identity,
     fetchedAt: "2026-07-26T12:00:00.000Z",
     finality: {
       status,
       witnessKind: "indexed_tron_usdt_transfer",
-      witnessSha256: WITNESS
+      witnessSha256,
+      movement
     },
     payloadSha256: createHash("sha256").update(canonicalizeArtifactJson(payload)).digest("hex"),
     payload
@@ -67,18 +131,28 @@ function fullEvidence(input: {
     ? "SUCCESS"
     : status === "confirmed_reverted" ? "REVERT" : "FAILED";
   const payload = input.payload ?? { hash: txHash, confirmed: true, contractRet };
-  return {
+  const identity: TransactionProviderEvidenceIdentityV1 = {
     version: "tron-transaction-provider-evidence-v1",
     chain: "tron",
     txHash,
     provider: "tronscan",
     endpoint: "transaction-info",
-    providerSchemaVersion: 1,
+    providerSchemaVersion: 1
+  };
+  let witnessSha256 = WITNESS;
+  try {
+    witnessSha256 = transactionProviderFinalityWitnessSha256({ identity, status, payload, movement: null });
+  } catch {
+    // Deliberately malformed fixtures reach the repository's fail-closed validation.
+  }
+  return {
+    ...identity,
     fetchedAt: "2026-07-26T12:00:00.000Z",
     finality: {
       status,
       witnessKind: "tronscan_transaction_info",
-      witnessSha256: WITNESS
+      witnessSha256,
+      movement: null
     },
     payloadSha256: createHash("sha256").update(canonicalizeArtifactJson(payload)).digest("hex"),
     payload
@@ -157,6 +231,34 @@ describe("transaction evidence repository", () => {
       "tron"
     ]);
     await expect(getTransactionProviderEvidence(store.db, rawIdentity())).resolves.toEqual(evidence);
+  });
+
+  it("binds each endpoint to its real payload shape and a recomputed finality witness", async () => {
+    const raw = rawEvidence();
+    const full = fullEvidence();
+    await expect(saveTransactionProviderEvidence(memoryDb().db, raw)).resolves.toBeTruthy();
+    await expect(saveTransactionProviderEvidence(memoryDb().db, full)).resolves.toBeTruthy();
+    await expect(saveTransactionProviderEvidence(memoryDb().db, rawEvidence({ payload: full.payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({ payload: raw.payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+    await expect(saveTransactionProviderEvidence(memoryDb().db, {
+      ...raw,
+      finality: { ...raw.finality, witnessSha256: WITNESS }
+    })).rejects.toThrow("transaction_provider_evidence_not_permanent");
+  });
+
+  it("binds a raw witness to one exact rich movement identity", async () => {
+    const raw = rawEvidence();
+    const withUnhashedMovement = {
+      ...raw,
+      finality: {
+        ...raw.finality,
+        movement: { ...raw.finality.movement!, eventIndex: 7 }
+      }
+    } as unknown as TronTransactionProviderEvidenceV1;
+    await expect(saveTransactionProviderEvidence(memoryDb().db, withUnhashedMovement))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
   });
 
   it("fails closed when an immutable row has a different source, identity, or payload hash", async () => {
@@ -263,7 +365,8 @@ describe("transaction evidence repository", () => {
 
   it("stores deterministic decision evidence as detector_output with exact provider and movement witnesses", async () => {
     const store = memoryDb();
-    const providerEvidenceId = (await saveTransactionProviderEvidence(store.db, rawEvidence())).id;
+    const raw = rawEvidence();
+    const providerEvidenceId = (await saveTransactionProviderEvidence(store.db, raw)).id;
     const decision: TransactionEnrichmentDecisionEvidenceV1 = {
       version: "transaction-enrichment-decision-evidence-v1",
       policyVersion: "selective-transaction-enrichment-v1",
@@ -272,7 +375,7 @@ describe("transaction evidence repository", () => {
       decision: "plain_usdt_raw_proven",
       triggerCodes: [],
       providerEvidenceIds: [providerEvidenceId],
-      movementWitnessSha256: WITNESS
+      movementWitnessSha256: raw.finality.witnessSha256
     };
     const first = await saveTransactionEnrichmentDecisionEvidence(store.db, decision);
     const second = await saveTransactionEnrichmentDecisionEvidence(store.db, { ...decision });
@@ -291,7 +394,8 @@ describe("transaction evidence repository", () => {
 
   it("fails closed rather than overwriting conflicting decision evidence", async () => {
     const store = memoryDb();
-    const providerEvidenceId = (await saveTransactionProviderEvidence(store.db, rawEvidence())).id;
+    const raw = rawEvidence();
+    const providerEvidenceId = (await saveTransactionProviderEvidence(store.db, raw)).id;
     const decision: TransactionEnrichmentDecisionEvidenceV1 = {
       version: "transaction-enrichment-decision-evidence-v1",
       policyVersion: "selective-transaction-enrichment-v1",
@@ -300,7 +404,7 @@ describe("transaction evidence repository", () => {
       decision: "plain_usdt_raw_proven",
       triggerCodes: [],
       providerEvidenceIds: [providerEvidenceId],
-      movementWitnessSha256: WITNESS
+      movementWitnessSha256: raw.finality.witnessSha256
     };
     const saved = await saveTransactionEnrichmentDecisionEvidence(store.db, decision);
     store.rows.set(saved.id, { ...store.rows.get(saved.id)!, source_type: "provider_response" });
@@ -323,55 +427,91 @@ describe("transaction evidence repository", () => {
       movementWitnessSha256: WITNESS
     })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
   });
-});
 
-const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
-
-postgresDescribe("transaction evidence repository (PostgreSQL)", () => {
-  it("converges concurrent immutable inserts and reads provider and decision rows back exactly", async () => {
-    const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(`create temporary table raw_evidence (
-        id text primary key,
-        source text not null,
-        source_type text not null,
-        chain text not null,
-        address text,
-        tx_hash text,
-        observed_transaction_hash text,
-        evidence_json jsonb not null,
-        created_at timestamptz not null default now()
-      ) on commit drop`);
-      const evidence = rawEvidence();
-      const saved = await Promise.all(Array.from({ length: 4 }, () =>
-        saveTransactionProviderEvidence(client as unknown as Db, evidence)));
-      expect(new Set(saved.map(({ id }) => id))).toHaveLength(1);
-      expect((await client.query("select count(*)::int as count from raw_evidence")).rows[0].count).toBe(1);
-
-      const decision: TransactionEnrichmentDecisionEvidenceV1 = {
+  it.each(["confirmed_failed", "confirmed_reverted"] as const)(
+    "rejects a plain decision that mixes successful raw evidence with %s full evidence",
+    async (status) => {
+      const store = memoryDb();
+      const raw = rawEvidence();
+      const contradictory = fullEvidence({ status });
+      const rawId = (await saveTransactionProviderEvidence(store.db, raw)).id;
+      const contradictoryId = (await saveTransactionProviderEvidence(store.db, contradictory)).id;
+      await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
         version: "transaction-enrichment-decision-evidence-v1",
         policyVersion: "selective-transaction-enrichment-v1",
         chain: "tron",
         txHash: HASH_A,
         decision: "plain_usdt_raw_proven",
         triggerCodes: [],
+        providerEvidenceIds: [rawId, contradictoryId],
+        movementWitnessSha256: raw.finality.witnessSha256
+      })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
+    }
+  );
+});
+
+const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
+
+postgresDescribe("transaction evidence repository (PostgreSQL)", () => {
+  it("converges concurrent immutable inserts and reads provider and decision rows back exactly", async () => {
+    const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 4 });
+    const firstClient = await pool.connect();
+    const secondClient = await pool.connect();
+    const cleanupIds: string[] = [];
+    try {
+      const txHash = createHash("sha256").update(randomUUID()).digest("hex");
+      const evidence = rawEvidence({ txHash });
+      cleanupIds.push(transactionProviderEvidenceId(rawIdentity(txHash)));
+      let arrivals = 0;
+      let releaseBarrier!: () => void;
+      const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+      const concurrentDb = (client: pg.PoolClient): Db => ({
+        query: async (sql: string, params?: unknown[]) => {
+          if (/^\s*insert into raw_evidence/i.test(sql)) {
+            arrivals += 1;
+            if (arrivals === 2) releaseBarrier();
+            await barrier;
+          }
+          return client.query(sql, params);
+        }
+      }) as unknown as Db;
+      const saved = await Promise.all([
+        saveTransactionProviderEvidence(concurrentDb(firstClient), evidence),
+        saveTransactionProviderEvidence(concurrentDb(secondClient), evidence)
+      ]);
+      expect(arrivals).toBe(2);
+      expect(new Set(saved.map(({ id }) => id))).toHaveLength(1);
+      expect((await pool.query(
+        "select count(*)::int as count from raw_evidence where id = $1",
+        [saved[0].id]
+      )).rows[0].count).toBe(1);
+
+      const decision: TransactionEnrichmentDecisionEvidenceV1 = {
+        version: "transaction-enrichment-decision-evidence-v1",
+        policyVersion: "selective-transaction-enrichment-v1",
+        chain: "tron",
+        txHash,
+        decision: "plain_usdt_raw_proven",
+        triggerCodes: [],
         providerEvidenceIds: [saved[0].id],
-        movementWitnessSha256: WITNESS
+        movementWitnessSha256: evidence.finality.witnessSha256
       };
       const storedDecision = await saveTransactionEnrichmentDecisionEvidence(
-        client as unknown as Db,
+        pool,
         decision
       );
+      cleanupIds.push(storedDecision.id);
       expect(storedDecision.evidence).toEqual(decision);
-      expect((await client.query(
+      expect((await pool.query(
         "select source_type from raw_evidence where id = $1",
         [storedDecision.id]
       )).rows[0].source_type).toBe("detector_output");
     } finally {
-      await client.query("rollback").catch(() => undefined);
-      client.release();
+      firstClient.release();
+      secondClient.release();
+      if (cleanupIds.length > 0) {
+        await pool.query("delete from raw_evidence where id = any($1::text[])", [cleanupIds]);
+      }
       await pool.end();
     }
   });

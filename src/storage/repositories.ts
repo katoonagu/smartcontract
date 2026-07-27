@@ -5586,10 +5586,12 @@ export {
   getTransactionProviderEvidence,
   saveTransactionEnrichmentDecisionEvidence,
   saveTransactionProviderEvidence,
+  transactionProviderFinalityWitnessSha256,
   transactionProviderEvidenceId
 } from "./transactionEvidenceRepository";
 export type {
   TransactionEnrichmentDecisionEvidenceV1,
+  TransactionProviderMovementWitnessV1,
   TransactionProviderEvidenceIdentityV1,
   TronTransactionProviderEvidenceV1
 } from "./transactionEvidenceRepository";
