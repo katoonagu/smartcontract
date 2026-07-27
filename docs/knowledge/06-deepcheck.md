@@ -53,3 +53,8 @@ Economic and approval numeric limits bound optional exploration only. Exact
 transferFrom, Verify20, permit, non-plain, and other hard parser candidates are
 kept outside those optional limits, and Deep owns no private full-payload
 promise cache.
+
+While a shared raw/full promise is pending, the claimed Deep runner performs a
+non-overlapping heartbeat CAS at most once per 30 seconds. A false CAS aborts
+the Deep caller immediately; it does not cancel the shared provider promise,
+but the stale caller cannot start full/next work or attach evidence/results.

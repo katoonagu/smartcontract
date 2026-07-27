@@ -21,7 +21,11 @@ import { DEFAULT_MAX_BUNDLE_FUNDERS } from "./provenanceTracingConfig";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
-import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  mergeForensicJobProgress,
+  runWithForensicEnrichmentHeartbeat,
+  type ForensicJobProgressPatch
+} from "./forensicJobProgress";
 import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
 import {
   ensureCandidateWindowsOrWait,
@@ -204,6 +208,8 @@ export type DeepForensicJobRunnerOptions = {
   counterpartyFastSnapshotLimit?: number;
   counterpartyFastSnapshotActiveLimit?: number;
   crossChainStage2Enabled?: boolean;
+  /** Test seam; production uses the 30-second default. */
+  transactionEnrichmentHeartbeatIntervalMs?: number;
   crossChainManualDeepMode?: boolean;
   crossChainMaxProviderCalls?: number;
   apiKeyConfigured?: boolean;
@@ -1854,13 +1860,33 @@ export async function runSingleDeepForensicJobCycle(
       const movements = await deps.listIndexedMovementsByHashes?.([txHash]) ?? [];
       const addresses = [...new Set(movements.flatMap((edge) => [edge.fromAddress, edge.toAddress]))];
       const assertions = await deps.listActiveRouteAssertions?.({ addresses, txHashes: [txHash] }) ?? [];
-      const enrichment = await deps.selectiveTransactionEnricher.enrich({
-        mode: "subject",
-        routeEdges: movements,
-        movements,
-        assertions,
-        hardTxHashes: [txHash]
-      }, { signal: abortController.signal });
+      const enrichment = await runWithForensicEnrichmentHeartbeat({
+        intervalMs: options.transactionEnrichmentHeartbeatIntervalMs,
+        heartbeat: async () => {
+          job.progressJson = mergeForensicJobProgress(job.progressJson, {
+            jobHeartbeatAt: new Date().toISOString()
+          });
+          const updated = await deps.updateForensicCheckJobProgress?.({
+            id: job.id,
+            progressJson: job.progressJson,
+            lastError: null
+          });
+          if (updated === false) {
+            abortController.abort();
+            throw new Error("lost_forensic_job_claim");
+          }
+        },
+        task: (onCandidateResolved) => deps.selectiveTransactionEnricher!.enrich({
+          mode: "subject",
+          routeEdges: movements,
+          movements,
+          assertions,
+          hardTxHashes: [txHash]
+        }, {
+          signal: abortController.signal,
+          onCandidateResolved
+        })
+      });
       for (const evidenceId of enrichment.evidenceIds) deepSelectiveEvidenceIds.add(evidenceId);
       return deps.selectiveTransactionEnricher.getFullTransactionInfo(txHash);
     };

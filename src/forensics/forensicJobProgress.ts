@@ -74,6 +74,50 @@ export type ForensicJobProgressPatch = {
   waitReconciliation?: WaitReconciliationResultV1 | null;
 };
 
+export type ForensicEnrichmentProgress = (input: { completed: number; total: number }) => Promise<void>;
+
+export async function runWithForensicEnrichmentHeartbeat<T>(input: {
+  task(onCandidateResolved: ForensicEnrichmentProgress): Promise<T>;
+  heartbeat(): Promise<void>;
+  intervalMs?: number;
+  now?: () => number;
+}): Promise<T> {
+  const intervalMs = Math.max(1, Math.floor(input.intervalMs ?? 30_000));
+  const now = input.now ?? Date.now;
+  let lastWriteStartedAt = Number.NEGATIVE_INFINITY;
+  let writeInFlight: Promise<void> | null = null;
+  let heartbeatFailure: unknown;
+  let heartbeatFailed = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const write = (force: boolean): Promise<void> => {
+    if (heartbeatFailed) return Promise.resolve();
+    if (writeInFlight) return writeInFlight;
+    const current = now();
+    if (!force && current - lastWriteStartedAt < intervalMs) return Promise.resolve();
+    lastWriteStartedAt = current;
+    const pending = input.heartbeat().catch((error) => {
+      heartbeatFailed = true;
+      heartbeatFailure = error;
+      if (timer) clearInterval(timer);
+    }).finally(() => {
+      if (writeInFlight === pending) writeInFlight = null;
+    });
+    writeInFlight = pending;
+    return pending;
+  };
+  timer = setInterval(() => { void write(false); }, intervalMs);
+  if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  try {
+    const result = await input.task(({ completed, total }) => write(completed === total));
+    await writeInFlight;
+    if (heartbeatFailed) throw heartbeatFailure;
+    return result;
+  } finally {
+    if (timer) clearInterval(timer);
+    await writeInFlight;
+  }
+}
+
 export type ForensicRuntimeContractProjection = {
   telegramDelivery: ForensicTelegramDeliveryV1 | null;
   telegramDeliveryIntent: RecoveredForensicDeliveryIntentV1 | null;

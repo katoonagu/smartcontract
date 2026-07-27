@@ -36,12 +36,14 @@ A technical/provider stop must remain distinguishable from a risk decision.
 Legacy retries keep their current ownership rules; operators must not grant
 both legacy and Unified workers delivery ownership.
 
-Stage B legacy Where and Incoming workers bind one `AbortController` to each
+Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the
 worker aborts selective enrichment, starts no later candidate, and cannot
 complete, publish, or prepare delivery. Enrichment heartbeats are written at
-most once per 30 seconds and on the final candidate. Completed jobs merge the
-provider and decision evidence IDs into existing `raw_evidence_ids`.
+most once per 30 seconds while a provider promise is pending and on the final
+candidate. Heartbeat writes never overlap, and their timer is cleared and
+unreferenced. Completed jobs merge the provider and decision evidence IDs into
+existing `raw_evidence_ids`.
 
 ## Unified Lifecycle
 

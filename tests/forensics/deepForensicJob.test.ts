@@ -389,9 +389,15 @@ describe("deep forensic job runner", () => {
     vi.resetModules();
     const txHash = "d".repeat(64);
     const legacyGetTransaction = vi.fn(async () => ({ legacy: true }));
+    let rawSettled = false;
+    let periodicHeartbeatWhileRawPending = false;
+    let progressUpdates = 0;
     const persistedFull = { hash: txHash, confirmed: true, contractRet: "SUCCESS", trigger_info: { methodName: "Verify20" } };
     const saved = new Map<string, TronTransactionProviderEvidenceV1>();
-    const rawProvider = vi.fn(async () => ({
+    const rawProvider = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      rawSettled = true;
+      return {
       txID: txHash,
       raw_data: {
         contract: [{
@@ -407,7 +413,8 @@ describe("deep forensic job runner", () => {
         }]
       },
       ret: [{ contractRet: "SUCCESS" }]
-    }));
+    };
+    });
     const fullProvider = vi.fn(async () => persistedFull);
     const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
       getSavedEvidence: async (identity) => saved.get(transactionProviderEvidenceId(identity)) ?? null,
@@ -440,6 +447,11 @@ describe("deep forensic job runner", () => {
       await runCycleWithMock({
         claimNextForensicCheckJob: async () => job(),
         completeForensicCheckJob,
+        updateForensicCheckJobProgress: async () => {
+          progressUpdates += 1;
+          if (progressUpdates > 1 && !rawSettled) periodicHeartbeatWhileRawPending = true;
+          return true;
+        },
         recordRiskEvaluation: vi.fn(async () => undefined),
         tronClient: { listRelatedTrc20Transfers: async () => [] },
         getLabelsForAddress: async () => [],
@@ -447,10 +459,11 @@ describe("deep forensic job runner", () => {
         selectiveTransactionEnricher,
         listIndexedMovementsByHashes: async () => [],
         getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
-      });
+      }, { transactionEnrichmentHeartbeatIntervalMs: 1 });
 
       expect(rawProvider).toHaveBeenCalledTimes(1);
       expect(fullProvider).toHaveBeenCalledTimes(1);
+      expect(periodicHeartbeatWhileRawPending).toBe(true);
       expect(legacyGetTransaction).not.toHaveBeenCalled();
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
         rawEvidenceIds: expect.arrayContaining([`deep:decision:${txHash}`])

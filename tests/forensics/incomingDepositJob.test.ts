@@ -2026,46 +2026,45 @@ describe("buildIncomingDepositReport", () => {
       maxConcurrentSubmissions: 1
     });
 
-    const handled = await runSingleIncomingDepositJobCycle({
+    const handledPromise = runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job(validProgressJson),
       updateForensicCheckJobProgress: async () => {
         updates += 1;
         return updates === 1;
       },
+      transactionEnrichmentHeartbeatIntervalMs: 1,
       completeForensicCheckJob: complete,
       markUserAlertSent: async () => true,
       markUserAlertFailed: async () => true,
       recordObservedTransactionRisk: record,
       formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
-      buildReport: async ({ persistProgress, abortSignal }) => {
-        const claimedRun = enricher.enrich({
+      buildReport: async ({ abortSignal, runWithTransactionEnrichmentHeartbeat }) => {
+        const claimedRun = runWithTransactionEnrichmentHeartbeat((onCandidateResolved) => enricher.enrich({
           mode: "subject",
           routeEdges: [firstMovement, nextMovement],
           movements: [firstMovement, nextMovement]
-        }, { signal: abortSignal });
+        }, { signal: abortSignal, onCandidateResolved }));
         const otherWaiter = enricher.enrich({
           mode: "subject",
           routeEdges: [firstMovement],
           movements: [firstMovement]
         });
         await rawStarted;
-        let claimLoss: unknown;
-        try {
-          await persistProgress?.({ jobHeartbeatAt: "2026-07-27T00:00:30.000Z" });
-        } catch (error) {
-          claimLoss = error;
-        } finally {
-          observedAborted = abortSignal?.aborted === true;
+        if (!abortSignal?.aborted) {
+          await new Promise<void>((resolve) => abortSignal?.addEventListener("abort", () => resolve(), { once: true }));
         }
+        observedAborted = abortSignal?.aborted === true;
         releaseRaw(rawPayload);
         await expect(claimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
         await expect(otherWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
-        throw claimLoss;
+        throw new Error("lost_forensic_job_claim");
       }
     });
+    const handled = await handledPromise;
 
     expect(handled).toBe(true);
     expect(observedAborted).toBe(true);
+    expect(updates).toBe(2);
     expect(rawCalls).toEqual([firstHash]);
     expect(fullCalls).toEqual([]);
     expect(saved.size).toBeGreaterThan(0);

@@ -19,7 +19,12 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import type { RouteLinkedAssertionInput, SelectiveTransactionEnricher } from "./selectiveTransactionEnrichment";
-import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  mergeForensicJobProgress,
+  runWithForensicEnrichmentHeartbeat,
+  type ForensicEnrichmentProgress,
+  type ForensicJobProgressPatch
+} from "./forensicJobProgress";
 import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
 import {
   createIncomingDepositTiming,
@@ -180,8 +185,13 @@ export type BuildIncomingDepositReportInput = {
   localIndexMaterializationMaxRows?: number;
   timing?: IncomingDepositTimingRecorder;
   persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+  runWithTransactionEnrichmentHeartbeat?: TransactionEnrichmentHeartbeatRunner;
   abortSignal?: AbortSignal;
 };
+
+export type TransactionEnrichmentHeartbeatRunner = <T>(
+  task: (onCandidateResolved: ForensicEnrichmentProgress) => Promise<T>
+) => Promise<T>;
 
 export type RunSingleIncomingDepositJobCycleDeps = {
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
@@ -217,6 +227,8 @@ export type RunSingleIncomingDepositJobCycleDeps = {
   logger?: Logger;
   now?: () => Date;
   timingClock?: IncomingDepositTimingClock;
+  /** Test seam; production uses the 30-second default. */
+  transactionEnrichmentHeartbeatIntervalMs?: number;
   formatIncomingDepositRiskAlert(input: {
     jobId: string;
     amount: string;
@@ -237,6 +249,7 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     timestamp: Date;
     timing?: IncomingDepositTimingRecorder;
     persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+    runWithTransactionEnrichmentHeartbeat: TransactionEnrichmentHeartbeatRunner;
     abortSignal?: AbortSignal;
   }): Promise<IncomingDepositRiskReport>;
 };
@@ -1490,17 +1503,25 @@ export async function buildIncomingDepositReport(
       addresses: routeAddresses,
       txHashes: [routeEdge.txHash.toLowerCase()]
     }).catch(() => []) ?? [];
-    const enrichment = await input.deps.selectiveTransactionEnricher.enrich({
-      mode: "subject",
-      routeEdges: [routeEdge],
-      movements: indexedMovements,
-      assertions
-    }, {
-      signal: input.abortSignal,
-      onCandidateResolved: input.persistProgress
-        ? async () => { await input.persistProgress!({ jobHeartbeatAt: new Date().toISOString() }); }
-        : undefined
-    });
+    const runWithHeartbeat: TransactionEnrichmentHeartbeatRunner = input.runWithTransactionEnrichmentHeartbeat ?? (
+      input.persistProgress
+        ? (task) => runWithForensicEnrichmentHeartbeat({
+            task,
+            heartbeat: async () => { await input.persistProgress!({ jobHeartbeatAt: new Date().toISOString() }); }
+          })
+        : (task) => task(async () => undefined)
+    );
+    const enrichment = await runWithHeartbeat((onCandidateResolved) =>
+      input.deps.selectiveTransactionEnricher!.enrich({
+        mode: "subject",
+        routeEdges: [routeEdge],
+        movements: indexedMovements,
+        assertions
+      }, {
+        signal: input.abortSignal,
+        onCandidateResolved
+      })
+    );
     outerTransactionEnrichment.push(enrichment);
     return input.deps.selectiveTransactionEnricher.getFullTransactionInfo(routeEdge.txHash);
   };
@@ -2340,6 +2361,13 @@ export async function runSingleIncomingDepositJobCycle(
     }
     await persist();
   };
+  const runWithTransactionEnrichmentHeartbeat: TransactionEnrichmentHeartbeatRunner = (task) =>
+    runWithForensicEnrichmentHeartbeat({
+      task,
+      heartbeat: () => persistProgress({ jobHeartbeatAt: now().toISOString() }),
+      intervalMs: deps.transactionEnrichmentHeartbeatIntervalMs,
+      now: () => now().getTime()
+    });
   const persistPerformanceTiming = async (): Promise<IncomingDepositTimingSummary> => {
     const summary = timing.summary({
       queueWaitMs,
@@ -2432,6 +2460,7 @@ export async function runSingleIncomingDepositJobCycle(
       timestamp,
       timing,
       persistProgress,
+      runWithTransactionEnrichmentHeartbeat,
       abortSignal: abortController.signal
     }));
     const activeReport = activeIncomingDepositReport(report);
