@@ -248,6 +248,36 @@ describe("transaction evidence repository", () => {
     })).rejects.toThrow("transaction_provider_evidence_not_permanent");
   });
 
+  it.each([
+    ["receipt success false overrides SUCCESS text", {
+      hash: HASH_A,
+      confirmed: true,
+      receipt: { success: false, result: "SUCCESS" }
+    }],
+    ["FAILED contractRet overrides successful receipt text", {
+      hash: HASH_A,
+      confirmed: true,
+      receipt: { result: "SUCCESS" },
+      contractRet: "FAILED"
+    }]
+  ])("never persists confirmed_success when transaction-info has %s", async (_label, payload) => {
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({ payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({
+      payload,
+      status: "confirmed_failed"
+    }))).resolves.toMatchObject({ evidence: { finality: { status: "confirmed_failed" } } });
+  });
+
+  it("rejects raw evidence polluted by transaction-info receipt finality", async () => {
+    const payload = {
+      ...rawPayload(HASH_A, "SUCCESS"),
+      receipt: { result: "REVERT" }
+    };
+    await expect(saveTransactionProviderEvidence(memoryDb().db, rawEvidence({ payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+  });
+
   it("binds a raw witness to one exact rich movement identity", async () => {
     const raw = rawEvidence();
     const withUnhashedMovement = {
@@ -363,6 +393,22 @@ describe("transaction evidence repository", () => {
     expect(store.rows).toHaveLength(1);
   });
 
+  it("converges semantic provider evidence when only fetchedAt differs", async () => {
+    const store = memoryDb();
+    const first = rawEvidence();
+    const later = { ...first, fetchedAt: "2026-07-26T12:00:01.000Z" };
+    const results = await Promise.all([
+      saveTransactionProviderEvidence(store.db, first),
+      saveTransactionProviderEvidence(store.db, later)
+    ]);
+    expect(results.map(({ id }) => id)).toEqual([
+      transactionProviderEvidenceId(rawIdentity()),
+      transactionProviderEvidenceId(rawIdentity())
+    ]);
+    expect(results[0].evidence.fetchedAt).toBe(first.fetchedAt);
+    expect(results[1].evidence.fetchedAt).toBe(first.fetchedAt);
+  });
+
   it("stores deterministic decision evidence as detector_output with exact provider and movement witnesses", async () => {
     const store = memoryDb();
     const raw = rawEvidence();
@@ -448,6 +494,61 @@ describe("transaction evidence repository", () => {
       })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
     }
   );
+
+  it("requires an approved trigger for a successful full-information decision", async () => {
+    const store = memoryDb();
+    const full = fullEvidence();
+    const fullId = (await saveTransactionProviderEvidence(store.db, full)).id;
+    await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+      version: "transaction-enrichment-decision-evidence-v1",
+      policyVersion: "selective-transaction-enrichment-v1",
+      chain: "tron",
+      txHash: HASH_A,
+      decision: "full_transaction_info_confirmed",
+      triggerCodes: [],
+      providerEvidenceIds: [fullId],
+      movementWitnessSha256: full.finality.witnessSha256
+    })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
+  });
+
+  it.each(["confirmed_failed", "confirmed_reverted"] as const)(
+    "rejects successful full decisions mixed with %s raw evidence",
+    async (status) => {
+      const store = memoryDb();
+      const full = fullEvidence();
+      const negativeRaw = rawEvidence({ status });
+      const fullId = (await saveTransactionProviderEvidence(store.db, full)).id;
+      const negativeRawId = (await saveTransactionProviderEvidence(store.db, negativeRaw)).id;
+      await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+        version: "transaction-enrichment-decision-evidence-v1",
+        policyVersion: "selective-transaction-enrichment-v1",
+        chain: "tron",
+        txHash: HASH_A,
+        decision: "full_transaction_info_confirmed",
+        triggerCodes: ["raw_unavailable_or_ambiguous"],
+        providerEvidenceIds: [fullId, negativeRawId],
+        movementWitnessSha256: full.finality.witnessSha256
+      })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
+    }
+  );
+
+  it("persists a triggered successful full-information decision", async () => {
+    const store = memoryDb();
+    const full = fullEvidence();
+    const fullId = (await saveTransactionProviderEvidence(store.db, full)).id;
+    await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+      version: "transaction-enrichment-decision-evidence-v1",
+      policyVersion: "selective-transaction-enrichment-v1",
+      chain: "tron",
+      txHash: HASH_A,
+      decision: "full_transaction_info_confirmed",
+      triggerCodes: ["raw_unavailable_or_ambiguous"],
+      providerEvidenceIds: [fullId],
+      movementWitnessSha256: full.finality.witnessSha256
+    })).resolves.toMatchObject({
+      evidence: { decision: "full_transaction_info_confirmed" }
+    });
+  });
 });
 
 const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -461,6 +562,7 @@ postgresDescribe("transaction evidence repository (PostgreSQL)", () => {
     try {
       const txHash = createHash("sha256").update(randomUUID()).digest("hex");
       const evidence = rawEvidence({ txHash });
+      const laterEvidence = { ...evidence, fetchedAt: "2026-07-26T12:00:01.000Z" };
       cleanupIds.push(transactionProviderEvidenceId(rawIdentity(txHash)));
       let arrivals = 0;
       let releaseBarrier!: () => void;
@@ -477,10 +579,11 @@ postgresDescribe("transaction evidence repository (PostgreSQL)", () => {
       }) as unknown as Db;
       const saved = await Promise.all([
         saveTransactionProviderEvidence(concurrentDb(firstClient), evidence),
-        saveTransactionProviderEvidence(concurrentDb(secondClient), evidence)
+        saveTransactionProviderEvidence(concurrentDb(secondClient), laterEvidence)
       ]);
       expect(arrivals).toBe(2);
       expect(new Set(saved.map(({ id }) => id))).toHaveLength(1);
+      expect(new Set(saved.map(({ evidence: item }) => item.fetchedAt)).size).toBe(1);
       expect((await pool.query(
         "select count(*)::int as count from raw_evidence where id = $1",
         [saved[0].id]

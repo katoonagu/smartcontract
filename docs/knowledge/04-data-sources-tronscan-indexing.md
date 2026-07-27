@@ -82,6 +82,14 @@ recomputed from those canonical fields on save and read; an arbitrary supplied
 hash or a payload shaped for the other endpoint fails closed. A persisted
 `plain_usdt_raw_proven` decision references exactly one successful compatible
 raw row and cannot also reference failed, reverted, or full-response evidence.
+Finality is derived separately for each endpoint: raw uses only its validated
+`ret` results, while transaction-info treats an explicit failure or conflicting
+result field as non-success. `fetchedAt` is observational metadata, so
+concurrent semantically identical inserts converge on the first immutable row;
+all payload, finality, movement, identity, and hash differences still conflict.
+A `full_transaction_info_confirmed` decision requires an approved enrichment
+trigger, a matching successful full-response witness, and no referenced
+failed or reverted provider row.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,

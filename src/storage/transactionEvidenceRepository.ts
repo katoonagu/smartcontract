@@ -158,20 +158,6 @@ export function transactionProviderEvidenceId(
   return `tron-transaction-provider-evidence-v1:${sha256}`;
 }
 
-function explicitResult(payload: Record<string, unknown>): string | null {
-  const receipt = record(payload.receipt);
-  for (const value of [
-    receipt?.result,
-    payload.finalResult,
-    payload.contractRet,
-    payload.contract_ret
-  ]) {
-    if (typeof value === "string" && value.trim()) return value.trim().toUpperCase();
-  }
-  if (typeof receipt?.success === "boolean") return receipt.success ? "SUCCESS" : "FAILED";
-  return null;
-}
-
 function endpointWitnessProjection(
   identity: TransactionProviderEvidenceIdentityV1,
   payload: Record<string, unknown>,
@@ -183,6 +169,11 @@ function endpointWitnessProjection(
     if (
       typeof payload.txID !== "string" ||
       payload.hash !== undefined ||
+      payload.receipt !== undefined ||
+      payload.confirmed !== undefined ||
+      payload.contractRet !== undefined ||
+      payload.contract_ret !== undefined ||
+      payload.finalResult !== undefined ||
       !rawData ||
       !Array.isArray(rawData.contract) ||
       rawData.contract.length === 0 ||
@@ -294,6 +285,7 @@ function endpointWitnessProjection(
     typeof payload.hash !== "string" ||
     payload.txID !== undefined ||
     payload.raw_data !== undefined ||
+    payload.ret !== undefined ||
     payload.confirmed !== true ||
     movement !== null
   ) {
@@ -322,7 +314,7 @@ export function transactionProviderFinalityWitnessSha256(input: {
 }): string {
   const identity = normalizeIdentity(input.identity);
   const payload = record(input.payload);
-  if (!payload || payloadFinalityStatus(payload) !== input.status) {
+  if (!payload || endpointFinalityStatus(identity, payload) !== input.status) {
     throw new TypeError("transaction_provider_evidence_not_permanent");
   }
   const witnessKind = identity.endpoint === "gettransactionbyid"
@@ -342,10 +334,21 @@ function resultStatus(result: string): TronTransactionProviderEvidenceV1["finali
   return "confirmed_failed";
 }
 
-function payloadFinalityStatus(
+function endpointFinalityStatus(
+  identity: TransactionProviderEvidenceIdentityV1,
   payload: Record<string, unknown>
 ): TronTransactionProviderEvidenceV1["finality"]["status"] | null {
-  if (Array.isArray(payload.ret) && payload.ret.length > 0) {
+  if (identity.endpoint === "gettransactionbyid") {
+    if (
+      payload.hash !== undefined ||
+      payload.receipt !== undefined ||
+      payload.confirmed !== undefined ||
+      payload.contractRet !== undefined ||
+      payload.contract_ret !== undefined ||
+      payload.finalResult !== undefined ||
+      !Array.isArray(payload.ret) ||
+      payload.ret.length === 0
+    ) return null;
     const results = payload.ret.map((item) => {
       const entry = record(item);
       const value = entry?.contractRet ?? entry?.contract_ret;
@@ -356,8 +359,37 @@ function payloadFinalityStatus(
     if (results.every((result) => result === "SUCCESS")) return "confirmed_success";
     return "confirmed_failed";
   }
-  const result = explicitResult(payload);
-  return result ? resultStatus(result) : null;
+
+  if (
+    payload.txID !== undefined ||
+    payload.raw_data !== undefined ||
+    payload.ret !== undefined ||
+    payload.confirmed !== true
+  ) return null;
+  const receipt = record(payload.receipt);
+  const results: string[] = [];
+  for (const value of [
+    receipt?.result,
+    payload.finalResult,
+    payload.contractRet,
+    payload.contract_ret
+  ]) {
+    if (typeof value === "string" && value.trim()) results.push(value.trim().toUpperCase());
+  }
+  if (typeof receipt?.success === "boolean") {
+    if (receipt.success === false) {
+      if (results.some((result) => resultStatus(result) === "confirmed_reverted")) {
+        return "confirmed_reverted";
+      }
+      return "confirmed_failed";
+    }
+    results.push("SUCCESS");
+  }
+  if (results.length === 0) return null;
+  const statuses = results.map(resultStatus);
+  if (statuses.includes("confirmed_reverted")) return "confirmed_reverted";
+  if (statuses.includes("confirmed_failed")) return "confirmed_failed";
+  return "confirmed_success";
 }
 
 function validatePermanentEvidence(
@@ -382,7 +414,7 @@ function validatePermanentEvidence(
   if (identity.endpoint === "transaction-info" && payload.confirmed !== true) {
     throw new TypeError("transaction_provider_evidence_not_permanent");
   }
-  if (payloadFinalityStatus(payload) !== evidence.finality.status) {
+  if (endpointFinalityStatus(identity, payload) !== evidence.finality.status) {
     throw new TypeError("transaction_provider_evidence_not_permanent");
   }
   const expectedWitnessKind = identity.endpoint === "gettransactionbyid"
@@ -484,7 +516,9 @@ export async function saveTransactionProviderEvidence(
   const row = await readRawEvidenceRow(db, id);
   if (!row) throw new Error("transaction_provider_evidence_conflict");
   const saved = validateProviderRow(row, identity);
-  if (canonicalizeArtifactJson(saved) !== canonicalizeArtifactJson(validated)) {
+  const { fetchedAt: _savedFetchedAt, ...savedSemanticEvidence } = saved;
+  const { fetchedAt: _candidateFetchedAt, ...candidateSemanticEvidence } = validated;
+  if (canonicalizeArtifactJson(savedSemanticEvidence) !== canonicalizeArtifactJson(candidateSemanticEvidence)) {
     throw new Error("transaction_provider_evidence_conflict");
   }
   return { id, evidence: saved };
@@ -597,9 +631,12 @@ export async function saveTransactionEnrichmentDecisionEvidence(
       rawPlain?.status === "parsed" &&
       rawPlain.successful === true
     : normalized.decision === "full_transaction_info_confirmed"
-      ? providers.some((provider) =>
-        provider.endpoint === "transaction-info" &&
-        provider.finality.status === "confirmed_success")
+      ? normalized.triggerCodes.length > 0 &&
+        providers.every((provider) => provider.finality.status === "confirmed_success") &&
+        providers.some((provider) =>
+          provider.endpoint === "transaction-info" &&
+          provider.finality.status === "confirmed_success" &&
+          provider.finality.witnessSha256 === normalized.movementWitnessSha256)
       : providers.some((provider) => provider.finality.status !== "confirmed_success");
   if (!decisionProven) {
     throw new TypeError("transaction_enrichment_decision_evidence_invalid");
