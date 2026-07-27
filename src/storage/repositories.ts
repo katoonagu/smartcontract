@@ -5543,38 +5543,27 @@ export async function listActiveRiskLabelsForAddress(db: Db, address: string, ch
 
 export async function listActiveAddressLabelAssertionsForRoute(
   db: Db,
-  input: { chain: string; addresses: string[]; txHashes: string[] }
+  input: { chain: "tron"; addresses: string[]; txHashes: string[] }
 ): Promise<AddressLabelAssertion[]> {
-  const addresses = [...new Set(input.addresses.filter((address) => address.length > 0))];
-  const txHashes = [...new Set(input.txHashes.filter((hash) => hash.length > 0))];
-  if (addresses.length === 0) return [];
+  const addresses = [...new Set(input.addresses.filter((address) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/u.test(address)))];
+  const txHashes = [...new Set(input.txHashes
+    .map((hash) => hash.toLowerCase())
+    .filter((hash) => /^[0-9a-f]{64}$/u.test(hash)))];
+  if (addresses.length === 0 && txHashes.length === 0) return [];
   const result = await db.query(
     `select id, chain, address, label, entity_name, category, confidence, severity,
        status, source_name, source_url, notes, evidence_json,
        created_by_telegram_id, first_seen_at, last_seen_at, created_at, updated_at
      from address_label_assertions assertions
      where assertions.chain = $1
-       and assertions.address = any($2)
        and assertions.status = 'active'
        and (
-         cardinality($3::text[]) = 0
+         assertions.address = any($2)
          or (
            jsonb_typeof(assertions.evidence_json) = 'object'
            and (
-             assertions.evidence_json ->> 'txHash' = any($3)
-             or assertions.evidence_json ->> 'approvalTxHash' = any($3)
+             assertions.evidence_json ->> 'approvalTxHash' = any($3)
              or assertions.evidence_json ->> 'drainTxHash' = any($3)
-             or (
-               exists (
-                 select 1
-                 from jsonb_array_elements_text(
-                   case when jsonb_typeof(assertions.evidence_json -> 'txHashes') = 'array'
-                     then assertions.evidence_json -> 'txHashes'
-                     else '[]'::jsonb end
-                 ) as route_hash(value)
-                 where route_hash.value = any($3)
-               )
-             )
              or exists (
                select 1
                from jsonb_array_elements_text(
@@ -5587,11 +5576,23 @@ export async function listActiveAddressLabelAssertionsForRoute(
            )
          )
        )
-     order by assertions.created_at asc, assertions.id asc`,
+     order by assertions.id asc`,
     [input.chain, addresses, txHashes]
   );
   return result.rows.map(mapAddressLabelAssertionRow);
 }
+
+export {
+  getTransactionProviderEvidence,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
+  transactionProviderEvidenceId
+} from "./transactionEvidenceRepository";
+export type {
+  TransactionEnrichmentDecisionEvidenceV1,
+  TransactionProviderEvidenceIdentityV1,
+  TronTransactionProviderEvidenceV1
+} from "./transactionEvidenceRepository";
 
 export async function upsertAddressLabelAssertion(
   db: Db,

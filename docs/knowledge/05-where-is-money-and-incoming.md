@@ -1,12 +1,13 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-27
 owner_area: forensics
 code_refs:
   - src/forensics/moneyOriginTrace.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/recentFlowProvenanceSelection.ts
+  - src/storage/repositories.ts
   - src/unifiedCheck/branchAdapters.ts
   - src/unifiedCheck/report.ts
   - src/unifiedCheck/presentation.ts
@@ -56,6 +57,13 @@ coverage.
 When a legacy row's tuple matches one or more rich rows, the legacy shadow is
 suppressed while each distinct rich event remains separate. Legacy-only
 duplicates continue to use the compatibility tuple for deduplication.
+
+Route assertion lookup uses only active assertion records linked by an exact
+route address or exact `approvalTxHash`, `drainTxHash`, or `pathTxHashes`
+value. Inputs are validated and deduplicated, malformed JSON shapes are ignored
+safely, and rows are returned in deterministic assertion-ID order. Flat address
+labels and suggestive category/name text are not assertion authority; the
+selective enrichment policy must repeat its own strict rich-evidence match.
 
 This contract is implemented and tested. Delivery ownership is separate from
 the analysis path and does not gate isolated execution.

@@ -48,11 +48,33 @@ function createMockDb(rows: Record<string, unknown>[] = []): { db: Db; queries: 
 }
 
 describe("address label assertions", () => {
+  it("deduplicates validated route identities and permits exact address or transaction links", async () => {
+    const { db, queries } = createMockDb([]);
+    await listActiveAddressLabelAssertionsForRoute(db, {
+      chain: "tron",
+      addresses: [
+        "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+        "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+        "not-an-address"
+      ],
+      txHashes: ["A".repeat(64), "a".repeat(64), "short"]
+    });
+    expect(queries[0].params).toEqual([
+      "tron",
+      ["TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"],
+      ["a".repeat(64)]
+    ]);
+    expect(queries[0].sql).toContain("assertions.address = any($2)");
+    expect(queries[0].sql).toMatch(/assertions\.address = any\(\$2\)[\s\S]*or[\s\S]*approvalTxHash/);
+    expect(queries[0].sql).toContain("order by assertions.id asc");
+    expect(queries[0].sql).not.toContain("address_labels");
+  });
+
   it("reads only active route assertions and safely handles scalar, array, malformed, and empty hash filters", async () => {
     const { db, queries } = createMockDb([]);
     await expect(listActiveAddressLabelAssertionsForRoute(db, {
       chain: "tron",
-      addresses: ["TSubject111111111111111111111111111111"],
+      addresses: ["TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"],
       txHashes: ["a".repeat(64)]
     })).resolves.toEqual([]);
     expect(queries[0].sql).toContain("assertions.status = 'active'");
@@ -60,7 +82,7 @@ describe("address label assertions", () => {
     expect(queries[0].sql).toContain("case when jsonb_typeof(assertions.evidence_json -> 'pathTxHashes') = 'array'");
     expect(queries[0].sql).toContain("else '[]'::jsonb end");
     expect(queries[0].sql).toContain("assertions.evidence_json ->> 'approvalTxHash' = any($3)");
-    expect(queries[0].params).toEqual(["tron", ["TSubject111111111111111111111111111111"], ["a".repeat(64)]]);
+    expect(queries[0].params).toEqual(["tron", ["TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"], ["a".repeat(64)]]);
   });
   it("upserts a confirmed darknet exchange assertion and derives an active flat label", async () => {
     const tx = createMockTransactionalDb([
@@ -240,7 +262,7 @@ describe("address label assertions", () => {
 const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
 
 postgresDescribe("address label assertion route query (PostgreSQL)", () => {
-  it("selects active scalar and path arrays, excludes inactive and malformed evidence, and preserves exact empty", async () => {
+  it("selects exact address and transaction links while ignoring every malformed JSON shape", async () => {
     const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
     const client = await pool.connect();
     try {
@@ -252,23 +274,33 @@ postgresDescribe("address label assertion route query (PostgreSQL)", () => {
       ) on commit preserve rows`);
       const hash = "a".repeat(64);
       const now = new Date();
-      for (const [id, status, evidence] of [
-        ["scalar", "active", { approvalTxHash: hash }], ["array", "active", { pathTxHashes: [hash] }],
-        ["inactive", "inactive", { drainTxHash: hash }], ["malformed", "active", { pathTxHashes: { hash } }],
-        ["null", "active", null]
+      for (const [id, address, status, evidence] of [
+        ["address", "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE", "active", null],
+        ["approval", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA", "active", { approvalTxHash: hash }],
+        ["drain", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAB", "active", { drainTxHash: hash }],
+        ["path", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAC", "active", { pathTxHashes: [hash] }],
+        ["inactive", "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE", "inactive", { drainTxHash: hash }],
+        ["scalar", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAD", "active", "bad"],
+        ["object", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAE", "active", { pathTxHashes: { hash } }],
+        ["json-null", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAF", "active", null],
+        ["missing", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAG", "active", {
+          category: "verify20 drainer",
+          name: "approval drain exact words",
+          label: "sanctioned"
+        }]
       ] as const) {
-        await client.query(`insert into address_label_assertions values ($1, 'tron', 'TSubject111111111111111111111111111111', 'exchange', null, 'exchange', 'high', 'high', $2, 'test', null, null, $3, null, $4, $4, $4, $4)`, [id, status, evidence, now]);
+        await client.query(`insert into address_label_assertions values ($1, 'tron', $2, 'exchange', null, 'exchange', 'high', 'high', $3, 'test', null, null, $4::jsonb, null, $5, $5, $5, $5)`, [id, address, status, JSON.stringify(evidence), now]);
       }
     } finally {
       client.release();
     }
     try {
       const rows = await listActiveAddressLabelAssertionsForRoute(pool as any, {
-        chain: "tron", addresses: ["TSubject111111111111111111111111111111"], txHashes: ["a".repeat(64)]
+        chain: "tron", addresses: ["TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"], txHashes: ["a".repeat(64)]
       });
-      expect(rows.map((row) => row.id)).toEqual(["scalar", "array"]);
+      expect(rows.map((row) => row.id)).toEqual(["address", "approval", "drain", "path"]);
       await expect(listActiveAddressLabelAssertionsForRoute(pool as any, {
-        chain: "tron", addresses: ["TNoMatch111111111111111111111111111111"], txHashes: ["a".repeat(64)]
+        chain: "tron", addresses: ["TGzz8gjYiYRqpfmDwnLxfgPuLVNmpCswVp"], txHashes: ["b".repeat(64)]
       })).resolves.toEqual([]);
     } finally {
       await pool.end();

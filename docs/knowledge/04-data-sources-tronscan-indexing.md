@@ -1,11 +1,12 @@
 ---
 status: current
-last_verified: 2026-07-26
+last_verified: 2026-07-27
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
   - src/tron/usdtBlacklistTimeline.ts
+  - src/storage/transactionEvidenceRepository.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/localTronUsdtIndex.ts
   - src/forensics/targetedHistoryCoordinator.ts
@@ -66,6 +67,15 @@ decoded transfer recipient/amount, and execution result. Malformed,
 unsupported, multi-contract, or insufficient payloads are explicit
 `ambiguous` evidence rather than a clean result; failed and reverted calls are
 parsed with `successful=false`.
+
+Finalized raw and transaction-info responses use deterministic immutable
+`raw_evidence` rows. The stored identity binds chain, normalized transaction
+hash, provider, endpoint, and provider schema, while the row is read back and
+its canonical payload hash is verified after every conflict-safe insert.
+Successful, failed, and reverted final results remain distinct. Transient,
+empty, unbound, partial, pending, and unconfirmed responses are never saved
+under the permanent identity. Policy conclusions are separate
+`detector_output` rows; they never masquerade as provider responses.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,
