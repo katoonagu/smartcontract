@@ -59,7 +59,9 @@ store, and prints only baseline/new raw/full request counts plus
 `stableFactsEqual`. The fixture freezes a canonical
 `expectedOrdinaryOfficialUsdtTxHashes` manifest from baseline raw/indexed facts;
 the post-Stage-B resolver cannot redefine that set to evade the zero-full-call
-gate.
+gate. Its `frozenKnownHardTxHashes` input is recomputed from the frozen legacy
+report, and the ordinary manifest is recomputed from those known-hard facts plus
+the frozen raw, indexed movement, and assertion facts before analysis.
 
 ```powershell
 npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/txc-legacy-where-latency-v1.json
@@ -68,11 +70,14 @@ npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/
 It fails closed for a missing file, noncanonical envelope, malformed evidence,
 or provenance-invalid tape; it never falls back to a database or network
 provider. A structurally valid route manifest may explicitly lack a raw or
-hard-required full response: replay then produces incomplete/technical-unknown
-coverage and cannot pass acceptance. The real TXc tape is not currently checked
-in, so this acceptance command and concurrency `2` remain blocked as recorded
-in `10-open-problems.md`. Synthetic tests validate the offline machinery but
-are not release evidence.
+full response. Analysis exposes canonical missing-raw/missing-full identity
+lists; a missing raw or requested hard full response also produces
+incomplete/technical-unknown report coverage. Acceptance requires both raw and
+full frozen evidence for every route-critical hash, including an ordinary hash
+whose Stage B run did not need to request full details. The real TXc tape is not
+currently checked in, so this acceptance command and concurrency `2` remain
+blocked as recorded in `10-open-problems.md`. Synthetic tests validate the
+offline machinery but are not release evidence.
 
 ## Adaptive Provider Configuration
 

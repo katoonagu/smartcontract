@@ -13,6 +13,7 @@ import {
   analyzeWhereLatencyReplay,
   assertWhereLatencyReplayAcceptance,
   collectExpectedOrdinaryOfficialUsdtTxHashes,
+  collectFrozenKnownHardTxHashes,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   createDependencyInvocationTapeRecorder,
@@ -332,6 +333,7 @@ try {
     }
     rawTransactions.push({ txHash, response: raw });
   }
+  const frozenKnownHardTxHashes = collectFrozenKnownHardTxHashes(rerun);
   const complete = buildWhereLatencyReplayV1({
     schema: "where-latency-replay-v1", version: 1, baselineGitCommit: LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
     recorderGitCommit: sourceRevision.recorderGitCommit,
@@ -342,12 +344,13 @@ try {
     frozenClockIso,
     job: { sourceAddress: jobSource, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), options },
     routeCriticalTxHashes: routeHashes,
+    frozenKnownHardTxHashes,
     expectedOrdinaryOfficialUsdtTxHashes: collectExpectedOrdinaryOfficialUsdtTxHashes({
       routeCriticalTxHashes: routeHashes,
       rawTransactions,
       indexedMovementRows: indexedRows.map(indexedSnapshotRow),
       assertionRows: assertions as unknown as Record<string, unknown>[],
-      knownHardTxHashes: unresolvedEconomicRoleInputs.flatMap((item) => item.txHash ? [item.txHash] : [])
+      knownHardTxHashes: frozenKnownHardTxHashes
     }),
     routeCriticalAddresses: routeAddresses,
     dependencies: capture.invocations,

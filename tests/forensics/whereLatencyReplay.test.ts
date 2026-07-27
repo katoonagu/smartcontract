@@ -29,6 +29,7 @@ import {
 } from "../../src/forensics/whereLatencyReplay";
 import { canonicalizeArtifactJson } from "../../src/forensics/canonicalJson";
 import { createCrossChainProviderBudget } from "../../src/forensics/crossChainBudget";
+import { transactionProviderEvidenceId } from "../../src/storage/transactionEvidenceRepository";
 
 const base = {
   schema: "where-latency-replay-v1" as const,
@@ -77,6 +78,7 @@ const base = {
   } as any),
   resolvedOptions: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" },
   routeCriticalTxHashes: ["a".repeat(64)],
+  frozenKnownHardTxHashes: [],
   expectedOrdinaryOfficialUsdtTxHashes: ["a".repeat(64)],
   routeCriticalAddresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"],
   frozenClockIso: "2026-07-26T00:00:00.000Z",
@@ -98,6 +100,22 @@ const base = {
   expectedStableFacts: { subjectAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", balanceFormingTransfers: [{ txHash: "a".repeat(64) }] } as any
 };
 const execFile = promisify(execFileCallback);
+const RAW_EVIDENCE_ID = transactionProviderEvidenceId({
+  version: "tron-transaction-provider-evidence-v1",
+  chain: "tron",
+  txHash: "a".repeat(64),
+  provider: "tron_fullnode",
+  endpoint: "gettransactionbyid",
+  providerSchemaVersion: 1
+});
+const FULL_EVIDENCE_ID = transactionProviderEvidenceId({
+  version: "tron-transaction-provider-evidence-v1",
+  chain: "tron",
+  txHash: "a".repeat(64),
+  provider: "tronscan",
+  endpoint: "transaction-info",
+  providerSchemaVersion: 1
+});
 
 function wordAddress(address: string): string {
   return TronWeb.address.toHex(address).slice(2).padStart(64, "0").toLowerCase();
@@ -127,7 +145,12 @@ function built() {
   return buildWhereLatencyReplayV1(base);
 }
 
-async function successfulReplay(overrides: { rawResponse?: unknown; fullResponse?: unknown; assertionRows?: Record<string, unknown>[] } = {}) {
+async function successfulReplay(overrides: {
+  rawResponse?: unknown;
+  fullResponse?: unknown;
+  assertionRows?: Record<string, unknown>[];
+  preserveOrdinaryManifest?: boolean;
+} = {}) {
   const sourceAddress = base.job.sourceAddress;
   const senderAddress = "TSender1111111111111111111111111111";
   const clock = new Date(base.frozenClockIso).getTime();
@@ -160,6 +183,8 @@ async function successfulReplay(overrides: { rawResponse?: unknown; fullResponse
   const routeCriticalTxHashes = collectRouteCriticalTransactionHashes(report);
   const routeCriticalAddresses = collectRouteCriticalAddresses(report);
   const storedOptions = { ...options, now: undefined };
+  const rawTransactions = [{ txHash: "a".repeat(64), response: overrides.rawResponse ?? base.rawTransactions[0]!.response }];
+  const assertionRows = overrides.assertionRows ?? [];
   return parseWhereLatencyReplayV1(buildWhereLatencyReplayV1({
     ...base,
     resolvedOptions: storedOptions,
@@ -171,14 +196,23 @@ async function successfulReplay(overrides: { rawResponse?: unknown; fullResponse
     },
     routeCriticalTxHashes,
     routeCriticalAddresses,
+    expectedOrdinaryOfficialUsdtTxHashes: overrides.preserveOrdinaryManifest
+      ? base.expectedOrdinaryOfficialUsdtTxHashes
+      : collectExpectedOrdinaryOfficialUsdtTxHashes({
+          routeCriticalTxHashes,
+          rawTransactions,
+          indexedMovementRows: base.indexedMovements[0]!.rows,
+          assertionRows,
+          knownHardTxHashes: base.frozenKnownHardTxHashes
+        }),
     dependencies: [
       ...capture.invocations,
       { method: "getTransaction", args: ["a".repeat(64)], response: overrides.fullResponse ?? { hash: "a".repeat(64), confirmed: true, contractRet: "SUCCESS" }, origin: "legacy_observed" as const },
       { method: "getTransaction", args: ["a".repeat(64)], response: overrides.fullResponse ?? { hash: "a".repeat(64), confirmed: true, contractRet: "SUCCESS" }, origin: "legacy_observed" as const }
     ],
     indexedMovements: [{ txHashes: routeCriticalTxHashes, rows: [{ ...base.indexedMovements[0]!.rows[0] }] }],
-    assertionQueries: [{ chain: "tron", addresses: routeCriticalAddresses, txHashes: routeCriticalTxHashes, rows: overrides.assertionRows ?? [] }],
-    rawTransactions: [{ txHash: "a".repeat(64), response: overrides.rawResponse ?? base.rawTransactions[0]!.response }],
+    assertionQueries: [{ chain: "tron", addresses: routeCriticalAddresses, txHashes: routeCriticalTxHashes, rows: assertionRows }],
+    rawTransactions,
     expectedStableFacts: projectStableWhereFacts(report)
   } as any).canonicalJson);
 }
@@ -237,6 +271,16 @@ describe("where latency replay v1", () => {
     const noOrdinaryManifest = structuredClone(built().envelope) as any;
     delete noOrdinaryManifest.expectedOrdinaryOfficialUsdtTxHashes;
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noOrdinaryManifest))).toThrow("where_latency_replay_expected_ordinary_manifest_invalid");
+    const noKnownHardManifest = structuredClone(built().envelope) as any;
+    delete noKnownHardManifest.frozenKnownHardTxHashes;
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noKnownHardManifest))).toThrow("where_latency_replay_known_hard_manifest_invalid");
+    const emptyOrdinaryEvasion = structuredClone(built().envelope) as any;
+    emptyOrdinaryEvasion.expectedOrdinaryOfficialUsdtTxHashes = [];
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(emptyOrdinaryEvasion))).toThrow("where_latency_replay_expected_ordinary_manifest_invalid");
+    const fakeKnownHardEvasion = structuredClone(built().envelope) as any;
+    fakeKnownHardEvasion.frozenKnownHardTxHashes = ["a".repeat(64)];
+    fakeKnownHardEvasion.expectedOrdinaryOfficialUsdtTxHashes = [];
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(fakeKnownHardEvasion))).toThrow("where_latency_replay_known_hard_manifest_invalid");
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, baselineGitCommit: "b".repeat(40) }))).toThrow("where_latency_replay_baseline_binding_missing");
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, version: 2 }))).toThrow("where_latency_replay_version_unsupported");
     expect(() => parseWhereLatencyReplayV1(JSON.stringify(built().envelope, null, 2))).toThrow("where_latency_replay_json_not_canonical");
@@ -618,6 +662,13 @@ describe("where latency replay v1", () => {
     }));
 
     expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.tapeCompleteness).toEqual({
+      status: "complete",
+      missingRawTxHashes: [],
+      missingFullTxHashes: [],
+      missingRawEvidenceIds: [],
+      missingFullEvidenceIds: []
+    });
     expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
       coverageStatus: "coverage_incomplete",
       technicalStatus: "technical_unknown",
@@ -633,6 +684,13 @@ describe("where latency replay v1", () => {
     const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(canonicalizeArtifactJson(incomplete)));
 
     expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.tapeCompleteness).toEqual({
+      status: "incomplete",
+      missingRawTxHashes: ["a".repeat(64)],
+      missingFullTxHashes: [],
+      missingRawEvidenceIds: [RAW_EVIDENCE_ID],
+      missingFullEvidenceIds: []
+    });
     expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
       coverageStatus: "coverage_incomplete",
       technicalStatus: "technical_unknown",
@@ -657,6 +715,13 @@ describe("where latency replay v1", () => {
     const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(canonicalizeArtifactJson(incomplete)));
 
     expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.tapeCompleteness).toEqual({
+      status: "incomplete",
+      missingRawTxHashes: [],
+      missingFullTxHashes: ["a".repeat(64)],
+      missingRawEvidenceIds: [],
+      missingFullEvidenceIds: [FULL_EVIDENCE_ID]
+    });
     expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
       coverageStatus: "coverage_incomplete",
       technicalStatus: "technical_unknown",
@@ -664,13 +729,31 @@ describe("where latency replay v1", () => {
     });
   });
 
-  it("fails acceptance when the new resolver reclassifies a frozen ordinary hash and makes a full call", async () => {
+  it("blocks acceptance when an ordinary hash lacks frozen full tape even though Stage B does not request it", async () => {
+    const incomplete = structuredClone(await successfulReplay());
+    incomplete.dependencies = incomplete.dependencies
+      .filter((entry) => entry.method !== "getTransaction")
+      .map((entry, sequence) => ({ ...entry, sequence }));
+    delete incomplete.baselineRequestCounts.getTransaction;
+
+    const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(canonicalizeArtifactJson(incomplete)));
+
+    expect(analysis.firstRun.providerCalls.full).toBe(0);
+    expect(analysis.stableFactsEqual).toBe(true);
+    expect(analysis.tapeCompleteness).toEqual({
+      status: "incomplete",
+      missingRawTxHashes: [],
+      missingFullTxHashes: ["a".repeat(64)],
+      missingRawEvidenceIds: [],
+      missingFullEvidenceIds: [FULL_EVIDENCE_ID]
+    });
+    expect(() => assertWhereLatencyReplayAcceptance(analysis)).toThrow("where_latency_replay_tape_incomplete");
+  });
+
+  it("rejects a frozen ordinary manifest when raw facts are changed to reclassify its hash as hard", async () => {
     const raw = structuredClone(base.rawTransactions[0]!.response) as any;
     raw.raw_data.contract[0].parameter.value.data = `deadbeef${raw.raw_data.contract[0].parameter.value.data.slice(8)}`;
-    const analysis = await analyzeWhereLatencyReplay(await successfulReplay({ rawResponse: raw }));
-
-    expect(analysis.firstRun.report.transactionInfoEnrichment?.decisions[0]).toMatchObject({ priority: "hard" });
-    expect(() => assertWhereLatencyReplayAcceptance(analysis)).toThrow("where_latency_replay_plain_transfer_full_request");
+    await expect(successfulReplay({ rawResponse: raw, preserveOrdinaryManifest: true })).rejects.toThrow("where_latency_replay_expected_ordinary_manifest_invalid");
   });
 
   it("runs the canonical replay command from a fixture without capture configuration or writes", async () => {
