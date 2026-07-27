@@ -14,6 +14,7 @@ code_refs:
   - src/forensics/deepForensicJob.ts
   - src/forensics/whereLatencyReplay.ts
   - scripts/captureWhereLatencyReplay.ts
+  - scripts/runWhereLatencyCanary.ts
 ---
 
 # Runbooks
@@ -318,3 +319,104 @@ by monolithic jobs, so Stage B makes no bounded-start SLA claim for a newly
 queued job; do not publish a start SLA from that poll. Never expand these
 aggregate diagnostics with an address, transaction hash, chat/key identifier,
 label, or username.
+
+## Isolated Stage B Where Concurrency-Two Canary
+
+This is a destructive-to-the-clone, no-delivery operational check. Run it only
+inside a dedicated canary deployment and database clone. It refuses a shared
+database: every runnable/running forensic job must be absent, and the same
+process-global TronScan scheduler must begin with `queued = 0` and
+`inFlight = 0`. Never delete or cancel user jobs to make those checks pass.
+
+The deployment must start only these runtime cycles:
+
+```text
+address_index,delivery_reconciliation,where
+```
+
+`delivery_reconciliation` is the null-chat/no-op reconciliation used to prove
+that no delivery intent or claim appears. Monitor polling, approvals, Deep,
+Incoming, Unified provider work, Telegram polling, and every other provider
+consumer must be disabled. Deep remains configured at one and is not run by
+this canary.
+
+The command obtains authoritative process observations through the trusted
+in-process adapter named by `WHERE_LATENCY_CANARY_RUNTIME_ADAPTER`. That module
+must export `createWhereLatencyCanaryRuntime(config)` and bind to the exact
+dedicated Where pump, scheduler, forensic repository, and delivery repository;
+an adapter that estimates scheduler counters from database rows is invalid.
+The adapter owns only jobs whose unique `requestedBy` and progress marker are
+provided by the harness. Its `stopClaimsAndDrain` must stop new canary claims
+and await every canary-owned handler promise before returning. The command
+fails closed when the adapter is absent or does not expose the complete
+contract.
+
+Prepare the deployment with a new clone and the candidate build, verify its
+cycle allowlist, then set:
+
+```powershell
+$env:DATABASE_URL = "<dedicated-canary-clone>"
+$env:RUNTIME_INSTANCE_LABEL = "where-canary-<unique-instance>"
+$env:WHERE_LATENCY_CANARY_DEDICATED = "true"
+$env:WHERE_LATENCY_CANARY_ENABLED_CYCLES = "where,address_index,delivery_reconciliation"
+$env:WHERE_LATENCY_CANARY_RUNTIME_ADAPTER = "<absolute-path-to-deployment-runtime-adapter>"
+$env:FORENSIC_WHERE_WORKER_CONCURRENCY = "2"
+```
+
+The `prepare` command exclusively creates a canonical
+`where-latency-canary-isolation-v1` receipt. It contains only a non-secret
+database fingerprint, runtime instance label, exact cycle allowlist, Where and
+Deep concurrency, polling interval, the clean scheduler baseline, capacity
+fingerprint, config hash, and receipt SHA-256. The database password and API
+keys are never written. `run` re-hashes the exact receipt, re-derives its
+configuration and capacity, and requires the scheduler counters to still
+equal the prepared clean baseline before it enqueues anything.
+
+```powershell
+npm.cmd run forensic:where-latency:canary -- prepare `
+  --out outputs/where-latency-canary/isolation.json
+
+npm.cmd run forensic:where-latency:canary -- run --confirm `
+  --isolation-receipt outputs/where-latency-canary/isolation.json
+```
+
+Both isolation and run receipts are create-only: remove neither and choose a
+new path for every attempt. A pass receipt is written under
+`outputs/where-latency-canary/` only after both canary jobs are terminal, their
+null-chat delivery intent/claim counts are zero, new canary claims are stopped,
+all canary-owned promises are drained, and the final scheduler snapshot is
+taken. The fresh TXc handler must start within two Where poll intervals and no
+later than five seconds while the long TQr handler occupies exactly one slot.
+Maximum active Where handlers is two; scheduler rate-limited and failed-request
+deltas are zero; scheduler/key capacity is unchanged.
+
+If both slots are occupied before TXc can be introduced, the receipt is
+`non_gating_not_isolated` with `no_stage_b_start_guarantee`. It is not a failed
+one-slot measurement and cannot promote concurrency two. Wait for a genuinely
+isolated window; never evict work. A shared-scheduler diagnostic is likewise
+non-gating and its global deltas are not release evidence.
+
+Cleanup ownership belongs to the operator of the disposable clone. Preserve
+receipts and structured logs, stop the dedicated process, confirm its pump is
+drained, and then retire the clone through the normal infrastructure workflow.
+The harness does not delete jobs or databases.
+
+After the Where canary, measure residual Deep latency separately with Deep at
+one: enqueue TXc through the existing Deep lane and record queue age, handler
+start, provider errors, process/container memory, terminal state, and delivery
+count. Do not mix this sample into the Where receipt and do not raise Deep
+concurrency under this plan. If Deep dominates, keep a separate
+`default 1 / isolated canary 2` design problem.
+
+For production promotion, compare the existing structured scheduler logs for
+30 minutes before and 30 minutes after enabling Where concurrency two. Compute
+rate-limited requests per dispatched request and failed requests per dispatched
+request for each window. Neither post-window rate may be higher. Any
+contamination, missing denominator, capacity increase, or delivery duplication
+blocks promotion and restores the default value of one.
+
+No Stage B concurrency-two receipt has been produced yet. This checkout has no
+dedicated canary database/configuration or deployment-owned runtime adapter,
+and the real legacy TXc replay evidence is still absent. Do not run against the
+current shared environment and do not treat the deterministic fake-runtime
+tests as rollout evidence; production concurrency two remains blocked.
