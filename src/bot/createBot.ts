@@ -4606,12 +4606,12 @@ async function replyWithCheck(
 function pendingCheckStartedMessage(kind: "address" | "tx", locale: BotLocale): string {
   if (locale === "en") {
     return kind === "address"
-      ? "Address check started. I will send the result here. The address will not be added to monitoring."
+      ? "Address check started. I will send the result here. The address will not be added to monitoring. The Cancel button above only closes address input and will not stop this accepted check."
       : "Tx check started. I will send the result here.";
   }
 
   return kind === "address"
-    ? "Проверка адреса запущена. Результат пришлю сюда. Адрес не будет добавлен в мониторинг."
+    ? "Проверка адреса запущена. Результат пришлю сюда. Адрес не будет добавлен в мониторинг. Кнопка «Отмена» выше закрывает только ввод адреса и уже не остановит принятую проверку."
     : "Проверка tx запущена. Результат пришлю сюда.";
 }
 
@@ -4669,7 +4669,10 @@ async function startPendingCheckInBackground(
       locale,
       telegramUserId: options.telegramUserId
     });
-    if (claimed) return;
+    if (claimed) {
+      await ctx.reply(pendingCheckStartedMessage(kind, locale));
+      return;
+    }
   }
   const replyTarget = {
     chat: chatId === undefined ? undefined : { id: chatId },

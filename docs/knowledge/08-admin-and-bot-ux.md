@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -28,10 +28,14 @@ immutable evidence storage and are not copied into bot reports.
 
 ## Unified Admin And Bot UX
 
-Unified sends nothing while Fast, Where, or Deep is running. After the parent
-reaches `COMPLETED`, the bot sends one immutable locale presentation derived
-from the same report hash. RU and EN share analysis/report identity and differ
-only in presentation artifacts.
+After durable Unified intake, the bot immediately acknowledges that the address
+check started and that the final result will arrive in the same chat. This is a
+lifecycle acknowledgement, not a preliminary analytical report. It also makes
+clear that the old input-form `Cancel` button cannot stop an already accepted
+check. While Fast, Where, or Deep is running, Unified sends no child result.
+After the parent reaches `COMPLETED`, the bot sends one immutable locale
+presentation derived from the same report hash. RU and EN share analysis/report
+identity and differ only in presentation artifacts.
 
 The Telegram dossier order is:
 

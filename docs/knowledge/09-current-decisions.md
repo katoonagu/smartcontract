@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -24,6 +24,9 @@ code_refs:
 
 - One logical `/check` owns one parent run and at most one automatic Telegram
   delivery intent.
+- Durable intake sends one immediate non-analytical acknowledgement. It confirms
+  that the check continues in the background and that an old input-form cancel
+  button does not cancel the accepted run.
 - Fast, Where, and Deep keep separate analytical responsibilities but are
   evidence-only children. No preliminary child report is sent.
 - `COMPLETED` always has one score and decision.

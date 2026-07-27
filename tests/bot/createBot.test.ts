@@ -2631,7 +2631,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonTexts(lastMessagePayload(calls))).toContain("Start cross-bridge");
   });
 
-  it("routes a fenced wallet check to Unified without preliminary or child messages", async () => {
+  it("routes a fenced wallet check to Unified with one intake acknowledgement and no child reports", async () => {
     const requests: Array<Parameters<NonNullable<BotOptions["createUnifiedCheckRequest"]>>[0]> = [];
     let legacyProviderCalls = 0;
     const { bot, calls } = await createSmokeBot({
@@ -2663,7 +2663,33 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "ru"
     })]);
     expect(legacyProviderCalls).toBe(0);
-    expect(messageCalls(calls)).toEqual([]);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text)))).toEqual([
+      expect.stringContaining("Проверка адреса запущена")
+    ]);
+  });
+
+  it("acknowledges a button-driven Unified address check after intake", async () => {
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      createUnifiedCheckRequest: async () => true,
+      addressRiskSignals: async () => {
+        throw new Error("legacy_check_must_not_run");
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    const promptCallCount = messageCalls(calls).length;
+    await bot.handleUpdate(messageUpdate(walletAddress, userId, "ru"));
+
+    const intakeMessages = messageCalls(calls)
+      .slice(promptCallCount)
+      .map((call) => plainTelegramText(String(call.payload.text)));
+    expect(intakeMessages).toEqual([
+      expect.stringContaining("Проверка адреса запущена")
+    ]);
+    expect(intakeMessages[0]).toContain("Результат пришлю сюда");
+    expect(intakeMessages[0]).toContain("Отмена");
+    expect(intakeMessages[0]).toContain("не остановит");
   });
 
   it("keeps transaction and incoming routes outside the Unified wallet fence", async () => {
