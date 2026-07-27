@@ -278,6 +278,47 @@ describe("transaction evidence repository", () => {
       .rejects.toThrow("transaction_provider_evidence_not_permanent");
   });
 
+  it("treats top-level transaction-info revert as finalized reverted evidence", async () => {
+    const payload = {
+      hash: HASH_A,
+      confirmed: true,
+      revert: true,
+      contractRet: "SUCCESS"
+    };
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({ payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({
+      payload,
+      status: "confirmed_reverted"
+    }))).resolves.toMatchObject({ evidence: { finality: { status: "confirmed_reverted" } } });
+  });
+
+  it.each([
+    ["failed status conflicts with successful result", {
+      hash: HASH_A,
+      confirmed: true,
+      result: "SUCCESS",
+      status: "FAILED"
+    }, "confirmed_failed"],
+    ["unknown status cannot become success", {
+      hash: HASH_A,
+      confirmed: true,
+      result: "SUCCESS",
+      status: "mystery-provider-status"
+    }, "confirmed_failed"],
+    ["reverted result wins over successful status", {
+      hash: HASH_A,
+      confirmed: true,
+      result: "REVERT",
+      status: "SUCCESS"
+    }, "confirmed_reverted"]
+  ] as const)("resolves transaction-info %s conservatively", async (_label, payload, status) => {
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({ payload })))
+      .rejects.toThrow("transaction_provider_evidence_not_permanent");
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({ payload, status })))
+      .resolves.toMatchObject({ evidence: { finality: { status } } });
+  });
+
   it("binds a raw witness to one exact rich movement identity", async () => {
     const raw = rawEvidence();
     const withUnhashedMovement = {

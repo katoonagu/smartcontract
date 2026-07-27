@@ -174,6 +174,9 @@ function endpointWitnessProjection(
       payload.contractRet !== undefined ||
       payload.contract_ret !== undefined ||
       payload.finalResult !== undefined ||
+      payload.result !== undefined ||
+      payload.status !== undefined ||
+      payload.revert !== undefined ||
       !rawData ||
       !Array.isArray(rawData.contract) ||
       rawData.contract.length === 0 ||
@@ -301,6 +304,9 @@ function endpointWitnessProjection(
     confirmed: true,
     contractRet: typeof payload.contractRet === "string" ? payload.contractRet.trim().toUpperCase() : null,
     finalResult: typeof payload.finalResult === "string" ? payload.finalResult.trim().toUpperCase() : null,
+    result: payload.result ?? null,
+    status: payload.status ?? null,
+    revert: payload.revert ?? null,
     receiptResult: typeof receipt?.result === "string" ? receipt.result.trim().toUpperCase() : null,
     receiptSuccess: typeof receipt?.success === "boolean" ? receipt.success : null
   };
@@ -346,6 +352,9 @@ function endpointFinalityStatus(
       payload.contractRet !== undefined ||
       payload.contract_ret !== undefined ||
       payload.finalResult !== undefined ||
+      payload.result !== undefined ||
+      payload.status !== undefined ||
+      payload.revert !== undefined ||
       !Array.isArray(payload.ret) ||
       payload.ret.length === 0
     ) return null;
@@ -367,26 +376,41 @@ function endpointFinalityStatus(
     payload.confirmed !== true
   ) return null;
   const receipt = record(payload.receipt);
-  const results: string[] = [];
+  const statuses: Array<TronTransactionProviderEvidenceV1["finality"]["status"]> = [];
   for (const value of [
     receipt?.result,
     payload.finalResult,
     payload.contractRet,
-    payload.contract_ret
+    payload.contract_ret,
+    payload.result
   ]) {
-    if (typeof value === "string" && value.trim()) results.push(value.trim().toUpperCase());
+    if (value === undefined) continue;
+    statuses.push(typeof value === "string" && value.trim()
+      ? resultStatus(value.trim().toUpperCase())
+      : "confirmed_failed");
   }
   if (typeof receipt?.success === "boolean") {
     if (receipt.success === false) {
-      if (results.some((result) => resultStatus(result) === "confirmed_reverted")) {
+      if (statuses.includes("confirmed_reverted")) {
         return "confirmed_reverted";
       }
       return "confirmed_failed";
     }
-    results.push("SUCCESS");
+    statuses.push("confirmed_success");
   }
-  if (results.length === 0) return null;
-  const statuses = results.map(resultStatus);
+  if (payload.revert !== undefined) {
+    if (payload.revert === true) statuses.push("confirmed_reverted");
+    else if (payload.revert !== false) statuses.push("confirmed_failed");
+  }
+  if (payload.status !== undefined) {
+    const status = payload.status;
+    statuses.push(status === 0 || status === "0" || status === "SUCCESS"
+      ? "confirmed_success"
+      : typeof status === "string" && status.toUpperCase().includes("REVERT")
+        ? "confirmed_reverted"
+        : "confirmed_failed");
+  }
+  if (statuses.length === 0) return null;
   if (statuses.includes("confirmed_reverted")) return "confirmed_reverted";
   if (statuses.includes("confirmed_failed")) return "confirmed_failed";
   return "confirmed_success";
