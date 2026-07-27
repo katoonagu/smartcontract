@@ -21,7 +21,7 @@ import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import type { RouteLinkedAssertionInput, SelectiveTransactionEnricher } from "./selectiveTransactionEnrichment";
 import {
   mergeForensicJobProgress,
-  runWithForensicEnrichmentHeartbeat,
+  createForensicEnrichmentHeartbeatCoordinator,
   type ForensicEnrichmentProgress,
   type ForensicJobProgressPatch
 } from "./forensicJobProgress";
@@ -1503,14 +1503,18 @@ export async function buildIncomingDepositReport(
       addresses: routeAddresses,
       txHashes: [routeEdge.txHash.toLowerCase()]
     }).catch(() => []) ?? [];
-    const runWithHeartbeat: TransactionEnrichmentHeartbeatRunner = input.runWithTransactionEnrichmentHeartbeat ?? (
-      input.persistProgress
-        ? (task) => runWithForensicEnrichmentHeartbeat({
-            task,
-            heartbeat: async () => { await input.persistProgress!({ jobHeartbeatAt: new Date().toISOString() }); }
-          })
-        : (task) => task(async () => undefined)
-    );
+    const runWithHeartbeat: TransactionEnrichmentHeartbeatRunner = input.runWithTransactionEnrichmentHeartbeat ?? (async (task) => {
+      if (!input.persistProgress) return task(async () => undefined);
+      const coordinator = createForensicEnrichmentHeartbeatCoordinator({
+        heartbeat: async () => { await input.persistProgress!({ jobHeartbeatAt: new Date().toISOString() }); },
+        isAborted: () => input.abortSignal?.aborted === true
+      });
+      try {
+        return await coordinator.run(task);
+      } finally {
+        await coordinator.dispose();
+      }
+    });
     const enrichment = await runWithHeartbeat((onCandidateResolved) =>
       input.deps.selectiveTransactionEnricher!.enrich({
         mode: "subject",
@@ -2361,13 +2365,6 @@ export async function runSingleIncomingDepositJobCycle(
     }
     await persist();
   };
-  const runWithTransactionEnrichmentHeartbeat: TransactionEnrichmentHeartbeatRunner = (task) =>
-    runWithForensicEnrichmentHeartbeat({
-      task,
-      heartbeat: () => persistProgress({ jobHeartbeatAt: now().toISOString() }),
-      intervalMs: deps.transactionEnrichmentHeartbeatIntervalMs,
-      now: () => now().getTime()
-    });
   const persistPerformanceTiming = async (): Promise<IncomingDepositTimingSummary> => {
     const summary = timing.summary({
       queueWaitMs,
@@ -2448,6 +2445,14 @@ export async function runSingleIncomingDepositJobCycle(
     return true;
   }
 
+  const enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
+    heartbeat: () => persistProgress({ jobHeartbeatAt: now().toISOString() }),
+    intervalMs: deps.transactionEnrichmentHeartbeatIntervalMs,
+    now: () => now().getTime(),
+    isAborted: () => abortController.signal.aborted
+  });
+  const runWithTransactionEnrichmentHeartbeat: TransactionEnrichmentHeartbeatRunner = (task) =>
+    enrichmentHeartbeat.run(task);
   try {
     const timestamp = depositTimestamp ?? new Date(timestampText);
     await persistProgress({ jobPhase: "incoming_deposit_trace" }, "persist_phase_incoming_deposit_trace");
@@ -2593,6 +2598,8 @@ export async function runSingleIncomingDepositJobCycle(
     }
     logTiming("failed");
     return true;
+  } finally {
+    await enrichmentHeartbeat.dispose();
   }
 }
 

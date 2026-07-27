@@ -23,7 +23,8 @@ import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import {
   mergeForensicJobProgress,
-  runWithForensicEnrichmentHeartbeat,
+  createForensicEnrichmentHeartbeatCoordinator,
+  type ForensicEnrichmentHeartbeatCoordinator,
   type ForensicJobProgressPatch
 } from "./forensicJobProgress";
 import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
@@ -1766,6 +1767,7 @@ export async function runSingleDeepForensicJobCycle(
   const job = await deps.claimNextForensicCheckJob();
   if (!job) return false;
   const abortController = new AbortController();
+  let enrichmentHeartbeat: ForensicEnrichmentHeartbeatCoordinator | null = null;
 
   try {
     if (job.kind === "where_is_money_check") {
@@ -1833,6 +1835,24 @@ export async function runSingleDeepForensicJobCycle(
       abortController.abort();
       return true;
     }
+    enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
+      intervalMs: options.transactionEnrichmentHeartbeatIntervalMs,
+      isAborted: () => abortController.signal.aborted,
+      heartbeat: async () => {
+        job.progressJson = mergeForensicJobProgress(job.progressJson, {
+          jobHeartbeatAt: new Date().toISOString()
+        });
+        const updated = await deps.updateForensicCheckJobProgress?.({
+          id: job.id,
+          progressJson: job.progressJson,
+          lastError: null
+        });
+        if (updated === false) {
+          abortController.abort();
+          throw new Error("lost_forensic_job_claim");
+        }
+      }
+    });
 
     const allTimeMode = deepCheckAllTimeModeField(job.progressJson.allTimeDeepCheckMode) ?? options.allTimeDeepCheckMode ?? "partial";
     const allTimeSubjectIndexState = allTimeMode === "strict" && deps.ensureAddressUsdtHistory
@@ -1860,23 +1880,8 @@ export async function runSingleDeepForensicJobCycle(
       const movements = await deps.listIndexedMovementsByHashes?.([txHash]) ?? [];
       const addresses = [...new Set(movements.flatMap((edge) => [edge.fromAddress, edge.toAddress]))];
       const assertions = await deps.listActiveRouteAssertions?.({ addresses, txHashes: [txHash] }) ?? [];
-      const enrichment = await runWithForensicEnrichmentHeartbeat({
-        intervalMs: options.transactionEnrichmentHeartbeatIntervalMs,
-        heartbeat: async () => {
-          job.progressJson = mergeForensicJobProgress(job.progressJson, {
-            jobHeartbeatAt: new Date().toISOString()
-          });
-          const updated = await deps.updateForensicCheckJobProgress?.({
-            id: job.id,
-            progressJson: job.progressJson,
-            lastError: null
-          });
-          if (updated === false) {
-            abortController.abort();
-            throw new Error("lost_forensic_job_claim");
-          }
-        },
-        task: (onCandidateResolved) => deps.selectiveTransactionEnricher!.enrich({
+      const enrichment = await enrichmentHeartbeat!.run((onCandidateResolved) =>
+        deps.selectiveTransactionEnricher!.enrich({
           mode: "subject",
           routeEdges: movements,
           movements,
@@ -1886,7 +1891,7 @@ export async function runSingleDeepForensicJobCycle(
           signal: abortController.signal,
           onCandidateResolved
         })
-      });
+      );
       for (const evidenceId of enrichment.evidenceIds) deepSelectiveEvidenceIds.add(evidenceId);
       return deps.selectiveTransactionEnricher.getFullTransactionInfo(txHash);
     };
@@ -2111,5 +2116,7 @@ export async function runSingleDeepForensicJobCycle(
       lastError: message
     });
     return true;
+  } finally {
+    await enrichmentHeartbeat?.dispose();
   }
 }

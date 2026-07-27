@@ -17,6 +17,7 @@ import {
   createSelectiveTransactionEnricher,
   type SelectiveTransactionEnrichmentInput
 } from "../../src/forensics/selectiveTransactionEnrichment";
+import { createForensicEnrichmentHeartbeatCoordinator } from "../../src/forensics/forensicJobProgress";
 import {
   transactionProviderEvidenceId,
   type TronTransactionProviderEvidenceV1
@@ -401,6 +402,51 @@ function incomingMaterializationRows(input: {
 }
 
 describe("runSingleIncomingDepositJobCycle", () => {
+  it("queues one latest final heartbeat behind an unresolved periodic job heartbeat", async () => {
+    let releasePeriodic!: () => void;
+    let signalPeriodicStarted!: () => void;
+    const periodicStarted = new Promise<void>((resolve) => { signalPeriodicStarted = resolve; });
+    const periodicGate = new Promise<void>((resolve) => { releasePeriodic = resolve; });
+    const writes: Array<{ kind: string; progress: { completed: number; total: number } | null }> = [];
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const coordinator = createForensicEnrichmentHeartbeatCoordinator({
+      intervalMs: 1,
+      heartbeat: async (write) => {
+        activeWrites += 1;
+        maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+        writes.push(write);
+        try {
+          if (write.kind === "periodic") {
+            signalPeriodicStarted();
+            await periodicGate;
+          }
+        } finally {
+          activeWrites -= 1;
+        }
+      }
+    });
+
+    const run = coordinator.run(async (onCandidateResolved) => {
+      await periodicStarted;
+      await Promise.all([
+        onCandidateResolved({ completed: 1, total: 1 }),
+        onCandidateResolved({ completed: 2, total: 2 })
+      ]);
+    });
+    await periodicStarted;
+    expect(writes).toEqual([{ kind: "periodic", progress: null }]);
+    releasePeriodic();
+    await run;
+    await coordinator.dispose();
+
+    expect(maxActiveWrites).toBe(1);
+    expect(writes).toEqual([
+      { kind: "periodic", progress: null },
+      { kind: "final", progress: { completed: 2, total: 2 } }
+    ]);
+  });
+
   it("completes an incoming deposit job with one pending final alert", async () => {
     const events: string[] = [];
     const complete = vi.fn(async (input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]) => {
@@ -2044,6 +2090,11 @@ describe("buildIncomingDepositReport", () => {
           routeEdges: [firstMovement, nextMovement],
           movements: [firstMovement, nextMovement]
         }, { signal: abortSignal, onCandidateResolved }));
+        const secondClaimedRun = runWithTransactionEnrichmentHeartbeat((onCandidateResolved) => enricher.enrich({
+          mode: "subject",
+          routeEdges: [firstMovement],
+          movements: [firstMovement]
+        }, { signal: abortSignal, onCandidateResolved }));
         const otherWaiter = enricher.enrich({
           mode: "subject",
           routeEdges: [firstMovement],
@@ -2056,6 +2107,7 @@ describe("buildIncomingDepositReport", () => {
         observedAborted = abortSignal?.aborted === true;
         releaseRaw(rawPayload);
         await expect(claimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
+        await expect(secondClaimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
         await expect(otherWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
         throw new Error("lost_forensic_job_claim");
       }

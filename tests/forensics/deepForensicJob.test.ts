@@ -392,6 +392,8 @@ describe("deep forensic job runner", () => {
     let rawSettled = false;
     let periodicHeartbeatWhileRawPending = false;
     let progressUpdates = 0;
+    let activeProgressUpdates = 0;
+    let maxActiveProgressUpdates = 0;
     const persistedFull = { hash: txHash, confirmed: true, contractRet: "SUCCESS", trigger_info: { methodName: "Verify20" } };
     const saved = new Map<string, TronTransactionProviderEvidenceV1>();
     const rawProvider = vi.fn(async () => {
@@ -449,8 +451,15 @@ describe("deep forensic job runner", () => {
         completeForensicCheckJob,
         updateForensicCheckJobProgress: async () => {
           progressUpdates += 1;
-          if (progressUpdates > 1 && !rawSettled) periodicHeartbeatWhileRawPending = true;
-          return true;
+          activeProgressUpdates += 1;
+          maxActiveProgressUpdates = Math.max(maxActiveProgressUpdates, activeProgressUpdates);
+          try {
+            if (progressUpdates > 1 && !rawSettled) periodicHeartbeatWhileRawPending = true;
+            await new Promise<void>((resolve) => setTimeout(resolve, 3));
+            return true;
+          } finally {
+            activeProgressUpdates -= 1;
+          }
         },
         recordRiskEvaluation: vi.fn(async () => undefined),
         tronClient: { listRelatedTrc20Transfers: async () => [] },
@@ -464,6 +473,7 @@ describe("deep forensic job runner", () => {
       expect(rawProvider).toHaveBeenCalledTimes(1);
       expect(fullProvider).toHaveBeenCalledTimes(1);
       expect(periodicHeartbeatWhileRawPending).toBe(true);
+      expect(maxActiveProgressUpdates).toBe(1);
       expect(legacyGetTransaction).not.toHaveBeenCalled();
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
         rawEvidenceIds: expect.arrayContaining([`deep:decision:${txHash}`])

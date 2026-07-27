@@ -54,7 +54,10 @@ transferFrom, Verify20, permit, non-plain, and other hard parser candidates are
 kept outside those optional limits, and Deep owns no private full-payload
 promise cache.
 
-While a shared raw/full promise is pending, the claimed Deep runner performs a
-non-overlapping heartbeat CAS at most once per 30 seconds. A false CAS aborts
-the Deep caller immediately; it does not cancel the shared provider promise,
-but the stale caller cannot start full/next work or attach evidence/results.
+While shared raw/full promises are pending, the claimed Deep runner uses one
+job-scoped coordinator for all concurrent transaction resolutions and performs
+a non-overlapping heartbeat CAS at most once per 30 seconds. A final candidate
+queues one latest final write behind an in-flight periodic CAS. A false CAS
+aborts every Deep caller for that job immediately; it does not cancel shared
+provider promises, but stale callers cannot start full/next work or attach
+evidence/results.

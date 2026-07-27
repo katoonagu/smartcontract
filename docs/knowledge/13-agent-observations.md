@@ -488,4 +488,5 @@ only through provider selection. It must reach every applicable semantic
 parser, remain resolver-owned without an indexed row, contribute evidence IDs
 and incomplete coverage, and be stopped immediately when claim fencing fails.
 A post-candidate callback is not a heartbeat for a long pending provider
-promise; the claimed caller also needs a periodic, non-overlapping CAS timer.
+promise; the claimed job also needs one periodic, non-overlapping CAS
+coordinator shared by all of its concurrent enrichment invocations.

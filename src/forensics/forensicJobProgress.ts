@@ -76,46 +76,106 @@ export type ForensicJobProgressPatch = {
 
 export type ForensicEnrichmentProgress = (input: { completed: number; total: number }) => Promise<void>;
 
-export async function runWithForensicEnrichmentHeartbeat<T>(input: {
-  task(onCandidateResolved: ForensicEnrichmentProgress): Promise<T>;
-  heartbeat(): Promise<void>;
+export type ForensicEnrichmentHeartbeatWrite = {
+  kind: "periodic" | "progress" | "final";
+  progress: { completed: number; total: number } | null;
+};
+
+export type ForensicEnrichmentHeartbeatCoordinator = {
+  run<T>(task: (onCandidateResolved: ForensicEnrichmentProgress) => Promise<T>): Promise<T>;
+  dispose(): Promise<void>;
+};
+
+export function createForensicEnrichmentHeartbeatCoordinator(input: {
+  heartbeat(write: ForensicEnrichmentHeartbeatWrite): Promise<void>;
   intervalMs?: number;
   now?: () => number;
-}): Promise<T> {
+  isAborted?: () => boolean;
+}): ForensicEnrichmentHeartbeatCoordinator {
   const intervalMs = Math.max(1, Math.floor(input.intervalMs ?? 30_000));
   const now = input.now ?? Date.now;
   let lastWriteStartedAt = Number.NEGATIVE_INFINITY;
   let writeInFlight: Promise<void> | null = null;
   let heartbeatFailure: unknown;
   let heartbeatFailed = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const write = (force: boolean): Promise<void> => {
-    if (heartbeatFailed) return Promise.resolve();
-    if (writeInFlight) return writeInFlight;
-    const current = now();
-    if (!force && current - lastWriteStartedAt < intervalMs) return Promise.resolve();
-    lastWriteStartedAt = current;
-    const pending = input.heartbeat().catch((error) => {
+  let activeRuns = 0;
+  let latestProgress: { completed: number; total: number } | null = null;
+  let queuedFinal: { completed: number; total: number } | null = null;
+  let queuedFinalWaiters: Array<() => void> = [];
+  let disposed = false;
+  const finishQueuedFinalWithoutWrite = (): void => {
+    queuedFinal = null;
+    const waiters = queuedFinalWaiters;
+    queuedFinalWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
+  const startWrite = (write: ForensicEnrichmentHeartbeatWrite): Promise<void> => {
+    lastWriteStartedAt = now();
+    const pending = input.heartbeat(write).catch((error) => {
       heartbeatFailed = true;
       heartbeatFailure = error;
-      if (timer) clearInterval(timer);
+      finishQueuedFinalWithoutWrite();
     }).finally(() => {
-      if (writeInFlight === pending) writeInFlight = null;
+      if (writeInFlight !== pending) return;
+      writeInFlight = null;
+      if (heartbeatFailed || disposed || input.isAborted?.()) {
+        finishQueuedFinalWithoutWrite();
+        return;
+      }
+      if (!queuedFinal) return;
+      const progress = queuedFinal;
+      const waiters = queuedFinalWaiters;
+      queuedFinal = null;
+      queuedFinalWaiters = [];
+      void startWrite({ kind: "final", progress }).then(() => {
+        for (const resolve of waiters) resolve();
+      });
     });
     writeInFlight = pending;
     return pending;
   };
-  timer = setInterval(() => { void write(false); }, intervalMs);
+  const write = (
+    force: boolean,
+    progress: { completed: number; total: number } | null,
+    kind: "periodic" | "progress"
+  ): Promise<void> => {
+    if (heartbeatFailed || disposed || input.isAborted?.()) return Promise.resolve();
+    if (force && writeInFlight) {
+      queuedFinal = progress;
+      return new Promise<void>((resolve) => queuedFinalWaiters.push(resolve));
+    }
+    if (writeInFlight) return writeInFlight;
+    const current = now();
+    if (!force && current - lastWriteStartedAt < intervalMs) return Promise.resolve();
+    return startWrite({ kind: force ? "final" : kind, progress });
+  };
+  const timer = setInterval(() => {
+    if (activeRuns > 0) void write(false, latestProgress, "periodic");
+  }, intervalMs);
   if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
-  try {
-    const result = await input.task(({ completed, total }) => write(completed === total));
-    await writeInFlight;
-    if (heartbeatFailed) throw heartbeatFailure;
-    return result;
-  } finally {
-    if (timer) clearInterval(timer);
-    await writeInFlight;
-  }
+  return {
+    async run(task) {
+      if (heartbeatFailed) throw heartbeatFailure;
+      if (disposed || input.isAborted?.()) throw new Error("selective_transaction_enrichment_aborted");
+      activeRuns += 1;
+      try {
+        const result = await task((progress) => {
+          latestProgress = progress;
+          return write(progress.completed === progress.total, progress, "progress");
+        });
+        if (heartbeatFailed) throw heartbeatFailure;
+        return result;
+      } finally {
+        activeRuns -= 1;
+      }
+    },
+    async dispose() {
+      disposed = true;
+      clearInterval(timer);
+      finishQueuedFinalWithoutWrite();
+      await writeInFlight;
+    }
+  };
 }
 
 export type ForensicRuntimeContractProjection = {

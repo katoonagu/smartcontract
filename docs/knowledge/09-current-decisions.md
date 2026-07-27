@@ -95,7 +95,8 @@ code_refs:
   contract-bucket floor. A false legacy job progress CAS aborts the caller and
   forbids stale completion or delivery preparation. Where, Incoming, and Deep
   keep that CAS alive during pending selective provider work with one
-  non-overlapping heartbeat per 30 seconds plus the final-candidate write.
+  job-scoped coordinator and non-overlapping heartbeat per 30 seconds plus one
+  queued latest final-candidate write.
 - Hard transaction hashes remain candidates without indexed movement rows and
   bypass only optional parser/exploration limits, never the shared resolver.
   Incoming combines outer and nested Where enrichment evidence and propagates

@@ -41,9 +41,12 @@ claimed job. A false progress/heartbeat compare-and-set is claim loss: the
 worker aborts selective enrichment, starts no later candidate, and cannot
 complete, publish, or prepare delivery. Enrichment heartbeats are written at
 most once per 30 seconds while a provider promise is pending and on the final
-candidate. Heartbeat writes never overlap, and their timer is cleared and
-unreferenced. Completed jobs merge the provider and decision evidence IDs into
-existing `raw_evidence_ids`.
+candidate. One job-scoped coordinator, timer, cadence, and in-flight write are
+shared by every concurrent selective invocation in that claimed attempt. A
+final write arriving behind an unresolved periodic CAS is queued once with the
+latest final summary. Heartbeat writes never overlap, and the job-level timer
+is cleared and unreferenced when the whole attempt ends. Completed jobs merge
+the provider and decision evidence IDs into existing `raw_evidence_ids`.
 
 ## Unified Lifecycle
 
