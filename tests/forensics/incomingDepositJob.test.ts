@@ -2124,6 +2124,146 @@ describe("buildIncomingDepositReport", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
+  it("keeps delayed nested Where enrichment inside the Incoming job heartbeat coordinator", async () => {
+    vi.resetModules();
+    const nestedHash = "9".repeat(64);
+    const nestedEdge: ForensicRouteEdge = {
+      id: `nested:${nestedHash}`,
+      txHash: nestedHash,
+      fromAddress: "TFunder111111111111111111111111111111",
+      toAddress: validProgressJson.sender,
+      amountRaw: "1000000",
+      timestamp: new Date(validProgressJson.timestamp),
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    let releaseNestedRaw!: () => void;
+    let signalNestedStarted!: () => void;
+    const nestedStarted = new Promise<void>((resolve) => { signalNestedStarted = resolve; });
+    const nestedRaw = new Promise<void>((resolve) => { releaseNestedRaw = resolve; });
+    let sharedRaw: Promise<void> | null = null;
+    let rawCalls = 0;
+    let fullCalls = 0;
+    let independentWaiter: Promise<unknown> | null = null;
+    const complete = vi.fn(async () => true);
+    const record = vi.fn(async () => true);
+    const enrichmentResult = {
+      policyVersion: "selective-transaction-enrichment-v1" as const,
+      coverageStatus: "complete" as const,
+      technicalStatus: "proven" as const,
+      candidateCount: 1,
+      hardCandidateCount: 0,
+      rawProviderRequests: 1,
+      fullProviderRequests: 0,
+      savedEvidenceHits: 0,
+      inFlightHits: 0,
+      schedulerAwaitMs: 0,
+      evidenceIds: ["nested:raw"],
+      decisions: [],
+      adverseGate: "complete" as const,
+      inferredStopAllowed: true,
+      continueTraversal: false
+    };
+    const selectiveTransactionEnricher = {
+      async enrich(
+        enrichmentInput: SelectiveTransactionEnrichmentInput,
+        options: { signal?: AbortSignal; onCandidateResolved?: (input: { completed: number; total: number }) => Promise<void> | void } = {}
+      ) {
+        const nested = enrichmentInput.routeEdges.some((edge) => edge.txHash === nestedHash);
+        if (!nested) {
+          await options.onCandidateResolved?.({ completed: 1, total: 1 });
+          return { ...enrichmentResult, rawProviderRequests: 0, evidenceIds: [] };
+        }
+        if (!sharedRaw) {
+          rawCalls += 1;
+          signalNestedStarted();
+          sharedRaw = nestedRaw;
+        }
+        await sharedRaw;
+        if (options.signal?.aborted) throw new Error("selective_transaction_enrichment_aborted");
+        await options.onCandidateResolved?.({ completed: 1, total: 1 });
+        return enrichmentResult;
+      },
+      async getFullTransactionInfo() {
+        fullCalls += 1;
+        return null;
+      }
+    };
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any, input: any) => {
+      independentWaiter = deps.selectiveTransactionEnricher.enrich({
+        mode: "subject",
+        routeEdges: [nestedEdge],
+        movements: [nestedEdge]
+      });
+      return input.runWithTransactionEnrichmentHeartbeat((onCandidateResolved: any) =>
+        deps.selectiveTransactionEnricher.enrich({
+          mode: "subject",
+          routeEdges: [nestedEdge],
+          movements: [nestedEdge]
+        }, { signal: input.abortSignal, onCandidateResolved })
+      );
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { buildIncomingDepositReport: buildReportWithMock } = await import("../../src/forensics/incomingDepositJob");
+      let nestedPending = false;
+      let activeCas = 0;
+      let maxActiveCas = 0;
+      const handledPromise = runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: async () => job(validProgressJson),
+        updateForensicCheckJobProgress: async () => {
+          activeCas += 1;
+          maxActiveCas = Math.max(maxActiveCas, activeCas);
+          try {
+            await new Promise<void>((resolve) => setTimeout(resolve, 2));
+            return !nestedPending;
+          } finally {
+            activeCas -= 1;
+          }
+        },
+        transactionEnrichmentHeartbeatIntervalMs: 1,
+        completeForensicCheckJob: complete,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: async () => true,
+        recordObservedTransactionRisk: record,
+        formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
+        buildReport: (runnerInput) => buildReportWithMock({
+          ...runnerInput,
+          deps: {
+            listIndexedUsdtTransfersForAddress: async () => [],
+            listRelatedTrc20Transfers: async () => [],
+            getLabelsForAddress: async () => [],
+            getClassificationForAddress: async () => null,
+            getContractIntelligenceProfile: async () => null,
+            getTransaction: async () => ({}),
+            selectiveTransactionEnricher,
+            getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+          }
+        })
+      });
+
+      await nestedStarted;
+      nestedPending = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      releaseNestedRaw();
+      expect(await handledPromise).toBe(true);
+      await expect(independentWaiter).resolves.toMatchObject({ evidenceIds: ["nested:raw"] });
+      expect(runWhereIsMoneyCheck).toHaveBeenCalled();
+      expect(rawCalls).toBe(1);
+      expect(fullCalls).toBe(1); // outer deposit persisted-reader only; nested aborted before its reader
+      expect(maxActiveCas).toBe(1);
+      expect(complete).not.toHaveBeenCalled();
+      expect(record).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("[REQ-31][AC-13][INCOMING] persists transaction-seed coverage with the checked deposit context", async () => {
     const receiverDeepReport = {
       subjectAddress: validProgressJson.watchedWallet,

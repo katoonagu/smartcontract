@@ -75,6 +75,9 @@ export type ForensicJobProgressPatch = {
 };
 
 export type ForensicEnrichmentProgress = (input: { completed: number; total: number }) => Promise<void>;
+export type ForensicEnrichmentHeartbeatRunner = <T>(
+  task: (onCandidateResolved: ForensicEnrichmentProgress) => Promise<T>
+) => Promise<T>;
 
 export type ForensicEnrichmentHeartbeatWrite = {
   kind: "periodic" | "progress" | "final";
@@ -82,7 +85,7 @@ export type ForensicEnrichmentHeartbeatWrite = {
 };
 
 export type ForensicEnrichmentHeartbeatCoordinator = {
-  run<T>(task: (onCandidateResolved: ForensicEnrichmentProgress) => Promise<T>): Promise<T>;
+  run: ForensicEnrichmentHeartbeatRunner;
   dispose(): Promise<void>;
 };
 

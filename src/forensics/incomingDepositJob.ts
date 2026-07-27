@@ -22,7 +22,7 @@ import type { RouteLinkedAssertionInput, SelectiveTransactionEnricher } from "./
 import {
   mergeForensicJobProgress,
   createForensicEnrichmentHeartbeatCoordinator,
-  type ForensicEnrichmentProgress,
+  type ForensicEnrichmentHeartbeatRunner,
   type ForensicJobProgressPatch
 } from "./forensicJobProgress";
 import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
@@ -189,9 +189,7 @@ export type BuildIncomingDepositReportInput = {
   abortSignal?: AbortSignal;
 };
 
-export type TransactionEnrichmentHeartbeatRunner = <T>(
-  task: (onCandidateResolved: ForensicEnrichmentProgress) => Promise<T>
-) => Promise<T>;
+export type TransactionEnrichmentHeartbeatRunner = ForensicEnrichmentHeartbeatRunner;
 
 export type RunSingleIncomingDepositJobCycleDeps = {
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
@@ -2031,6 +2029,7 @@ export async function buildIncomingDepositReport(
       minAmountPreservationRatio: 0.05,
       recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
       recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
+      runWithTransactionEnrichmentHeartbeat: input.runWithTransactionEnrichmentHeartbeat,
       abortSignal: input.abortSignal,
       crossChainStage2Enabled: input.deps.crossChainStage2Enabled,
       crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls

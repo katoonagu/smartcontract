@@ -14,7 +14,10 @@ import type {
   ChainContinuationProvider,
   CrossChainContinuationEdge
 } from "../../src/forensics/crossChainContinuationTypes";
-import type { ForensicJobProgressPatch } from "../../src/forensics/forensicJobProgress";
+import type {
+  ForensicEnrichmentHeartbeatRunner,
+  ForensicJobProgressPatch
+} from "../../src/forensics/forensicJobProgress";
 import type {
   EvmEvidenceProvider,
   EvmInternalTransaction,
@@ -546,6 +549,11 @@ describe("runWhereIsMoneyCheck", () => {
       inferredStopAllowed: true,
       continueTraversal: false
     }));
+    let enrichmentHeartbeatRuns = 0;
+    const runWithTransactionEnrichmentHeartbeat: ForensicEnrichmentHeartbeatRunner = async (task) => {
+      enrichmentHeartbeatRuns += 1;
+      return task(async () => undefined);
+    };
 
     const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "1000000",
@@ -561,10 +569,12 @@ describe("runWhereIsMoneyCheck", () => {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      runWithTransactionEnrichmentHeartbeat,
       approvalEnrichmentMode: "off"
     });
 
     expect(enrich.mock.calls.length).toBeGreaterThan(0);
+    expect(enrichmentHeartbeatRuns).toBeGreaterThan(0);
     expect(enrich.mock.calls[0]?.[0]).toMatchObject({ mode: "subject" });
     expect(report.transactionInfoEnrichment).toMatchObject({
       fullProviderRequests: 0,

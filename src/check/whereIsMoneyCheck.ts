@@ -40,7 +40,10 @@ import {
 import { detectDrainEpisode } from "../forensics/drainEpisode";
 import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
-import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
+import type {
+  ForensicEnrichmentHeartbeatRunner,
+  ForensicJobProgressPatch
+} from "../forensics/forensicJobProgress";
 import type {
   RouteLinkedAssertionInput,
   SelectiveTransactionEnricher,
@@ -162,6 +165,7 @@ export type RunWhereIsMoneyCheckInput = {
   deepServiceExposureProfiles?: ServiceExposureProfile[];
   now?: () => number;
   onProgress?: (patch: ForensicJobProgressPatch) => Promise<void> | void;
+  runWithTransactionEnrichmentHeartbeat?: ForensicEnrichmentHeartbeatRunner;
   abortSignal?: AbortSignal;
 };
 
@@ -1449,12 +1453,16 @@ export async function runWhereIsMoneyCheck(
       });
       return heartbeatWrite;
     };
-    const heartbeatTimer = enrichmentInput.emitHeartbeat && input.onProgress
+    const heartbeatTimer = !input.runWithTransactionEnrichmentHeartbeat && enrichmentInput.emitHeartbeat && input.onProgress
       ? setInterval(() => { void writeHeartbeat(false); }, 30_000)
       : null;
     let result: SelectiveTransactionEnrichmentResult;
     try {
-      result = await deps.selectiveTransactionEnricher.enrich({
+      const runEnrichment: ForensicEnrichmentHeartbeatRunner = input.runWithTransactionEnrichmentHeartbeat
+        ?? ((task) => task(enrichmentInput.emitHeartbeat
+          ? ({ completed, total }) => writeHeartbeat(completed === total)
+          : async () => undefined));
+      result = await runEnrichment((onCandidateResolved) => deps.selectiveTransactionEnricher!.enrich({
         mode: "subject",
         routeEdges: enrichmentInput.routeEdges,
         movements: indexedMovements.length > 0
@@ -1465,10 +1473,10 @@ export async function runWhereIsMoneyCheck(
         unresolvedEconomicRoleTxHashes: enrichmentInput.unresolvedEconomicRoleTxHashes
       }, {
         signal: input.abortSignal,
-        ...(enrichmentInput.emitHeartbeat ? {
-          onCandidateResolved: ({ completed, total }) => writeHeartbeat(completed === total)
-        } : {})
-      });
+        ...(enrichmentInput.emitHeartbeat || input.runWithTransactionEnrichmentHeartbeat
+          ? { onCandidateResolved }
+          : {})
+      }));
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       await heartbeatWrite;
