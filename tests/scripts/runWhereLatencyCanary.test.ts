@@ -1,12 +1,16 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../../src/forensics/canonicalJson";
 import {
   buildWhereLatencyCanaryIsolationReceipt,
   captureWhereLatencyDeepResidual,
+  loadVerifiedWhereLatencyRuntimeBridge,
   prepareWhereLatencyCanary,
   resolveWhereLatencyCanaryAdapterIdentity,
   runWhereLatencyCanary,
@@ -19,6 +23,17 @@ const FRESH = "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd";
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
+const GIT_COMMIT = "1".repeat(40);
+const GIT_TREE = "2".repeat(40);
+const deploymentIdentity = () => ({
+  schema: "where-latency-canary-deployment-identity-v1" as const,
+  deploymentReceiptFileSha256: "3".repeat(64),
+  immutableArtifactDigest: `sha256:${"4".repeat(64)}`,
+  gitCommit: GIT_COMMIT,
+  gitTree: GIT_TREE,
+  moduleGraphSha256: "5".repeat(64),
+  adapterEntrySha256: HEX_B
+});
 const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
   schema: "where-latency-canary-database-v1",
   protocol: "postgres:",
@@ -55,12 +70,15 @@ const config = () => ({
   workerConcurrency: 2,
   deepWorkerConcurrency: 1,
   wherePollIntervalMs: 2_000,
+  terminalTimeoutMs: 10_000,
+  drainTimeoutMs: 10_000,
   runtimeConfigIdentity: HEX_A,
   adapterIdentity: {
     schema: "where-latency-canary-adapter-v1" as const,
     moduleRealPath: "C:/deployment/whereCanaryAdapter.mjs",
     moduleContentSha256: HEX_B
-  }
+  },
+  deploymentIdentity: deploymentIdentity()
 });
 
 const attestation = () => ({
@@ -84,7 +102,22 @@ const attestation = () => ({
     apiKeyGroupCount: 2,
     maxInFlight: 20,
     maxInFlightPerGroup: 2
-  })
+  }),
+  schedulerOwnershipBindingIdentity: "1".repeat(64),
+  deploymentIdentity: deploymentIdentity()
+});
+
+const zeroOwnership = () => ({
+  preExistingAddressIndexWork: 0,
+  preExistingCanaryExternalWork: 0,
+  canaryOwned: {
+    queued: 0, inFlight: 0, dispatched: 0,
+    completed: 0, failed: 0, rateLimited: 0
+  },
+  foreign: {
+    queued: 0, inFlight: 0, dispatched: 0,
+    completed: 0, failed: 0, rateLimited: 0
+  }
 });
 
 function runtime(overrides: Partial<WhereLatencyCanaryRuntime> = {}): WhereLatencyCanaryRuntime {
@@ -92,6 +125,7 @@ function runtime(overrides: Partial<WhereLatencyCanaryRuntime> = {}): WhereLaten
   const jobs = new Map<string, { createdAtMs: number; startedAtMs: number; status: string }>();
   const value: WhereLatencyCanaryRuntime = {
     runtimeAttestation: vi.fn(async () => attestation()),
+    schedulerIsolationDiagnostics: vi.fn(async () => zeroOwnership()),
     schedulerDiagnostics: vi.fn(async () => {
       schedulerCalls += 1;
       const requestDelta = Math.max(0, schedulerCalls - 2);
@@ -161,10 +195,62 @@ function deepRuntime(
   };
 }
 
-async function receiptFile(directory: string, runtimeValue: WhereLatencyCanaryRuntime) {
+async function receiptFile(
+  directory: string,
+  runtimeValue: WhereLatencyCanaryRuntime,
+  configValue = config()
+) {
   const path = join(directory, "isolation.json");
-  await prepareWhereLatencyCanary({ out: path, config: config(), runtime: runtimeValue, now: () => 100 });
+  await prepareWhereLatencyCanary({
+    out: path,
+    config: configValue,
+    runtime: runtimeValue,
+    now: () => 100
+  });
   return path;
+}
+
+async function deploymentFixture(directory: string) {
+  const root = join(directory, "deployment");
+  await mkdir(root);
+  const adapterPath = join(root, "adapter.mjs");
+  const dependencyPath = join(root, "dependency.mjs");
+  await writeFile(adapterPath, "export const adapter = true;\n", "utf8");
+  await writeFile(dependencyPath, "export const dependency = true;\n", "utf8");
+  const hashFile = async (path: string) => createHash("sha256")
+    .update(await readFile(path)).digest("hex");
+  const moduleGraph = [
+    { path: "adapter.mjs", sha256: await hashFile(adapterPath) },
+    { path: "dependency.mjs", sha256: await hashFile(dependencyPath) }
+  ];
+  const payload = {
+    schema: "where-latency-canary-deployment-v1",
+    version: 1,
+    deploymentRoot: await realpath(root),
+    immutableArtifactDigest: `sha256:${"4".repeat(64)}`,
+    gitCommit: GIT_COMMIT,
+    gitTree: GIT_TREE,
+    moduleGraph,
+    moduleGraphSha256: fingerprintCanonicalArtifact(moduleGraph),
+    adapterEntryPath: "adapter.mjs",
+    adapterEntrySha256: moduleGraph[0]!.sha256,
+    runtimeConfigIdentity: HEX_A
+  } as const;
+  const receipt = { ...payload, sha256: fingerprintCanonicalArtifact(payload) };
+  const receiptPath = join(directory, "deployment-receipt.json");
+  const receiptBytes = `${canonicalizeArtifactJson(receipt)}\n`;
+  await writeFile(receiptPath, receiptBytes, "utf8");
+  const { adapterIdentity: _adapter, deploymentIdentity: _deployment, ...unboundConfig } = config();
+  return {
+    root,
+    adapterPath,
+    dependencyPath,
+    receiptPath,
+    receipt,
+    unboundConfig,
+    expectedDeploymentReceiptFileSha256: createHash("sha256").update(receiptBytes).digest("hex"),
+    expectedImmutableArtifactDigest: payload.immutableArtifactDigest
+  };
 }
 
 describe("Where latency canary", () => {
@@ -174,6 +260,7 @@ describe("Where latency canary", () => {
     const receipt = buildWhereLatencyCanaryIsolationReceipt({
       config: config(),
       scheduler: cleanScheduler(),
+      schedulerIsolation: zeroOwnership(),
       runtimeAttestation: attestation(),
       preparedAt: "2026-07-27T00:00:00.000Z"
     });
@@ -341,7 +428,7 @@ describe("Where latency canary", () => {
       runtime: runRuntime,
       longAddress: LONG,
       freshAddress: FRESH
-    })).rejects.toThrow("where_latency_canary_isolation_receipt_invalid");
+    })).rejects.toThrow("where_latency_canary_isolation_receipt_not_canonical");
     expect(runRuntime.enqueueWhereJob).not.toHaveBeenCalled();
   });
 
@@ -390,7 +477,7 @@ describe("Where latency canary", () => {
     expect(result).toMatchObject({
       schema: "where-latency-canary-run-v1",
       result: "pass",
-      startGate: { elapsedMs: 100, passed: true },
+      startGate: { elapsedMs: 100, maximumMs: 4_000, passed: true },
       slotGate: { maximumActiveHandlers: 2, passed: true },
       deliveryGate: { intentCount: 0, claimCount: 0, passed: true },
       schedulerGate: {
@@ -405,7 +492,9 @@ describe("Where latency canary", () => {
         passed: true
       },
       terminalAndDrainGate: { drained: true, passed: true },
-      deepConcurrency: 1
+      deepConcurrency: 1,
+      isolationReceiptFileSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      schedulerIsolationGate: { passed: true }
     });
     expect(JSON.parse(await readFile(output, "utf8"))).toEqual(result);
   });
@@ -704,5 +793,253 @@ describe("Where latency canary", () => {
       runtime: lateDelivery
     })).rejects.toThrow("where_latency_deep_residual_delivery_not_zero");
     expect(lateDelivery.stopDeepClaimsAndDrain).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds handler start, terminal wait, and drain with harness-owned abort signals", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    let startSignal: AbortSignal | null = null;
+    const startConfig = { ...config(), wherePollIntervalMs: 1 };
+    const startIsolationReceipt = await receiptFile(directory, runtime(), startConfig);
+    const startTimeoutRuntime = runtime({
+      waitForHandlerStart: vi.fn(async (_jobId, signal) => {
+        startSignal = signal;
+        return await new Promise<never>(() => undefined);
+      })
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt: startIsolationReceipt,
+      out: join(directory, "start-timeout.json"),
+      config: startConfig,
+      runtime: startTimeoutRuntime
+    })).rejects.toThrow("where_latency_canary_long_start_timeout");
+    expect((startSignal as AbortSignal | null)?.aborted).toBe(true);
+    expect(startTimeoutRuntime.stopClaimsAndDrain).toHaveBeenCalledTimes(1);
+
+    const terminalConfig = { ...config(), terminalTimeoutMs: 2 };
+    const terminalIsolationReceipt = join(directory, "terminal-isolation.json");
+    await prepareWhereLatencyCanary({
+      out: terminalIsolationReceipt,
+      config: terminalConfig,
+      runtime: runtime(),
+      now: () => 100
+    });
+    const terminalTimeoutRuntime = runtime({
+      waitForTerminal: vi.fn(async () => await new Promise<never>(() => undefined))
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt: terminalIsolationReceipt,
+      out: join(directory, "terminal-timeout.json"),
+      config: terminalConfig,
+      runtime: terminalTimeoutRuntime
+    })).rejects.toThrow("where_latency_canary_terminal_timeout");
+    expect(terminalTimeoutRuntime.stopClaimsAndDrain).toHaveBeenCalledTimes(1);
+
+    const drainConfig = { ...config(), drainTimeoutMs: 2 };
+    const drainIsolationReceipt = join(directory, "drain-isolation.json");
+    await prepareWhereLatencyCanary({
+      out: drainIsolationReceipt,
+      config: drainConfig,
+      runtime: runtime(),
+      now: () => 100
+    });
+    const drainTimeoutRuntime = runtime({
+      stopClaimsAndDrain: vi.fn(async () => await new Promise<never>(() => undefined))
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt: drainIsolationReceipt,
+      out: join(directory, "drain-timeout.json"),
+      config: drainConfig,
+      runtime: drainTimeoutRuntime
+    })).rejects.toThrow("where_latency_canary_drain_timeout");
+  });
+
+  it("rejects scheduler ownership contamination and pre-existing external/index work", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    await expect(prepareWhereLatencyCanary({
+      out: join(directory, "prepare.json"),
+      config: config(),
+      runtime: runtime({
+        schedulerIsolationDiagnostics: vi.fn(async () => ({
+          ...zeroOwnership(),
+          preExistingAddressIndexWork: 1
+        }))
+      })
+    })).rejects.toThrow("where_latency_canary_scheduler_isolation_not_clean");
+
+    const isolationReceipt = await receiptFile(directory, runtime());
+    let calls = 0;
+    const contaminated = runtime({
+      schedulerIsolationDiagnostics: vi.fn(async () => {
+        calls += 1;
+        return calls === 1 ? zeroOwnership() : {
+          ...zeroOwnership(),
+          foreign: { ...zeroOwnership().foreign, dispatched: 1 }
+        };
+      })
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "contaminated.json"),
+      config: config(),
+      runtime: contaminated
+    })).rejects.toThrow("where_latency_canary_scheduler_isolation_contaminated");
+
+    let ownershipCalls = 0;
+    const mismatchedOwnership = runtime({
+      schedulerIsolationDiagnostics: vi.fn(async () => {
+        ownershipCalls += 1;
+        return ownershipCalls === 1 ? zeroOwnership() : {
+          ...zeroOwnership(),
+          canaryOwned: {
+            ...zeroOwnership().canaryOwned,
+            dispatched: 1,
+            completed: 1
+          }
+        };
+      })
+    });
+    const mismatchReceipt = join(directory, "ownership-isolation.json");
+    await prepareWhereLatencyCanary({
+      out: mismatchReceipt,
+      config: config(),
+      runtime: runtime(),
+      now: () => 100
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt: mismatchReceipt,
+      out: join(directory, "ownership-mismatch.json"),
+      config: config(),
+      runtime: mismatchedOwnership
+    })).rejects.toThrow("where_latency_canary_scheduler_ownership_counter_mismatch");
+  });
+
+  it("rejects duplicate-key/noncanonical isolation bytes before runtime mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const isolationReceipt = await receiptFile(directory, runtime());
+    const canonical = await readFile(isolationReceipt, "utf8");
+    await writeFile(
+      isolationReceipt,
+      canonical.replace(/^\{/, '{"version":1,'),
+      "utf8"
+    );
+    const runRuntime = runtime();
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "duplicate.json"),
+      config: config(),
+      runtime: runRuntime
+    })).rejects.toThrow("where_latency_canary_isolation_receipt_not_canonical");
+    expect(runRuntime.enqueueWhereJob).not.toHaveBeenCalled();
+  });
+
+  it("bounds residual Deep terminal wait and attempts a bounded drain", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    let terminalSignal: AbortSignal | null = null;
+    const runtimeValue = deepRuntime({
+      waitForTerminal: vi.fn(async (_jobId, signal) => {
+        terminalSignal = signal;
+        return await new Promise<never>(() => undefined);
+      })
+    });
+    await expect(captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: join(directory, "deep-timeout.json"),
+      config: {
+        ...config(),
+        enabledRuntimeCycles: ["deep", "address_index", "delivery_reconciliation"],
+        terminalTimeoutMs: 2
+      },
+      runtime: runtimeValue
+    })).rejects.toThrow("where_latency_deep_residual_terminal_timeout");
+    expect((terminalSignal as AbortSignal | null)?.aborted).toBe(true);
+    expect(runtimeValue.stopDeepClaimsAndDrain).toHaveBeenCalledTimes(1);
+
+    const drainRuntime = deepRuntime({
+      stopDeepClaimsAndDrain: vi.fn(async () => await new Promise<never>(() => undefined))
+    });
+    await expect(captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: join(directory, "deep-drain-timeout.json"),
+      config: {
+        ...config(),
+        enabledRuntimeCycles: ["deep", "address_index", "delivery_reconciliation"],
+        drainTimeoutMs: 2
+      },
+      runtime: drainRuntime
+    })).rejects.toThrow("where_latency_deep_residual_drain_timeout");
+  });
+
+  it("rejects a changed transitive module before invoking the runtime importer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const fixture = await deploymentFixture(directory);
+    await writeFile(fixture.dependencyPath, "export const dependency = false;\n", "utf8");
+    const importModule = vi.fn();
+
+    await expect(loadVerifiedWhereLatencyRuntimeBridge({
+      config: fixture.unboundConfig,
+      modulePath: fixture.adapterPath,
+      deploymentReceiptPath: fixture.receiptPath,
+      expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
+      expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
+      inspectCheckout: vi.fn(async () => ({
+        commit: GIT_COMMIT,
+        tree: GIT_TREE,
+        status: ""
+      })),
+      importModule
+    })).rejects.toThrow("where_latency_canary_deployment_graph_file_changed");
+    expect(importModule).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed module-graph binding and dirty checkout before runtime import", async () => {
+    const graphDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const graphFixture = await deploymentFixture(graphDirectory);
+    const graphReceipt = {
+      ...graphFixture.receipt,
+      moduleGraphSha256: "9".repeat(64)
+    };
+    const graphPayload = { ...graphReceipt };
+    delete (graphPayload as Partial<typeof graphReceipt>).sha256;
+    const rewritten = {
+      ...graphReceipt,
+      sha256: fingerprintCanonicalArtifact(graphPayload)
+    };
+    const graphBytes = `${canonicalizeArtifactJson(rewritten)}\n`;
+    await writeFile(graphFixture.receiptPath, graphBytes, "utf8");
+    const graphImporter = vi.fn();
+    await expect(loadVerifiedWhereLatencyRuntimeBridge({
+      config: graphFixture.unboundConfig,
+      modulePath: graphFixture.adapterPath,
+      deploymentReceiptPath: graphFixture.receiptPath,
+      expectedDeploymentReceiptFileSha256: createHash("sha256").update(graphBytes).digest("hex"),
+      expectedImmutableArtifactDigest: graphFixture.expectedImmutableArtifactDigest,
+      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
+      importModule: graphImporter
+    })).rejects.toThrow("where_latency_canary_deployment_graph_sha256_mismatch");
+    expect(graphImporter).not.toHaveBeenCalled();
+
+    const dirtyDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const dirtyFixture = await deploymentFixture(dirtyDirectory);
+    const dirtyImporter = vi.fn();
+    await expect(loadVerifiedWhereLatencyRuntimeBridge({
+      config: dirtyFixture.unboundConfig,
+      modulePath: dirtyFixture.adapterPath,
+      deploymentReceiptPath: dirtyFixture.receiptPath,
+      expectedDeploymentReceiptFileSha256: dirtyFixture.expectedDeploymentReceiptFileSha256,
+      expectedImmutableArtifactDigest: dirtyFixture.expectedImmutableArtifactDigest,
+      inspectCheckout: vi.fn(async () => ({
+        commit: GIT_COMMIT,
+        tree: GIT_TREE,
+        status: " M adapter.mjs"
+      })),
+      importModule: dirtyImporter
+    })).rejects.toThrow("where_latency_canary_deployment_checkout_not_immutable");
+    expect(dirtyImporter).not.toHaveBeenCalled();
   });
 });

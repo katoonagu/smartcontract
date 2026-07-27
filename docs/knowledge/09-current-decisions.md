@@ -305,6 +305,14 @@ expanding frontier has no percent or ETA.
   memory, and rollout remain unverified until the isolated TXc canary and
   adjudication gates pass. There is no ETA or completion percentage for an
   expanding traversal frontier.
+- Stage B Where concurrency-two evidence is accepted only from the dedicated
+  canary harness after a pre-authorized immutable deployment receipt and clean
+  module graph are verified before runtime import. The canonical isolation
+  file is byte-bound separately from its semantic receipt, all start/terminal/
+  drain waits are harness-deadlined with abort signals, and authoritative
+  scheduler ownership must show zero foreign activity and reconcile canary
+  counters with the retained process-global deltas. Deep remains a separate
+  singleton residual measurement under the same isolation/deadline policy.
 
 ## Separate Decisions
 

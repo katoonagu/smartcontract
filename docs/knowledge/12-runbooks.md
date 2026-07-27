@@ -345,13 +345,20 @@ in-process adapter named by `WHERE_LATENCY_CANARY_RUNTIME_ADAPTER`. That module
 must export `createWhereLatencyCanaryRuntime(config)` and bind to the exact
 dedicated Where pump, scheduler, forensic repository, and delivery repository;
 an adapter that estimates scheduler counters from database rows is invalid.
-The CLI resolves the module's real path, hashes its bytes before loading, checks
-the bytes again after loading, and binds both values into every receipt. The
+Before any dynamic import, the CLI verifies a separately pre-authorized,
+canonical deployment receipt by its raw-file SHA-256. The receipt binds an
+immutable image/artifact digest, clean Git commit and tree, a sorted module
+graph and graph SHA-256, and the adapter entry path/hash. Every graph file is
+resolved under the canonical deployment root and re-hashed; a missing,
+transitively changed, symlink-escaping, non-canonical, or dirty checkout fails
+before adapter code can execute. The CLI checks the adapter bytes again after
+loading and binds the deployment and adapter identities into every receipt. The
 adapter must return an observed runtime attestation: cycle registry, instance
 label, runtime-config SHA-256, database fingerprint, Where/Deep concurrency,
 scheduler capacity, and SHA-256 binding identities for the Where pump, Deep
 worker, scheduler, forensic repository, delivery repository, and address-index
-worker. These observations must match the expected environment exactly; the
+worker, plus the verified deployment identity. These observations must match
+the expected environment exactly; the
 environment alone is never isolation evidence.
 The adapter owns only jobs whose unique `requestedBy` and progress marker are
 provided by the harness. Its `stopClaimsAndDrain` must stop new canary claims
@@ -369,6 +376,11 @@ $env:WHERE_LATENCY_CANARY_DEDICATED = "true"
 $env:WHERE_LATENCY_CANARY_ENABLED_CYCLES = "where,address_index,delivery_reconciliation"
 $env:WHERE_LATENCY_CANARY_RUNTIME_ADAPTER = "<absolute-path-to-deployment-runtime-adapter>"
 $env:WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256 = "<canonical-deployed-config-sha256>"
+$env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT = "<absolute-path-to-canonical-deployment-receipt>"
+$env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT_SHA256 = "<pre-authorized-raw-file-sha256>"
+$env:WHERE_LATENCY_CANARY_IMMUTABLE_ARTIFACT_DIGEST = "sha256:<immutable-image-or-artifact-digest>"
+$env:WHERE_LATENCY_CANARY_TERMINAL_TIMEOUT_MS = "7200000"
+$env:WHERE_LATENCY_CANARY_DRAIN_TIMEOUT_MS = "60000"
 $env:FORENSIC_WHERE_WORKER_CONCURRENCY = "2"
 ```
 
@@ -376,7 +388,10 @@ The `prepare` command exclusively creates a canonical
 `where-latency-canary-isolation-v1` receipt. It contains only a non-secret
 database fingerprint, runtime instance label, exact cycle allowlist, Where and
 Deep concurrency, polling interval, the clean scheduler baseline, capacity
-fingerprint, config hash, and receipt SHA-256. The database password and API
+fingerprint, config hash, deployment identity, and receipt SHA-256. The exact
+canonical receipt bytes are read once by `run`; a separate raw-file SHA-256 is
+recorded, so duplicate keys, alternate whitespace, or other byte-level
+rewrites are rejected even when parsed JSON would be equivalent. The database password and API
 keys are never written. `run` re-hashes the exact receipt, re-derives its
 configuration and capacity, and requires the scheduler counters to still
 equal the prepared clean baseline before it enqueues anything.
@@ -401,7 +416,19 @@ active Where handlers, and still report the long job as running. The receipt
 contains start/end lane snapshots, pre-drain and post-drain delivery snapshots,
 and matching monotonic dispatched/completed scheduler deltas.
 Maximum active Where handlers is two; scheduler rate-limited and failed-request
-deltas are zero; scheduler/key capacity is unchanged.
+deltas are zero; scheduler/key capacity is unchanged. The adapter must also
+prove that no address-index or external canary work pre-existed and attribute
+queued, in-flight, dispatched, completed, failed, and rate-limited work to the
+unique canary owner versus foreign owners for the full window. Any foreign
+activity, ownership/global-counter mismatch, or undrained owned work prevents
+a pass; process-global counters remain recorded as corroborating evidence.
+
+Long and fresh handler-start waits are harness-bounded at exactly the smaller
+of five seconds and two poll intervals. Terminal waits use
+`WHERE_LATENCY_CANARY_TERMINAL_TIMEOUT_MS`; cleanup uses
+`WHERE_LATENCY_CANARY_DRAIN_TIMEOUT_MS`. Each deadline supplies an
+harness-owned `AbortSignal`. On a start or terminal timeout, new claims are
+stopped and a separately bounded drain is attempted before the command fails.
 
 If both slots are occupied before TXc can be introduced, the receipt is
 `non_gating_not_isolated` with `no_stage_b_start_guarantee`. It is not a failed
@@ -430,7 +457,9 @@ before/start/after-drain process memory, start/end lane and scheduler snapshots,
 and delivery before/after drain. It requires the observed Deep handler count to
 remain exactly one and delivery to remain zero. This is a measurement, not a
 Where promotion gate. Do not mix it into the Where receipt and do not raise
-Deep concurrency under this plan. If Deep dominates, keep a separate
+Deep concurrency under this plan. Deep start, terminal, and drain operations
+use the same harness-owned deadline/abort policy and scheduler-ownership
+isolation proof. If Deep dominates, keep a separate
 `default 1 / isolated canary 2` design problem.
 
 For production promotion, compare the existing structured scheduler logs for
@@ -441,7 +470,8 @@ contamination, missing denominator, capacity increase, or delivery duplication
 blocks promotion and restores the default value of one.
 
 No Stage B concurrency-two receipt has been produced yet. This checkout has no
-dedicated canary database/configuration or deployment-owned attested runtime adapter,
+dedicated canary database/configuration, pre-authorized immutable deployment
+receipt, or deployment-owned attested runtime adapter,
 and the real legacy TXc replay evidence is still absent. Do not run against the
 current shared environment and do not treat the deterministic fake-runtime
 tests as rollout evidence; production concurrency two remains blocked.

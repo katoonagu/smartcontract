@@ -1,8 +1,10 @@
 import "dotenv/config";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { TronWeb } from "tronweb";
 import { loadConfig } from "../src/config";
 import {
@@ -36,6 +38,16 @@ export type WhereLatencyCanaryAdapterIdentity = {
   moduleContentSha256: string;
 };
 
+export type WhereLatencyCanaryDeploymentIdentity = {
+  schema: "where-latency-canary-deployment-identity-v1";
+  deploymentReceiptFileSha256: string;
+  immutableArtifactDigest: string;
+  gitCommit: string;
+  gitTree: string;
+  moduleGraphSha256: string;
+  adapterEntrySha256: string;
+};
+
 export type WhereLatencyCanaryRuntimeAttestation = {
   schema: "where-latency-canary-runtime-attestation-v1";
   runtimeInstanceLabel: string;
@@ -51,6 +63,8 @@ export type WhereLatencyCanaryRuntimeAttestation = {
   addressIndexBindingIdentity: string;
   deepWorkerBindingIdentity: string;
   schedulerCapacityFingerprint: string;
+  schedulerOwnershipBindingIdentity: string;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
 };
 
 export type WhereLatencyCanaryConfig = {
@@ -61,14 +75,22 @@ export type WhereLatencyCanaryConfig = {
   workerConcurrency: number;
   deepWorkerConcurrency: number;
   wherePollIntervalMs: number;
+  terminalTimeoutMs: number;
+  drainTimeoutMs: number;
   runtimeConfigIdentity: string;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
 };
 
 export type WhereLatencyCanaryUnboundConfig = Omit<
   WhereLatencyCanaryConfig,
-  "adapterIdentity"
+  "adapterIdentity" | "deploymentIdentity"
 >;
+
+export type WhereLatencyCanaryRuntimeFactoryConfig =
+  WhereLatencyCanaryUnboundConfig & {
+    deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
+  };
 
 export type WhereLatencySchedulerDiagnostics = {
   apiKeyConfigured: boolean;
@@ -90,8 +112,27 @@ export type WhereLatencyLaneDiagnostics = {
   deep: { runnableQueuedCount: number; dbRunningCount: number };
 };
 
+type SchedulerOwnershipCounters = {
+  queued: number;
+  inFlight: number;
+  dispatched: number;
+  completed: number;
+  failed: number;
+  rateLimited: number;
+};
+
+export type WhereLatencySchedulerOwnershipDiagnostics = {
+  preExistingAddressIndexWork: number;
+  preExistingCanaryExternalWork: number;
+  canaryOwned: SchedulerOwnershipCounters;
+  foreign: SchedulerOwnershipCounters;
+};
+
 export type WhereLatencyCanaryRuntime = {
   runtimeAttestation(): Promise<WhereLatencyCanaryRuntimeAttestation>;
+  schedulerIsolationDiagnostics(
+    requestedBy: string | null
+  ): Promise<WhereLatencySchedulerOwnershipDiagnostics>;
   schedulerDiagnostics(): Promise<WhereLatencySchedulerDiagnostics>;
   laneDiagnostics(): Promise<WhereLatencyLaneDiagnostics>;
   enqueueWhereJob(input: {
@@ -101,7 +142,7 @@ export type WhereLatencyCanaryRuntime = {
     requestedBy: string;
     progressMarker: string;
   }): Promise<{ id: string; createdAtMs: number }>;
-  waitForHandlerStart(jobId: string): Promise<{
+  waitForHandlerStart(jobId: string, signal: AbortSignal): Promise<{
     jobId: string;
     startedAtMs: number;
     activeWhereHandlers: number;
@@ -111,7 +152,7 @@ export type WhereLatencyCanaryRuntime = {
     status: "queued" | "running" | "completed" | "partial" | "failed";
     handlerActive: boolean;
   }>;
-  waitForTerminal(jobId: string): Promise<{
+  waitForTerminal(jobId: string, signal: AbortSignal): Promise<{
     jobId: string;
     status: "completed" | "partial" | "failed";
     completedAtMs: number;
@@ -121,7 +162,7 @@ export type WhereLatencyCanaryRuntime = {
     claimCount: number;
   }>;
   maxActiveWhereHandlers(): number;
-  stopClaimsAndDrain(jobIds: readonly string[]): Promise<void>;
+  stopClaimsAndDrain(jobIds: readonly string[], signal: AbortSignal): Promise<void>;
 };
 
 export type WhereLatencyDeepResidualRuntime = WhereLatencyCanaryRuntime & {
@@ -132,14 +173,14 @@ export type WhereLatencyDeepResidualRuntime = WhereLatencyCanaryRuntime & {
     requestedBy: string;
     progressMarker: string;
   }): Promise<{ id: string; createdAtMs: number }>;
-  waitForDeepHandlerStart(jobId: string): Promise<{
+  waitForDeepHandlerStart(jobId: string, signal: AbortSignal): Promise<{
     jobId: string;
     startedAtMs: number;
     activeDeepHandlers: number;
   }>;
   deepJobDiagnostics(jobId: string): Promise<{ providerErrorCount: number }>;
   memoryDiagnostics(): Promise<{ rssBytes: number; heapUsedBytes: number }>;
-  stopDeepClaimsAndDrain(jobIds: readonly string[]): Promise<void>;
+  stopDeepClaimsAndDrain(jobIds: readonly string[], signal: AbortSignal): Promise<void>;
 };
 
 export type WhereLatencyDeepResidualReceipt = {
@@ -150,6 +191,7 @@ export type WhereLatencyDeepResidualReceipt = {
   measurementId: string;
   requestedBy: string;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
   runtimeAttestation: WhereLatencyCanaryRuntimeAttestation;
   configSha256: string;
   subjectAddress: string;
@@ -179,6 +221,10 @@ export type WhereLatencyDeepResidualReceipt = {
     start: WhereLatencySchedulerDiagnostics;
     end: WhereLatencySchedulerDiagnostics;
   };
+  schedulerIsolation: {
+    start: WhereLatencySchedulerOwnershipDiagnostics;
+    end: WhereLatencySchedulerOwnershipDiagnostics;
+  };
   drained: true;
   sha256: string;
 };
@@ -193,10 +239,14 @@ type IsolationReceiptPayload = {
   workerConcurrency: 2;
   deepWorkerConcurrency: 1;
   wherePollIntervalMs: number;
+  terminalTimeoutMs: number;
+  drainTimeoutMs: number;
   schedulerBaseline: WhereLatencySchedulerDiagnostics;
+  schedulerIsolationBaseline: WhereLatencySchedulerOwnershipDiagnostics;
   schedulerCapacityFingerprint: string;
   configSha256: string;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
   runtimeAttestation: WhereLatencyCanaryRuntimeAttestation;
 };
 
@@ -215,7 +265,9 @@ export type WhereLatencyCanaryRunReceipt = {
   canaryId: string;
   requestedBy: string;
   isolationReceiptSha256: string;
+  isolationReceiptFileSha256: string;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
   runtimeAttestation: WhereLatencyCanaryRuntimeAttestation;
   addresses: { long: string; fresh: string };
   jobs: {
@@ -245,6 +297,11 @@ export type WhereLatencyCanaryRunReceipt = {
     rateLimitedRequestDelta: number;
     capacityFingerprintAtStart: string;
     capacityFingerprintAtEnd: string;
+    passed: boolean;
+  };
+  schedulerIsolationGate: {
+    start: WhereLatencySchedulerOwnershipDiagnostics;
+    end: WhereLatencySchedulerOwnershipDiagnostics;
     passed: boolean;
   };
   terminalAndDrainGate: { bothTerminal: boolean; drained: boolean; passed: boolean };
@@ -285,6 +342,12 @@ function validateBaseConfig(config: WhereLatencyCanaryUnboundConfig): void {
   if (!Number.isSafeInteger(config.wherePollIntervalMs) || config.wherePollIntervalMs < 1) {
     throw new Error("where_latency_canary_poll_interval_invalid");
   }
+  if (!Number.isSafeInteger(config.terminalTimeoutMs) || config.terminalTimeoutMs < 1) {
+    throw new Error("where_latency_canary_terminal_timeout_invalid");
+  }
+  if (!Number.isSafeInteger(config.drainTimeoutMs) || config.drainTimeoutMs < 1) {
+    throw new Error("where_latency_canary_drain_timeout_invalid");
+  }
   assertSha256(config.runtimeConfigIdentity, "where_latency_canary_runtime_config_identity_invalid");
 }
 
@@ -305,6 +368,7 @@ function canonicalDeepResidualCycles(input: readonly string[]): string[] {
 function validateDeepResidualConfig(config: WhereLatencyCanaryConfig): string[] {
   validateBaseConfig(config);
   assertAdapterIdentity(config.adapterIdentity);
+  assertDeploymentIdentity(config.deploymentIdentity);
   return canonicalDeepResidualCycles(config.enabledRuntimeCycles);
 }
 
@@ -318,6 +382,7 @@ function validateDeepResidualUnboundConfig(
 function validateConfig(config: WhereLatencyCanaryConfig): AllowedCycle[] {
   const cycles = validateUnboundConfig(config);
   assertAdapterIdentity(config.adapterIdentity);
+  assertDeploymentIdentity(config.deploymentIdentity);
   return cycles;
 }
 
@@ -331,6 +396,20 @@ function assertAdapterIdentity(value: WhereLatencyCanaryAdapterIdentity): void {
     typeof value.moduleRealPath !== "string" || !value.moduleRealPath.trim()
   ) throw new Error("where_latency_canary_adapter_identity_invalid");
   assertSha256(value.moduleContentSha256, "where_latency_canary_adapter_identity_invalid");
+}
+
+function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): void {
+  if (
+    value?.schema !== "where-latency-canary-deployment-identity-v1" ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.immutableArtifactDigest) ||
+    !/^[a-f0-9]{40}$/.test(value.gitCommit) ||
+    !/^[a-f0-9]{40}$/.test(value.gitTree)
+  ) throw new Error("where_latency_canary_deployment_identity_invalid");
+  for (const identity of [
+    value.deploymentReceiptFileSha256,
+    value.moduleGraphSha256,
+    value.adapterEntrySha256
+  ]) assertSha256(identity, "where_latency_canary_deployment_identity_invalid");
 }
 
 function databaseFingerprint(databaseUrl: string): string {
@@ -377,6 +456,66 @@ function schedulerCapacityFingerprint(input: WhereLatencySchedulerDiagnostics): 
   });
 }
 
+function assertOwnershipShape(value: WhereLatencySchedulerOwnershipDiagnostics): void {
+  safeInteger(value.preExistingAddressIndexWork, "where_latency_canary_scheduler_ownership_invalid");
+  safeInteger(value.preExistingCanaryExternalWork, "where_latency_canary_scheduler_ownership_invalid");
+  for (const scope of [value.canaryOwned, value.foreign]) {
+    for (const counter of Object.values(scope)) {
+      safeInteger(counter, "where_latency_canary_scheduler_ownership_invalid");
+    }
+  }
+}
+
+function assertOwnershipCleanStart(value: WhereLatencySchedulerOwnershipDiagnostics): void {
+  assertOwnershipShape(value);
+  if (
+    value.preExistingAddressIndexWork !== 0 ||
+    value.preExistingCanaryExternalWork !== 0 ||
+    Object.values(value.canaryOwned).some((counter) => counter !== 0) ||
+    Object.values(value.foreign).some((counter) => counter !== 0)
+  ) throw new Error("where_latency_canary_scheduler_isolation_not_clean");
+}
+
+function assertOwnershipWindowClean(
+  start: WhereLatencySchedulerOwnershipDiagnostics,
+  end: WhereLatencySchedulerOwnershipDiagnostics
+): void {
+  assertOwnershipCleanStart(start);
+  assertOwnershipShape(end);
+  const foreignChanged = (Object.keys(end.foreign) as Array<keyof SchedulerOwnershipCounters>)
+    .some((key) => end.foreign[key] !== start.foreign[key]);
+  if (
+    end.preExistingAddressIndexWork !== 0 ||
+    end.preExistingCanaryExternalWork !== 0 ||
+    foreignChanged || Object.values(end.foreign).some((counter) => counter !== 0) ||
+    end.canaryOwned.queued !== 0 || end.canaryOwned.inFlight !== 0 ||
+    end.canaryOwned.failed !== 0 || end.canaryOwned.rateLimited !== 0 ||
+    end.canaryOwned.completed !== end.canaryOwned.dispatched
+  ) throw new Error("where_latency_canary_scheduler_isolation_contaminated");
+  for (const key of ["dispatched", "completed", "failed", "rateLimited"] as const) {
+    if (end.canaryOwned[key] < start.canaryOwned[key]) {
+      throw new Error("where_latency_canary_scheduler_ownership_regressed");
+    }
+  }
+}
+
+function assertOwnershipMatchesSchedulerWindow(
+  ownership: WhereLatencySchedulerOwnershipDiagnostics,
+  scheduler: {
+    dispatched: number;
+    completed: number;
+    failed: number;
+    rateLimited: number;
+  }
+): void {
+  if (
+    ownership.canaryOwned.dispatched !== scheduler.dispatched ||
+    ownership.canaryOwned.completed !== scheduler.completed ||
+    ownership.canaryOwned.failed !== scheduler.failed ||
+    ownership.canaryOwned.rateLimited !== scheduler.rateLimited
+  ) throw new Error("where_latency_canary_scheduler_ownership_counter_mismatch");
+}
+
 function configProjection(
   config: WhereLatencyCanaryConfig,
   cycles: readonly string[],
@@ -388,10 +527,13 @@ function configProjection(
     runtimeInstanceLabel: config.runtimeInstanceLabel.trim(),
     runtimeConfigIdentity: config.runtimeConfigIdentity,
     adapterIdentity: { ...config.adapterIdentity },
+    deploymentIdentity: { ...config.deploymentIdentity },
     enabledRuntimeCycles: [...cycles],
     workerConcurrency: 2,
     deepWorkerConcurrency: 1,
     wherePollIntervalMs: config.wherePollIntervalMs,
+    terminalTimeoutMs: config.terminalTimeoutMs,
+    drainTimeoutMs: config.drainTimeoutMs,
     schedulerCapacityFingerprint: capacityFingerprint
   };
 }
@@ -408,7 +550,9 @@ function canonicalRuntimeAttestation(
     value.runtimeConfigIdentity !== config.runtimeConfigIdentity ||
     value.databaseFingerprint !== databaseFingerprint(config.databaseUrl) ||
     canonicalizeArtifactJson(cycles) !== canonicalizeArtifactJson(canonicalCycles(config.enabledRuntimeCycles)) ||
-    value.schedulerCapacityFingerprint !== capacityFingerprint
+    value.schedulerCapacityFingerprint !== capacityFingerprint ||
+    canonicalizeArtifactJson(value.deploymentIdentity) !==
+      canonicalizeArtifactJson(config.deploymentIdentity)
   ) {
     throw new Error("where_latency_canary_runtime_attestation_mismatch");
   }
@@ -433,7 +577,9 @@ function projectRuntimeAttestation(
     deliveryRepositoryBindingIdentity: value.deliveryRepositoryBindingIdentity,
     addressIndexBindingIdentity: value.addressIndexBindingIdentity,
     deepWorkerBindingIdentity: value.deepWorkerBindingIdentity,
-    schedulerCapacityFingerprint: value.schedulerCapacityFingerprint
+    schedulerCapacityFingerprint: value.schedulerCapacityFingerprint,
+    schedulerOwnershipBindingIdentity: value.schedulerOwnershipBindingIdentity,
+    deploymentIdentity: { ...value.deploymentIdentity }
   };
 }
 
@@ -447,7 +593,8 @@ function assertRuntimeAttestationShape(
     forensicRepositoryBindingIdentity: value.forensicRepositoryBindingIdentity,
     deliveryRepositoryBindingIdentity: value.deliveryRepositoryBindingIdentity,
     addressIndexBindingIdentity: value.addressIndexBindingIdentity,
-    deepWorkerBindingIdentity: value.deepWorkerBindingIdentity
+    deepWorkerBindingIdentity: value.deepWorkerBindingIdentity,
+    schedulerOwnershipBindingIdentity: value.schedulerOwnershipBindingIdentity
   };
   for (const [field, identity] of Object.entries(bindings)) {
     assertSha256(identity, `where_latency_canary_runtime_${field}_invalid`);
@@ -465,6 +612,7 @@ function assertRuntimeAttestationShape(
   assertSha256(value.runtimeConfigIdentity, "where_latency_canary_runtime_attestation_mismatch");
   assertSha256(value.databaseFingerprint, "where_latency_canary_runtime_attestation_mismatch");
   assertSha256(value.schedulerCapacityFingerprint, "where_latency_canary_runtime_attestation_mismatch");
+  assertDeploymentIdentity(value.deploymentIdentity);
   return cycles;
 }
 
@@ -480,7 +628,8 @@ function canonicalDeepResidualAttestation(
     value.forensicRepositoryBindingIdentity,
     value.deliveryRepositoryBindingIdentity,
     value.addressIndexBindingIdentity,
-    value.deepWorkerBindingIdentity
+    value.deepWorkerBindingIdentity,
+    value.schedulerOwnershipBindingIdentity
   ];
   for (const identity of bindingIdentities) {
     assertSha256(identity, "where_latency_deep_residual_runtime_binding_invalid");
@@ -495,6 +644,8 @@ function canonicalDeepResidualAttestation(
     value.databaseFingerprint !== databaseFingerprint(config.databaseUrl) ||
     value.whereWorkerConcurrency !== 2 || value.deepWorkerConcurrency !== 1 ||
     value.schedulerCapacityFingerprint !== schedulerCapacityFingerprint(scheduler) ||
+    canonicalizeArtifactJson(value.deploymentIdentity) !==
+      canonicalizeArtifactJson(config.deploymentIdentity) ||
     canonicalizeArtifactJson(cycles) !==
       canonicalizeArtifactJson(canonicalDeepResidualCycles(config.enabledRuntimeCycles))
   ) throw new Error("where_latency_deep_residual_runtime_attestation_mismatch");
@@ -508,6 +659,7 @@ function withHash<T extends Record<string, unknown>>(payload: T): T & { sha256: 
 export function buildWhereLatencyCanaryIsolationReceipt(input: {
   config: WhereLatencyCanaryConfig;
   scheduler: WhereLatencySchedulerDiagnostics;
+  schedulerIsolation: WhereLatencySchedulerOwnershipDiagnostics;
   runtimeAttestation: WhereLatencyCanaryRuntimeAttestation;
   preparedAt: string;
 }): WhereLatencyCanaryIsolationReceipt {
@@ -517,6 +669,7 @@ export function buildWhereLatencyCanaryIsolationReceipt(input: {
     throw new Error("where_latency_canary_scheduler_not_clean");
   }
   const capacityFingerprint = schedulerCapacityFingerprint(input.scheduler);
+  assertOwnershipCleanStart(input.schedulerIsolation);
   const runtimeAttestation = canonicalRuntimeAttestation(
     input.config,
     input.scheduler,
@@ -533,10 +686,14 @@ export function buildWhereLatencyCanaryIsolationReceipt(input: {
     workerConcurrency: 2,
     deepWorkerConcurrency: 1,
     wherePollIntervalMs: projection.wherePollIntervalMs,
+    terminalTimeoutMs: input.config.terminalTimeoutMs,
+    drainTimeoutMs: input.config.drainTimeoutMs,
     schedulerBaseline: { ...input.scheduler },
+    schedulerIsolationBaseline: input.schedulerIsolation,
     schedulerCapacityFingerprint: capacityFingerprint,
     configSha256: fingerprintCanonicalArtifact(projection),
     adapterIdentity: { ...input.config.adapterIdentity },
+    deploymentIdentity: { ...input.config.deploymentIdentity },
     runtimeAttestation
   });
 }
@@ -598,10 +755,12 @@ export async function prepareWhereLatencyCanary(input: {
   const lanes = await input.runtime.laneDiagnostics();
   assertCleanLanes(lanes);
   const scheduler = await input.runtime.schedulerDiagnostics();
+  const schedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(null);
   const runtimeAttestation = await input.runtime.runtimeAttestation();
   const receipt = buildWhereLatencyCanaryIsolationReceipt({
     config: input.config,
     scheduler,
+    schedulerIsolation,
     runtimeAttestation,
     preparedAt: new Date((input.now ?? Date.now)()).toISOString()
   });
@@ -626,7 +785,9 @@ function parseIsolationReceipt(value: unknown): WhereLatencyCanaryIsolationRecei
     const receipt = value as unknown as WhereLatencyCanaryIsolationReceipt;
     canonicalCycles(receipt.enabledRuntimeCycles);
     assertSchedulerShape(receipt.schedulerBaseline);
+    assertOwnershipCleanStart(receipt.schedulerIsolationBaseline);
     assertAdapterIdentity(receipt.adapterIdentity);
+    assertDeploymentIdentity(receipt.deploymentIdentity);
     assertRuntimeAttestationShape(receipt.runtimeAttestation);
     if (
       typeof receipt.databaseFingerprint !== "string" ||
@@ -639,12 +800,39 @@ function parseIsolationReceipt(value: unknown): WhereLatencyCanaryIsolationRecei
       canonicalizeArtifactJson(receipt.runtimeAttestation.enabledRuntimeCycles) !==
         canonicalizeArtifactJson(receipt.enabledRuntimeCycles) ||
       receipt.workerConcurrency !== 2 || receipt.deepWorkerConcurrency !== 1 ||
-      !Number.isSafeInteger(receipt.wherePollIntervalMs)
+      !Number.isSafeInteger(receipt.wherePollIntervalMs) ||
+      !Number.isSafeInteger(receipt.terminalTimeoutMs) || receipt.terminalTimeoutMs < 1 ||
+      !Number.isSafeInteger(receipt.drainTimeoutMs) || receipt.drainTimeoutMs < 1
     ) throw new Error("invalid");
     return receipt;
   } catch {
     throw new Error("where_latency_canary_isolation_receipt_invalid");
   }
+}
+
+export type WhereLatencyCanaryIsolationDocument = {
+  receipt: WhereLatencyCanaryIsolationReceipt;
+  fileSha256: string;
+};
+
+export async function readWhereLatencyCanaryIsolationDocument(
+  path: string
+): Promise<WhereLatencyCanaryIsolationDocument> {
+  const bytes = await readFile(resolve(path));
+  const text = bytes.toString("utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("where_latency_canary_isolation_receipt_invalid");
+  }
+  if (text !== `${canonicalizeArtifactJson(parsed)}\n`) {
+    throw new Error("where_latency_canary_isolation_receipt_not_canonical");
+  }
+  return {
+    receipt: parseIsolationReceipt(parsed),
+    fileSha256: createHash("sha256").update(bytes).digest("hex")
+  };
 }
 
 function assertValidTronAddress(address: string): void {
@@ -696,6 +884,27 @@ function delta(end: number, start: number, code: string): number {
   return result;
 }
 
+async function withDeadline<T>(
+  timeoutMs: number,
+  code: string,
+  operation: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error(code));
+      reject(new Error(code));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([operation(controller.signal), timeout]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 function runPayload(input: Omit<WhereLatencyCanaryRunReceipt, "sha256">): WhereLatencyCanaryRunReceipt {
   return withHash(input);
 }
@@ -739,6 +948,7 @@ function assertActiveRuntimeJob(
 export async function runWhereLatencyCanary(input: {
   confirm: boolean;
   isolationReceipt: string;
+  isolationDocument?: WhereLatencyCanaryIsolationDocument;
   out: string;
   config: WhereLatencyCanaryConfig;
   runtime: WhereLatencyCanaryRuntime;
@@ -753,7 +963,11 @@ export async function runWhereLatencyCanary(input: {
   assertValidTronAddress(longAddress);
   assertValidTronAddress(freshAddress);
   await ensureOutputAbsent(input.out);
-  const receipt = parseIsolationReceipt(JSON.parse(await readFile(resolve(input.isolationReceipt), "utf8")));
+  const isolationDocument = input.isolationDocument ??
+    await readWhereLatencyCanaryIsolationDocument(input.isolationReceipt);
+  const receipt = isolationDocument.receipt;
+  const canaryId = input.canaryId ?? randomUUID();
+  const requestedBy = `where-latency-canary:${canaryId}`;
   const startScheduler = await input.runtime.schedulerDiagnostics();
   assertConfigMatchesReceipt(input.config, startScheduler, receipt);
   if (startScheduler.queued !== 0 || startScheduler.inFlight !== 0) {
@@ -775,11 +989,20 @@ export async function runWhereLatencyCanary(input: {
   }
   const startLanes = await input.runtime.laneDiagnostics();
   assertCleanLanes(startLanes);
-
-  const canaryId = input.canaryId ?? randomUUID();
-  const requestedBy = `where-latency-canary:${canaryId}`;
+  const startSchedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(requestedBy);
+  assertOwnershipCleanStart(startSchedulerIsolation);
+  if (
+    canonicalizeArtifactJson(startSchedulerIsolation) !==
+    canonicalizeArtifactJson(receipt.schedulerIsolationBaseline)
+  ) throw new Error("where_latency_canary_scheduler_isolation_baseline_mismatch");
+  const startDeadlineMs = Math.min(5_000, input.config.wherePollIntervalMs * 2);
   const ownedJobIds: string[] = [];
   let drained = false;
+  const drain = () => withDeadline(
+    input.config.drainTimeoutMs,
+    "where_latency_canary_drain_timeout",
+    (signal) => input.runtime.stopClaimsAndDrain(ownedJobIds, signal)
+  );
   try {
     const long = await input.runtime.enqueueWhereJob({
       subjectAddress: longAddress,
@@ -789,7 +1012,11 @@ export async function runWhereLatencyCanary(input: {
       progressMarker: `where-latency-canary-progress:${canaryId}:long`
     });
     ownedJobIds.push(long.id);
-    const longStart = await input.runtime.waitForHandlerStart(long.id);
+    const longStart = await withDeadline(
+      startDeadlineMs,
+      "where_latency_canary_long_start_timeout",
+      (signal) => input.runtime.waitForHandlerStart(long.id, signal)
+    );
     assertHandlerStart(long.id, longStart);
 
     if (longStart.activeWhereHandlers > 2) {
@@ -800,13 +1027,19 @@ export async function runWhereLatencyCanary(input: {
     }
 
     if (longStart.activeWhereHandlers === 2) {
-      const longTerminal = await input.runtime.waitForTerminal(long.id);
+      const longTerminal = await withDeadline(
+        input.config.terminalTimeoutMs,
+        "where_latency_canary_terminal_timeout",
+        (signal) => input.runtime.waitForTerminal(long.id, signal)
+      );
       assertTerminal(long.id, longTerminal);
       const deliveryBeforeDrain = await input.runtime.deliveryDiagnostics(ownedJobIds);
-      await input.runtime.stopClaimsAndDrain(ownedJobIds);
+      await drain();
       drained = true;
       const endLanes = await input.runtime.laneDiagnostics();
       const deliveryAfterDrain = await input.runtime.deliveryDiagnostics(ownedJobIds);
+      const endSchedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(requestedBy);
+      assertOwnershipShape(endSchedulerIsolation);
       const endScheduler = await input.runtime.schedulerDiagnostics();
       const capacityEnd = schedulerCapacityFingerprint(endScheduler);
       const result = runPayload({
@@ -818,7 +1051,9 @@ export async function runWhereLatencyCanary(input: {
         canaryId,
         requestedBy,
         isolationReceiptSha256: receipt.sha256,
+        isolationReceiptFileSha256: isolationDocument.fileSha256,
         adapterIdentity: receipt.adapterIdentity,
+        deploymentIdentity: receipt.deploymentIdentity,
         runtimeAttestation,
         addresses: { long: longAddress, fresh: freshAddress },
         jobs: {
@@ -857,6 +1092,11 @@ export async function runWhereLatencyCanary(input: {
           capacityFingerprintAtEnd: capacityEnd,
           passed: false
         },
+        schedulerIsolationGate: {
+          start: startSchedulerIsolation,
+          end: endSchedulerIsolation,
+          passed: false
+        },
         terminalAndDrainGate: { bothTerminal: true, drained: true, passed: true },
         deepConcurrency: 1,
         residualDeepLatencyMeasuredSeparately: true
@@ -873,7 +1113,11 @@ export async function runWhereLatencyCanary(input: {
       progressMarker: `where-latency-canary-progress:${canaryId}:fresh`
     });
     ownedJobIds.push(fresh.id);
-    const freshStart = await input.runtime.waitForHandlerStart(fresh.id);
+    const freshStart = await withDeadline(
+      startDeadlineMs,
+      "where_latency_canary_fresh_start_timeout",
+      (signal) => input.runtime.waitForHandlerStart(fresh.id, signal)
+    );
     assertHandlerStart(fresh.id, freshStart);
     if (freshStart.activeWhereHandlers !== 2) {
       throw new Error("where_latency_canary_one_slot_scenario_not_observed");
@@ -884,14 +1128,22 @@ export async function runWhereLatencyCanary(input: {
     ]);
     assertActiveRuntimeJob(long.id, longAtFreshStart);
     assertActiveRuntimeJob(fresh.id, freshAtFreshStart);
-    const maximumStartMs = Math.min(5_000, input.config.wherePollIntervalMs * 2);
+    const maximumStartMs = startDeadlineMs;
     const startElapsedMs = freshStart.startedAtMs - fresh.createdAtMs;
     const startPassed = startElapsedMs >= 0 && startElapsedMs <= maximumStartMs;
 
     // The start gate is fixed before either terminal wait can obscure queue age.
     const [longTerminal, freshTerminal] = await Promise.all([
-      input.runtime.waitForTerminal(long.id),
-      input.runtime.waitForTerminal(fresh.id)
+      withDeadline(
+        input.config.terminalTimeoutMs,
+        "where_latency_canary_terminal_timeout",
+        (signal) => input.runtime.waitForTerminal(long.id, signal)
+      ),
+      withDeadline(
+        input.config.terminalTimeoutMs,
+        "where_latency_canary_terminal_timeout",
+        (signal) => input.runtime.waitForTerminal(fresh.id, signal)
+      )
     ]);
     assertTerminal(long.id, longTerminal);
     assertTerminal(fresh.id, freshTerminal);
@@ -901,7 +1153,7 @@ export async function runWhereLatencyCanary(input: {
       freshStart.activeWhereHandlers,
       input.runtime.maxActiveWhereHandlers()
     );
-    await input.runtime.stopClaimsAndDrain(ownedJobIds);
+    await drain();
     drained = true;
     const endLanes = await input.runtime.laneDiagnostics();
     assertCleanLanes(
@@ -909,6 +1161,8 @@ export async function runWhereLatencyCanary(input: {
       "where_latency_canary_database_not_drained"
     );
     const deliveryAfterDrain = await input.runtime.deliveryDiagnostics(ownedJobIds);
+    const endSchedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(requestedBy);
+    assertOwnershipWindowClean(startSchedulerIsolation, endSchedulerIsolation);
     const endScheduler = await input.runtime.schedulerDiagnostics();
     const capacityAtEnd = schedulerCapacityFingerprint(endScheduler);
     const failedRequestDelta = delta(
@@ -949,6 +1203,12 @@ export async function runWhereLatencyCanary(input: {
     if (completedRequestDelta !== dispatchedRequestDelta) {
       throw new Error("where_latency_canary_scheduler_completion_mismatch");
     }
+    assertOwnershipMatchesSchedulerWindow(endSchedulerIsolation, {
+      dispatched: dispatchedRequestDelta,
+      completed: completedRequestDelta,
+      failed: failedRequestDelta,
+      rateLimited: rateLimitedRequestDelta
+    });
     if (endScheduler.queued !== 0 || endScheduler.inFlight !== 0) {
       throw new Error("where_latency_canary_scheduler_not_drained");
     }
@@ -962,7 +1222,9 @@ export async function runWhereLatencyCanary(input: {
       canaryId,
       requestedBy,
       isolationReceiptSha256: receipt.sha256,
+      isolationReceiptFileSha256: isolationDocument.fileSha256,
       adapterIdentity: receipt.adapterIdentity,
+      deploymentIdentity: receipt.deploymentIdentity,
       runtimeAttestation,
       addresses: { long: longAddress, fresh: freshAddress },
       jobs: {
@@ -989,6 +1251,11 @@ export async function runWhereLatencyCanary(input: {
         capacityFingerprintAtEnd: capacityAtEnd,
         passed: true
       },
+      schedulerIsolationGate: {
+        start: startSchedulerIsolation,
+        end: endSchedulerIsolation,
+        passed: true
+      },
       terminalAndDrainGate: { bothTerminal: true, drained: true, passed: true },
       deepConcurrency: 1,
       residualDeepLatencyMeasuredSeparately: true
@@ -997,7 +1264,7 @@ export async function runWhereLatencyCanary(input: {
     return result;
   } finally {
     if (ownedJobIds.length > 0 && !drained) {
-      await input.runtime.stopClaimsAndDrain(ownedJobIds);
+      await drain();
     }
   }
 }
@@ -1026,6 +1293,8 @@ export async function captureWhereLatencyDeepResidual(input: {
   const subjectAddress = input.subjectAddress ?? WHERE_LATENCY_CANARY_FRESH_ADDRESS;
   assertValidTronAddress(subjectAddress);
   const cycles = validateDeepResidualConfig(input.config);
+  const measurementId = input.measurementId ?? randomUUID();
+  const requestedBy = `where-latency-deep-residual:${measurementId}`;
   await ensureOutputAbsent(input.out);
   const startLanes = await input.runtime.laneDiagnostics();
   assertCleanLanes(startLanes, "where_latency_deep_residual_database_not_clean");
@@ -1038,11 +1307,16 @@ export async function captureWhereLatencyDeepResidual(input: {
     startScheduler,
     await input.runtime.runtimeAttestation()
   );
+  const startSchedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(requestedBy);
+  assertOwnershipCleanStart(startSchedulerIsolation);
   const memoryBefore = validateMemorySnapshot(await input.runtime.memoryDiagnostics());
-  const measurementId = input.measurementId ?? randomUUID();
-  const requestedBy = `where-latency-deep-residual:${measurementId}`;
   const ownedJobIds: string[] = [];
   let drained = false;
+  const drain = () => withDeadline(
+    input.config.drainTimeoutMs,
+    "where_latency_deep_residual_drain_timeout",
+    (signal) => input.runtime.stopDeepClaimsAndDrain(ownedJobIds, signal)
+  );
   try {
     const job = await input.runtime.enqueueDeepJob({
       subjectAddress,
@@ -1052,7 +1326,11 @@ export async function captureWhereLatencyDeepResidual(input: {
       progressMarker: `where-latency-deep-residual-progress:${measurementId}`
     });
     ownedJobIds.push(job.id);
-    const started = await input.runtime.waitForDeepHandlerStart(job.id);
+    const started = await withDeadline(
+      Math.min(5_000, input.config.wherePollIntervalMs * 2),
+      "where_latency_deep_residual_start_timeout",
+      (signal) => input.runtime.waitForDeepHandlerStart(job.id, signal)
+    );
     if (started.jobId !== job.id) {
       throw new Error("where_latency_canary_runtime_job_identity_mismatch");
     }
@@ -1065,7 +1343,11 @@ export async function captureWhereLatencyDeepResidual(input: {
       throw new Error("where_latency_deep_residual_queue_age_invalid");
     }
     const memoryAtStart = validateMemorySnapshot(await input.runtime.memoryDiagnostics());
-    const terminal = await input.runtime.waitForTerminal(job.id);
+    const terminal = await withDeadline(
+      input.config.terminalTimeoutMs,
+      "where_latency_deep_residual_terminal_timeout",
+      (signal) => input.runtime.waitForTerminal(job.id, signal)
+    );
     assertTerminal(job.id, terminal);
     const jobDiagnostics = await input.runtime.deepJobDiagnostics(job.id);
     safeInteger(
@@ -1073,7 +1355,7 @@ export async function captureWhereLatencyDeepResidual(input: {
       "where_latency_deep_residual_provider_error_count_invalid"
     );
     const deliveryBeforeDrain = await input.runtime.deliveryDiagnostics(ownedJobIds);
-    await input.runtime.stopDeepClaimsAndDrain(ownedJobIds);
+    await drain();
     drained = true;
     const endLanes = await input.runtime.laneDiagnostics();
     assertCleanLanes(endLanes, "where_latency_deep_residual_database_not_drained");
@@ -1083,6 +1365,8 @@ export async function captureWhereLatencyDeepResidual(input: {
       deliveryAfterDrain.intentCount !== 0 || deliveryAfterDrain.claimCount !== 0
     ) throw new Error("where_latency_deep_residual_delivery_not_zero");
     const memoryAfterDrain = validateMemorySnapshot(await input.runtime.memoryDiagnostics());
+    const endSchedulerIsolation = await input.runtime.schedulerIsolationDiagnostics(requestedBy);
+    assertOwnershipWindowClean(startSchedulerIsolation, endSchedulerIsolation);
     const endScheduler = await input.runtime.schedulerDiagnostics();
     if (schedulerCapacityFingerprint(endScheduler) !== schedulerCapacityFingerprint(startScheduler)) {
       throw new Error("where_latency_deep_residual_scheduler_capacity_changed");
@@ -1110,6 +1394,12 @@ export async function captureWhereLatencyDeepResidual(input: {
       startScheduler.dispatchedRequests,
       "where_latency_deep_residual_scheduler_counter_regressed"
     );
+    assertOwnershipMatchesSchedulerWindow(endSchedulerIsolation, {
+      dispatched: endScheduler.dispatchedRequests - startScheduler.dispatchedRequests,
+      completed: endScheduler.completedRequests - startScheduler.completedRequests,
+      failed: failedDelta,
+      rateLimited: rateLimitedDelta
+    });
     const configSha256 = fingerprintCanonicalArtifact(
       configProjection(
         input.config,
@@ -1125,6 +1415,7 @@ export async function captureWhereLatencyDeepResidual(input: {
       measurementId,
       requestedBy,
       adapterIdentity: input.config.adapterIdentity,
+      deploymentIdentity: input.config.deploymentIdentity,
       runtimeAttestation,
       configSha256,
       subjectAddress,
@@ -1146,13 +1437,17 @@ export async function captureWhereLatencyDeepResidual(input: {
       },
       lanes: { start: startLanes, end: endLanes },
       scheduler: { start: startScheduler, end: endScheduler },
+      schedulerIsolation: {
+        start: startSchedulerIsolation,
+        end: endSchedulerIsolation
+      },
       drained: true as const
     });
     await writeCanonicalExclusive(input.out, result);
     return result;
   } finally {
     if (ownedJobIds.length > 0 && !drained) {
-      await input.runtime.stopDeepClaimsAndDrain(ownedJobIds);
+      await drain();
     }
   }
 }
@@ -1171,6 +1466,16 @@ function booleanEnv(name: string): boolean {
   return value === "1" || value === "true";
 }
 
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return value;
+}
+
 function canaryConfigFromEnvironment(): WhereLatencyCanaryUnboundConfig {
   const app = loadConfig();
   return {
@@ -1184,9 +1489,233 @@ function canaryConfigFromEnvironment(): WhereLatencyCanaryUnboundConfig {
     workerConcurrency: app.forensicWhereWorkerConcurrency,
     deepWorkerConcurrency: 1,
     wherePollIntervalMs: app.forensicWherePollIntervalMs,
+    terminalTimeoutMs: positiveIntegerEnv(
+      "WHERE_LATENCY_CANARY_TERMINAL_TIMEOUT_MS",
+      7_200_000
+    ),
+    drainTimeoutMs: positiveIntegerEnv(
+      "WHERE_LATENCY_CANARY_DRAIN_TIMEOUT_MS",
+      60_000
+    ),
     runtimeConfigIdentity:
       process.env.WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256?.trim() ?? ""
   };
+}
+
+type DeploymentModuleGraphEntry = { path: string; sha256: string };
+type DeploymentReceiptPayload = {
+  schema: "where-latency-canary-deployment-v1";
+  version: 1;
+  deploymentRoot: string;
+  immutableArtifactDigest: string;
+  gitCommit: string;
+  gitTree: string;
+  moduleGraph: DeploymentModuleGraphEntry[];
+  moduleGraphSha256: string;
+  adapterEntryPath: string;
+  adapterEntrySha256: string;
+  runtimeConfigIdentity: string;
+};
+type DeploymentReceipt = DeploymentReceiptPayload & { sha256: string };
+
+type RuntimeAdapterModule = {
+  createWhereLatencyCanaryRuntime?: (
+    input: WhereLatencyCanaryRuntimeFactoryConfig
+  ) => WhereLatencyCanaryRuntime | Promise<WhereLatencyCanaryRuntime>;
+};
+
+const execFileAsync = promisify(execFile);
+
+async function inspectGitCheckout(deploymentRoot: string): Promise<{
+  commit: string;
+  tree: string;
+  status: string;
+}> {
+  const git = async (...args: string[]) => (await execFileAsync(
+    "git",
+    ["-C", deploymentRoot, ...args],
+    { encoding: "utf8", windowsHide: true }
+  )).stdout.trim();
+  return {
+    commit: await git("rev-parse", "HEAD"),
+    tree: await git("rev-parse", "HEAD^{tree}"),
+    status: await git("status", "--porcelain", "--untracked-files=all")
+  };
+}
+
+function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
+  if (!record(value)) throw new Error("where_latency_canary_deployment_receipt_invalid");
+  const { sha256, ...payload } = value;
+  if (
+    payload.schema !== "where-latency-canary-deployment-v1" ||
+    payload.version !== 1 ||
+    sha256 !== fingerprintCanonicalArtifact(payload)
+  ) throw new Error("where_latency_canary_deployment_receipt_invalid");
+  const receipt = value as unknown as DeploymentReceipt;
+  if (
+    typeof receipt.deploymentRoot !== "string" || !receipt.deploymentRoot ||
+    !/^sha256:[a-f0-9]{64}$/.test(receipt.immutableArtifactDigest) ||
+    !/^[a-f0-9]{40}$/.test(receipt.gitCommit) ||
+    !/^[a-f0-9]{40}$/.test(receipt.gitTree) ||
+    !Array.isArray(receipt.moduleGraph) || receipt.moduleGraph.length < 1 ||
+    typeof receipt.adapterEntryPath !== "string"
+  ) throw new Error("where_latency_canary_deployment_receipt_invalid");
+  for (const hash of [
+    receipt.moduleGraphSha256,
+    receipt.adapterEntrySha256,
+    receipt.runtimeConfigIdentity
+  ]) assertSha256(hash, "where_latency_canary_deployment_receipt_invalid");
+  return receipt;
+}
+
+function assertSafeGraphPath(path: string): void {
+  if (
+    !path || isAbsolute(path) || path.includes("\\") ||
+    path.split("/").some((part) => !part || part === "." || part === "..")
+  ) throw new Error("where_latency_canary_deployment_graph_path_invalid");
+}
+
+function assertContained(root: string, child: string): void {
+  const pathFromRoot = relative(root, child);
+  if (pathFromRoot === "" || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
+    throw new Error("where_latency_canary_deployment_graph_escape");
+  }
+}
+
+export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
+  config: WhereLatencyCanaryUnboundConfig;
+  modulePath: string;
+  deploymentReceiptPath: string;
+  expectedDeploymentReceiptFileSha256: string;
+  expectedImmutableArtifactDigest: string;
+  importModule?: (specifier: string) => Promise<RuntimeAdapterModule>;
+  inspectCheckout?: (deploymentRoot: string) => Promise<{
+    commit: string;
+    tree: string;
+    status: string;
+  }>;
+}): Promise<{
+  runtime: WhereLatencyCanaryRuntime;
+  adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
+}> {
+  assertSha256(
+    input.expectedDeploymentReceiptFileSha256,
+    "where_latency_canary_deployment_receipt_file_sha256_invalid"
+  );
+  if (!/^sha256:[a-f0-9]{64}$/.test(input.expectedImmutableArtifactDigest)) {
+    throw new Error("where_latency_canary_immutable_artifact_digest_invalid");
+  }
+  const receiptBytes = await readFile(resolve(input.deploymentReceiptPath));
+  const receiptFileSha256 = createHash("sha256").update(receiptBytes).digest("hex");
+  if (receiptFileSha256 !== input.expectedDeploymentReceiptFileSha256) {
+    throw new Error("where_latency_canary_deployment_receipt_file_sha256_mismatch");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(receiptBytes.toString("utf8"));
+  } catch {
+    throw new Error("where_latency_canary_deployment_receipt_invalid");
+  }
+  if (receiptBytes.toString("utf8") !== `${canonicalizeArtifactJson(parsed)}\n`) {
+    throw new Error("where_latency_canary_deployment_receipt_not_canonical");
+  }
+  const receipt = parseDeploymentReceipt(parsed);
+  if (receipt.immutableArtifactDigest !== input.expectedImmutableArtifactDigest) {
+    throw new Error("where_latency_canary_immutable_artifact_digest_mismatch");
+  }
+  if (receipt.runtimeConfigIdentity !== input.config.runtimeConfigIdentity) {
+    throw new Error("where_latency_canary_deployment_runtime_config_mismatch");
+  }
+  const deploymentRoot = await realpath(resolve(receipt.deploymentRoot));
+  if (deploymentRoot !== receipt.deploymentRoot) {
+    throw new Error("where_latency_canary_deployment_root_not_canonical");
+  }
+  for (const entry of receipt.moduleGraph) {
+    if (!record(entry) || typeof entry.path !== "string") {
+      throw new Error("where_latency_canary_deployment_graph_invalid");
+    }
+  }
+  const canonicalGraph = [...receipt.moduleGraph]
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  if (canonicalizeArtifactJson(canonicalGraph) !== canonicalizeArtifactJson(receipt.moduleGraph)) {
+    throw new Error("where_latency_canary_deployment_graph_not_canonical");
+  }
+  if (new Set(receipt.moduleGraph.map((entry) => entry.path)).size !== receipt.moduleGraph.length) {
+    throw new Error("where_latency_canary_deployment_graph_duplicate");
+  }
+  if (fingerprintCanonicalArtifact(receipt.moduleGraph) !== receipt.moduleGraphSha256) {
+    throw new Error("where_latency_canary_deployment_graph_sha256_mismatch");
+  }
+  const graphRealPaths = new Map<string, string>();
+  for (const entry of receipt.moduleGraph) {
+    if (!record(entry)) throw new Error("where_latency_canary_deployment_graph_invalid");
+    assertSafeGraphPath(entry.path);
+    assertSha256(entry.sha256, "where_latency_canary_deployment_graph_invalid");
+    const moduleRealPath = await realpath(resolve(deploymentRoot, ...entry.path.split("/")));
+    assertContained(deploymentRoot, moduleRealPath);
+    if (!(await stat(moduleRealPath)).isFile()) {
+      throw new Error("where_latency_canary_deployment_graph_invalid");
+    }
+    const actualSha256 = createHash("sha256").update(await readFile(moduleRealPath)).digest("hex");
+    if (actualSha256 !== entry.sha256) {
+      throw new Error("where_latency_canary_deployment_graph_file_changed");
+    }
+    graphRealPaths.set(entry.path, moduleRealPath);
+  }
+  assertSafeGraphPath(receipt.adapterEntryPath);
+  const adapterEntry = receipt.moduleGraph.find(({ path }) => path === receipt.adapterEntryPath);
+  if (!adapterEntry || adapterEntry.sha256 !== receipt.adapterEntrySha256) {
+    throw new Error("where_latency_canary_deployment_adapter_not_bound");
+  }
+  const adapterRealPath = graphRealPaths.get(receipt.adapterEntryPath)!;
+  if (await realpath(resolve(input.modulePath)) !== adapterRealPath) {
+    throw new Error("where_latency_canary_deployment_adapter_path_mismatch");
+  }
+  const checkout = await (input.inspectCheckout ?? inspectGitCheckout)(deploymentRoot);
+  if (
+    checkout.commit !== receipt.gitCommit || checkout.tree !== receipt.gitTree ||
+    checkout.status !== ""
+  ) throw new Error("where_latency_canary_deployment_checkout_not_immutable");
+
+  const deploymentIdentity: WhereLatencyCanaryDeploymentIdentity = {
+    schema: "where-latency-canary-deployment-identity-v1",
+    deploymentReceiptFileSha256: receiptFileSha256,
+    immutableArtifactDigest: receipt.immutableArtifactDigest,
+    gitCommit: receipt.gitCommit,
+    gitTree: receipt.gitTree,
+    moduleGraphSha256: receipt.moduleGraphSha256,
+    adapterEntrySha256: receipt.adapterEntrySha256
+  };
+  const adapterIdentity: WhereLatencyCanaryAdapterIdentity = {
+    schema: "where-latency-canary-adapter-v1",
+    moduleRealPath: adapterRealPath,
+    moduleContentSha256: receipt.adapterEntrySha256
+  };
+  const imported = await (input.importModule ?? ((specifier) => import(specifier)))(
+    `${pathToFileURL(adapterRealPath).href}?sha256=${receipt.adapterEntrySha256}`
+  );
+  const afterIdentity = await resolveWhereLatencyCanaryAdapterIdentity(adapterRealPath);
+  if (afterIdentity.moduleContentSha256 !== receipt.adapterEntrySha256) {
+    throw new Error("where_latency_canary_runtime_adapter_changed_during_load");
+  }
+  if (typeof imported.createWhereLatencyCanaryRuntime !== "function") {
+    throw new Error("where_latency_canary_runtime_adapter_invalid");
+  }
+  const runtime = await imported.createWhereLatencyCanaryRuntime({
+    ...input.config,
+    deploymentIdentity
+  });
+  for (const method of [
+    "runtimeAttestation", "schedulerIsolationDiagnostics", "schedulerDiagnostics",
+    "laneDiagnostics", "enqueueWhereJob", "waitForHandlerStart", "waitForTerminal",
+    "deliveryDiagnostics", "jobRuntimeState", "maxActiveWhereHandlers", "stopClaimsAndDrain"
+  ] as const) {
+    if (typeof runtime?.[method] !== "function") {
+      throw new Error("where_latency_canary_runtime_adapter_invalid");
+    }
+  }
+  return { runtime, adapterIdentity, deploymentIdentity };
 }
 
 async function loadRuntimeBridge(
@@ -1194,37 +1723,29 @@ async function loadRuntimeBridge(
 ): Promise<{
   runtime: WhereLatencyCanaryRuntime;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
+  deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
 }> {
   const modulePath = process.env.WHERE_LATENCY_CANARY_RUNTIME_ADAPTER?.trim();
   if (!modulePath) throw new Error("where_latency_canary_runtime_adapter_required");
-  const adapterIdentity = await resolveWhereLatencyCanaryAdapterIdentity(modulePath);
-  const moduleRealPath = adapterIdentity.moduleRealPath;
-  const moduleContentSha256 = adapterIdentity.moduleContentSha256;
-  const imported = await import(
-    `${pathToFileURL(moduleRealPath).href}?sha256=${moduleContentSha256}`
-  ) as {
-    createWhereLatencyCanaryRuntime?: (
-      input: WhereLatencyCanaryUnboundConfig
-    ) => WhereLatencyCanaryRuntime | Promise<WhereLatencyCanaryRuntime>;
-  };
-  const afterIdentity = await resolveWhereLatencyCanaryAdapterIdentity(moduleRealPath);
-  if (afterIdentity.moduleContentSha256 !== moduleContentSha256) {
-    throw new Error("where_latency_canary_runtime_adapter_changed_during_load");
+  const deploymentReceiptPath = process.env.WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT?.trim();
+  const deploymentReceiptFileSha256 =
+    process.env.WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT_SHA256?.trim();
+  const immutableArtifactDigest =
+    process.env.WHERE_LATENCY_CANARY_IMMUTABLE_ARTIFACT_DIGEST?.trim();
+  if (!deploymentReceiptPath) throw new Error("where_latency_canary_deployment_receipt_required");
+  if (!deploymentReceiptFileSha256) {
+    throw new Error("where_latency_canary_deployment_receipt_sha256_required");
   }
-  if (typeof imported.createWhereLatencyCanaryRuntime !== "function") {
-    throw new Error("where_latency_canary_runtime_adapter_invalid");
+  if (!immutableArtifactDigest) {
+    throw new Error("where_latency_canary_immutable_artifact_digest_required");
   }
-  const runtime = await imported.createWhereLatencyCanaryRuntime(config);
-  for (const method of [
-    "runtimeAttestation", "schedulerDiagnostics", "laneDiagnostics", "enqueueWhereJob",
-    "waitForHandlerStart", "waitForTerminal", "deliveryDiagnostics",
-    "jobRuntimeState", "maxActiveWhereHandlers", "stopClaimsAndDrain"
-  ] as const) {
-    if (typeof runtime?.[method] !== "function") {
-      throw new Error("where_latency_canary_runtime_adapter_invalid");
-    }
-  }
-  return { runtime, adapterIdentity };
+  return loadVerifiedWhereLatencyRuntimeBridge({
+    config,
+    modulePath,
+    deploymentReceiptPath,
+    expectedDeploymentReceiptFileSha256: deploymentReceiptFileSha256,
+    expectedImmutableArtifactDigest: immutableArtifactDigest
+  });
 }
 
 export async function resolveWhereLatencyCanaryAdapterIdentity(
@@ -1280,7 +1801,8 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
     const loaded = await loadRuntimeBridge(unboundConfig);
     const config: WhereLatencyCanaryConfig = {
       ...unboundConfig,
-      adapterIdentity: loaded.adapterIdentity
+      adapterIdentity: loaded.adapterIdentity,
+      deploymentIdentity: loaded.deploymentIdentity
     };
     const receipt = await prepareWhereLatencyCanary({
       out,
@@ -1306,7 +1828,8 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
     assertDeepResidualRuntime(loaded.runtime);
     const config: WhereLatencyCanaryConfig = {
       ...unboundConfig,
-      adapterIdentity: loaded.adapterIdentity
+      adapterIdentity: loaded.adapterIdentity,
+      deploymentIdentity: loaded.deploymentIdentity
     };
     const receipt = await captureWhereLatencyDeepResidual({
       confirm: true,
@@ -1327,11 +1850,16 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
   assertValidTronAddress(freshAddress);
   const unboundConfig = canaryConfigFromEnvironment();
   validateUnboundConfig(unboundConfig);
-  const isolation = parseIsolationReceipt(JSON.parse(
-    await readFile(resolve(isolationReceipt), "utf8")
-  ));
+  const isolationDocument = await readWhereLatencyCanaryIsolationDocument(
+    isolationReceipt
+  );
+  const isolation = isolationDocument.receipt;
   assertStaticConfigMatchesReceipt(
-    { ...unboundConfig, adapterIdentity: isolation.adapterIdentity },
+    {
+      ...unboundConfig,
+      adapterIdentity: isolation.adapterIdentity,
+      deploymentIdentity: isolation.deploymentIdentity
+    },
     isolation
   );
   const canaryId = randomUUID();
@@ -1340,12 +1868,14 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
   const loaded = await loadRuntimeBridge(unboundConfig);
   const config: WhereLatencyCanaryConfig = {
     ...unboundConfig,
-    adapterIdentity: loaded.adapterIdentity
+    adapterIdentity: loaded.adapterIdentity,
+    deploymentIdentity: loaded.deploymentIdentity
   };
   assertStaticConfigMatchesReceipt(config, isolation);
   const receipt = await runWhereLatencyCanary({
     confirm: true,
     isolationReceipt,
+    isolationDocument,
     out,
     config,
     runtime: loaded.runtime,
