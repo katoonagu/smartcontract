@@ -389,13 +389,24 @@ function emptyDeepReport(): DeepAddressForensicReport {
 
 describe("deep forensic job runner", () => {
   it("persists count-only Where lifecycle diagnostics with monotonic scheduler snapshots", async () => {
+    const sensitiveTxHash = "9".repeat(64);
+    const sensitiveKeyIdentifier = "provider-key-sensitive-identifier";
+    const sensitiveUsername = "private_operator_username";
+    const sensitiveLabel = "private_service_label";
     const sourceJob = {
       ...job(),
       kind: "where_is_money_check" as const,
+      subjectAddress: "TSensitiveSubjectAddress11111111111111111",
+      chatId: "sensitive-chat-id",
+      requestedBy: "sensitive-requester-id",
       createdAt: new Date("2026-05-23T23:59:59.000Z"),
       progressJson: {
         jobPhase: "provider_limited",
-        targetedIndex: { statusReason: "partial_provider_inconsistent" }
+        targetedIndex: { statusReason: "partial_provider_inconsistent" },
+        transactionHash: sensitiveTxHash,
+        keyIdentifier: sensitiveKeyIdentifier,
+        username: sensitiveUsername,
+        label: sensitiveLabel
       }
     };
     const snapshots = [{
@@ -450,6 +461,16 @@ describe("deep forensic job runner", () => {
           schedulerDispatchedRequestCountAtStart: 10,
           schedulerFailedRequestCountAtStart: 1,
           schedulerRateLimitedRequestCountAtStart: 2,
+          schedulerDispatchedRequestCountAtEnd: 10,
+          schedulerFailedRequestCountAtEnd: 1,
+          schedulerRateLimitedRequestCountAtEnd: 2,
+          transactionInfoCandidateCount: 0,
+          transactionInfoHardCandidateCount: 0,
+          transactionInfoRawProviderRequests: 0,
+          transactionInfoFullProviderRequests: 0,
+          transactionInfoSavedEvidenceHits: 0,
+          transactionInfoInFlightHits: 0,
+          transactionInfoSchedulerAwaitMs: 0,
           schedulerCapacityFingerprint: "capacity-fingerprint"
         })
       })
@@ -471,7 +492,20 @@ describe("deep forensic job runner", () => {
     }));
     expect(logger.info).toHaveBeenCalledWith(
       "forensic_job_lifecycle_started",
-      expect.objectContaining({ kind: "where_is_money_check", occupiedSlotsAtPoll: 1 })
+      expect.objectContaining({
+        kind: "where_is_money_check",
+        occupiedSlotsAtPoll: 1,
+        schedulerDispatchedRequestCountAtEnd: 10,
+        schedulerFailedRequestCountAtEnd: 1,
+        schedulerRateLimitedRequestCountAtEnd: 2,
+        transactionInfoCandidateCount: 0,
+        transactionInfoHardCandidateCount: 0,
+        transactionInfoRawProviderRequests: 0,
+        transactionInfoFullProviderRequests: 0,
+        transactionInfoSavedEvidenceHits: 0,
+        transactionInfoInFlightHits: 0,
+        transactionInfoSchedulerAwaitMs: 0
+      })
     );
     expect(logger.info).toHaveBeenCalledWith(
       "forensic_job_lifecycle_completed",
@@ -481,6 +515,10 @@ describe("deep forensic job runner", () => {
     expect(diagnosticPayload).not.toContain(sourceJob.subjectAddress);
     expect(diagnosticPayload).not.toContain(sourceJob.chatId!);
     expect(diagnosticPayload).not.toContain(sourceJob.requestedBy!);
+    expect(diagnosticPayload).not.toContain(sensitiveTxHash);
+    expect(diagnosticPayload).not.toContain(sensitiveKeyIdentifier);
+    expect(diagnosticPayload).not.toContain(sensitiveUsername);
+    expect(diagnosticPayload).not.toContain(sensitiveLabel);
   });
 
   it("executes an externally claimed job without issuing another claim", async () => {

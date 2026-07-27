@@ -1926,20 +1926,6 @@ export async function runClaimedForensicJob(
     const lifecycleStart = await captureLifecycleDiagnostics("start");
     if (lifecycleStart) {
       const queueWaitMs = Math.max(0, Math.round(job.startedAt.getTime() - job.createdAt.getTime()));
-      const startTiming = {
-        ...(isRecord(job.progressJson.performanceTiming) ? job.progressJson.performanceTiming : {}),
-        queueWaitMs,
-        runnableQueuedCount: lifecycleStart.runnableQueuedCount,
-        oldestRunnableQueueAgeMs: lifecycleStart.oldestRunnableQueueAgeMs,
-        activeSlots: lifecycleStart.activeSlots,
-        configuredSlots: lifecycleStart.configuredSlots,
-        occupiedSlotsAtPoll: lifecycleStart.occupiedSlotsAtPoll,
-        dbRunningCount: lifecycleStart.dbRunningCount,
-        schedulerDispatchedRequestCountAtStart: lifecycleStart.schedulerDispatchedRequestCount,
-        schedulerFailedRequestCountAtStart: lifecycleStart.schedulerFailedRequestCount,
-        schedulerRateLimitedRequestCountAtStart: lifecycleStart.schedulerRateLimitedRequestCount,
-        schedulerCapacityFingerprint: lifecycleStart.schedulerCapacityFingerprint
-      };
       const lifecycleStartFields = {
         queueWaitMs,
         runnableQueuedCount: lifecycleStart.runnableQueuedCount,
@@ -1951,7 +1937,15 @@ export async function runClaimedForensicJob(
         schedulerDispatchedRequestCountAtStart: lifecycleStart.schedulerDispatchedRequestCount,
         schedulerFailedRequestCountAtStart: lifecycleStart.schedulerFailedRequestCount,
         schedulerRateLimitedRequestCountAtStart: lifecycleStart.schedulerRateLimitedRequestCount,
+        schedulerDispatchedRequestCountAtEnd: lifecycleStart.schedulerDispatchedRequestCount,
+        schedulerFailedRequestCountAtEnd: lifecycleStart.schedulerFailedRequestCount,
+        schedulerRateLimitedRequestCountAtEnd: lifecycleStart.schedulerRateLimitedRequestCount,
+        ...emptyTransactionInfoLifecycleMetrics(),
         schedulerCapacityFingerprint: lifecycleStart.schedulerCapacityFingerprint
+      };
+      const startTiming = {
+        ...(isRecord(job.progressJson.performanceTiming) ? job.progressJson.performanceTiming : {}),
+        ...lifecycleStartFields
       };
       job.progressJson = mergeForensicJobProgress(job.progressJson, {
         performanceTiming: startTiming

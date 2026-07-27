@@ -75,6 +75,11 @@ completion. This timing records runnable queue count and age, DB-running count, 
 slot occupancy, transaction-enrichment counts, and monotonic scheduler
 counters. `waiting_for_targeted_index` is excluded from runnable age. Deep
 remains configured for one slot; Incoming remains a separate timed lane.
+The claim snapshot already has the complete lifecycle shape: all seven
+transaction-enrichment counters start at zero, and each scheduler `AtEnd`
+counter initially equals its matching `AtStart` value. Terminal completion
+replaces those placeholders with the job's final enrichment totals and a
+non-decreasing scheduler snapshot.
 
 ## Unified Lifecycle
 

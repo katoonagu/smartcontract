@@ -663,6 +663,63 @@ describe("forensic check job repositories", () => {
     expect(queries[0].params).toEqual([["where_is_money_check"]]);
   });
 
+  it("summarizes a runnable forensic lane without leaking row identities", async () => {
+    const sensitive = {
+      subject_address: "TSensitiveAddress111111111111111111111",
+      transaction_hash: "f".repeat(64),
+      chat_id: "4242",
+      key_identifier: "secret-key-id",
+      username: "sensitive-user",
+      sensitive_label: "sensitive-service-label"
+    };
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return {
+          rows: [{
+            runnable_queued_count: "3",
+            oldest_runnable_queued_at: new Date("2026-07-27T10:00:00.000Z"),
+            db_running_count: "2",
+            ...sensitive
+          }]
+        };
+      }
+    } as unknown as Db;
+
+    const diagnostics = await getForensicLaneQueueDiagnostics(db, "where_is_money_check");
+
+    expect(diagnostics).toEqual({
+      kind: "where_is_money_check",
+      runnableQueuedCount: 3,
+      oldestRunnableQueuedAt: new Date("2026-07-27T10:00:00.000Z"),
+      dbRunningCount: 2
+    });
+    expect(queries[0].sql).toContain("progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].params).toEqual(["where_is_money_check"]);
+    const serialized = JSON.stringify(diagnostics);
+    for (const value of Object.values(sensitive)) expect(serialized).not.toContain(value);
+  });
+
+  it("returns bounded zero diagnostics for an empty Deep lane", async () => {
+    const db = {
+      query: async () => ({
+        rows: [{
+          runnable_queued_count: "0",
+          oldest_runnable_queued_at: null,
+          db_running_count: "0"
+        }]
+      })
+    } as unknown as Db;
+
+    await expect(getForensicLaneQueueDiagnostics(db, "address_deep_check")).resolves.toEqual({
+      kind: "address_deep_check",
+      runnableQueuedCount: 0,
+      oldestRunnableQueuedAt: null,
+      dbRunningCount: 0
+    });
+  });
+
   it("releases strict provenance jobs to queued waiting state", async () => {
     const queries: Array<{ sql: string; params: unknown[] }> = [];
     const progressJson = {
@@ -2804,62 +2861,6 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
         [id]
       );
       expect(deliveries.rows[0]?.count).toBe(1);
-    });
-  });
-
-  it("summarizes a runnable forensic lane without leaking row identities", async () => {
-    const sensitive = {
-      subject_address: "TSensitiveAddress111111111111111111111",
-      transaction_hash: "f".repeat(64),
-      chat_id: "4242",
-      key_identifier: "secret-key-id",
-      username: "sensitive-user"
-    };
-    const queries: Array<{ sql: string; params: unknown[] }> = [];
-    const db = {
-      query: async (sql: string, params: unknown[]) => {
-        queries.push({ sql, params });
-        return {
-          rows: [{
-            runnable_queued_count: "3",
-            oldest_runnable_queued_at: new Date("2026-07-27T10:00:00.000Z"),
-            db_running_count: "2",
-            ...sensitive
-          }]
-        };
-      }
-    } as unknown as Db;
-
-    const diagnostics = await getForensicLaneQueueDiagnostics(db, "where_is_money_check");
-
-    expect(diagnostics).toEqual({
-      kind: "where_is_money_check",
-      runnableQueuedCount: 3,
-      oldestRunnableQueuedAt: new Date("2026-07-27T10:00:00.000Z"),
-      dbRunningCount: 2
-    });
-    expect(queries[0].sql).toContain("progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
-    expect(queries[0].params).toEqual(["where_is_money_check"]);
-    const serialized = JSON.stringify(diagnostics);
-    for (const value of Object.values(sensitive)) expect(serialized).not.toContain(value);
-  });
-
-  it("returns bounded zero diagnostics for an empty Deep lane", async () => {
-    const db = {
-      query: async () => ({
-        rows: [{
-          runnable_queued_count: "0",
-          oldest_runnable_queued_at: null,
-          db_running_count: "0"
-        }]
-      })
-    } as unknown as Db;
-
-    await expect(getForensicLaneQueueDiagnostics(db, "address_deep_check")).resolves.toEqual({
-      kind: "address_deep_check",
-      runnableQueuedCount: 0,
-      oldestRunnableQueuedAt: null,
-      dbRunningCount: 0
     });
   });
 
