@@ -319,6 +319,34 @@ describe("transaction evidence repository", () => {
       .resolves.toMatchObject({ evidence: { finality: { status } } });
   });
 
+  it.each([
+    ["top-level revert", {
+      hash: HASH_A,
+      confirmed: true,
+      receipt: { success: false },
+      revert: true
+    }],
+    ["reverted status", {
+      hash: HASH_A,
+      confirmed: true,
+      receipt: { success: false },
+      status: "REVERTED"
+    }]
+  ])("preserves %s precedence over receipt failure", async (_label, payload) => {
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({
+      payload,
+      status: "confirmed_reverted"
+    }))).resolves.toMatchObject({ evidence: { finality: { status: "confirmed_reverted" } } });
+  });
+
+  it("keeps receipt failure without a revert signal as confirmed_failed", async () => {
+    const payload = { hash: HASH_A, confirmed: true, receipt: { success: false } };
+    await expect(saveTransactionProviderEvidence(memoryDb().db, fullEvidence({
+      payload,
+      status: "confirmed_failed"
+    }))).resolves.toMatchObject({ evidence: { finality: { status: "confirmed_failed" } } });
+  });
+
   it("binds a raw witness to one exact rich movement identity", async () => {
     const raw = rawEvidence();
     const withUnhashedMovement = {

@@ -390,13 +390,7 @@ function endpointFinalityStatus(
       : "confirmed_failed");
   }
   if (typeof receipt?.success === "boolean") {
-    if (receipt.success === false) {
-      if (statuses.includes("confirmed_reverted")) {
-        return "confirmed_reverted";
-      }
-      return "confirmed_failed";
-    }
-    statuses.push("confirmed_success");
+    statuses.push(receipt.success ? "confirmed_success" : "confirmed_failed");
   }
   if (payload.revert !== undefined) {
     if (payload.revert === true) statuses.push("confirmed_reverted");
