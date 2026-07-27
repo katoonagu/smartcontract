@@ -345,6 +345,14 @@ in-process adapter named by `WHERE_LATENCY_CANARY_RUNTIME_ADAPTER`. That module
 must export `createWhereLatencyCanaryRuntime(config)` and bind to the exact
 dedicated Where pump, scheduler, forensic repository, and delivery repository;
 an adapter that estimates scheduler counters from database rows is invalid.
+The CLI resolves the module's real path, hashes its bytes before loading, checks
+the bytes again after loading, and binds both values into every receipt. The
+adapter must return an observed runtime attestation: cycle registry, instance
+label, runtime-config SHA-256, database fingerprint, Where/Deep concurrency,
+scheduler capacity, and SHA-256 binding identities for the Where pump, Deep
+worker, scheduler, forensic repository, delivery repository, and address-index
+worker. These observations must match the expected environment exactly; the
+environment alone is never isolation evidence.
 The adapter owns only jobs whose unique `requestedBy` and progress marker are
 provided by the harness. Its `stopClaimsAndDrain` must stop new canary claims
 and await every canary-owned handler promise before returning. The command
@@ -360,6 +368,7 @@ $env:RUNTIME_INSTANCE_LABEL = "where-canary-<unique-instance>"
 $env:WHERE_LATENCY_CANARY_DEDICATED = "true"
 $env:WHERE_LATENCY_CANARY_ENABLED_CYCLES = "where,address_index,delivery_reconciliation"
 $env:WHERE_LATENCY_CANARY_RUNTIME_ADAPTER = "<absolute-path-to-deployment-runtime-adapter>"
+$env:WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256 = "<canonical-deployed-config-sha256>"
 $env:FORENSIC_WHERE_WORKER_CONCURRENCY = "2"
 ```
 
@@ -387,6 +396,10 @@ null-chat delivery intent/claim counts are zero, new canary claims are stopped,
 all canary-owned promises are drained, and the final scheduler snapshot is
 taken. The fresh TXc handler must start within two Where poll intervals and no
 later than five seconds while the long TQr handler occupies exactly one slot.
+At TXc start, the adapter must observe both handlers active, report exactly two
+active Where handlers, and still report the long job as running. The receipt
+contains start/end lane snapshots, pre-drain and post-drain delivery snapshots,
+and matching monotonic dispatched/completed scheduler deltas.
 Maximum active Where handlers is two; scheduler rate-limited and failed-request
 deltas are zero; scheduler/key capacity is unchanged.
 
@@ -401,11 +414,23 @@ receipts and structured logs, stop the dedicated process, confirm its pump is
 drained, and then retire the clone through the normal infrastructure workflow.
 The harness does not delete jobs or databases.
 
-After the Where canary, measure residual Deep latency separately with Deep at
-one: enqueue TXc through the existing Deep lane and record queue age, handler
-start, provider errors, process/container memory, terminal state, and delivery
-count. Do not mix this sample into the Where receipt and do not raise Deep
-concurrency under this plan. If Deep dominates, keep a separate
+After the Where canary, restart the dedicated deployment with only
+`address_index,deep,delivery_reconciliation` enabled and Deep at one. Keep the
+same adapter/config identity requirements, choose a new output path, and run:
+
+```powershell
+$env:WHERE_LATENCY_CANARY_ENABLED_CYCLES = "deep,address_index,delivery_reconciliation"
+npm.cmd run forensic:where-latency:canary -- deep-residual --confirm `
+  --out outputs/where-latency-canary/deep-residual-<unique-id>.json
+```
+
+The create-only `where-latency-deep-residual-v1` receipt records TXc queue age,
+handler start, terminal state, job and scheduler provider errors/rate limits,
+before/start/after-drain process memory, start/end lane and scheduler snapshots,
+and delivery before/after drain. It requires the observed Deep handler count to
+remain exactly one and delivery to remain zero. This is a measurement, not a
+Where promotion gate. Do not mix it into the Where receipt and do not raise
+Deep concurrency under this plan. If Deep dominates, keep a separate
 `default 1 / isolated canary 2` design problem.
 
 For production promotion, compare the existing structured scheduler logs for
@@ -416,7 +441,7 @@ contamination, missing denominator, capacity increase, or delivery duplication
 blocks promotion and restores the default value of one.
 
 No Stage B concurrency-two receipt has been produced yet. This checkout has no
-dedicated canary database/configuration or deployment-owned runtime adapter,
+dedicated canary database/configuration or deployment-owned attested runtime adapter,
 and the real legacy TXc replay evidence is still absent. Do not run against the
 current shared environment and do not treat the deterministic fake-runtime
 tests as rollout evidence; production concurrency two remains blocked.

@@ -1,16 +1,31 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildWhereLatencyCanaryIsolationReceipt,
+  captureWhereLatencyDeepResidual,
   prepareWhereLatencyCanary,
+  resolveWhereLatencyCanaryAdapterIdentity,
   runWhereLatencyCanary,
-  type WhereLatencyCanaryRuntime
+  type WhereLatencyCanaryRuntime,
+  type WhereLatencyDeepResidualRuntime
 } from "../../scripts/runWhereLatencyCanary";
 
 const LONG = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const FRESH = "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd";
+const HEX_A = "a".repeat(64);
+const HEX_B = "b".repeat(64);
+const HEX_C = "c".repeat(64);
+const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
+  schema: "where-latency-canary-database-v1",
+  protocol: "postgres:",
+  hostname: "canary-db.internal",
+  port: "5432",
+  database: "tron_guard_canary"
+});
 
 const cleanScheduler = () => ({
   apiKeyConfigured: true,
@@ -39,16 +54,52 @@ const config = () => ({
   enabledRuntimeCycles: ["where", "address_index", "delivery_reconciliation"] as const,
   workerConcurrency: 2,
   deepWorkerConcurrency: 1,
-  wherePollIntervalMs: 2_000
+  wherePollIntervalMs: 2_000,
+  runtimeConfigIdentity: HEX_A,
+  adapterIdentity: {
+    schema: "where-latency-canary-adapter-v1" as const,
+    moduleRealPath: "C:/deployment/whereCanaryAdapter.mjs",
+    moduleContentSha256: HEX_B
+  }
+});
+
+const attestation = () => ({
+  schema: "where-latency-canary-runtime-attestation-v1" as const,
+  runtimeInstanceLabel: "where-canary-01",
+  runtimeConfigIdentity: HEX_A,
+  databaseFingerprint: DATABASE_FINGERPRINT,
+  enabledRuntimeCycles: ["address_index", "delivery_reconciliation", "where"],
+  whereWorkerConcurrency: 2,
+  deepWorkerConcurrency: 1,
+  wherePumpBindingIdentity: HEX_A,
+  schedulerBindingIdentity: HEX_B,
+  forensicRepositoryBindingIdentity: HEX_C,
+  deliveryRepositoryBindingIdentity: "d".repeat(64),
+  addressIndexBindingIdentity: "e".repeat(64),
+  deepWorkerBindingIdentity: "f".repeat(64),
+  schedulerCapacityFingerprint: fingerprintCanonicalArtifact({
+    schema: "tronscan-scheduler-capacity-v1",
+    apiKeyConfigured: true,
+    apiKeyCount: 4,
+    apiKeyGroupCount: 2,
+    maxInFlight: 20,
+    maxInFlightPerGroup: 2
+  })
 });
 
 function runtime(overrides: Partial<WhereLatencyCanaryRuntime> = {}): WhereLatencyCanaryRuntime {
   let schedulerCalls = 0;
   const jobs = new Map<string, { createdAtMs: number; startedAtMs: number; status: string }>();
   const value: WhereLatencyCanaryRuntime = {
+    runtimeAttestation: vi.fn(async () => attestation()),
     schedulerDiagnostics: vi.fn(async () => {
       schedulerCalls += 1;
-      return { ...cleanScheduler(), dispatchedRequests: 10 + Math.max(0, schedulerCalls - 2) };
+      const requestDelta = Math.max(0, schedulerCalls - 2);
+      return {
+        ...cleanScheduler(),
+        dispatchedRequests: 10 + requestDelta,
+        completedRequests: 10 + requestDelta
+      };
     }),
     laneDiagnostics: vi.fn(async () => cleanLanes()),
     enqueueWhereJob: vi.fn(async (input) => {
@@ -62,6 +113,11 @@ function runtime(overrides: Partial<WhereLatencyCanaryRuntime> = {}): WhereLaten
       job.status = "running";
       return { jobId, startedAtMs: job.startedAtMs, activeWhereHandlers: jobId === "long-job" ? 1 : 2 };
     }),
+    jobRuntimeState: vi.fn(async (jobId) => ({
+      jobId,
+      status: "running" as const,
+      handlerActive: true
+    })),
     waitForTerminal: vi.fn(async (jobId) => ({
       jobId,
       status: "completed" as const,
@@ -73,6 +129,36 @@ function runtime(overrides: Partial<WhereLatencyCanaryRuntime> = {}): WhereLaten
     ...overrides
   };
   return value;
+}
+
+function deepRuntime(
+  overrides: Partial<WhereLatencyDeepResidualRuntime> = {}
+): WhereLatencyDeepResidualRuntime {
+  return {
+    ...runtime(),
+    runtimeAttestation: vi.fn(async () => ({
+      ...attestation(),
+      enabledRuntimeCycles: ["address_index", "deep", "delivery_reconciliation"]
+    })),
+    enqueueDeepJob: vi.fn(async () => ({ id: "deep-job", createdAtMs: 1_000 })),
+    waitForDeepHandlerStart: vi.fn(async (jobId) => ({
+      jobId,
+      startedAtMs: 1_500,
+      activeDeepHandlers: 1
+    })),
+    waitForTerminal: vi.fn(async (jobId) => ({
+      jobId,
+      status: "partial" as const,
+      completedAtMs: 4_000
+    })),
+    deepJobDiagnostics: vi.fn(async () => ({ providerErrorCount: 2 })),
+    memoryDiagnostics: vi.fn()
+      .mockResolvedValueOnce({ rssBytes: 100, heapUsedBytes: 50 })
+      .mockResolvedValueOnce({ rssBytes: 120, heapUsedBytes: 60 })
+      .mockResolvedValueOnce({ rssBytes: 110, heapUsedBytes: 55 }),
+    stopDeepClaimsAndDrain: vi.fn(async () => undefined),
+    ...overrides
+  };
 }
 
 async function receiptFile(directory: string, runtimeValue: WhereLatencyCanaryRuntime) {
@@ -88,6 +174,7 @@ describe("Where latency canary", () => {
     const receipt = buildWhereLatencyCanaryIsolationReceipt({
       config: config(),
       scheduler: cleanScheduler(),
+      runtimeAttestation: attestation(),
       preparedAt: "2026-07-27T00:00:00.000Z"
     });
 
@@ -98,13 +185,48 @@ describe("Where latency canary", () => {
       enabledRuntimeCycles: ["address_index", "delivery_reconciliation", "where"],
       workerConcurrency: 2,
       deepWorkerConcurrency: 1,
-      schedulerBaseline: { queued: 0, inFlight: 0 }
+      schedulerBaseline: { queued: 0, inFlight: 0 },
+      adapterIdentity: config().adapterIdentity,
+      runtimeAttestation: expect.objectContaining({
+        schema: "where-latency-canary-runtime-attestation-v1",
+        whereWorkerConcurrency: 2,
+        deepWorkerConcurrency: 1
+      })
     });
     expect(receipt.databaseFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(receipt)).not.toContain("secret");
     expect(receipt.schedulerCapacityFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt.configSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("rejects runtime attestation that differs from the expected canonical deployment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    await expect(prepareWhereLatencyCanary({
+      out: join(directory, "isolation.json"),
+      config: config(),
+      runtime: runtime({
+        runtimeAttestation: vi.fn(async () => ({
+          ...attestation(),
+          runtimeInstanceLabel: "foreign-runtime"
+        }))
+      })
+    })).rejects.toThrow("where_latency_canary_runtime_attestation_mismatch");
+  });
+
+  it("canonicalizes the adapter real path and hashes its exact module bytes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-adapter-"));
+    const path = join(directory, "adapter.mjs");
+    const bytes = "export const adapter = true;\n";
+    await writeFile(path, bytes, "utf8");
+    const identity = await resolveWhereLatencyCanaryAdapterIdentity(
+      join(directory, ".", "adapter.mjs")
+    );
+    expect(identity).toEqual({
+      schema: "where-latency-canary-adapter-v1",
+      moduleRealPath: path,
+      moduleContentSha256: createHash("sha256").update(bytes).digest("hex")
+    });
   });
 
   it.each([
@@ -271,7 +393,17 @@ describe("Where latency canary", () => {
       startGate: { elapsedMs: 100, passed: true },
       slotGate: { maximumActiveHandlers: 2, passed: true },
       deliveryGate: { intentCount: 0, claimCount: 0, passed: true },
-      schedulerGate: { failedRequestDelta: 0, rateLimitedRequestDelta: 0, passed: true },
+      schedulerGate: {
+        completedRequestDelta: 0,
+        failedRequestDelta: 0,
+        rateLimitedRequestDelta: 0,
+        passed: true
+      },
+      laneGate: {
+        start: cleanLanes(),
+        end: cleanLanes(),
+        passed: true
+      },
       terminalAndDrainGate: { drained: true, passed: true },
       deepConcurrency: 1
     });
@@ -418,5 +550,159 @@ describe("Where latency canary", () => {
       runtime: runRuntime
     })).rejects.toThrow("where_latency_canary_runtime_job_identity_mismatch");
     expect(runRuntime.stopClaimsAndDrain).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires job-specific proof that long is still active when fresh starts in exactly two slots", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const isolationReceipt = await receiptFile(directory, runtime());
+    const endedLongRuntime = runtime({
+      jobRuntimeState: vi.fn(async (jobId) => ({
+        jobId,
+        status: jobId === "long-job" ? "completed" as const : "running" as const,
+        handlerActive: jobId !== "long-job"
+      }))
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "ended-long.json"),
+      config: config(),
+      runtime: endedLongRuntime
+    })).rejects.toThrow("where_latency_canary_one_slot_scenario_not_observed");
+
+    const oneActiveRuntime = runtime({
+      waitForHandlerStart: vi.fn(async (jobId) => ({
+        jobId,
+        startedAtMs: jobId === "long-job" ? 1_100 : 2_100,
+        activeWhereHandlers: 1
+      }))
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "one-active.json"),
+      config: config(),
+      runtime: oneActiveRuntime
+    })).rejects.toThrow("where_latency_canary_one_slot_scenario_not_observed");
+  });
+
+  it("resamples delivery after drain and rejects a late intent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const isolationReceipt = await receiptFile(directory, runtime());
+    let deliveryCalls = 0;
+    const runRuntime = runtime({
+      deliveryDiagnostics: vi.fn(async () => {
+        deliveryCalls += 1;
+        return deliveryCalls === 1
+          ? { intentCount: 0, claimCount: 0 }
+          : { intentCount: 1, claimCount: 0 };
+      })
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "late-delivery.json"),
+      config: config(),
+      runtime: runRuntime
+    })).rejects.toThrow("where_latency_canary_delivery_gate_failed");
+    expect(runRuntime.deliveryDiagnostics).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires drained completed-request delta to equal dispatched delta", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const isolationReceipt = await receiptFile(directory, runtime());
+    let schedulerCalls = 0;
+    const runRuntime = runtime({
+      schedulerDiagnostics: vi.fn(async () => {
+        schedulerCalls += 1;
+        return schedulerCalls === 1
+          ? cleanScheduler()
+          : { ...cleanScheduler(), dispatchedRequests: 11, completedRequests: 10 };
+      })
+    });
+    await expect(runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: join(directory, "counter-mismatch.json"),
+      config: config(),
+      runtime: runRuntime
+    })).rejects.toThrow("where_latency_canary_scheduler_completion_mismatch");
+  });
+
+  it("captures residual Deep queue, provider, memory, delivery, terminal, and drain evidence separately", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const output = join(directory, "deep.json");
+    const runtimeValue = deepRuntime();
+    const result = await captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: output,
+      config: {
+        ...config(),
+        enabledRuntimeCycles: ["deep", "address_index", "delivery_reconciliation"]
+      },
+      runtime: runtimeValue,
+      measurementId: "deep-measurement",
+      now: () => 5_000
+    });
+
+    expect(runtimeValue.enqueueDeepJob).toHaveBeenCalledWith(expect.objectContaining({
+      subjectAddress: FRESH,
+      chatId: null,
+      requestedBy: "where-latency-deep-residual:deep-measurement"
+    }));
+    expect(runtimeValue.deliveryDiagnostics).toHaveBeenCalledTimes(2);
+    expect(runtimeValue.stopDeepClaimsAndDrain).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      schema: "where-latency-deep-residual-v1",
+      result: "measured",
+      queueAgeMs: 500,
+      providerErrors: {
+        jobReported: 2,
+        schedulerFailedRequestDelta: 0,
+        schedulerRateLimitedRequestDelta: 0
+      },
+      memory: {
+        before: { rssBytes: 100, heapUsedBytes: 50 },
+        atStart: { rssBytes: 120, heapUsedBytes: 60 },
+        afterDrain: { rssBytes: 110, heapUsedBytes: 55 }
+      },
+      delivery: {
+        beforeDrain: { intentCount: 0, claimCount: 0 },
+        afterDrain: { intentCount: 0, claimCount: 0 }
+      },
+      drained: true
+    });
+    expect(JSON.parse(await readFile(output, "utf8"))).toEqual(result);
+  });
+
+  it("fails Deep residual capture before enqueue without confirmation and on late delivery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-"));
+    const runtimeValue = deepRuntime();
+    const deepConfig = {
+      ...config(),
+      enabledRuntimeCycles: ["deep", "address_index", "delivery_reconciliation"]
+    };
+    await expect(captureWhereLatencyDeepResidual({
+      confirm: false,
+      out: join(directory, "unconfirmed.json"),
+      config: deepConfig,
+      runtime: runtimeValue
+    })).rejects.toThrow("where_latency_deep_residual_confirm_required");
+    expect(runtimeValue.enqueueDeepJob).not.toHaveBeenCalled();
+
+    let deliveryCalls = 0;
+    const lateDelivery = deepRuntime({
+      deliveryDiagnostics: vi.fn(async () => ({
+        intentCount: ++deliveryCalls === 1 ? 0 : 1,
+        claimCount: 0
+      }))
+    });
+    await expect(captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: join(directory, "late-delivery.json"),
+      config: deepConfig,
+      runtime: lateDelivery
+    })).rejects.toThrow("where_latency_deep_residual_delivery_not_zero");
+    expect(lateDelivery.stopDeepClaimsAndDrain).toHaveBeenCalledTimes(1);
   });
 });
