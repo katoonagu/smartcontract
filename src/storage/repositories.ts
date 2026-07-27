@@ -6509,18 +6509,18 @@ export async function listTronAddressUsdtCoverageIntervals(
   return result.rows.map(mapTronAddressUsdtCoverageIntervalRow);
 }
 
-export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedTronUsdtTransfer[]): Promise<void> {
+export async function upsertIndexedTronUsdtTransfersWithClient(
+  client: Pick<PoolClient, "query">,
+  transfers: IndexedTronUsdtTransfer[]
+): Promise<void> {
   if (transfers.length === 0) return;
-  const client = await db.connect();
-  try {
-    await client.query("begin");
-    for (const transfer of transfers) {
-      assertRawAmount(transfer.amountRaw);
-      parseTronUsdtTransferMethod(transfer.method);
-      const provider = transfer.provider ?? "tronscan";
-      const transferId = transfer.transferId ?? deriveIndexedTronUsdtTransferId(transfer);
-      await client.query(
-        `insert into tron_usdt_transfers (
+  for (const transfer of transfers) {
+    assertRawAmount(transfer.amountRaw);
+    parseTronUsdtTransferMethod(transfer.method);
+    const provider = transfer.provider ?? "tronscan";
+    const transferId = transfer.transferId ?? deriveIndexedTronUsdtTransferId(transfer);
+    await client.query(
+      `insert into tron_usdt_transfers (
            transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
            provider_row_ordinal_in_tx,
            from_address, to_address, amount_raw, method,
@@ -6547,28 +6547,36 @@ export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedT
            risk_transaction = excluded.risk_transaction,
            confirmed = excluded.confirmed,
            updated_at = now()`,
-        [
-          transferId,
-          provider,
-          transfer.txHash,
-          transfer.blockNumber,
-          transfer.blockTimestamp,
-          transfer.eventIndex,
-          transfer.providerRowOrdinalInTx ?? null,
-          transfer.fromAddress,
-          transfer.toAddress,
-          transfer.amountRaw,
-          transfer.method,
-          transfer.eventType ?? null,
-          transfer.callerAddress,
-          transfer.contractRet,
-          transfer.finalResult ?? null,
-          transfer.reverted ?? false,
-          transfer.riskTransaction ?? false,
-          transfer.confirmed
-        ]
-      );
-    }
+      [
+        transferId,
+        provider,
+        transfer.txHash,
+        transfer.blockNumber,
+        transfer.blockTimestamp,
+        transfer.eventIndex,
+        transfer.providerRowOrdinalInTx ?? null,
+        transfer.fromAddress,
+        transfer.toAddress,
+        transfer.amountRaw,
+        transfer.method,
+        transfer.eventType ?? null,
+        transfer.callerAddress,
+        transfer.contractRet,
+        transfer.finalResult ?? null,
+        transfer.reverted ?? false,
+        transfer.riskTransaction ?? false,
+        transfer.confirmed
+      ]
+    );
+  }
+}
+
+export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedTronUsdtTransfer[]): Promise<void> {
+  if (transfers.length === 0) return;
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    await upsertIndexedTronUsdtTransfersWithClient(client, transfers);
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");

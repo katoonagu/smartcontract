@@ -97,6 +97,8 @@ import {
   upsertCustomerAlertRecipient,
   upsertTheftReportDraft,
   upsertIndexedTronUsdtTransfers,
+  upsertIndexedTronUsdtTransfersWithClient,
+  runClaimedForensicJobTransaction,
   upsertTronAddressUsdtCoverageInterval,
   upsertTronAddressUsdtIndexPage,
   upsertTronAddressUsdtIndexState,
@@ -2610,6 +2612,35 @@ describe("TRON address USDT index repositories", () => {
 });
 
 describe("offline TRON USDT index repositories", () => {
+  it("uses the existing claimed transaction for transfer upserts without nested lifecycle calls", async () => {
+    const tx = createMockTransactionalDb();
+    const result = await runClaimedForensicJobTransaction(tx.db, {
+      jobId: "job-1",
+      claimStartedAt: new Date("2026-07-27T00:00:00.000Z")
+    }, (client) => upsertIndexedTronUsdtTransfersWithClient(client, [{
+      txHash: "tx-claimed",
+      blockNumber: 101,
+      blockTimestamp: new Date("2026-07-26T00:00:00.000Z"),
+      eventIndex: 0,
+      fromAddress: "TFrom",
+      toAddress: "TTo",
+      amountRaw: "1000000",
+      method: "transfer",
+      callerAddress: null,
+      contractRet: "SUCCESS",
+      confirmed: true
+    }]));
+
+    expect(result).toEqual({ claimed: true, value: undefined });
+    expect(tx.queries.map((query) => query.sql.trim().toLowerCase())).toEqual([
+      "begin",
+      expect.stringContaining("for share"),
+      expect.stringContaining("insert into tron_usdt_transfers"),
+      "commit"
+    ]);
+    expect(tx.released).toBe(true);
+  });
+
   it("upserts indexed transfers by compatible transfer id", async () => {
     const tx = createMockTransactionalDb();
 

@@ -27,6 +27,7 @@ import {
   saveClaimedRiskEvaluationEvidence,
   upsertClaimedAddressLabelAssertion,
   updateForensicCheckJobProgress,
+  upsertIndexedTronUsdtTransfersWithClient,
   saveCompletedDeepSecondLayerContext,
   saveAddressFastCheckJob,
   upsertForensicJobWait
@@ -2881,6 +2882,102 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
       })).resolves.toEqual({ claimed: false });
       await expect(db.query("select worker from claim_side_effects order by worker"))
         .resolves.toMatchObject({ rows: [{ worker: "A" }] });
+    });
+  });
+
+  it("writes non-empty claimed transfers on the outer claim transaction and rolls them back with it", async () => {
+    await withRepositoryWaitSchema("claimed_transfer_transaction", async (db) => {
+      await db.query(`create table tron_usdt_transfers (
+        transfer_id text primary key,
+        provider text not null,
+        tx_hash text not null,
+        block_number bigint not null,
+        block_timestamp timestamptz not null,
+        event_index integer not null,
+        provider_row_ordinal_in_tx integer,
+        from_address text not null,
+        to_address text not null,
+        amount_raw text not null,
+        method text not null,
+        event_type text,
+        caller_address text,
+        contract_ret text,
+        final_result text,
+        reverted boolean not null,
+        risk_transaction boolean not null,
+        confirmed boolean not null,
+        updated_at timestamptz not null default now()
+      )`);
+      const id = "claimed-transfer-job";
+      await insertRepositoryDeliveryJob(db, { id, status: "queued" });
+      const workerA = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+      const tokenA = workerA!.startedAt!;
+      const transfer = (txHash: string) => ({
+        txHash,
+        blockNumber: 101,
+        blockTimestamp: new Date("2026-07-26T00:00:00.000Z"),
+        eventIndex: 0,
+        fromAddress: "TFrom",
+        toAddress: "TTo",
+        amountRaw: "1000000",
+        method: "transfer" as const,
+        callerAddress: null,
+        contractRet: "SUCCESS",
+        confirmed: true
+      });
+
+      await expect(runClaimedForensicJobTransaction(db, {
+        jobId: id,
+        claimStartedAt: tokenA
+      }, async (client) => {
+        await upsertIndexedTronUsdtTransfersWithClient(client, [transfer("tx-current-A")]);
+        await client.query(
+          "update forensic_check_jobs set progress_json = progress_json || '{\"inlineIndex\":\"written\"}'::jsonb where id = $1",
+          [id]
+        );
+      })).resolves.toEqual({ claimed: true, value: undefined });
+      await expect(db.query("select tx_hash from tron_usdt_transfers order by tx_hash"))
+        .resolves.toMatchObject({ rows: [{ tx_hash: "tx-current-A" }] });
+
+      await db.query(
+        `update forensic_check_jobs
+         set progress_json = progress_json || jsonb_build_object('jobHeartbeatAt', $2::text)
+         where id = $1`,
+        [id, new Date(tokenA.getTime() - 60_000).toISOString()]
+      );
+      await recoverStaleForensicCheckJobs(db, {
+        staleRunningBefore: new Date(tokenA.getTime() - 30_000),
+        recoveredAt: new Date(tokenA.getTime() + 1),
+        maxRetries: 3,
+        limit: 10
+      });
+      const workerB = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+      const tokenB = workerB!.startedAt!;
+
+      await expect(runClaimedForensicJobTransaction(db, {
+        jobId: id,
+        claimStartedAt: tokenA
+      }, (client) => upsertIndexedTronUsdtTransfersWithClient(client, [transfer("tx-stale-A")])))
+        .resolves.toEqual({ claimed: false });
+
+      await expect(runClaimedForensicJobTransaction(db, {
+        jobId: id,
+        claimStartedAt: tokenB
+      }, async (client) => {
+        await upsertIndexedTronUsdtTransfersWithClient(client, [transfer("tx-rollback-B")]);
+        await client.query(
+          "update forensic_check_jobs set progress_json = progress_json || '{\"inlineIndex\":\"rollback\"}'::jsonb where id = $1",
+          [id]
+        );
+        throw new Error("injected_after_transfer_upsert");
+      })).rejects.toThrow("injected_after_transfer_upsert");
+
+      const persisted = await db.query(
+        "select tx_hash from tron_usdt_transfers order by tx_hash"
+      );
+      expect(persisted.rows).toEqual([{ tx_hash: "tx-current-A" }]);
+      const progress = await db.query("select progress_json from forensic_check_jobs where id = $1", [id]);
+      expect(progress.rows[0]?.progress_json.inlineIndex).toBe("written");
     });
   });
 

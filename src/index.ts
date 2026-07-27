@@ -177,6 +177,7 @@ import {
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   upsertIndexedTronUsdtTransfers,
+  upsertIndexedTronUsdtTransfersWithClient,
   upsertTronAddressUsdtCoverageInterval,
   upsertTronAddressUsdtIndexPage,
   upsertTronAddressUsdtIndexState,
@@ -2195,7 +2196,8 @@ async function ensureAddressUsdtHistory(input: {
   maxWindowSplitDepth?: number | null;
   lockOwner?: string | null;
   lockMs?: number | null;
-}, storage: Db = db) {
+}, storage: Db = db, upsertTransfers = (transfers: IndexedTronUsdtTransfer[]) =>
+  upsertIndexedTronUsdtTransfers(storage, transfers)) {
   const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? input.windowEndTimestamp ?? null;
   const existing = await getTronAddressUsdtIndexState(storage, {
     address: input.address,
@@ -2309,7 +2311,7 @@ async function ensureAddressUsdtHistory(input: {
     onBenchmarkCounters: patchBenchmarkCounters,
     onProgressHeartbeat: extendIndexLock,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
-    upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(storage, transfers),
+    upsertTransfers,
     countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(storage, address),
     upsertState: (state) => upsertTronAddressUsdtIndexState(storage, state),
     upsertPage: (page) => upsertTronAddressUsdtIndexPage(storage, page),
@@ -2333,7 +2335,11 @@ async function ensureClaimedAddressUsdtHistory(
   input: Parameters<typeof ensureAddressUsdtHistory>[0] & { jobId: string; claimStartedAt: Date }
 ) {
   const claimed = await runClaimedForensicJobTransaction(db, input, (client) =>
-    ensureAddressUsdtHistory(input, client as unknown as Db)
+    ensureAddressUsdtHistory(
+      input,
+      client as unknown as Db,
+      (transfers) => upsertIndexedTronUsdtTransfersWithClient(client, transfers)
+    )
   );
   if (!claimed.claimed) throw new Error("lost_forensic_job_claim");
   return claimed.value;
