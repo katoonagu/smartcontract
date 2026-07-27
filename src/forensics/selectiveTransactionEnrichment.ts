@@ -553,6 +553,8 @@ export function createSelectiveTransactionEnricher(deps: {
     const raw = await loadProvider({ txHash: candidate.txHash, endpoint: "raw", movement }, signal);
     account(raw, "raw");
     aborted(signal);
+    const savedRawMatchesCurrentMovement = raw.kind === "evidence" &&
+      savedRawEvidenceMatchesCurrentMovement(raw.evidence, movement);
     const triggers = [...candidate.triggerCodes];
     let parsed: RawTransactionPreflightV1 | null = null;
     if (raw.kind === "corrupt" || raw.kind === "capped") {
@@ -586,7 +588,7 @@ export function createSelectiveTransactionEnricher(deps: {
       if (raw.kind === "evidence" && raw.evidence.finality.status !== "confirmed_success") {
         addTrigger(triggers, "raw_edge_mismatch");
       }
-      if (raw.kind === "evidence" && !savedRawEvidenceMatchesCurrentMovement(raw.evidence, movement)) {
+      if (raw.kind === "evidence" && !savedRawMatchesCurrentMovement) {
         addTrigger(triggers, "raw_edge_mismatch");
       }
     }
@@ -595,7 +597,7 @@ export function createSelectiveTransactionEnricher(deps: {
       triggers.length === 0 &&
       parsed && rawPlain(parsed) &&
       movementPlain(movement) &&
-      savedRawEvidenceMatchesCurrentMovement(raw.evidence, movement)
+      savedRawMatchesCurrentMovement
     ) {
       const saved = await saveDecision({
         candidate,
@@ -690,6 +692,23 @@ export function createSelectiveTransactionEnricher(deps: {
       return { ...metrics, ...saved, incomplete: true };
     }
     const failed = full.evidence.finality.status !== "confirmed_success";
+    if (raw.kind === "evidence" && !savedRawMatchesCurrentMovement && !failed) {
+      return {
+        ...metrics,
+        decision: {
+          txHash: candidate.txHash,
+          candidateId: candidate.id,
+          priority: "hard",
+          triggerCodes: triggers,
+          decision: "technical_unknown",
+          providerEvidenceIds: [raw.id, full.id],
+          decisionEvidenceId: null,
+          continueTraversal: true
+        },
+        evidenceIds: [raw.id, full.id],
+        incomplete: true
+      };
+    }
     const providers = [
       ...(raw.kind === "evidence" && (failed || raw.evidence.finality.status === "confirmed_success")
         ? [{ id: raw.id, evidence: raw.evidence }]

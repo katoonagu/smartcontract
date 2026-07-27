@@ -663,6 +663,65 @@ describe("selective transaction enrichment", () => {
   });
 
   it.each([
+    ["FAILED", false],
+    ["REVERT", true]
+  ] as const)("never cleans saved raw SUCCESS when current same-identity indexed movement becomes %s", async (currentResult, reverted) => {
+    const original = edge();
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "SUCCESS" }),
+      getFullTransactionInfo: async (hash) => fullPayload(hash, "SUCCESS")
+    });
+    const first = await h.enricher.enrich(inputFor(original));
+    expect(first.decisions[0].decision).toBe("plain_usdt_raw_proven");
+    const changed = edge(HASH_A, {
+      contractRet: currentResult,
+      finalResult: currentResult,
+      reverted
+    });
+    const second = await h.enricher.enrich(inputFor(changed));
+    expect(second).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      adverseGate: "incomplete",
+      inferredStopAllowed: false,
+      rawProviderRequests: 0,
+      fullProviderRequests: 1,
+      savedEvidenceHits: 1,
+      decisions: [{
+        decision: "technical_unknown",
+        priority: "hard",
+        decisionEvidenceId: null,
+        continueTraversal: true
+      }]
+    });
+    expect(second.decisions[0].triggerCodes).toContain("raw_edge_mismatch");
+    expect(second.decisions[0].decision).not.toBe("full_transaction_info_confirmed");
+    expect(second.evidenceIds).toHaveLength(2);
+    expect(h.rawCalls).toEqual([HASH_A]);
+    expect(h.fullCalls).toEqual([HASH_A]);
+  });
+
+  it("keeps saved raw SUCCESS clean when the current same-identity indexed movement still agrees", async () => {
+    const route = edge();
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "SUCCESS" }),
+      getFullTransactionInfo: async (hash) => fullPayload(hash, "SUCCESS")
+    });
+    await h.enricher.enrich(inputFor(route));
+    const second = await h.enricher.enrich(inputFor({ ...route }));
+    expect(second).toMatchObject({
+      coverageStatus: "complete",
+      adverseGate: "complete",
+      rawProviderRequests: 0,
+      fullProviderRequests: 0,
+      savedEvidenceHits: 1,
+      decisions: [{ decision: "plain_usdt_raw_proven" }]
+    });
+    expect(h.rawCalls).toEqual([HASH_A]);
+    expect(h.fullCalls).toEqual([]);
+  });
+
+  it.each([
     ["unconfirmed", { confirmed: false }],
     ["unknown finality", { finalResult: null }]
   ])("does not synthesize a route-bound adverse raw witness from %s indexed movement", async (_label, overrides) => {
