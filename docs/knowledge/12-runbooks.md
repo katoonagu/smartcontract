@@ -12,6 +12,8 @@ code_refs:
   - src/unifiedCheck
   - src/forensics/forensicSlotPump.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/whereLatencyReplay.ts
+  - scripts/captureWhereLatencyReplay.ts
 ---
 
 # Runbooks
@@ -48,6 +50,23 @@ npm.cmd test -- tests/storage/migration034.postgres.test.ts tests/storage/migrat
 Never edit historical migration files and never generate a destructive down
 migration. A pre-034 binary rollback must drain or block rolling runs before the
 old process starts; the database remains at the forward schema.
+
+## Legacy Where Latency Replay
+
+The Stage B replay is read-only: it parses the checked-in canonical legacy tape,
+runs selective transaction enrichment twice against one in-memory evidence
+store, and prints only baseline/new raw/full request counts plus
+`stableFactsEqual`.
+
+```powershell
+npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/txc-legacy-where-latency-v1.json
+```
+
+It fails closed for a missing, noncanonical, incomplete, or provenance-invalid
+tape; it never falls back to a database or network provider. The real TXc tape
+is not currently checked in, so this acceptance command and concurrency `2`
+remain blocked as recorded in `10-open-problems.md`. Synthetic tests validate
+the offline machinery but are not release evidence.
 
 ## Adaptive Provider Configuration
 

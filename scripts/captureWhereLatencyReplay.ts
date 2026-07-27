@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config";
 import { createLegacyWhereIsMoneyExecution, type DeepForensicJobRunnerDeps } from "../src/forensics/deepForensicJob";
@@ -10,12 +10,15 @@ import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "..
 import { createTronUsdtContinuationProvider } from "../src/forensics/tronContinuationProvider";
 import {
   buildWhereLatencyReplayV1,
+  analyzeWhereLatencyReplay,
+  assertWhereLatencyReplayAcceptance,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   createDependencyInvocationTapeRecorder,
   LEGACY_WHERE_REPLAY_BASELINE_COMMIT,
   projectWhereReplayConfig,
   projectStableWhereFacts,
+  parseWhereLatencyReplayV1,
   readLegacyWhereSourceRevision,
   recordWhereIsMoneyDependencies
 } from "../src/forensics/whereLatencyReplay";
@@ -90,6 +93,27 @@ async function writeReplayExclusive(path: string, bytes: string): Promise<void> 
 }
 
 const positional = process.argv.slice(2).filter((value) => !value.startsWith("--"));
+
+async function replay(): Promise<void> {
+  const fixture = argument("--fixture") ?? positional[1] ?? null;
+  if (!fixture) throw new Error("Usage: forensic:where-latency:replay -- --fixture <checked-in-json-file>");
+  let bytes: string;
+  try {
+    bytes = await readFile(resolve(fixture), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("where_latency_replay_fixture_missing");
+    throw error;
+  }
+  const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(bytes));
+  assertWhereLatencyReplayAcceptance(analysis);
+  process.stdout.write(canonicalizeArtifactJson({
+    baseline: analysis.requestCounts.baseline,
+    new: analysis.requestCounts.firstRun,
+    stableFactsEqual: analysis.stableFactsEqual
+  }) + "\n");
+}
+
+async function capture(): Promise<void> {
 const source = argument("--source") ?? positional[0] ?? null;
 const output = argument("--out") ?? positional[1] ?? null;
 if (!source || !output) throw new Error("Usage: forensic:where-latency:capture -- --source <TRON-address> --out <new-json-file>");
@@ -327,3 +351,7 @@ try {
 } finally {
   await closeDb(db);
 }
+}
+
+if (positional[0] === "replay") await replay();
+else await capture();

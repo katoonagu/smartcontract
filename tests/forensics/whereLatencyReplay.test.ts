@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { TronWeb } from "tronweb";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
 import { resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForensicJob";
 import {
   assertLegacyWhereSourceRevision,
+  analyzeWhereLatencyReplay,
   assertWhereReplayConsumed,
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
@@ -73,19 +80,51 @@ const base = {
   job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z", options: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" } },
   dependencies: [
     { method: "getTrc20Balance", args: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", "TR7"], response: "1", origin: "legacy_observed" as const },
-    { method: "getTransaction", args: ["a".repeat(64)], response: { txID: "a".repeat(64) }, origin: "supplemental_stage_b_fixture" as const }
+    { method: "getTransaction", args: ["a".repeat(64)], response: { hash: "a".repeat(64), confirmed: true, contractRet: "SUCCESS" }, origin: "supplemental_stage_b_fixture" as const }
   ],
-  indexedMovements: [{ txHashes: ["a".repeat(64)], rows: [{ txHash: "a".repeat(64), eventIndex: 0, transferId: "t-1", providerRowOrdinalInTx: 0, callerAddress: null, contractRet: "SUCCESS", finalResult: "SUCCESS", reverted: false, confirmed: true }] }],
+  indexedMovements: [{ txHashes: ["a".repeat(64)], rows: [{
+    txHash: "a".repeat(64), blockNumber: 1, blockTimestamp: "2026-06-01T00:00:00.000Z",
+    eventIndex: 0, transferId: "t-1", provider: "tronscan", providerRowOrdinalInTx: 0,
+    fromAddress: "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm", toAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+    amountRaw: "1", method: "transfer", eventType: "Transfer",
+    callerAddress: "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm", contractRet: "SUCCESS", finalResult: "SUCCESS", reverted: false,
+    riskTransaction: false, confirmed: true
+  }] }],
   assertionQueries: [{ chain: "tron", addresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"], txHashes: ["a".repeat(64)], rows: [] }],
-  rawTransactions: [{ txHash: "a".repeat(64), response: { txID: "a".repeat(64) } }],
+  rawTransactions: [{ txHash: "a".repeat(64), response: rawTransfer("a".repeat(64), "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm", "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", "1") }],
   expectedStableFacts: { subjectAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", balanceFormingTransfers: [{ txHash: "a".repeat(64) }] } as any
 };
+const execFile = promisify(execFileCallback);
+
+function wordAddress(address: string): string {
+  return TronWeb.address.toHex(address).slice(2).padStart(64, "0").toLowerCase();
+}
+
+function rawTransfer(txHash: string, caller: string, recipient: string, amountRaw: string): Record<string, unknown> {
+  return {
+    txID: txHash,
+    raw_data: {
+      contract: [{
+        type: "TriggerSmartContract",
+        parameter: {
+          type_url: "type.googleapis.com/protocol.TriggerSmartContract",
+          value: {
+            owner_address: TronWeb.address.toHex(caller),
+            contract_address: TronWeb.address.toHex("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"),
+            data: `a9059cbb${wordAddress(recipient)}${BigInt(amountRaw).toString(16).padStart(64, "0")}`
+          }
+        }
+      }]
+    },
+    ret: [{ contractRet: "SUCCESS" }]
+  };
+}
 
 function built() {
   return buildWhereLatencyReplayV1(base);
 }
 
-async function successfulReplay() {
+async function successfulReplay(overrides: { rawResponse?: unknown; fullResponse?: unknown; assertionRows?: Record<string, unknown>[] } = {}) {
   const sourceAddress = base.job.sourceAddress;
   const senderAddress = "TSender1111111111111111111111111111";
   const clock = new Date(base.frozenClockIso).getTime();
@@ -131,10 +170,12 @@ async function successfulReplay() {
     routeCriticalAddresses,
     dependencies: [
       ...capture.invocations,
-      { method: "getTransaction", args: ["a".repeat(64)], response: { txID: "a".repeat(64) }, origin: "supplemental_stage_b_fixture" as const }
+      { method: "getTransaction", args: ["a".repeat(64)], response: overrides.fullResponse ?? { hash: "a".repeat(64), confirmed: true, contractRet: "SUCCESS" }, origin: "legacy_observed" as const },
+      { method: "getTransaction", args: ["a".repeat(64)], response: overrides.fullResponse ?? { hash: "a".repeat(64), confirmed: true, contractRet: "SUCCESS" }, origin: "legacy_observed" as const }
     ],
     indexedMovements: [{ txHashes: routeCriticalTxHashes, rows: [{ ...base.indexedMovements[0]!.rows[0] }] }],
-    assertionQueries: [{ chain: "tron", addresses: routeCriticalAddresses, txHashes: routeCriticalTxHashes, rows: [] }],
+    assertionQueries: [{ chain: "tron", addresses: routeCriticalAddresses, txHashes: routeCriticalTxHashes, rows: overrides.assertionRows ?? [] }],
+    rawTransactions: [{ txHash: "a".repeat(64), response: overrides.rawResponse ?? base.rawTransactions[0]!.response }],
     expectedStableFacts: projectStableWhereFacts(report)
   } as any).canonicalJson);
 }
@@ -148,8 +189,9 @@ describe("where latency replay v1", () => {
     } as any, { maxEdgesPerAddress: 77 });
     expect(input).toMatchObject({
       sourceAddress: base.job.sourceAddress, maxEdgesPerAddress: 77,
-      contractTransactionInfoMinIntervalMs: 1000, requestedAmountRaw: "7"
+      requestedAmountRaw: "7"
     });
+    expect(input).not.toHaveProperty("contractTransactionInfoMinIntervalMs");
   });
   it("collects a conservative route-critical transaction superset", () => {
     expect(collectRouteCriticalTransactionHashes({
@@ -493,5 +535,92 @@ describe("where latency replay v1", () => {
 
     expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
     expect(Date).toBe(originalDate);
+  });
+
+  it("replays Stage B selectively, preserves explicit facts, and reuses deterministic evidence in a second job", async () => {
+    const replay = await successfulReplay();
+    const liveFetch = vi.spyOn(globalThis, "fetch");
+
+    const analysis = await analyzeWhereLatencyReplay(replay);
+
+    expect(liveFetch).not.toHaveBeenCalled();
+    expect(analysis.stableFactsEqual).toBe(true);
+    expect(analysis.explicitStableFactsEqual).toEqual({
+      coverage: true,
+      coverageV2: true,
+      decisionReasons: true,
+      fastWalletRisk: true,
+      sourceProvenanceMateriality: true,
+      crossChainCorridor: true,
+      riskCaseFile: true
+    });
+    expect(analysis.requestCounts).toEqual({
+      baseline: { raw: 0, full: 2 },
+      firstRun: { raw: 1, full: 0 },
+      secondRun: { raw: 0, full: 0 }
+    });
+    expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "complete",
+      fullProviderRequests: 0,
+      rawProviderRequests: 1,
+      decisions: [{ decision: "plain_usdt_raw_proven" }]
+    });
+    expect(analysis.secondRun.evidenceIds).toEqual(analysis.firstRun.evidenceIds);
+    expect(analysis.secondRun.report.transactionInfoEnrichment?.savedEvidenceHits).toBeGreaterThan(0);
+    liveFetch.mockRestore();
+  });
+
+  it("uses at most one full tape response for a hard hash and reuses it across jobs", async () => {
+    const analysis = await analyzeWhereLatencyReplay(await successfulReplay({
+      assertionRows: [{
+        chain: "tron",
+        address: base.job.sourceAddress,
+        status: "active",
+        evidenceJson: { approvalTxHash: "a".repeat(64) }
+      }]
+    }));
+
+    expect(analysis.requestCounts.firstRun).toEqual({ raw: 1, full: 1 });
+    expect(analysis.requestCounts.secondRun).toEqual({ raw: 0, full: 0 });
+    expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "complete",
+      decisions: [{ decision: "full_transaction_info_confirmed", priority: "hard" }]
+    });
+    expect(analysis.maxFullCallsPerIdentity).toBe(1);
+  });
+
+  it("turns bound but unusable raw/full tape responses into incomplete coverage, never an unchanged clean projection", async () => {
+    const analysis = await analyzeWhereLatencyReplay(await successfulReplay({
+      rawResponse: { txID: "a".repeat(64) },
+      fullResponse: { hash: "a".repeat(64), confirmed: false }
+    }));
+
+    expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      decisions: [{ decision: "technical_unknown", continueTraversal: true }]
+    });
+    expect(analysis.firstRun.report.coverage).not.toEqual(analysis.expectedStableFacts.coverage);
+  });
+
+  it("runs the canonical replay command from a fixture without capture configuration or writes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-latency-replay-"));
+    const fixture = join(directory, "fixture.json");
+    try {
+      await writeFile(fixture, canonicalizeArtifactJson(await successfulReplay()), "utf8");
+      const { stdout, stderr } = await execFile(process.execPath, [
+        "--import", "tsx", "scripts/captureWhereLatencyReplay.ts", "replay", "--fixture", fixture
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+
+      expect(stderr).toBe("");
+      expect(stdout).toBe(canonicalizeArtifactJson({
+        baseline: { raw: 0, full: 2 },
+        new: { raw: 1, full: 0 },
+        stableFactsEqual: true
+      }) + "\n");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
