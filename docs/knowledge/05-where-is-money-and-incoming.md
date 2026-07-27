@@ -97,6 +97,11 @@ If raw and full providers both fail to produce final evidence, the report keeps
 a stable transaction-evidence-incomplete note, sets local coverage partial,
 and publishes no clean enrichment fact. Where and Incoming completion persist
 the resolver evidence IDs alongside IDs already owned by the job.
+This structured incomplete/technical coverage has zero direct score impact: it
+cannot add risk, prove safety, authorize a service boundary, or be converted
+into a clean transaction conclusion. Finalized failed/reverted evidence is
+reusable technical-proven evidence, but it remains adverse/incomplete rather
+than proving `plain_usdt_raw_proven`.
 
 Where and Incoming runner-owned writes require the non-null claim generation
 returned by PostgreSQL. Claim loss stops traversal/enrichment at the worker
@@ -113,3 +118,9 @@ sender, or Telegram identities.
 Where and Incoming `queueWaitMs` use the persisted post-index runnable
 transition, so targeted-index waiting is not reported as runnable queue delay;
 jobs that never waited retain creation-to-claim timing.
+
+Stage B behavior is code-complete, while live rollout evidence is separate.
+Where remains at concurrency 1 until the real TXc replay and isolated
+concurrency-two receipt pass. Deep remains a singleton and its residual queue
+latency has not yet been measured; no Where test or synthetic runtime result
+may stand in for that measurement.

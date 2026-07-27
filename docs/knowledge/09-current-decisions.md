@@ -125,6 +125,26 @@ code_refs:
 - `ScoreAnchorV3` binds facts, policy/config versions, analysis, locked Golden
   identity, and report.
 
+## Stage B Release State
+
+- Selective enrichment, immutable raw/full evidence, claim fencing, the Where
+  slot pump, lifecycle diagnostics, strict replay reader, and isolated canary
+  harness are code-complete and covered by deterministic tests.
+- Runtime default remains `FORENSIC_WHERE_WORKER_CONCURRENCY=1`. Value 2 is an
+  isolated canary candidate, not an approved production setting.
+- The real legacy TXc fixture
+  `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` has not been
+  captured. The strict replay currently stops with
+  `where_latency_replay_fixture_missing`; this is the intended fail-closed
+  release result, not a passing replay.
+- No accepted artifact exists under `outputs/where-latency-canary/` for the
+  concurrency-two run. The separate `where-latency-deep-residual-v1` singleton
+  receipt is also absent. Both receipts are required before production Where
+  concurrency 2, along with the PostgreSQL race/fairness evidence. The measured
+  Deep latency value is not part of the isolated Where start-SLA pass/fail and
+  cannot authorize changing Deep concurrency; Deep stays at 1 and a high
+  residual opens a separate follow-up.
+
 ## Runtime Configuration And Schema
 
 - Adaptive rolling is ordinary validated configuration. No signed rollout

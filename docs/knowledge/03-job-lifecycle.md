@@ -70,6 +70,14 @@ queue, and drains them during shutdown. `FORENSIC_WHERE_WORKER_CONCURRENCY`
 is validated from 1 through 2 and defaults to 1. Incoming and Deep keep their
 existing independent workers and batch settings.
 
+The Where timer defaults to two seconds and rejects configured intervals below
+one second. Immediate refill does not rerun reconciliation or stale recovery;
+those remain once-per-timer-poll work. The pump is bounded and work-conserving,
+not preemptive or globally fair: a running job keeps its slot until it reaches a
+terminal/waiting boundary, so two long jobs can still occupy both canary slots.
+Shutdown first stops claims and timer refills, then waits for every active
+handler promise to settle.
+
 Where and Deep persist identity-free lifecycle timing at claim and terminal
 completion. This timing records runnable queue count and age, DB-running count, local
 slot occupancy, transaction-enrichment counts, and monotonic scheduler
@@ -320,3 +328,13 @@ and the next DB/CPU/memory bottleneck must be measured with real independent
 groups. P1 boundary
 activation still waits for blind review/adjudication, and exact performance
 comparison waits for frozen TPCP/TFWG/TXc provider bundles.
+
+Stage B implementation is code-complete in this checkout, but release evidence
+is not complete. The required real legacy TXc replay fixture is absent, no
+accepted concurrency-two Where canary receipt exists, and the separate Deep
+singleton residual receipt has not been measured. That Deep receipt is required
+release evidence before production Where concurrency 2, but its latency value
+is not part of the isolated Where start-SLA pass/fail. It cannot authorize a
+Deep concurrency change: Deep remains 1, and a high residual opens a separate
+follow-up. These missing artifacts are operational blockers, not reasons to
+reinterpret deterministic tests as live evidence.

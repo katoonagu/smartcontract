@@ -37,6 +37,11 @@ Current production workers retain their existing queue and pagination
 semantics until cutover. More API keys improve throughput but do not prove
 history completeness.
 
+Stage B changes which transaction details are fetched, not provider capacity.
+Raw and full transaction requests still use the existing scheduler-backed
+`fullnode` and `contract` buckets; no checker-local queue, sleep, key group, or
+new capacity class was added.
+
 When legacy Where, Incoming, or Deep requests address-history index work, the
 queue upsert is performed in the same transaction as a lock on that job's exact
 claim generation. A reclaimed worker therefore cannot create or reopen index
@@ -128,6 +133,12 @@ fields; otherwise the raw result may force full fallback but cannot by itself
 prove an adverse decision for that route. Decision-evidence identity also
 includes the normalized trigger-code set, so distinct audited reasons over the
 same provider evidence remain distinct immutable decisions.
+
+The code paths and deterministic tests for this contract are complete. The
+real TXc provider/DB replay tape is not: the required release fixture at
+`tests/fixtures/forensics/txc-legacy-where-latency-v1.json` is absent, and the
+release replay fails closed with `where_latency_replay_fixture_missing`.
+Synthetic pages cannot replace that provider evidence.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,

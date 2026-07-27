@@ -523,9 +523,11 @@ The create-only `where-latency-deep-residual-v1` receipt records TXc queue age,
 handler start, terminal state, job and scheduler provider errors/rate limits,
 before/start/after-drain process memory, start/end lane and scheduler snapshots,
 and delivery before/after drain. It requires the observed Deep handler count to
-remain exactly one and delivery to remain zero. This is a measurement, not a
-Where promotion gate. Do not mix it into the Where receipt and do not raise
-Deep concurrency under this plan. Deep start, terminal, and drain operations
+remain exactly one and delivery to remain zero. The receipt itself is required
+release evidence before production Where concurrency 2, but the measured Deep
+latency value is not part of the isolated Where start-SLA pass/fail. Do not mix
+it into the Where receipt and do not raise Deep concurrency under this plan.
+Deep start, terminal, and drain operations
 use the same harness-owned deadline/abort policy and scheduler-ownership
 isolation proof. If Deep dominates, keep a separate
 `default 1 / isolated canary 2` design problem.
@@ -543,3 +545,28 @@ receipt, or deployment-owned attested runtime adapter,
 and the real legacy TXc replay evidence is still absent. Do not run against the
 current shared environment and do not treat the deterministic fake-runtime
 tests as rollout evidence; production concurrency two remains blocked.
+
+### 2026-07-27 local release-gate record
+
+This record distinguishes code-complete checks from external release evidence:
+
+- the exact targeted Stage B suite passed 20 files and 996 tests; one file and
+  80 PostgreSQL-gated tests skipped because `TEST_DATABASE_URL` was absent;
+- `npm run typecheck` passed;
+- the full `npm test` suite passed 279 files and 4,806 tests; 25 files and 151
+  tests skipped under their existing environment gates;
+- `git diff --check` and the forbidden-shortcut audits passed; Stage B added no
+  migration, Unified manifest/hash/golden change, or snapshot/fixture update;
+- `npm run schema:verify` could not run because `DATABASE_URL` was absent;
+- the final read-only replay stopped with
+  `where_latency_replay_fixture_missing` because
+  `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` does not exist.
+
+These results close the local code regression gate only. Before any canary,
+rerun the PostgreSQL claim-generation/fairness tests and `schema:verify` against
+the dedicated database. Before production concurrency 2, also capture and pass
+the real replay fixture, produce an accepted Where canary receipt, and produce
+the required separate Deep singleton residual receipt. Its measured latency
+does not change the Where start-SLA result or authorize Deep concurrency above
+1; a high residual is a separate follow-up. No live canary was run during this
+gate.

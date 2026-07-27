@@ -1,8 +1,10 @@
 ---
 status: current
-last_verified: 2026-07-26
+last_verified: 2026-07-27
 owner_area: docs
 code_refs:
+  - scripts/captureWhereLatencyReplay.ts
+  - scripts/runWhereLatencyCanary.ts
   - scripts/runUnifiedWalletCanary.ts
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - src/unifiedCheck
@@ -21,6 +23,10 @@ code_refs:
   freeze. Do not create a synthetic replacement. Stage B release and concurrency
   2 remain blocked until the capture is made from the pre-Stage-B commit with its
   full provider/DB dependency tape and supplemental raw/full transaction facts.
+  The expected checked-in path is
+  `tests/fixtures/forensics/txc-legacy-where-latency-v1.json`; the 2026-07-27
+  final replay audit found it missing and stopped with
+  `where_latency_replay_fixture_missing`, as required.
 - Exact barrier-versus-rolling hash comparison remains tied to one frozen
   provider snapshot. Separate live runs cannot substitute for it.
 
@@ -58,6 +64,22 @@ currently requires operator investigation of the marker and any recorded
 run/control plus an explicit decision about the orphan; automatic continuation
 is deferred until a durable phase-resume protocol can prove ownership of every
 phase.
+
+## Stage B Operational Evidence
+
+- No accepted concurrency-two receipt exists under
+  `outputs/where-latency-canary/`. This checkout also has no dedicated canary
+  clone/configuration, pre-authorized immutable deployment receipt, or
+  deployment-owned attested runtime adapter. Do not run the harness against a
+  shared environment.
+- Deep remains one slot. Its required
+  `where-latency-deep-residual-v1` measurement has not been produced, so Deep
+  queue/provider residual latency is unmeasured rather than zero.
+- The 2026-07-27 local release gate had no `TEST_DATABASE_URL` or
+  `DATABASE_URL`. PostgreSQL-gated tests therefore skipped and `schema:verify`
+  could not connect. Deterministic coverage is code evidence only; real
+  claim-generation/fairness and schema verification remain required before the
+  canary.
 
 ## Dense Traversal Performance
 
