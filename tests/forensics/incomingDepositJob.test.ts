@@ -1191,7 +1191,6 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(infoLogs).toContainEqual({
       event: "incoming_deposit_job_timing",
       fields: expect.objectContaining({
-        job_id: "job-incoming-1",
         total_run_ms: 34_000,
         top_stages: expect.arrayContaining([
           expect.objectContaining({ name: "build_report", durationMs: 31_000 })
@@ -1947,10 +1946,6 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(infoLogs).toContainEqual({
       event: "incoming_deposit_job_timing",
       fields: expect.objectContaining({
-        job_id: "job-incoming-1",
-        deposit_tx_hash: depositTxHash,
-        watched_wallet_id: watchedWalletId,
-        sender: validProgressJson.sender,
         status: "completed",
         queue_wait_ms: 1000,
         deposit_age_at_start_ms: 65000,
@@ -1960,6 +1955,13 @@ describe("runSingleIncomingDepositJobCycle", () => {
         ])
       })
     });
+    const timingLog = infoLogs.find((entry) => entry.event === "incoming_deposit_job_timing");
+    const serialized = JSON.stringify(timingLog);
+    expect(serialized).not.toContain("job-incoming-1");
+    expect(serialized).not.toContain(depositTxHash);
+    expect(serialized).not.toContain(watchedWalletId);
+    expect(serialized).not.toContain(String(validProgressJson.sender));
+    expect(serialized).not.toContain(String(validProgressJson.telegramUserId));
   });
 
   it("does not log timing when no incoming deposit job is claimed", async () => {
@@ -2045,7 +2047,6 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(infoLogs).toContainEqual({
       event: "incoming_deposit_job_timing",
       fields: expect.objectContaining({
-        job_id: "job-incoming-1",
         status: "failed",
         top_stages: expect.arrayContaining([
           { name: "build_report", durationMs: 11 }

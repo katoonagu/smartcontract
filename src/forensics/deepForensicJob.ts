@@ -61,6 +61,29 @@ const WHERE_BALANCE_SLICE_MAX_PAGES = 20;
 const WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO = 0.95;
 const WHERE_BALANCE_SLICE_PROVIDER_CAP_RANGE_TOTAL = 10_000;
 
+export type ForensicLifecycleDiagnosticsSnapshot = {
+  runnableQueuedCount: number;
+  oldestRunnableQueueAgeMs: number | null;
+  activeSlots: number;
+  configuredSlots: number;
+  occupiedSlotsAtPoll: number;
+  dbRunningCount: number;
+  schedulerDispatchedRequestCount: number;
+  schedulerFailedRequestCount: number;
+  schedulerRateLimitedRequestCount: number;
+  schedulerCapacityFingerprint: string;
+};
+
+type TransactionInfoLifecycleMetrics = {
+  transactionInfoCandidateCount: number;
+  transactionInfoHardCandidateCount: number;
+  transactionInfoRawProviderRequests: number;
+  transactionInfoFullProviderRequests: number;
+  transactionInfoSavedEvidenceHits: number;
+  transactionInfoInFlightHits: number;
+  transactionInfoSchedulerAwaitMs: number;
+};
+
 export type DeepForensicJobRunnerDeps = Omit<
   DeepAddressForensicDeps,
   "getAddressUsdtIndexState" | "listIndexedUsdtTransfersForAddress"
@@ -77,6 +100,7 @@ export type DeepForensicJobRunnerDeps = Omit<
   selectiveTransactionEnricher?: SelectiveTransactionEnricher;
   listActiveRouteAssertions?(input: { addresses: string[]; txHashes: string[] }): Promise<RouteLinkedAssertionInput[]>;
   listIndexedMovementsByHashes?(txHashes: string[]): Promise<ForensicRouteEdge[]>;
+  captureLifecycleDiagnostics?(): Promise<ForensicLifecycleDiagnosticsSnapshot>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
     id: string;
@@ -763,6 +787,47 @@ function fastRiskReasonsField(value: unknown): RiskReport["reasons"] {
 
 function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return mergeForensicRouteEdges(edges);
+}
+
+function nonNegativeMetric(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.round(value))
+    : 0;
+}
+
+function emptyTransactionInfoLifecycleMetrics(): TransactionInfoLifecycleMetrics {
+  return {
+    transactionInfoCandidateCount: 0,
+    transactionInfoHardCandidateCount: 0,
+    transactionInfoRawProviderRequests: 0,
+    transactionInfoFullProviderRequests: 0,
+    transactionInfoSavedEvidenceHits: 0,
+    transactionInfoInFlightHits: 0,
+    transactionInfoSchedulerAwaitMs: 0
+  };
+}
+
+function transactionInfoLifecycleMetrics(value: unknown): TransactionInfoLifecycleMetrics {
+  const summary = isRecord(value) ? value : {};
+  return {
+    transactionInfoCandidateCount: nonNegativeMetric(summary.candidateCount),
+    transactionInfoHardCandidateCount: nonNegativeMetric(summary.hardCandidateCount),
+    transactionInfoRawProviderRequests: nonNegativeMetric(summary.rawProviderRequests),
+    transactionInfoFullProviderRequests: nonNegativeMetric(summary.fullProviderRequests),
+    transactionInfoSavedEvidenceHits: nonNegativeMetric(summary.savedEvidenceHits),
+    transactionInfoInFlightHits: nonNegativeMetric(summary.inFlightHits),
+    transactionInfoSchedulerAwaitMs: nonNegativeMetric(summary.schedulerAwaitMs)
+  };
+}
+
+function addTransactionInfoLifecycleMetrics(
+  target: TransactionInfoLifecycleMetrics,
+  value: unknown
+): void {
+  const addition = transactionInfoLifecycleMetrics(value);
+  for (const key of Object.keys(target) as Array<keyof TransactionInfoLifecycleMetrics>) {
+    target[key] += addition[key];
+  }
 }
 
 function historyCoverageSource(input: {
@@ -1829,8 +1894,138 @@ export async function runClaimedForensicJob(
     }
   };
   let enrichmentHeartbeat: ForensicEnrichmentHeartbeatCoordinator | null = null;
+  const deepTransactionInfoMetrics = emptyTransactionInfoLifecycleMetrics();
+
+  const logLifecycleInfo = (event: string, fields: Record<string, unknown>): void => {
+    try {
+      (deps.logger ?? defaultLogger).info(event, fields);
+    } catch {
+      // ponytail: count-only diagnostics must never own job lifecycle.
+    }
+  };
+  const captureLifecycleDiagnostics = async (
+    phase: "start" | "completion"
+  ): Promise<ForensicLifecycleDiagnosticsSnapshot | null> => {
+    if (!deps.captureLifecycleDiagnostics) return null;
+    try {
+      return await deps.captureLifecycleDiagnostics();
+    } catch {
+      try {
+        (deps.logger ?? defaultLogger).warn("forensic_job_lifecycle_diagnostics_failed", {
+          kind: job.kind,
+          phase
+        });
+      } catch {
+        // Diagnostics are best-effort and identity-free.
+      }
+      return null;
+    }
+  };
 
   try {
+    const lifecycleStart = await captureLifecycleDiagnostics("start");
+    if (lifecycleStart) {
+      const queueWaitMs = Math.max(0, Math.round(job.startedAt.getTime() - job.createdAt.getTime()));
+      const startTiming = {
+        ...(isRecord(job.progressJson.performanceTiming) ? job.progressJson.performanceTiming : {}),
+        queueWaitMs,
+        runnableQueuedCount: lifecycleStart.runnableQueuedCount,
+        oldestRunnableQueueAgeMs: lifecycleStart.oldestRunnableQueueAgeMs,
+        activeSlots: lifecycleStart.activeSlots,
+        configuredSlots: lifecycleStart.configuredSlots,
+        occupiedSlotsAtPoll: lifecycleStart.occupiedSlotsAtPoll,
+        dbRunningCount: lifecycleStart.dbRunningCount,
+        schedulerDispatchedRequestCountAtStart: lifecycleStart.schedulerDispatchedRequestCount,
+        schedulerFailedRequestCountAtStart: lifecycleStart.schedulerFailedRequestCount,
+        schedulerRateLimitedRequestCountAtStart: lifecycleStart.schedulerRateLimitedRequestCount,
+        schedulerCapacityFingerprint: lifecycleStart.schedulerCapacityFingerprint
+      };
+      const lifecycleStartFields = {
+        queueWaitMs,
+        runnableQueuedCount: lifecycleStart.runnableQueuedCount,
+        oldestRunnableQueueAgeMs: lifecycleStart.oldestRunnableQueueAgeMs,
+        activeSlots: lifecycleStart.activeSlots,
+        configuredSlots: lifecycleStart.configuredSlots,
+        occupiedSlotsAtPoll: lifecycleStart.occupiedSlotsAtPoll,
+        dbRunningCount: lifecycleStart.dbRunningCount,
+        schedulerDispatchedRequestCountAtStart: lifecycleStart.schedulerDispatchedRequestCount,
+        schedulerFailedRequestCountAtStart: lifecycleStart.schedulerFailedRequestCount,
+        schedulerRateLimitedRequestCountAtStart: lifecycleStart.schedulerRateLimitedRequestCount,
+        schedulerCapacityFingerprint: lifecycleStart.schedulerCapacityFingerprint
+      };
+      job.progressJson = mergeForensicJobProgress(job.progressJson, {
+        performanceTiming: startTiming
+      });
+      const startPersisted = await deps.updateForensicCheckJobProgress?.({
+        id: job.id,
+        claimStartedAt: job.startedAt,
+        progressJson: job.progressJson,
+        lastError: null
+      });
+      if (startPersisted === false) {
+        logClaimLostOnce("lifecycle_start_progress");
+        return;
+      }
+      logLifecycleInfo("forensic_job_lifecycle_started", {
+        kind: job.kind,
+        ...lifecycleStartFields
+      });
+
+      const completeForensicCheckJob = deps.completeForensicCheckJob;
+      deps = {
+        ...deps,
+        completeForensicCheckJob: async (input) => {
+          const capturedEnd = await captureLifecycleDiagnostics("completion");
+          const lifecycleEnd = capturedEnd ?? lifecycleStart;
+          let enrichmentMetrics = deepTransactionInfoMetrics;
+          if (job.kind === "where_is_money_check") {
+            const whereReport = isRecord(input.resultJson.whereIsMoneyReport)
+              ? input.resultJson.whereIsMoneyReport
+              : {};
+            enrichmentMetrics = transactionInfoLifecycleMetrics(whereReport.transactionInfoEnrichment);
+          }
+          const schedulerDispatchedRequestCountAtEnd = Math.max(
+            lifecycleStart.schedulerDispatchedRequestCount,
+            lifecycleEnd.schedulerDispatchedRequestCount
+          );
+          const schedulerFailedRequestCountAtEnd = Math.max(
+            lifecycleStart.schedulerFailedRequestCount,
+            lifecycleEnd.schedulerFailedRequestCount
+          );
+          const schedulerRateLimitedRequestCountAtEnd = Math.max(
+            lifecycleStart.schedulerRateLimitedRequestCount,
+            lifecycleEnd.schedulerRateLimitedRequestCount
+          );
+          const performanceTiming = {
+            ...(isRecord(input.progressJson.performanceTiming) ? input.progressJson.performanceTiming : startTiming),
+            ...enrichmentMetrics,
+            schedulerDispatchedRequestCountAtEnd,
+            schedulerFailedRequestCountAtEnd,
+            schedulerRateLimitedRequestCountAtEnd
+          };
+          const completed = await completeForensicCheckJob({
+            ...input,
+            progressJson: {
+              ...input.progressJson,
+              performanceTiming
+            }
+          });
+          if (completed) {
+            logLifecycleInfo("forensic_job_lifecycle_completed", {
+              kind: job.kind,
+              status: input.status,
+              ...lifecycleStartFields,
+              ...enrichmentMetrics,
+              schedulerDispatchedRequestCountAtEnd,
+              schedulerFailedRequestCountAtEnd,
+              schedulerRateLimitedRequestCountAtEnd
+            });
+          }
+          return completed;
+        }
+      };
+    }
+
     if (job.kind === "where_is_money_check") {
       if (isStrictProvenanceBenchmarkJob(job) && job.progressJson.jobPhase === "provider_limited") {
         const strictProvenance = isRecord(job.progressJson.strictProvenance)
@@ -1970,6 +2165,7 @@ export async function runClaimedForensicJob(
           onCandidateResolved
         })
       );
+      addTransactionInfoLifecycleMetrics(deepTransactionInfoMetrics, enrichment);
       for (const evidenceId of enrichment.evidenceIds) deepSelectiveEvidenceIds.add(evidenceId);
       return deps.selectiveTransactionEnricher.getFullTransactionInfo(txHash);
     };

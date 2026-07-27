@@ -1,6 +1,11 @@
 export type ForensicSlotPump = {
   poll(): Promise<void>;
-  diagnostics(): { activeSlots: number; configuredSlots: number; stopping: boolean };
+  diagnostics(): {
+    activeSlots: number;
+    configuredSlots: number;
+    occupiedSlotsAtPoll: number;
+    stopping: boolean;
+  };
   stopAndDrain(): Promise<void>;
 };
 
@@ -21,6 +26,7 @@ export function createForensicSlotPump<Job>(input: {
   let refillRequested = false;
   let timerPollRequested = false;
   let stopping = false;
+  let occupiedSlotsAtPoll = 0;
 
   const reportError = (error: unknown): void => {
     try {
@@ -38,6 +44,7 @@ export function createForensicSlotPump<Job>(input: {
       while ((timerPollRequested || refillRequested) && !stopping) {
         if (timerPollRequested) {
           timerPollRequested = false;
+          occupiedSlotsAtPoll = activeHandlers.size;
           await input.beforePoll();
           refillRequested = true;
         }
@@ -83,6 +90,7 @@ export function createForensicSlotPump<Job>(input: {
     diagnostics: () => ({
       activeSlots: activeHandlers.size,
       configuredSlots: input.concurrency,
+      occupiedSlotsAtPoll,
       stopping
     }),
     async stopAndDrain(): Promise<void> {

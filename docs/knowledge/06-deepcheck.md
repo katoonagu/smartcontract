@@ -70,3 +70,9 @@ index, or Telegram delivery may be published by the stale attempt. This also
 applies to a failed waiting-state release and to any second-layer queue request:
 the runner aborts once, stops the remaining queue, and does not enter risk or
 completion stages.
+
+Deep lifecycle timing is comparable with Where without changing capacity:
+`configuredSlots` remains `1`. Claim and terminal snapshots persist only
+queue/slot counts, aggregate selective-enrichment counters, monotonic scheduler
+counters, and an opaque capacity fingerprint. Lifecycle logs contain no
+subject, transaction, chat, provider-key, label, or username identity.

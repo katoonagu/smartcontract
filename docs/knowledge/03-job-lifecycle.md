@@ -70,6 +70,12 @@ queue, and drains them during shutdown. `FORENSIC_WHERE_WORKER_CONCURRENCY`
 is validated from 1 through 2 and defaults to 1. Incoming and Deep keep their
 existing independent workers and batch settings.
 
+Where and Deep persist identity-free lifecycle timing at claim and terminal
+completion. This timing records runnable queue count and age, DB-running count, local
+slot occupancy, transaction-enrichment counts, and monotonic scheduler
+counters. `waiting_for_targeted_index` is excluded from runnable age. Deep
+remains configured for one slot; Incoming remains a separate timed lane.
+
 ## Unified Lifecycle
 
 Schema 033 introduces one durable `CheckRequest`, one `UnifiedCheckRun`,

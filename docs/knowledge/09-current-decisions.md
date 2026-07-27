@@ -108,6 +108,11 @@ code_refs:
   `FORENSIC_WHERE_JOBS_PER_POLL` value remains parsed solely because Incoming
   still inherits it when `FORENSIC_INCOMING_JOBS_PER_POLL` is absent. Deep and
   Incoming concurrency, guards, and polling intervals are unchanged.
+- Stage B queue diagnostics are lane-scoped and identity-free. Runnable age
+  excludes `waiting_for_targeted_index`; Where and Deep persist claim/terminal
+  queue, slot, enrichment, and monotonic scheduler counts under
+  `performanceTiming`. Deep stays at one slot, and Incoming retains its
+  separate queue-wait timing.
 - Hard transaction hashes remain candidates without indexed movement rows and
   bypass only optional parser/exploration limits, never the shared resolver.
   Incoming combines outer and nested Where enrichment evidence and propagates

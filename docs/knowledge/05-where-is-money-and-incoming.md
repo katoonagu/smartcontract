@@ -103,3 +103,10 @@ returned by PostgreSQL. Claim loss stops traversal/enrichment at the worker
 boundary: an in-flight shared provider promise may settle only as reusable
 immutable evidence, while no later fallback, risk record, result, or Telegram
 delivery intent may be attached to the reclaimed job.
+
+Where terminal progress stores count-only queue/slot, enrichment, and
+scheduler timing under `performanceTiming`; the matching lifecycle logs contain
+no address, transaction hash, chat/key identifier, label, or username.
+Incoming keeps its separate lane and existing `queueWaitMs`/stage timing. Its
+timing log is aggregate-only and no longer repeats job, deposit, wallet,
+sender, or Telegram identities.

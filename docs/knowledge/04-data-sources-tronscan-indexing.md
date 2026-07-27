@@ -138,6 +138,11 @@ half-open probe restores it. Request pacing, endpoint/account limits, cooldown,
 and RPS remain inside the TronScan scheduler and are separate from the
 controller's concurrent-chunk target.
 
+Legacy Where/Deep lifecycle diagnostics take monotonic start/end snapshots of
+dispatched, failed, and rate-limited scheduler requests. Their capacity
+fingerprint hashes only boolean/count configuration and concurrency limits; it
+contains no API-key or account-group identifier.
+
 An ordered task is not bound to a provider group in advance. It is eligible
 when at least one healthy capable group can execute it under the ordinary
 claim, cooldown, and pacing rules. Canonical-head priority changes scheduling

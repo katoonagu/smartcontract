@@ -388,6 +388,101 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("persists count-only Where lifecycle diagnostics with monotonic scheduler snapshots", async () => {
+    const sourceJob = {
+      ...job(),
+      kind: "where_is_money_check" as const,
+      createdAt: new Date("2026-05-23T23:59:59.000Z"),
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: { statusReason: "partial_provider_inconsistent" }
+      }
+    };
+    const snapshots = [{
+      runnableQueuedCount: 4,
+      oldestRunnableQueueAgeMs: 12_000,
+      activeSlots: 2,
+      configuredSlots: 2,
+      occupiedSlotsAtPoll: 1,
+      dbRunningCount: 2,
+      schedulerDispatchedRequestCount: 10,
+      schedulerFailedRequestCount: 1,
+      schedulerRateLimitedRequestCount: 2,
+      schedulerCapacityFingerprint: "capacity-fingerprint"
+    }, {
+      runnableQueuedCount: 3,
+      oldestRunnableQueueAgeMs: 13_000,
+      activeSlots: 1,
+      configuredSlots: 2,
+      occupiedSlotsAtPoll: 1,
+      dbRunningCount: 1,
+      schedulerDispatchedRequestCount: 18,
+      schedulerFailedRequestCount: 2,
+      schedulerRateLimitedRequestCount: 4,
+      schedulerCapacityFingerprint: "capacity-fingerprint"
+    }];
+    const updateForensicCheckJobProgress = vi.fn(async () => true);
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await runClaimedForensicJob({
+      claimNextForensicCheckJob: vi.fn(async () => null),
+      updateForensicCheckJobProgress,
+      completeForensicCheckJob,
+      captureLifecycleDiagnostics: vi.fn(async () => snapshots.shift()!),
+      recordRiskEvaluation: vi.fn(async () => true),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async () => usdtRestrictionProfile(),
+      logger
+    } as unknown as DeepForensicJobRunnerDeps, sourceJob);
+
+    expect(updateForensicCheckJobProgress).toHaveBeenCalledWith(expect.objectContaining({
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.objectContaining({
+          queueWaitMs: 1000,
+          runnableQueuedCount: 4,
+          oldestRunnableQueueAgeMs: 12_000,
+          activeSlots: 2,
+          configuredSlots: 2,
+          occupiedSlotsAtPoll: 1,
+          dbRunningCount: 2,
+          schedulerDispatchedRequestCountAtStart: 10,
+          schedulerFailedRequestCountAtStart: 1,
+          schedulerRateLimitedRequestCountAtStart: 2,
+          schedulerCapacityFingerprint: "capacity-fingerprint"
+        })
+      })
+    }));
+    const completion = completeForensicCheckJob.mock.calls[0][0];
+    expect(completion.progressJson).toEqual(expect.objectContaining({
+      performanceTiming: expect.objectContaining({
+        transactionInfoCandidateCount: 0,
+        transactionInfoHardCandidateCount: 0,
+        transactionInfoRawProviderRequests: 0,
+        transactionInfoFullProviderRequests: 0,
+        transactionInfoSavedEvidenceHits: 0,
+        transactionInfoInFlightHits: 0,
+        transactionInfoSchedulerAwaitMs: 0,
+        schedulerDispatchedRequestCountAtEnd: 18,
+        schedulerFailedRequestCountAtEnd: 2,
+        schedulerRateLimitedRequestCountAtEnd: 4
+      })
+    }));
+    expect(logger.info).toHaveBeenCalledWith(
+      "forensic_job_lifecycle_started",
+      expect.objectContaining({ kind: "where_is_money_check", occupiedSlotsAtPoll: 1 })
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "forensic_job_lifecycle_completed",
+      expect.objectContaining({ kind: "where_is_money_check", schedulerDispatchedRequestCountAtEnd: 18 })
+    );
+    const diagnosticPayload = JSON.stringify(logger.info.mock.calls);
+    expect(diagnosticPayload).not.toContain(sourceJob.subjectAddress);
+    expect(diagnosticPayload).not.toContain(sourceJob.chatId!);
+    expect(diagnosticPayload).not.toContain(sourceJob.requestedBy!);
+  });
+
   it("executes an externally claimed job without issuing another claim", async () => {
     const claimNextForensicCheckJob = vi.fn(async () => null);
     await expect(runClaimedForensicJob({
@@ -465,9 +560,23 @@ describe("deep forensic job runner", () => {
     try {
       const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
       const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+      const lifecycleSnapshot = {
+        runnableQueuedCount: 0,
+        oldestRunnableQueueAgeMs: null,
+        activeSlots: 1,
+        configuredSlots: 1,
+        occupiedSlotsAtPoll: 0,
+        dbRunningCount: 1,
+        schedulerDispatchedRequestCount: 5,
+        schedulerFailedRequestCount: 0,
+        schedulerRateLimitedRequestCount: 0,
+        schedulerCapacityFingerprint: "deep-capacity-fingerprint"
+      };
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
       await runCycleWithMock({
         claimNextForensicCheckJob: async () => job(),
         completeForensicCheckJob,
+        captureLifecycleDiagnostics: async () => lifecycleSnapshot,
         updateForensicCheckJobProgress: async () => {
           progressUpdates += 1;
           activeProgressUpdates += 1;
@@ -486,7 +595,8 @@ describe("deep forensic job runner", () => {
         getTransaction: legacyGetTransaction,
         selectiveTransactionEnricher,
         listIndexedMovementsByHashes: async () => [],
-        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address }),
+        logger
       }, { transactionEnrichmentHeartbeatIntervalMs: 1 });
 
       expect(rawProvider).toHaveBeenCalledTimes(1);
@@ -495,8 +605,24 @@ describe("deep forensic job runner", () => {
       expect(maxActiveProgressUpdates).toBe(1);
       expect(legacyGetTransaction).not.toHaveBeenCalled();
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
-        rawEvidenceIds: expect.arrayContaining([`deep:decision:${txHash}`])
+        rawEvidenceIds: expect.arrayContaining([`deep:decision:${txHash}`]),
+        progressJson: expect.objectContaining({
+          performanceTiming: expect.objectContaining({
+            configuredSlots: 1,
+            transactionInfoCandidateCount: 2,
+            transactionInfoHardCandidateCount: 2,
+            transactionInfoRawProviderRequests: 1,
+            transactionInfoFullProviderRequests: 1,
+            transactionInfoInFlightHits: expect.any(Number),
+            schedulerDispatchedRequestCountAtStart: 5,
+            schedulerDispatchedRequestCountAtEnd: 5
+          })
+        })
       }));
+      expect(completeForensicCheckJob.mock.calls[0]?.[0].progressJson.performanceTiming)
+        .toEqual(expect.objectContaining({ transactionInfoInFlightHits: expect.any(Number) }));
+      expect((completeForensicCheckJob.mock.calls[0]?.[0].progressJson.performanceTiming as Record<string, number>)
+        .transactionInfoInFlightHits).toBeGreaterThanOrEqual(1);
       expect(completeForensicCheckJob.mock.calls[0]?.[0].rawEvidenceIds.length).toBeGreaterThanOrEqual(2);
     } finally {
       vi.doUnmock("../../src/check/deepForensicCheck");

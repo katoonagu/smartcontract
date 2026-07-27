@@ -97,6 +97,7 @@ import {
   getAddressMetadata,
   listFreshTaggedAddressMetadataAt,
   getForensicCheckJob,
+  getForensicLaneQueueDiagnostics,
   getTransactionProviderEvidence,
   getTelegramUserProfile,
   getTheftReport,
@@ -3136,6 +3137,9 @@ async function indexWalletIntelligenceCompletedJob(input: {
 }
 
 function createDeepForensicJobRunnerDeps(kinds: ForensicCheckJobKind[]): DeepForensicJobRunnerDeps {
+  const laneKind = kinds[0] === "where_is_money_check" || kinds[0] === "address_deep_check"
+    ? kinds[0]
+    : null;
   return {
       tronClient,
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
@@ -3162,6 +3166,38 @@ function createDeepForensicJobRunnerDeps(kinds: ForensicCheckJobKind[]): DeepFor
       selectiveTransactionEnricher,
       listActiveRouteAssertions: selectiveRouteAssertions,
       listIndexedMovementsByHashes: indexedMovementsByHashes,
+      ...(laneKind
+        ? {
+            captureLifecycleDiagnostics: async () => {
+              const lane = await getForensicLaneQueueDiagnostics(db, laneKind);
+              const scheduler = tronscanScheduler.diagnostics();
+              const slots = laneKind === "where_is_money_check"
+                ? whereForensicPump.diagnostics()
+                : { activeSlots: 1, configuredSlots: 1, occupiedSlotsAtPoll: 0 };
+              return {
+                runnableQueuedCount: lane.runnableQueuedCount,
+                oldestRunnableQueueAgeMs: lane.oldestRunnableQueuedAt
+                  ? Math.max(0, Date.now() - lane.oldestRunnableQueuedAt.getTime())
+                  : null,
+                activeSlots: slots.activeSlots,
+                configuredSlots: slots.configuredSlots,
+                occupiedSlotsAtPoll: slots.occupiedSlotsAtPoll,
+                dbRunningCount: lane.dbRunningCount,
+                schedulerDispatchedRequestCount: scheduler.dispatchedRequests,
+                schedulerFailedRequestCount: scheduler.failedRequests,
+                schedulerRateLimitedRequestCount: scheduler.rateLimitedRequests,
+                schedulerCapacityFingerprint: fingerprintCanonicalArtifact({
+                  schema: "tronscan-scheduler-capacity-v1",
+                  apiKeyConfigured: scheduler.apiKeyConfigured,
+                  apiKeyCount: scheduler.apiKeyCount,
+                  apiKeyGroupCount: scheduler.apiKeyGroupCount,
+                  maxInFlight: scheduler.maxInFlight,
+                  maxInFlightPerGroup: scheduler.maxInFlightPerGroup
+                })
+              };
+            }
+          }
+        : {}),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
       crossChainDiscoveryProvider,
       evmEvidenceProvider,

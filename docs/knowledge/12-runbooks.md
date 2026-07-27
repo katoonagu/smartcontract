@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-26
+last_verified: 2026-07-27
 owner_area: docs
 code_refs:
   - package.json
@@ -10,6 +10,8 @@ code_refs:
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - scripts/captureUnifiedWslMemory.ps1
   - src/unifiedCheck
+  - src/forensics/forensicSlotPump.ts
+  - src/forensics/deepForensicJob.ts
 ---
 
 # Runbooks
@@ -258,3 +260,17 @@ analysis, reconciliation, and isolated canaries do not depend on it.
 `DELIVERY_UNKNOWN` is inspected manually and never auto-retried. Any manual
 resend uses the explicit warned/audited path. Never grant legacy and Unified
 automatic delivery ownership at the same time.
+
+## Stage B Where Queue Diagnostics
+
+Use the count-only `performanceTiming` and lifecycle logs to compare runnable
+queue age, DB-running jobs, occupied/active slots, selective enrichment, and
+scheduler counter deltas. Runnable age excludes
+`waiting_for_targeted_index`, which belongs to the indexing wait path.
+
+In an isolated concurrency-two canary, `occupiedSlotsAtPoll = 0` or `1`
+leaves capacity for new work. When it is `2`, both slots were already occupied
+by monolithic jobs, so Stage B makes no bounded-start SLA claim for a newly
+queued job; do not publish a start SLA from that poll. Never expand these
+aggregate diagnostics with an address, transaction hash, chat/key identifier,
+label, or username.

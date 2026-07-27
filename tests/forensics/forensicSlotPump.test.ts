@@ -61,7 +61,12 @@ describe("createForensicSlotPump", () => {
 
     await pump.poll();
     expect(active).toBe(2);
-    expect(pump.diagnostics()).toEqual({ activeSlots: 2, configuredSlots: 2, stopping: false });
+    expect(pump.diagnostics()).toEqual({
+      activeSlots: 2,
+      configuredSlots: 2,
+      occupiedSlotsAtPoll: 0,
+      stopping: false
+    });
     gates[0].resolve();
     await flush();
     expect(active).toBe(2);
@@ -221,6 +226,31 @@ describe("createForensicSlotPump", () => {
     expect(beforePoll).toHaveBeenCalledTimes(1);
     await pump.poll();
     expect(beforePoll).toHaveBeenCalledTimes(2);
+    await pump.stopAndDrain();
+  });
+
+  it("retains the occupied-slot count from the last timer poll for fairness diagnostics", async () => {
+    const first = deferred();
+    const second = deferred();
+    const jobs = [1];
+    const pump = createForensicSlotPump({
+      concurrency: 2,
+      beforePoll: async () => {},
+      claimOne: async () => jobs.shift() ?? null,
+      runClaimed: async (job) => job === 1 ? first.promise : second.promise,
+      onHandlerError: vi.fn()
+    });
+
+    await pump.poll();
+    expect(pump.diagnostics().occupiedSlotsAtPoll).toBe(0);
+    jobs.push(2);
+    await pump.poll();
+    expect(pump.diagnostics().occupiedSlotsAtPoll).toBe(1);
+    await pump.poll();
+    expect(pump.diagnostics().occupiedSlotsAtPoll).toBe(2);
+
+    first.resolve();
+    second.resolve();
     await pump.stopAndDrain();
   });
 

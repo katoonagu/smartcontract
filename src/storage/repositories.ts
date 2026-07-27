@@ -400,6 +400,12 @@ export type ForensicCheckJobKind =
   | "where_is_money_check"
   | "incoming_deposit_check";
 export type QueueableForensicCheckJobKind = Exclude<ForensicCheckJobKind, "address_fast_check">;
+export type ForensicLaneQueueDiagnostics = {
+  kind: "where_is_money_check" | "address_deep_check";
+  runnableQueuedCount: number;
+  oldestRunnableQueuedAt: Date | null;
+  dbRunningCount: number;
+};
 
 export type ForensicCheckJob = {
   id: string;
@@ -7124,6 +7130,37 @@ export async function claimNextForensicCheckJob(
     kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getForensicLaneQueueDiagnostics(
+  db: Db,
+  kind: ForensicLaneQueueDiagnostics["kind"]
+): Promise<ForensicLaneQueueDiagnostics> {
+  if (kind !== "where_is_money_check" && kind !== "address_deep_check") {
+    throw new Error("forensic_lane_diagnostics_kind_unsupported");
+  }
+  const result = await db.query(
+    `select
+       count(*) filter (
+         where status = 'queued'
+           and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
+       ) as runnable_queued_count,
+       min(created_at) filter (
+         where status = 'queued'
+           and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
+       ) as oldest_runnable_queued_at,
+       count(*) filter (where status = 'running') as db_running_count
+     from forensic_check_jobs
+     where kind = $1`,
+    [kind]
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    kind,
+    runnableQueuedCount: Number(row.runnable_queued_count ?? 0),
+    oldestRunnableQueuedAt: row.oldest_runnable_queued_at ?? null,
+    dbRunningCount: Number(row.db_running_count ?? 0)
+  };
 }
 
 export async function releaseForensicCheckJobToWaiting(

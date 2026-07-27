@@ -2429,10 +2429,6 @@ export async function runSingleIncomingDepositJobCycle(
       depositAgeAtStartMs
     });
     safeLoggerInfo(logger, "incoming_deposit_job_timing", {
-      job_id: job.id,
-      deposit_tx_hash: depositTxHash,
-      watched_wallet_id: watchedWalletId,
-      sender,
       status,
       queue_wait_ms: summary.queueWaitMs,
       deposit_age_at_start_ms: summary.depositAgeAtStartMs,
