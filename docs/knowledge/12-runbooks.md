@@ -340,11 +340,14 @@ Incoming, Unified provider work, Telegram polling, and every other provider
 consumer must be disabled. Deep remains configured at one and is not run by
 this canary.
 
-The command obtains authoritative process observations through the trusted
-in-process adapter named by `WHERE_LATENCY_CANARY_RUNTIME_ADAPTER`. That module
-must export `createWhereLatencyCanaryRuntime(config)` and bind to the exact
-dedicated Where pump, scheduler, forensic repository, and delivery repository;
-an adapter that estimates scheduler counters from database rows is invalid.
+The dedicated runtime must first expose an attested loopback HTTP(S) bridge
+bound directly to its real Where pump, scheduler, forensic repository,
+delivery repository, address-index worker, and Deep worker. The verified bundle
+named by `WHERE_LATENCY_CANARY_RUNTIME_ADAPTER` is only a client for that
+already-running bridge; it must not create a second database connection, pump,
+scheduler, or repository. It exports `createWhereLatencyCanaryRuntime(config)`
+and relays authoritative observations and commands. An adapter that estimates
+scheduler counters from database rows is invalid.
 Before any dynamic import, the CLI verifies a separately pre-authorized,
 canonical deployment receipt by its raw-file SHA-256. The receipt binds an
 immutable image/artifact digest, clean Git commit and tree, a single-entry
@@ -352,9 +355,11 @@ module graph and graph SHA-256, and the adapter entry path/hash. Its format must
 `single_file_esm_bundle_v1`: the graph contains exactly that one self-contained
 adapter bundle plus the explicit `node` implementation, exact Node version and
 `execArgv`, and a sorted exact list of permitted `node:` built-ins. The list
-must be a subset of the harness hardcoded safe set; `node:module`, `process`,
-`fs`, `vm`, `child_process`, `worker_threads`, and `inspector` are never in that
-set. Relative, absolute, bare-package, `data:`, and dynamic imports are rejected
+must be a subset of the exact hardcoded set: `node:buffer`, `node:http`,
+`node:https`, `node:timers`, `node:timers/promises`, and `node:url`. Direct
+`net`, `tls`, `dns`, `events`, `node:module`, `process`, `fs`, `vm`,
+`child_process`, `worker_threads`, and `inspector` imports are not allowed.
+Relative, absolute, bare-package, `data:`, and dynamic imports are rejected
 by the module linker; only declared safe static `node:` imports are linked.
 The adapter path is resolved under the canonical deployment root and
 its bytes are read and hashed exactly once before execution. A missing,
@@ -363,7 +368,10 @@ checkout fails before adapter code can execute. The verified bytes, rather than
 the mutable file path, are evaluated as a `vm.SourceTextModule` in a dedicated
 context with string/WASM code generation disabled, no `process`, `require`, or
 host `global`, membrane-wrapped Buffer/URL/Abort/text/timer capabilities, and
-an always-rejecting dynamic-import hook. The npm command
+an always-rejecting dynamic-import hook. The membrane is bidirectional: host
+callback `this`, arguments, results, Promise values/rejections, event-listener
+values, and thrown errors are never delivered raw into the VM, and VM callback
+values are never delivered raw to host capabilities. The npm command
 supplies `--experimental-vm-modules`; absence of `SourceTextModule` fails
 closed. The deployment, bundle, Node flags/version, allowed-builtins, and
 adapter identities are bound into every receipt and runtime attestation. The
@@ -390,6 +398,7 @@ $env:WHERE_LATENCY_CANARY_DEDICATED = "true"
 $env:WHERE_LATENCY_CANARY_ENABLED_CYCLES = "where,address_index,delivery_reconciliation"
 $env:WHERE_LATENCY_CANARY_RUNTIME_ADAPTER = "<absolute-path-to-deployment-runtime-adapter>"
 $env:WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256 = "<canonical-deployed-config-sha256>"
+$env:WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_URL = "http://127.0.0.1:<dedicated-bridge-port>"
 $env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT = "<absolute-path-to-canonical-deployment-receipt>"
 $env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT_SHA256 = "<pre-authorized-raw-file-sha256>"
 $env:WHERE_LATENCY_CANARY_IMMUTABLE_ARTIFACT_DIGEST = "sha256:<immutable-image-or-artifact-digest>"

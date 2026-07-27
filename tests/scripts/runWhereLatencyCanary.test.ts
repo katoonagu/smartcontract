@@ -86,6 +86,7 @@ const config = () => ({
   terminalTimeoutMs: 10_000,
   drainTimeoutMs: 10_000,
   runtimeConfigIdentity: HEX_A,
+  runtimeBridgeUrl: "http://127.0.0.1:43123",
   adapterIdentity: {
     schema: "where-latency-canary-adapter-v1" as const,
     moduleRealPath: "C:/deployment/whereCanaryAdapter.mjs",
@@ -375,6 +376,7 @@ describe("Where latency canary", () => {
     ["runtime label", { runtimeInstanceLabel: "" }, "where_latency_canary_runtime_instance_label_required"],
     ["concurrency two", { workerConcurrency: 1 }, "where_latency_canary_concurrency_two_required"],
     ["Deep singleton", { deepWorkerConcurrency: 2 }, "where_latency_canary_deep_concurrency_must_remain_one"],
+    ["loopback runtime bridge", { runtimeBridgeUrl: "https://example.com" }, "where_latency_canary_runtime_bridge_url_invalid"],
     ["exact cycle allowlist", { enabledRuntimeCycles: ["where", "address_index", "deep"] }, "where_latency_canary_cycle_allowlist_invalid"]
   ])("rejects preparation without %s", async (_label, changed, code) => {
     await expect(prepareWhereLatencyCanary({
@@ -1105,6 +1107,65 @@ describe("Where latency canary", () => {
         allowed: ["node:buffer"],
         source: "import { Buffer as B } from 'node:buffer'; export function createWhereLatencyCanaryRuntime(){ return { marker: B.from('safe').toString() }; }"
       },
+      {
+        name: "callback-this",
+        allowed: ["node:timers"],
+        source: `
+          import { setTimeout as schedule } from "node:timers";
+          export async function createWhereLatencyCanaryRuntime() {
+            const marker = await new Promise((resolve) => schedule(function (value) {
+              resolve(value + ":" + (this.constructor === undefined && Object.getPrototypeOf(this) === null));
+            }, 0, "callback-ok"));
+            return { marker };
+          }
+        `
+      },
+      {
+        name: "promise-error-roundtrip",
+        allowed: ["node:timers/promises"],
+        source: `
+          import { setTimeout as delay } from "node:timers/promises";
+          export async function createWhereLatencyCanaryRuntime() {
+            const controller = new AbortController();
+            const pending = delay(1000, "late", { signal: controller.signal });
+            controller.abort();
+            let hostErrorBlocked = false;
+            try { await pending; } catch (error) {
+              hostErrorBlocked = error.constructor === undefined && Object.getPrototypeOf(error) === null;
+            }
+            const returned = await delay(0, "value").then((value) => ({ value }));
+            const thrown = await delay(0).then(() => {
+              throw new Error("vm-callback-throw");
+            }).catch((error) => error.message);
+            return { marker: hostErrorBlocked + ":" + returned.value + ":" + thrown };
+          }
+        `
+      },
+      {
+        name: "http-callback",
+        allowed: ["node:http"],
+        source: `
+          import { get } from "node:http";
+          export async function createWhereLatencyCanaryRuntime(config) {
+            const marker = await new Promise((resolve, reject) => {
+              const request = get(config.runtimeBridgeUrl, function (response) {
+                const responseBlocked = response.constructor === undefined && Object.getPrototypeOf(response) === null;
+                let body = "";
+                let chunkBlocked = true;
+                let callbackThisBlocked = true;
+                response.on("data", function (chunk) {
+                  chunkBlocked = chunkBlocked && chunk.constructor === undefined && Object.getPrototypeOf(chunk) === null;
+                  callbackThisBlocked = callbackThisBlocked && this.constructor === undefined && Object.getPrototypeOf(this) === null;
+                  body += chunk.toString();
+                });
+                response.on("end", () => resolve(body + ":" + responseBlocked + ":" + chunkBlocked + ":" + callbackThisBlocked));
+              });
+              request.on("error", reject);
+            });
+            return { marker };
+          }
+        `
+      },
       { name: "create-require", allowed: [], source: "import { createRequire } from 'node:module'; export function createWhereLatencyCanaryRuntime(){ return createRequire(import.meta.url); }" },
       { name: "relative", allowed: [], source: "import './dependency.mjs'; export function createWhereLatencyCanaryRuntime(){}" },
       { name: "bare", allowed: [], source: "import 'some-package'; export function createWhereLatencyCanaryRuntime(){}" },
@@ -1116,27 +1177,38 @@ describe("Where latency canary", () => {
       { name: "global-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return globalThis.constructor.constructor('return process')(); }" },
       { name: "global-host", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return global.process; }" },
       { name: "buffer-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return Buffer.constructor('return process')(); }" },
+      { name: "reflective-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ const descriptor = Object.getOwnPropertyDescriptor(Buffer, 'prototype'); return { marker: descriptor.value === null && Object.getPrototypeOf(Buffer) === null }; }" },
       { name: "url-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return URL.constructor('return process')(); }" },
       { name: "abort-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return AbortController.constructor('return process')(); }" },
       { name: "timer-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return setTimeout.constructor('return process')(); }" },
       { name: "unused-declaration", allowed: ["node:buffer"], source: "export function createWhereLatencyCanaryRuntime(){ return {}; }" }
     ];
     const result = await runVmChild(directory, `
+      import http from "node:http";
       const api = await import(process.env.CANARY_SCRIPT_URL);
       const cases = JSON.parse(Buffer.from(process.env.PROBE_CASES, "base64").toString("utf8"));
+      const bridge = http.createServer((_request, response) => response.end("bridge"));
+      await new Promise((resolve) => bridge.listen(0, "127.0.0.1", resolve));
+      const address = bridge.address();
       const results = [];
-      for (const item of cases) {
-        try {
-          const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
-            bytes: Buffer.from(item.source),
-            identifier: "where-latency-canary:test:" + item.name,
-            allowedNodeBuiltins: item.allowed,
-            factoryConfig: {}
-          });
-          results.push({ name: item.name, ok: true, marker: runtime.marker ?? null });
-        } catch (error) {
-          results.push({ name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) });
+      try {
+        for (const item of cases) {
+          try {
+            const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
+              bytes: Buffer.from(item.source),
+              identifier: "where-latency-canary:test:" + item.name,
+              allowedNodeBuiltins: item.allowed,
+              factoryConfig: item.name === "http-callback"
+                ? { runtimeBridgeUrl: "http://127.0.0.1:" + address.port }
+                : {}
+            });
+            results.push({ name: item.name, ok: true, marker: runtime.marker ?? null });
+          } catch (error) {
+            results.push({ name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) });
+          }
         }
+      } finally {
+        await new Promise((resolve) => bridge.close(resolve));
       }
       process.stdout.write(JSON.stringify(results));
     `, {
@@ -1144,6 +1216,14 @@ describe("Where latency canary", () => {
     }) as Array<{ name: string; ok: boolean; marker?: string; error?: string }>;
     expect(result.find(({ name }) => name === "safe-builtin"))
       .toMatchObject({ ok: true, marker: "safe" });
+    expect(result.find(({ name }) => name === "callback-this"))
+      .toMatchObject({ ok: true, marker: "callback-ok:true" });
+    expect(result.find(({ name }) => name === "promise-error-roundtrip"))
+      .toMatchObject({ ok: true, marker: "true:value:vm-callback-throw" });
+    expect(result.find(({ name }) => name === "http-callback"))
+      .toMatchObject({ ok: true, marker: "bridge:true:true:true" });
+    expect(result.find(({ name }) => name === "reflective-host-escape"))
+      .toMatchObject({ ok: true, marker: true });
     const expectedErrors: Record<string, RegExp> = {
       "create-require": /where_latency_canary_bundle_builtin_forbidden/,
       relative: /where_latency_canary_bundle_import_forbidden/,

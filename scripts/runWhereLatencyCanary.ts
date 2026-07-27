@@ -31,11 +31,8 @@ const DEEP_RESIDUAL_ALLOWED_CYCLES = [
 const ISOLATION_SCHEMA = "where-latency-canary-isolation-v1";
 const RUN_SCHEMA = "where-latency-canary-run-v1";
 const SAFE_CANARY_NODE_BUILTINS = [
-  "node:assert", "node:assert/strict", "node:buffer", "node:crypto",
-  "node:dns", "node:dns/promises", "node:events", "node:http", "node:https",
-  "node:net", "node:querystring", "node:stream", "node:stream/promises",
-  "node:string_decoder", "node:timers", "node:timers/promises", "node:tls",
-  "node:url", "node:util", "node:zlib"
+  "node:buffer", "node:http", "node:https", "node:timers",
+  "node:timers/promises", "node:url"
 ] as const;
 const SAFE_CANARY_NODE_BUILTIN_SET = new Set<string>(SAFE_CANARY_NODE_BUILTINS);
 
@@ -90,6 +87,7 @@ export type WhereLatencyCanaryConfig = {
   terminalTimeoutMs: number;
   drainTimeoutMs: number;
   runtimeConfigIdentity: string;
+  runtimeBridgeUrl: string;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
   deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
 };
@@ -361,6 +359,17 @@ function validateBaseConfig(config: WhereLatencyCanaryUnboundConfig): void {
     throw new Error("where_latency_canary_drain_timeout_invalid");
   }
   assertSha256(config.runtimeConfigIdentity, "where_latency_canary_runtime_config_identity_invalid");
+  let bridgeUrl: URL;
+  try {
+    bridgeUrl = new URL(config.runtimeBridgeUrl);
+  } catch {
+    throw new Error("where_latency_canary_runtime_bridge_url_invalid");
+  }
+  if (
+    !(["http:", "https:"] as const).includes(bridgeUrl.protocol as "http:" | "https:") ||
+    !(bridgeUrl.hostname === "127.0.0.1" || bridgeUrl.hostname === "[::1]") ||
+    bridgeUrl.username !== "" || bridgeUrl.password !== "" || bridgeUrl.hash !== ""
+  ) throw new Error("where_latency_canary_runtime_bridge_url_invalid");
 }
 
 function validateUnboundConfig(config: WhereLatencyCanaryUnboundConfig): AllowedCycle[] {
@@ -559,6 +568,7 @@ function configProjection(
     databaseFingerprint: databaseFingerprint(config.databaseUrl),
     runtimeInstanceLabel: config.runtimeInstanceLabel.trim(),
     runtimeConfigIdentity: config.runtimeConfigIdentity,
+    runtimeBridgeUrl: config.runtimeBridgeUrl,
     adapterIdentity: { ...config.adapterIdentity },
     deploymentIdentity: { ...config.deploymentIdentity },
     enabledRuntimeCycles: [...cycles],
@@ -1532,7 +1542,9 @@ function canaryConfigFromEnvironment(): WhereLatencyCanaryUnboundConfig {
       60_000
     ),
     runtimeConfigIdentity:
-      process.env.WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256?.trim() ?? ""
+      process.env.WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256?.trim() ?? "",
+    runtimeBridgeUrl:
+      process.env.WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_URL?.trim() ?? ""
   };
 }
 
@@ -1622,62 +1634,120 @@ function assertContained(root: string, child: string): void {
 function createVmCapabilityMembrane(): {
   wrap: (value: unknown) => unknown;
 } {
-  const wrapped = new WeakMap<object, unknown>();
-  const unwrapped = new WeakMap<object, object>();
-  const unwrap = (value: unknown) =>
-    typeof value === "object" && value !== null || typeof value === "function"
-      ? unwrapped.get(value as object) ?? value
-      : value;
-  const wrap = (value: unknown): unknown => {
-    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
-      return value;
-    }
-    const source = value as object;
-    const existing = wrapped.get(source);
-    if (existing) return existing;
-    let facade: object;
+  const hostToVm = new WeakMap<object, object>();
+  const vmFacadeToHost = new WeakMap<object, object>();
+  const vmToHost = new WeakMap<object, object>();
+  const hostFacadeToVm = new WeakMap<object, object>();
+  const isObject = (value: unknown): value is object =>
+    (typeof value === "object" && value !== null) || typeof value === "function";
+  const hidden = new Set<PropertyKey>([
+    "constructor", "prototype", "__proto__", "caller", "callee", "arguments"
+  ]);
+
+  const createFacade = (
+    source: object,
+    convertIn: (value: unknown) => unknown,
+    convertOut: (value: unknown) => unknown,
+    sourceToFacade: WeakMap<object, object>,
+    facadeToSource: WeakMap<object, object>
+  ): object => {
     const handler: ProxyHandler<object> = {
       get(_target, property) {
-        if (property === "constructor" || property === "prototype" || property === "__proto__") {
-          return undefined;
+        if (hidden.has(property)) {
+          return property === "caller" || property === "arguments" || property === "prototype"
+            ? null
+            : undefined;
         }
-        return wrap(Reflect.get(source, property, source));
+        try {
+          return convertOut(Reflect.get(source, property, source));
+        } catch (error) {
+          throw convertOut(error);
+        }
       },
       set(_target, property, next) {
-        return Reflect.set(source, property, unwrap(next), source);
+        if (hidden.has(property)) return false;
+        try {
+          return Reflect.set(source, property, convertIn(next), source);
+        } catch (error) {
+          throw convertOut(error);
+        }
+      },
+      defineProperty() {
+        return false;
+      },
+      deleteProperty() {
+        return false;
       },
       getPrototypeOf() {
         return null;
+      },
+      setPrototypeOf() {
+        return false;
       },
       preventExtensions() {
         return false;
       }
     };
-    if (typeof value === "function") {
-      const callable = function vmCapability(this: unknown, ...args: unknown[]) {
+    let facade: object;
+    if (typeof source === "function") {
+      const callable = function membraneCallable(this: unknown, ...args: unknown[]) {
         try {
-          return wrap(Reflect.apply(value, unwrap(this), args.map(unwrap)));
+          return convertOut(Reflect.apply(
+            source,
+            convertIn(this),
+            args.map(convertIn)
+          ));
         } catch (error) {
-          throw wrap(error);
+          throw convertOut(error);
         }
       };
       Object.setPrototypeOf(callable, null);
+      Object.defineProperty(callable, "prototype", {
+        value: null,
+        writable: false
+      });
       handler.construct = (_target, args, newTarget) => {
         try {
-          return wrap(Reflect.construct(value, args.map(unwrap), unwrap(newTarget) as Function)) as object;
+          return convertOut(Reflect.construct(
+            source,
+            args.map(convertIn),
+            convertIn(newTarget) as Function
+          )) as object;
         } catch (error) {
-          throw wrap(error);
+          throw convertOut(error);
         }
       };
       facade = new Proxy(callable, handler as ProxyHandler<typeof callable>);
     } else {
       facade = new Proxy(Object.create(null) as object, handler);
     }
-    wrapped.set(source, facade);
-    unwrapped.set(facade, source);
+    sourceToFacade.set(source, facade);
+    facadeToSource.set(facade, source);
     return facade;
   };
-  return { wrap };
+
+  const toVm = (value: unknown): unknown => {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+      return value;
+    }
+    const source = value as object;
+    const originalVmValue = hostFacadeToVm.get(source);
+    if (originalVmValue) return originalVmValue;
+    const existing = hostToVm.get(source);
+    if (existing) return existing;
+    return createFacade(source, toHost, toVm, hostToVm, vmFacadeToHost);
+  };
+
+  const toHost = (value: unknown): unknown => {
+    if (!isObject(value)) return value;
+    const actualHostValue = vmFacadeToHost.get(value);
+    if (actualHostValue) return actualHostValue;
+    const existing = vmToHost.get(value);
+    if (existing) return existing;
+    return createFacade(value, toVm, toHost, vmToHost, hostFacadeToVm);
+  };
+
+  return { wrap: toVm };
 }
 
 export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
