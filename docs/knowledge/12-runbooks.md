@@ -56,7 +56,8 @@ old process starts; the database remains at the forward schema.
 The Stage B replay is read-only: it parses the checked-in canonical legacy tape,
 runs selective transaction enrichment twice against one in-memory evidence
 store, and prints only baseline/new raw/full request counts plus
-`stableFactsEqual`. The fixture freezes a canonical
+`stableFactsEqual` and the non-secret HEAD commit, fixture blob, and raw-content
+SHA-256 identities. The fixture freezes a canonical
 `expectedOrdinaryOfficialUsdtTxHashes` manifest from baseline raw/indexed facts;
 the post-Stage-B resolver cannot redefine that set to evade the zero-full-call
 gate. Its `frozenKnownHardTxHashes` input is recomputed from the frozen legacy
@@ -66,6 +67,13 @@ the frozen raw, indexed movement, and assertion facts before analysis.
 ```powershell
 npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/txc-legacy-where-latency-v1.json
 ```
+
+Run this command only from the repository root. The release CLI accepts no
+other fixture path, requires the canonical fixture to be tracked in HEAD with
+no staged or unstaged change, and verifies that its current raw bytes hash to
+the exact HEAD blob. It fails closed in a source archive without Git. Synthetic
+fixtures are supported only through unit-level analysis APIs and cannot be used
+by the release command.
 
 It fails closed for a missing file, noncanonical envelope, malformed evidence,
 or provenance-invalid tape; it never falls back to a database or network

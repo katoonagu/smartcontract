@@ -17,6 +17,7 @@ import {
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   collectExpectedOrdinaryOfficialUsdtTxHashes,
+  canonicalWhereLatencyReplayCliOutput,
   createDependencyInvocationTapeRecorder,
   createWhereReplayDeps,
   LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
@@ -25,6 +26,7 @@ import {
   projectWhereReplayConfig,
   projectStableWhereFacts,
   recordWhereIsMoneyDependencies,
+  readReleaseWhereLatencyReplayFixture,
   runWhereLatencyReplay
 } from "../../src/forensics/whereLatencyReplay";
 import { canonicalizeArtifactJson } from "../../src/forensics/canonicalJson";
@@ -756,23 +758,45 @@ describe("where latency replay v1", () => {
     await expect(successfulReplay({ rawResponse: raw, preserveOrdinaryManifest: true })).rejects.toThrow("where_latency_replay_expected_ordinary_manifest_invalid");
   });
 
-  it("runs the canonical replay command from a fixture without capture configuration or writes", async () => {
+  it("rejects an arbitrary synthetic fixture in the release replay command", async () => {
     const directory = await mkdtemp(join(tmpdir(), "where-latency-replay-"));
     const fixture = join(directory, "fixture.json");
     try {
       await writeFile(fixture, canonicalizeArtifactJson(await successfulReplay()), "utf8");
-      const { stdout, stderr } = await execFile(process.execPath, [
+      await expect(execFile(process.execPath, [
         "--import", "tsx", "scripts/captureWhereLatencyReplay.ts", "replay", "--fixture", fixture
-      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
-
-      expect(stderr).toBe("");
-      expect(stdout).toBe(canonicalizeArtifactJson({
-        baseline: { raw: 0, full: 2 },
-        new: { raw: 1, full: 0 },
-        stableFactsEqual: true
-      }) + "\n");
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true })).rejects.toMatchObject({
+        stderr: expect.stringContaining("where_latency_replay_fixture_path_invalid")
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("rejects release replay outside the exact repository root", async () => {
+    await expect(readReleaseWhereLatencyReplayFixture({
+      cwd: join(process.cwd(), "src"),
+      fixturePath: "tests/fixtures/forensics/txc-legacy-where-latency-v1.json"
+    })).rejects.toThrow("where_latency_replay_repository_root_required");
+  });
+
+  it("serializes canonical replay counts with immutable repository fixture identity", async () => {
+    const analysis = await analyzeWhereLatencyReplay(await successfulReplay());
+    expect(canonicalWhereLatencyReplayCliOutput(analysis, {
+      fixturePath: "tests/fixtures/forensics/txc-legacy-where-latency-v1.json",
+      gitCommit: "b".repeat(40),
+      gitBlob: "c".repeat(40),
+      contentSha256: "d".repeat(64)
+    })).toBe(canonicalizeArtifactJson({
+      baseline: { raw: 0, full: 2 },
+      fixture: {
+        contentSha256: "d".repeat(64),
+        gitBlob: "c".repeat(40),
+        gitCommit: "b".repeat(40),
+        path: "tests/fixtures/forensics/txc-legacy-where-latency-v1.json"
+      },
+      new: { raw: 1, full: 0 },
+      stableFactsEqual: true
+    }));
   });
 });

@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
+import { readFile, realpath } from "node:fs/promises";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { runWhereIsMoneyCheck, type RunWhereIsMoneyCheckInput, type WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
 import type { AppConfig } from "../config";
@@ -17,6 +20,7 @@ import { createSelectiveTransactionEnricher } from "./selectiveTransactionEnrich
 import { parseRawTransactionPreflightV1 } from "../tron/rawTransactionPreflight";
 
 export type StableWhereFactsV1 = Omit<WhereIsMoneyReport, "transactionInfoEnrichment">;
+export const WHERE_LATENCY_REPLAY_FIXTURE_PATH = "tests/fixtures/forensics/txc-legacy-where-latency-v1.json";
 export const LEGACY_WHERE_REPLAY_BASELINE_COMMIT = "4861f22e697652c688489ef4be6ab9698cd6ef9f";
 // The shared production/capture builder was extracted after the legacy baseline; pin that exact approved source.
 const LEGACY_WHERE_EXECUTION_ADAPTER_SOURCE_SHA256 = "8061ad07af5147af4a8d0b1bd7aa23914fde9b44eefa3d77b936263fd536001e";
@@ -136,6 +140,119 @@ export type WhereLatencyReplayAnalysisV1 = {
   firstRun: WhereLatencyReplayRunV1;
   secondRun: WhereLatencyReplayRunV1;
 };
+
+export type WhereLatencyReplayFixtureIdentityV1 = {
+  fixturePath: typeof WHERE_LATENCY_REPLAY_FIXTURE_PATH;
+  gitCommit: string;
+  gitBlob: string;
+  contentSha256: string;
+};
+
+export type ReleaseWhereLatencyReplayFixtureV1 = WhereLatencyReplayFixtureIdentityV1 & {
+  bytes: string;
+};
+
+const WHERE_LATENCY_REPLAY_REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
+
+function sameFilesystemPath(left: string, right: string): boolean {
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+async function releaseReplayGit(cwd: string, args: string[], code: string): Promise<string> {
+  try {
+    const { stdout } = await execFile("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    });
+    return stdout.trim();
+  } catch {
+    fail(code);
+  }
+}
+
+export async function readReleaseWhereLatencyReplayFixture(input: {
+  cwd: string;
+  fixturePath: string;
+}): Promise<ReleaseWhereLatencyReplayFixtureV1> {
+  let cwd: string;
+  let repositoryRoot: string;
+  try {
+    cwd = await realpath(resolve(input.cwd));
+    repositoryRoot = await realpath(WHERE_LATENCY_REPLAY_REPOSITORY_ROOT);
+  } catch {
+    fail("where_latency_replay_repository_root_required");
+  }
+  if (!sameFilesystemPath(cwd, repositoryRoot)) fail("where_latency_replay_repository_root_required");
+  const gitRootValue = await releaseReplayGit(repositoryRoot, ["rev-parse", "--show-toplevel"], "where_latency_replay_git_repository_required");
+  let gitRoot: string;
+  try {
+    gitRoot = await realpath(resolve(gitRootValue));
+  } catch {
+    fail("where_latency_replay_git_repository_required");
+  }
+  if (!sameFilesystemPath(gitRoot, repositoryRoot)) fail("where_latency_replay_repository_root_required");
+  const expectedPath = resolve(repositoryRoot, WHERE_LATENCY_REPLAY_FIXTURE_PATH);
+  const requestedPath = resolve(cwd, input.fixturePath);
+  if (!sameFilesystemPath(requestedPath, expectedPath)) fail("where_latency_replay_fixture_path_invalid");
+  let content: Buffer;
+  try {
+    content = await readFile(expectedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") fail("where_latency_replay_fixture_missing");
+    fail("where_latency_replay_fixture_unreadable");
+  }
+  const gitCommit = await releaseReplayGit(repositoryRoot, ["rev-parse", "HEAD"], "where_latency_replay_git_head_required");
+  const gitBlob = await releaseReplayGit(
+    repositoryRoot,
+    ["rev-parse", `HEAD:${WHERE_LATENCY_REPLAY_FIXTURE_PATH}`],
+    "where_latency_replay_fixture_not_tracked"
+  );
+  const status = await releaseReplayGit(
+    repositoryRoot,
+    ["status", "--porcelain=v1", "--untracked-files=all", "--", WHERE_LATENCY_REPLAY_FIXTURE_PATH],
+    "where_latency_replay_fixture_status_unavailable"
+  );
+  if (status.length > 0) fail("where_latency_replay_fixture_dirty");
+  const currentBlob = await releaseReplayGit(
+    repositoryRoot,
+    ["hash-object", "--no-filters", "--", WHERE_LATENCY_REPLAY_FIXTURE_PATH],
+    "where_latency_replay_fixture_hash_unavailable"
+  );
+  if (currentBlob !== gitBlob) fail("where_latency_replay_fixture_head_mismatch");
+  return {
+    bytes: content.toString("utf8"),
+    fixturePath: WHERE_LATENCY_REPLAY_FIXTURE_PATH,
+    gitCommit,
+    gitBlob,
+    contentSha256: createHash("sha256").update(content).digest("hex")
+  };
+}
+
+export function canonicalWhereLatencyReplayCliOutput(
+  analysis: WhereLatencyReplayAnalysisV1,
+  identity: WhereLatencyReplayFixtureIdentityV1
+): string {
+  if (identity.fixturePath !== WHERE_LATENCY_REPLAY_FIXTURE_PATH
+    || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(identity.gitCommit)
+    || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(identity.gitBlob)
+    || !/^[0-9a-f]{64}$/u.test(identity.contentSha256)) {
+    fail("where_latency_replay_fixture_identity_invalid");
+  }
+  return canonicalizeArtifactJson({
+    baseline: analysis.requestCounts.baseline,
+    fixture: {
+      path: identity.fixturePath,
+      gitCommit: identity.gitCommit,
+      gitBlob: identity.gitBlob,
+      contentSha256: identity.contentSha256
+    },
+    new: analysis.requestCounts.firstRun,
+    stableFactsEqual: analysis.stableFactsEqual
+  });
+}
 
 export type BuildWhereLatencyReplayV1Input = Omit<
   WhereLatencyReplayV1,
