@@ -354,9 +354,11 @@ Before any dynamic import, the CLI verifies a separately pre-authorized,
 canonical deployment receipt by its raw-file SHA-256. The receipt binds an
 immutable image/artifact digest, clean Git commit and tree, a single-entry
 module graph and graph SHA-256, the adapter entry path/hash, bridge protocol
-`where-latency-canary-bridge-v1`, and the canonical Ed25519 public key as SPKI
-DER plus its SHA-256 fingerprint. A private key is never present in a receipt,
-isolation file, run result, or runtime attestation. Its format must be
+`where-latency-canary-bridge-v1`, and both canonical Ed25519 public keys as
+SPKI DER plus SHA-256 fingerprints: the bridge server key and the only
+authorized canary-client key. A private key is never present in a receipt,
+configuration projection, adapter input, isolation file, run result, runtime
+attestation, or log. Its format must be
 `single_file_esm_bundle_v1`: the graph contains exactly that one self-contained
 adapter bundle plus the explicit `node` implementation, exact Node version and
 `execArgv`, and a sorted exact list of permitted `node:` built-ins. The list
@@ -376,8 +378,10 @@ context with string/WASM code generation disabled, no `process`, `require`, or
 host `global`, membrane-wrapped Buffer/URL/Abort/text/timer capabilities, and
 an always-rejecting dynamic-import hook. The membrane is bidirectional: host
 callback `this`, arguments, results, Promise values/rejections, event-listener
-values, AbortSignal, and thrown errors are never delivered raw into the VM;
-the factory result, runtime method `this`/arguments, VM Promise
+values, AbortSignal, and thrown errors are never delivered raw into the VM.
+The factory itself is invoked through the boundary and its raw return is
+wrapped before host `await`/thenable assimilation; the factory result, runtime
+method `this`/arguments, VM Promise
 fulfilments/rejections, and thrown errors are likewise never delivered raw to
 the host. The npm command
 supplies `--experimental-vm-modules`; absence of `SourceTextModule` fails
@@ -390,22 +394,36 @@ worker, scheduler, forensic repository, delivery repository, and address-index
 worker, plus the verified deployment identity. These observations must match
 the expected environment exactly; the
 environment alone is never isolation evidence.
-For each process run the trusted host creates a fresh 32-byte nonce and assigns
-a strictly increasing sequence number. The only accepted methods are the exact
+For each process run the trusted host reads the explicit PKCS8 PEM client key
+secret, requires an Ed25519 private key, derives its public SPKI, and requires
+an exact match with the receipt-authorized client SPKI. On POSIX the key file
+must not grant group/other permissions; symlinks are rejected. The secret is
+kept out of adapter/config/receipt data. `prepare` also requires this secret
+because it calls bridge-backed attestation and diagnostics. The host then
+creates a fresh 32-byte nonce and assigns a strictly increasing sequence
+number. The only accepted methods are the exact
 runtime contract: `runtimeAttestation`, `schedulerIsolationDiagnostics`,
 `schedulerDiagnostics`, `laneDiagnostics`, `enqueueWhereJob`,
 `waitForHandlerStart`, `jobRuntimeState`, `waitForTerminal`,
 `deliveryDiagnostics`, `maxActiveWhereHandlers`, `stopClaimsAndDrain`,
 `enqueueDeepJob`, `waitForDeepHandlerStart`, `deepJobDiagnostics`,
 `memoryDiagnostics`, and `stopDeepClaimsAndDrain`. Canonical request envelopes
-bind protocol, nonce, sequence, method, request SHA-256, and request JSON.
-Canonical response envelopes bind the same fields plus response SHA-256 and an
-Ed25519 signature over the unsigned response envelope. Before returning a
+bind protocol, nonce, sequence, method, expiry, authorized client fingerprint,
+request SHA-256, and request JSON, then carry the client Ed25519 signature.
+Before dispatching any method, the bridge server must verify that signature,
+expiry, fingerprint, method and hashes, and atomically reject a duplicate or
+non-monotonic sequence for that authenticated nonce/client session. Canonical
+response envelopes bind protocol, nonce, sequence, method, request SHA-256,
+client fingerprint, SHA-256 of the client request signature, response SHA-256,
+and the server Ed25519 signature. Before returning a
 bounded structured clone to the VM, the host rejects unknown methods,
 replayed/mismatched sequence or nonce, method/hash/key/signature mismatch,
 non-canonical or non-JSON responses, responses over 1 MiB, and timeout. The
 request limit is 256 KiB. Concurrent requests may complete in any order, but a
 response must carry the sequence assigned to that request.
+Production fetch uses redirect mode `error` and also rejects a redirected,
+opaque-redirect, or final response URL that differs from the exact canonical
+configured loopback origin/path.
 The adapter owns only jobs whose unique `requestedBy` and progress marker are
 provided by the harness. Its `stopClaimsAndDrain` must stop new canary claims
 and await every canary-owned handler promise before returning. The command
@@ -424,6 +442,7 @@ $env:WHERE_LATENCY_CANARY_RUNTIME_ADAPTER = "<absolute-path-to-deployment-runtim
 $env:WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256 = "<canonical-deployed-config-sha256>"
 $env:WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_URL = "http://127.0.0.1:<dedicated-bridge-port>"
 $env:WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_TIMEOUT_MS = "10000"
+$env:WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_CLIENT_KEY_FILE = "<absolute-path-to-protected-client-pkcs8-pem>"
 $env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT = "<absolute-path-to-canonical-deployment-receipt>"
 $env:WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT_SHA256 = "<pre-authorized-raw-file-sha256>"
 $env:WHERE_LATENCY_CANARY_IMMUTABLE_ARTIFACT_DIGEST = "sha256:<immutable-image-or-artifact-digest>"

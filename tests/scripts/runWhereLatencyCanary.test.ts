@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,6 +35,11 @@ const execFileAsync = promisify(execFile);
 const BRIDGE_KEYS = generateKeyPairSync("ed25519");
 const BRIDGE_PUBLIC_DER = BRIDGE_KEYS.publicKey.export({ format: "der", type: "spki" });
 const BRIDGE_PUBLIC_SHA256 = createHash("sha256").update(BRIDGE_PUBLIC_DER).digest("hex");
+const BRIDGE_CLIENT_KEYS = generateKeyPairSync("ed25519");
+const BRIDGE_CLIENT_PUBLIC_DER = BRIDGE_CLIENT_KEYS.publicKey.export({ format: "der", type: "spki" });
+const BRIDGE_CLIENT_PUBLIC_SHA256 = createHash("sha256")
+  .update(BRIDGE_CLIENT_PUBLIC_DER)
+  .digest("hex");
 const deploymentIdentity = () => ({
   schema: "where-latency-canary-deployment-identity-v1" as const,
   deploymentReceiptFileSha256: "3".repeat(64),
@@ -51,7 +56,8 @@ const deploymentIdentity = () => ({
   },
   allowedNodeBuiltins: [],
   bridgeProtocolVersion: "where-latency-canary-bridge-v1" as const,
-  bridgePublicKeySpkiSha256: BRIDGE_PUBLIC_SHA256
+  bridgePublicKeySpkiSha256: BRIDGE_PUBLIC_SHA256,
+  bridgeClientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256
 });
 const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
   schema: "where-latency-canary-database-v1",
@@ -249,7 +255,12 @@ async function deploymentFixture(
   const root = join(directory, "deployment");
   await mkdir(root);
   const adapterPath = join(root, "adapter.mjs");
+  const clientPrivateKeyPath = join(directory, "bridge-client-key.pem");
   await writeFile(adapterPath, adapterSource, "utf8");
+  await writeFile(clientPrivateKeyPath, BRIDGE_CLIENT_KEYS.privateKey.export({
+    format: "pem",
+    type: "pkcs8"
+  }), { mode: 0o600 });
   const hashFile = async (path: string) => createHash("sha256")
     .update(await readFile(path)).digest("hex");
   const moduleGraph = [{ path: "adapter.mjs", sha256: await hashFile(adapterPath) }];
@@ -270,6 +281,8 @@ async function deploymentFixture(
     bridgeProtocolVersion: "where-latency-canary-bridge-v1",
     bridgePublicKeySpkiDerBase64: Buffer.from(BRIDGE_PUBLIC_DER).toString("base64"),
     bridgePublicKeySpkiSha256: BRIDGE_PUBLIC_SHA256,
+    bridgeClientPublicKeySpkiDerBase64: Buffer.from(BRIDGE_CLIENT_PUBLIC_DER).toString("base64"),
+    bridgeClientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256,
     moduleGraph,
     moduleGraphSha256: fingerprintCanonicalArtifact(moduleGraph),
     adapterEntryPath: "adapter.mjs",
@@ -284,6 +297,7 @@ async function deploymentFixture(
   return {
     root,
     adapterPath,
+    clientPrivateKeyPath,
     adapterSource,
     receiptPath,
     receipt,
@@ -1068,32 +1082,63 @@ describe("Where latency canary", () => {
     const signedTransport = (
       privateKey = BRIDGE_KEYS.privateKey,
       mutate: (value: Record<string, unknown>) => void = () => undefined
-    ) => async (body: string) => {
-      const request = JSON.parse(body) as Record<string, unknown>;
-      const response = { ok: true, seq: request.seq };
-      const signed: Record<string, unknown> = {
-        schema: "where-latency-canary-bridge-response-v1",
-        protocolVersion: "where-latency-canary-bridge-v1",
-        sessionNonce: request.sessionNonce,
-        seq: request.seq,
-        method: request.method,
-        requestSha256: request.requestSha256,
-        responseSha256: fingerprintCanonicalArtifact(response),
-        response
-      };
-      mutate(signed);
-      const envelope = {
-        ...signed,
-        signature: sign(
-          null,
-          Buffer.from(canonicalizeArtifactJson(signed)),
-          privateKey
-        ).toString("base64")
-      };
-      return {
-        status: 200,
-        contentType: "application/json",
-        body: Buffer.from(canonicalizeArtifactJson(envelope)) as Uint8Array
+    ) => {
+      const lastSequence = new Map<string, number>();
+      return async (body: string) => {
+        const request = JSON.parse(body) as Record<string, unknown>;
+        const { clientSignature, ...signedRequest } = request;
+        if (
+          request.clientPublicKeySpkiSha256 !== BRIDGE_CLIENT_PUBLIC_SHA256 ||
+          typeof clientSignature !== "string"
+        ) throw new Error("test_bridge_client_signature_missing");
+        const clientSignatureBytes = Buffer.from(clientSignature, "base64");
+        if (
+          clientSignatureBytes.toString("base64") !== clientSignature ||
+          !verify(
+            null,
+            Buffer.from(canonicalizeArtifactJson(signedRequest)),
+            BRIDGE_CLIENT_KEYS.publicKey,
+            clientSignatureBytes
+          )
+        ) throw new Error("test_bridge_client_signature_invalid");
+        if (request.expiresAtMs !== 1_000_100) {
+          throw new Error("test_bridge_request_expiry_invalid");
+        }
+        const session = String(request.sessionNonce);
+        const previous = lastSequence.get(session) ?? 0;
+        if (typeof request.seq !== "number" || request.seq <= previous) {
+          throw new Error("test_bridge_request_replay");
+        }
+        lastSequence.set(session, request.seq);
+        const response = { ok: true, seq: request.seq };
+        const signed: Record<string, unknown> = {
+          schema: "where-latency-canary-bridge-response-v1",
+          protocolVersion: "where-latency-canary-bridge-v1",
+          sessionNonce: request.sessionNonce,
+          seq: request.seq,
+          method: request.method,
+          requestSha256: request.requestSha256,
+          clientPublicKeySpkiSha256: request.clientPublicKeySpkiSha256,
+          requestSignatureSha256: createHash("sha256")
+            .update(clientSignatureBytes)
+            .digest("hex"),
+          responseSha256: fingerprintCanonicalArtifact(response),
+          response
+        };
+        mutate(signed);
+        const envelope = {
+          ...signed,
+          signature: sign(
+            null,
+            Buffer.from(canonicalizeArtifactJson(signed)),
+            privateKey
+          ).toString("base64")
+        };
+        return {
+          status: 200,
+          contentType: "application/json",
+          body: Buffer.from(canonicalizeArtifactJson(envelope)) as Uint8Array
+        };
       };
     };
     const invoke = (transport: ReturnType<typeof signedTransport>) =>
@@ -1101,7 +1146,10 @@ describe("Where latency canary", () => {
         url: "http://127.0.0.1:43123",
         timeoutMs: 100,
         publicKey: BRIDGE_KEYS.publicKey,
+        clientPrivateKey: BRIDGE_CLIENT_KEYS.privateKey,
+        clientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256,
         sessionNonce: nonce,
+        now: () => 1_000_000,
         transport
       });
 
@@ -1121,7 +1169,9 @@ describe("Where latency canary", () => {
     for (const [field, value] of [
       ["seq", 2],
       ["method", "laneDiagnostics"],
-      ["requestSha256", "0".repeat(64)]
+      ["requestSha256", "0".repeat(64)],
+      ["clientPublicKeySpkiSha256", "0".repeat(64)],
+      ["requestSignatureSha256", "0".repeat(64)]
     ] as const) {
       await expect(invoke(signedTransport(BRIDGE_KEYS.privateKey, (signed) => {
         signed[field] = value;
@@ -1139,6 +1189,21 @@ describe("Where latency canary", () => {
     await replayInvoker.invoke("schedulerDiagnostics", "{}");
     await expect(replayInvoker.invoke("schedulerDiagnostics", "{}"))
       .rejects.toThrow("where_latency_canary_bridge_response_binding_mismatch");
+    let capturedRequest = "";
+    const requestReplayTransport = signedTransport();
+    const requestReplayInvoker = invoke(async (body) => {
+      capturedRequest = body;
+      return requestReplayTransport(body);
+    });
+    await requestReplayInvoker.invoke("schedulerDiagnostics", "{}");
+    await expect(requestReplayTransport(capturedRequest))
+      .rejects.toThrow("test_bridge_request_replay");
+    await expect(invoke(async (body) => {
+      const request = JSON.parse(body) as Record<string, unknown>;
+      request.method = "laneDiagnostics";
+      return signedTransport()(canonicalizeArtifactJson(request));
+    }).invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("test_bridge_client_signature_invalid");
     await expect(invoke(async () => ({
       status: 200,
       contentType: "application/json",
@@ -1157,10 +1222,98 @@ describe("Where latency canary", () => {
       url: "http://127.0.0.1:43123",
       timeoutMs: 2,
       publicKey: BRIDGE_KEYS.publicKey,
+      clientPrivateKey: BRIDGE_CLIENT_KEYS.privateKey,
+      clientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256,
       sessionNonce: nonce,
+      now: () => 1_000_000,
       transport: async () => await new Promise<never>(() => undefined)
     }).invoke("schedulerDiagnostics", "{}"))
       .rejects.toThrow("where_latency_canary_bridge_timeout");
+
+    const wrongClient = generateKeyPairSync("ed25519");
+    expect(() => createWhereLatencyCanaryBridgeInvoker({
+      url: "http://127.0.0.1:43123",
+      timeoutMs: 100,
+      publicKey: BRIDGE_KEYS.publicKey,
+      clientPrivateKey: wrongClient.privateKey,
+      clientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256
+    })).toThrow("where_latency_canary_bridge_client_key_mismatch");
+    expect(() => createWhereLatencyCanaryBridgeInvoker({
+      url: "http://127.0.0.1:43123",
+      timeoutMs: 100,
+      publicKey: BRIDGE_KEYS.publicKey,
+      clientPrivateKey: undefined as never,
+      clientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256
+    })).toThrow("where_latency_canary_bridge_client_private_key_required");
+  });
+
+  it("rejects a loopback fetch response from a redirected or different URL", async () => {
+    const configuredUrl = "http://127.0.0.1:43123/bridge";
+    let responseMetadata: Pick<Response, "redirected" | "type" | "url"> = {
+      redirected: true,
+      type: "basic",
+      url: configuredUrl
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const clientSignature = String(request.clientSignature);
+      const { clientSignature: _signature, ...signedRequest } = request;
+      expect(verify(
+        null,
+        Buffer.from(canonicalizeArtifactJson(signedRequest)),
+        BRIDGE_CLIENT_KEYS.publicKey,
+        Buffer.from(clientSignature, "base64")
+      )).toBe(true);
+      const response = { ok: true };
+      const signed = {
+        schema: "where-latency-canary-bridge-response-v1",
+        protocolVersion: "where-latency-canary-bridge-v1",
+        sessionNonce: request.sessionNonce,
+        seq: request.seq,
+        method: request.method,
+        requestSha256: request.requestSha256,
+        clientPublicKeySpkiSha256: request.clientPublicKeySpkiSha256,
+        requestSignatureSha256: createHash("sha256")
+          .update(Buffer.from(clientSignature, "base64"))
+          .digest("hex"),
+        responseSha256: fingerprintCanonicalArtifact(response),
+        response
+      };
+      const body = canonicalizeArtifactJson({
+        ...signed,
+        signature: sign(
+          null,
+          Buffer.from(canonicalizeArtifactJson(signed)),
+          BRIDGE_KEYS.privateKey
+        ).toString("base64")
+      });
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        body: new Response(body).body,
+        ...responseMetadata
+      } as Response;
+    });
+    for (const metadata of [
+      { redirected: true, type: "basic" as ResponseType, url: configuredUrl },
+      { redirected: false, type: "opaqueredirect" as ResponseType, url: configuredUrl },
+      { redirected: false, type: "basic" as ResponseType, url: "http://127.0.0.1:43123/other" }
+    ]) {
+      responseMetadata = metadata;
+      await expect(createWhereLatencyCanaryBridgeInvoker({
+        url: configuredUrl,
+        timeoutMs: 100,
+        publicKey: BRIDGE_KEYS.publicKey,
+        clientPrivateKey: BRIDGE_CLIENT_KEYS.privateKey,
+        clientPublicKeySpkiSha256: BRIDGE_CLIENT_PUBLIC_SHA256,
+        sessionNonce: createHash("sha256").update(randomUUID()).digest("hex"),
+        now: () => 1_000_000
+      }).invoke("schedulerDiagnostics", "{}"))
+        .rejects.toThrow("where_latency_canary_bridge_redirect_invalid");
+    }
+    expect(fetchSpy).toHaveBeenCalledWith(configuredUrl, expect.objectContaining({
+      redirect: "error"
+    }));
   });
 
   it("executes verified bundle bytes even if the adapter path changes after read", async () => {
@@ -1172,6 +1325,7 @@ describe("Where latency canary", () => {
       config: fixture.unboundConfig,
       modulePath: fixture.adapterPath,
       deploymentReceiptPath: fixture.receiptPath,
+      bridgeClientPrivateKeyPath: fixture.clientPrivateKeyPath,
       expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
       expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
       gitCommit: GIT_COMMIT,
@@ -1397,6 +1551,31 @@ describe("Where latency canary", () => {
     });
   });
 
+  it("wraps a VM factory thenable before host await assimilation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-vm-"));
+    const result = await runVmChild(directory, `
+      const api = await import(process.env.CANARY_SCRIPT_URL);
+      const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
+        bytes: Buffer.from(\`
+          export function createWhereLatencyCanaryRuntime() {
+            return { then(resolve) {
+              const blocked = resolve.constructor === undefined && Object.getPrototypeOf(resolve) === null;
+              let escaped = false;
+              try { escaped = Boolean(resolve.constructor("return process")()); }
+              catch { escaped = false; }
+              resolve({ marker: escaped ? "escaped" : "blocked", blocked });
+            } };
+          }
+        \`),
+        identifier: "where-latency-canary:test:factory-thenable-boundary",
+        allowedNodeBuiltins: [],
+        factoryConfig: {}
+      });
+      process.stdout.write(JSON.stringify({ marker: runtime.marker, blocked: runtime.blocked }));
+    `, {});
+    expect(result).toEqual({ marker: "blocked", blocked: true });
+  });
+
   it("fails closed when vm.SourceTextModule is unavailable", async () => {
     const directory = await mkdtemp(join(tmpdir(), "where-canary-vm-"));
     const result = await runVmChild(directory, `
@@ -1419,6 +1598,30 @@ describe("Where latency canary", () => {
     });
   });
 
+  it("requires the runtime PKCS8 client key to match the receipt-authorized public key", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const fixture = await deploymentFixture(directory);
+    const load = (bridgeClientPrivateKeyPath: string) =>
+      loadVerifiedWhereLatencyRuntimeBridge({
+        config: fixture.unboundConfig,
+        modulePath: fixture.adapterPath,
+        deploymentReceiptPath: fixture.receiptPath,
+        bridgeClientPrivateKeyPath,
+        expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
+        expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
+        inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" }))
+      });
+    await expect(load(""))
+      .rejects.toThrow("where_latency_canary_bridge_client_private_key_required");
+    const wrongKeyPath = join(directory, "wrong-client-key.pem");
+    await writeFile(wrongKeyPath, generateKeyPairSync("ed25519").privateKey.export({
+      format: "pem",
+      type: "pkcs8"
+    }), { mode: 0o600 });
+    await expect(load(wrongKeyPath))
+      .rejects.toThrow("where_latency_canary_bridge_client_key_mismatch");
+  });
+
   it("rejects wrong bundle format, multi-file graph, and dirty checkout before runtime import", async () => {
     const graphDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const graphFixture = await deploymentFixture(graphDirectory);
@@ -1438,6 +1641,7 @@ describe("Where latency canary", () => {
       config: graphFixture.unboundConfig,
       modulePath: graphFixture.adapterPath,
       deploymentReceiptPath: graphFixture.receiptPath,
+      bridgeClientPrivateKeyPath: graphFixture.clientPrivateKeyPath,
       expectedDeploymentReceiptFileSha256: createHash("sha256").update(graphBytes).digest("hex"),
       expectedImmutableArtifactDigest: graphFixture.expectedImmutableArtifactDigest,
       inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" }))
@@ -1466,6 +1670,7 @@ describe("Where latency canary", () => {
       config: multiFixture.unboundConfig,
       modulePath: multiFixture.adapterPath,
       deploymentReceiptPath: multiFixture.receiptPath,
+      bridgeClientPrivateKeyPath: multiFixture.clientPrivateKeyPath,
       expectedDeploymentReceiptFileSha256: createHash("sha256").update(multiBytes).digest("hex"),
       expectedImmutableArtifactDigest: multiFixture.expectedImmutableArtifactDigest,
       inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" }))
@@ -1477,6 +1682,7 @@ describe("Where latency canary", () => {
       config: dirtyFixture.unboundConfig,
       modulePath: dirtyFixture.adapterPath,
       deploymentReceiptPath: dirtyFixture.receiptPath,
+      bridgeClientPrivateKeyPath: dirtyFixture.clientPrivateKeyPath,
       expectedDeploymentReceiptFileSha256: dirtyFixture.expectedDeploymentReceiptFileSha256,
       expectedImmutableArtifactDigest: dirtyFixture.expectedImmutableArtifactDigest,
       inspectCheckout: vi.fn(async () => ({

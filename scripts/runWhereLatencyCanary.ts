@@ -2,9 +2,11 @@ import "dotenv/config";
 import { execFile } from "node:child_process";
 import {
   createHash,
+  createPrivateKey,
   createPublicKey,
   randomBytes,
   randomUUID,
+  sign as signPayload,
   verify as verifySignature,
   type KeyObject
 } from "node:crypto";
@@ -63,6 +65,7 @@ export type WhereLatencyCanaryDeploymentIdentity = {
   allowedNodeBuiltins: string[];
   bridgeProtocolVersion: "where-latency-canary-bridge-v1";
   bridgePublicKeySpkiSha256: string;
+  bridgeClientPublicKeySpkiSha256: string;
 };
 
 export type WhereLatencyCanaryRuntimeAttestation = {
@@ -460,7 +463,8 @@ function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): 
     value.deploymentReceiptFileSha256,
     value.moduleGraphSha256,
     value.adapterEntrySha256,
-    value.bridgePublicKeySpkiSha256
+    value.bridgePublicKeySpkiSha256,
+    value.bridgeClientPublicKeySpkiSha256
   ]) assertSha256(identity, "where_latency_canary_deployment_identity_invalid");
   canonicalAllowedNodeBuiltins(
     value.allowedNodeBuiltins,
@@ -1581,6 +1585,8 @@ type DeploymentReceiptPayload = {
   bridgeProtocolVersion: "where-latency-canary-bridge-v1";
   bridgePublicKeySpkiDerBase64: string;
   bridgePublicKeySpkiSha256: string;
+  bridgeClientPublicKeySpkiDerBase64: string;
+  bridgeClientPublicKeySpkiSha256: string;
   moduleGraph: DeploymentModuleGraphEntry[];
   moduleGraphSha256: string;
   adapterEntryPath: string;
@@ -1630,6 +1636,7 @@ function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
     !Array.isArray(receipt.allowedNodeBuiltins) ||
     receipt.bridgeProtocolVersion !== "where-latency-canary-bridge-v1" ||
     typeof receipt.bridgePublicKeySpkiDerBase64 !== "string" ||
+    typeof receipt.bridgeClientPublicKeySpkiDerBase64 !== "string" ||
     !Array.isArray(receipt.moduleGraph) || receipt.moduleGraph.length < 1 ||
     typeof receipt.adapterEntryPath !== "string"
   ) throw new Error("where_latency_canary_deployment_receipt_invalid");
@@ -1637,28 +1644,89 @@ function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
     receipt.moduleGraphSha256,
     receipt.adapterEntrySha256,
     receipt.runtimeConfigIdentity,
-    receipt.bridgePublicKeySpkiSha256
+    receipt.bridgePublicKeySpkiSha256,
+    receipt.bridgeClientPublicKeySpkiSha256
   ]) assertSha256(hash, "where_latency_canary_deployment_receipt_invalid");
   return receipt;
 }
 
-function verifiedBridgePublicKey(receipt: DeploymentReceipt): KeyObject {
-  const bytes = Buffer.from(receipt.bridgePublicKeySpkiDerBase64, "base64");
-  if (bytes.toString("base64") !== receipt.bridgePublicKeySpkiDerBase64) {
-    throw new Error("where_latency_canary_bridge_public_key_invalid");
+function verifiedEd25519PublicKey(
+  derBase64: string,
+  sha256: string,
+  errorCode: string
+): KeyObject {
+  const bytes = Buffer.from(derBase64, "base64");
+  if (bytes.toString("base64") !== derBase64) {
+    throw new Error(errorCode);
   }
   let key: KeyObject;
   try {
     key = createPublicKey({ key: bytes, format: "der", type: "spki" });
   } catch {
-    throw new Error("where_latency_canary_bridge_public_key_invalid");
+    throw new Error(errorCode);
   }
   const canonical = key.export({ format: "der", type: "spki" });
   if (
     key.asymmetricKeyType !== "ed25519" || !Buffer.from(canonical).equals(bytes) ||
-    createHash("sha256").update(bytes).digest("hex") !== receipt.bridgePublicKeySpkiSha256
-  ) throw new Error("where_latency_canary_bridge_public_key_invalid");
+    createHash("sha256").update(bytes).digest("hex") !== sha256
+  ) throw new Error(errorCode);
   return key;
+}
+
+function verifiedBridgePublicKey(receipt: DeploymentReceipt): KeyObject {
+  return verifiedEd25519PublicKey(
+    receipt.bridgePublicKeySpkiDerBase64,
+    receipt.bridgePublicKeySpkiSha256,
+    "where_latency_canary_bridge_public_key_invalid"
+  );
+}
+
+function verifiedBridgeClientPublicKey(receipt: DeploymentReceipt): KeyObject {
+  return verifiedEd25519PublicKey(
+    receipt.bridgeClientPublicKeySpkiDerBase64,
+    receipt.bridgeClientPublicKeySpkiSha256,
+    "where_latency_canary_bridge_client_public_key_invalid"
+  );
+}
+
+async function verifiedBridgeClientPrivateKey(
+  path: string,
+  authorizedPublicKey: KeyObject
+): Promise<KeyObject> {
+  if (!path.trim()) {
+    throw new Error("where_latency_canary_bridge_client_private_key_required");
+  }
+  let bytes: Buffer;
+  try {
+    const secretPath = resolve(path);
+    const metadata = await lstat(secretPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("invalid");
+    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+      throw new Error("permissions");
+    }
+    bytes = await readFile(secretPath);
+  } catch (error) {
+    if (error instanceof Error && error.message === "permissions") {
+      throw new Error("where_latency_canary_bridge_client_private_key_permissions_invalid");
+    }
+    throw new Error("where_latency_canary_bridge_client_private_key_invalid");
+  }
+  let privateKey: KeyObject;
+  try {
+    privateKey = createPrivateKey({ key: bytes, format: "pem", type: "pkcs8" });
+  } catch {
+    throw new Error("where_latency_canary_bridge_client_private_key_invalid");
+  } finally {
+    bytes.fill(0);
+  }
+  const derivedPublic = createPublicKey(privateKey);
+  const authorizedDer = authorizedPublicKey.export({ format: "der", type: "spki" });
+  const derivedDer = derivedPublic.export({ format: "der", type: "spki" });
+  if (
+    privateKey.type !== "private" || privateKey.asymmetricKeyType !== "ed25519" ||
+    !Buffer.from(derivedDer).equals(Buffer.from(authorizedDer))
+  ) throw new Error("where_latency_canary_bridge_client_key_mismatch");
+  return privateKey;
 }
 
 function assertSafeGraphPath(path: string): void {
@@ -1695,12 +1763,18 @@ async function loopbackBridgeTransport(
   body: string,
   signal: AbortSignal
 ): Promise<{ status: number; contentType: string; body: Uint8Array }> {
+  const expectedUrl = new URL(url).href;
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body,
-    signal
+    signal,
+    redirect: "error"
   });
+  if (
+    response.type === "opaqueredirect" || response.redirected ||
+    response.url !== expectedUrl
+  ) throw new Error("where_latency_canary_bridge_redirect_invalid");
   const reader = response.body?.getReader();
   if (!reader) throw new Error("where_latency_canary_bridge_empty_response");
   const chunks: Uint8Array[] = [];
@@ -1726,8 +1800,11 @@ export function createWhereLatencyCanaryBridgeInvoker(input: {
   url: string;
   timeoutMs: number;
   publicKey: KeyObject;
+  clientPrivateKey: KeyObject;
+  clientPublicKeySpkiSha256: string;
   transport?: BridgeTransport;
   sessionNonce?: string;
+  now?: () => number;
 }): {
   sessionNonce: string;
   invoke(method: string, requestJson: string, signal?: AbortSignal): Promise<unknown>;
@@ -1738,6 +1815,23 @@ export function createWhereLatencyCanaryBridgeInvoker(input: {
   if (input.publicKey.type !== "public" || input.publicKey.asymmetricKeyType !== "ed25519") {
     throw new Error("where_latency_canary_bridge_public_key_invalid");
   }
+  if (!input.clientPrivateKey) {
+    throw new Error("where_latency_canary_bridge_client_private_key_required");
+  }
+  if (
+    input.clientPrivateKey.type !== "private" ||
+    input.clientPrivateKey.asymmetricKeyType !== "ed25519"
+  ) throw new Error("where_latency_canary_bridge_client_private_key_invalid");
+  assertSha256(
+    input.clientPublicKeySpkiSha256,
+    "where_latency_canary_bridge_client_public_key_invalid"
+  );
+  const derivedClientPublicDer = createPublicKey(input.clientPrivateKey)
+    .export({ format: "der", type: "spki" });
+  if (
+    createHash("sha256").update(derivedClientPublicDer).digest("hex") !==
+      input.clientPublicKeySpkiSha256
+  ) throw new Error("where_latency_canary_bridge_client_key_mismatch");
   const sessionNonce = input.sessionNonce ?? randomBytes(32).toString("hex");
   if (!/^[a-f0-9]{64}$/.test(sessionNonce)) {
     throw new Error("where_latency_canary_bridge_session_invalid");
@@ -1767,15 +1861,30 @@ export function createWhereLatencyCanaryBridgeInvoker(input: {
       }
       const seq = nextSequence++;
       const requestSha256 = fingerprintCanonicalArtifact(request);
-      const requestEnvelope = {
+      const expiresAtMs = (input.now ?? Date.now)() + input.timeoutMs;
+      if (!Number.isSafeInteger(expiresAtMs)) {
+        throw new Error("where_latency_canary_bridge_request_expiry_invalid");
+      }
+      const signedRequest = {
         schema: "where-latency-canary-bridge-request-v1",
         protocolVersion: "where-latency-canary-bridge-v1",
         sessionNonce,
         seq,
         method,
+        expiresAtMs,
+        clientPublicKeySpkiSha256: input.clientPublicKeySpkiSha256,
         requestSha256,
         request
       };
+      const clientSignature = signPayload(
+        null,
+        Buffer.from(canonicalizeArtifactJson(signedRequest)),
+        input.clientPrivateKey
+      ).toString("base64");
+      const requestSignatureSha256 = createHash("sha256")
+        .update(Buffer.from(clientSignature, "base64"))
+        .digest("hex");
+      const requestEnvelope = { ...signedRequest, clientSignature };
       const controller = new AbortController();
       const abort = () => controller.abort(callerSignal?.reason);
       callerSignal?.addEventListener("abort", abort, { once: true });
@@ -1826,6 +1935,8 @@ export function createWhereLatencyCanaryBridgeInvoker(input: {
         signed.protocolVersion !== "where-latency-canary-bridge-v1" ||
         signed.sessionNonce !== sessionNonce || signed.seq !== seq ||
         signed.method !== method || signed.requestSha256 !== requestSha256 ||
+        signed.clientPublicKeySpkiSha256 !== input.clientPublicKeySpkiSha256 ||
+        signed.requestSignatureSha256 !== requestSignatureSha256 ||
         completed.has(seq)
       ) throw new Error("where_latency_canary_bridge_response_binding_mismatch");
       if (
@@ -2065,13 +2176,16 @@ export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
   if (typeof factory !== "function") {
     throw new Error("where_latency_canary_runtime_adapter_invalid");
   }
-  return membrane.toHost(await factory(factoryConfig)) as WhereLatencyCanaryRuntime;
+  const hostFactory = membrane.toHost(factory) as (config: unknown) => unknown;
+  const factoryReturn = hostFactory(membrane.toHost(factoryConfig));
+  return await factoryReturn as WhereLatencyCanaryRuntime;
 }
 
 export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
   config: WhereLatencyCanaryUnboundConfig;
   modulePath: string;
   deploymentReceiptPath: string;
+  bridgeClientPrivateKeyPath: string;
   expectedDeploymentReceiptFileSha256: string;
   expectedImmutableArtifactDigest: string;
   inspectCheckout?: (deploymentRoot: string) => Promise<{
@@ -2124,6 +2238,11 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     "where_latency_canary_allowed_builtins_invalid"
   );
   const bridgePublicKey = verifiedBridgePublicKey(receipt);
+  const bridgeClientPublicKey = verifiedBridgeClientPublicKey(receipt);
+  const bridgeClientPrivateKey = await verifiedBridgeClientPrivateKey(
+    input.bridgeClientPrivateKeyPath,
+    bridgeClientPublicKey
+  );
   if (receipt.moduleGraph.length !== 1) {
     throw new Error("where_latency_canary_bundle_graph_must_be_single_file");
   }
@@ -2188,7 +2307,8 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     },
     allowedNodeBuiltins,
     bridgeProtocolVersion: receipt.bridgeProtocolVersion,
-    bridgePublicKeySpkiSha256: receipt.bridgePublicKeySpkiSha256
+    bridgePublicKeySpkiSha256: receipt.bridgePublicKeySpkiSha256,
+    bridgeClientPublicKeySpkiSha256: receipt.bridgeClientPublicKeySpkiSha256
   };
   const adapterIdentity: WhereLatencyCanaryAdapterIdentity = {
     schema: "where-latency-canary-adapter-v1",
@@ -2203,7 +2323,9 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     bridgeInvoke: createWhereLatencyCanaryBridgeInvoker({
       url: input.config.runtimeBridgeUrl,
       timeoutMs: input.config.runtimeBridgeTimeoutMs,
-      publicKey: bridgePublicKey
+      publicKey: bridgePublicKey,
+      clientPrivateKey: bridgeClientPrivateKey,
+      clientPublicKeySpkiSha256: receipt.bridgeClientPublicKeySpkiSha256
     }).invoke,
     requireBridge: true
   });
@@ -2233,6 +2355,8 @@ async function loadRuntimeBridge(
     process.env.WHERE_LATENCY_CANARY_DEPLOYMENT_RECEIPT_SHA256?.trim();
   const immutableArtifactDigest =
     process.env.WHERE_LATENCY_CANARY_IMMUTABLE_ARTIFACT_DIGEST?.trim();
+  const bridgeClientPrivateKeyPath =
+    process.env.WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_CLIENT_KEY_FILE?.trim();
   if (!deploymentReceiptPath) throw new Error("where_latency_canary_deployment_receipt_required");
   if (!deploymentReceiptFileSha256) {
     throw new Error("where_latency_canary_deployment_receipt_sha256_required");
@@ -2240,10 +2364,14 @@ async function loadRuntimeBridge(
   if (!immutableArtifactDigest) {
     throw new Error("where_latency_canary_immutable_artifact_digest_required");
   }
+  if (!bridgeClientPrivateKeyPath) {
+    throw new Error("where_latency_canary_bridge_client_private_key_required");
+  }
   return loadVerifiedWhereLatencyRuntimeBridge({
     config,
     modulePath,
     deploymentReceiptPath,
+    bridgeClientPrivateKeyPath,
     expectedDeploymentReceiptFileSha256: deploymentReceiptFileSha256,
     expectedImmutableArtifactDigest: immutableArtifactDigest
   });
