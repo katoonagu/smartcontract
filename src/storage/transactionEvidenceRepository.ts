@@ -347,6 +347,26 @@ function resultStatus(result: string): TronTransactionProviderEvidenceV1["finali
   return "confirmed_failed";
 }
 
+function indexedMovementFinalityStatus(
+  movement: TransactionProviderMovementWitnessV1 | null
+): TronTransactionProviderEvidenceV1["finality"]["status"] | null {
+  if (!movement || movement.confirmed !== true || typeof movement.reverted !== "boolean") return null;
+  const contractStatus = resultStatus(movement.contractRet.toUpperCase());
+  const finalStatus = resultStatus(movement.finalResult.toUpperCase());
+  if (contractStatus !== finalStatus || movement.reverted !== (finalStatus === "confirmed_reverted")) return null;
+  return finalStatus;
+}
+
+function providerEvidenceHasAdverseFinality(evidence: TronTransactionProviderEvidenceV1): boolean {
+  const indexedStatus = indexedMovementFinalityStatus(evidence.finality.movement);
+  return evidence.finality.status !== "confirmed_success" || (
+    indexedStatus !== null && (
+      indexedStatus !== "confirmed_success" ||
+      indexedStatus !== evidence.finality.status
+    )
+  );
+}
+
 function endpointFinalityStatus(
   identity: TransactionProviderEvidenceIdentityV1,
   payload: Record<string, unknown>
@@ -665,12 +685,12 @@ export async function saveTransactionEnrichmentDecisionEvidence(
       rawMovement.finalResult === "SUCCESS"
     : normalized.decision === "full_transaction_info_confirmed"
       ? normalized.triggerCodes.length > 0 &&
-        providers.every((provider) => provider.finality.status === "confirmed_success") &&
+        providers.every((provider) => !providerEvidenceHasAdverseFinality(provider)) &&
         providers.some((provider) =>
           provider.endpoint === "transaction-info" &&
           provider.finality.status === "confirmed_success" &&
           provider.finality.witnessSha256 === normalized.movementWitnessSha256)
-      : providers.some((provider) => provider.finality.status !== "confirmed_success");
+      : providers.some(providerEvidenceHasAdverseFinality);
   if (!decisionProven) {
     throw new TypeError("transaction_enrichment_decision_evidence_invalid");
   }

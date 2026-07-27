@@ -634,6 +634,53 @@ describe("transaction evidence repository", () => {
   });
 
   it.each(["confirmed_failed", "confirmed_reverted"] as const)(
+    "rejects full-confirmed and accepts adverse decision for raw SUCCESS with indexed %s",
+    async (indexedStatus) => {
+      const store = memoryDb();
+      const rawIdentityValue = rawIdentity();
+      const rawPayloadValue = rawPayload(HASH_A, "SUCCESS");
+      const indexedMovement = movementWitness(HASH_A, indexedStatus);
+      const contradictoryRaw: TronTransactionProviderEvidenceV1 = {
+        ...rawIdentityValue,
+        fetchedAt: "2026-07-26T12:00:00.000Z",
+        finality: {
+          status: "confirmed_success",
+          witnessKind: "indexed_tron_usdt_transfer",
+          witnessSha256: transactionProviderFinalityWitnessSha256({
+            identity: rawIdentityValue,
+            status: "confirmed_success",
+            payload: rawPayloadValue,
+            movement: indexedMovement
+          }),
+          movement: indexedMovement
+        },
+        payloadSha256: createHash("sha256").update(canonicalizeArtifactJson(rawPayloadValue)).digest("hex"),
+        payload: rawPayloadValue
+      };
+      const rawId = (await saveTransactionProviderEvidence(store.db, contradictoryRaw)).id;
+      const full = fullEvidence();
+      const fullId = (await saveTransactionProviderEvidence(store.db, full)).id;
+      const base = {
+        version: "transaction-enrichment-decision-evidence-v1" as const,
+        policyVersion: "selective-transaction-enrichment-v1" as const,
+        chain: "tron" as const,
+        txHash: HASH_A,
+        triggerCodes: ["raw_edge_mismatch"] as const,
+        providerEvidenceIds: [rawId, fullId],
+        movementWitnessSha256: contradictoryRaw.finality.witnessSha256
+      };
+      await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+        ...base,
+        decision: "full_transaction_info_confirmed"
+      })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
+      await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+        ...base,
+        decision: "confirmed_failed_or_reverted"
+      })).resolves.toMatchObject({ evidence: { decision: "confirmed_failed_or_reverted" } });
+    }
+  );
+
+  it.each(["confirmed_failed", "confirmed_reverted"] as const)(
     "rejects a plain decision that mixes successful raw evidence with %s full evidence",
     async (status) => {
       const store = memoryDb();

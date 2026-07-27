@@ -620,6 +620,49 @@ describe("selective transaction enrichment", () => {
   });
 
   it.each([
+    ["FAILED", false],
+    ["REVERT", true]
+  ] as const)("keeps indexed %s adverse when raw and full endpoints say SUCCESS", async (indexedResult, reverted) => {
+    const route = edge(HASH_A, {
+      contractRet: indexedResult,
+      finalResult: indexedResult,
+      reverted
+    });
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "SUCCESS" }),
+      getFullTransactionInfo: async (hash) => fullPayload(hash, "SUCCESS")
+    });
+    const result = await h.enricher.enrich(inputFor(route));
+    expect(result).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "proven",
+      adverseGate: "incomplete",
+      inferredStopAllowed: false,
+      decisions: [{ decision: "confirmed_failed_or_reverted", priority: "hard" }]
+    });
+    expect(result.decisions[0].providerEvidenceIds).toHaveLength(2);
+    expect(result.evidenceIds.some((id) => id.startsWith("transaction-enrichment-decision-evidence-v1:"))).toBe(true);
+  });
+
+  it("keeps agreeing indexed/raw/full SUCCESS clean when full enrichment has a real trigger", async () => {
+    const route = edge();
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "SUCCESS" }),
+      getFullTransactionInfo: async (hash) => fullPayload(hash, "SUCCESS")
+    });
+    const result = await h.enricher.enrich(inputFor(route, {
+      unresolvedEconomicRoleTxHashes: [route.txHash]
+    }));
+    expect(result).toMatchObject({
+      coverageStatus: "complete",
+      technicalStatus: "proven",
+      adverseGate: "complete",
+      inferredStopAllowed: true,
+      decisions: [{ decision: "full_transaction_info_confirmed", priority: "hard" }]
+    });
+  });
+
+  it.each([
     ["unconfirmed", { confirmed: false }],
     ["unknown finality", { finalResult: null }]
   ])("does not synthesize a route-bound adverse raw witness from %s indexed movement", async (_label, overrides) => {

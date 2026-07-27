@@ -339,6 +339,27 @@ function savedRawEvidenceMatchesCurrentMovement(
   }
 }
 
+function indexedMovementStatus(
+  movement: TransactionProviderMovementWitnessV1 | null
+): TronTransactionProviderEvidenceV1["finality"]["status"] | null {
+  if (!movement) return null;
+  const status = (value: string): TronTransactionProviderEvidenceV1["finality"]["status"] =>
+    value === "SUCCESS" ? "confirmed_success" : value.includes("REVERT") ? "confirmed_reverted" : "confirmed_failed";
+  const contractStatus = status(movement.contractRet);
+  const finalStatus = status(movement.finalResult);
+  return contractStatus === finalStatus && movement.reverted === (finalStatus === "confirmed_reverted")
+    ? finalStatus
+    : null;
+}
+
+function rawEvidenceHasAdverseFinality(evidence: TronTransactionProviderEvidenceV1): boolean {
+  const indexedStatus = indexedMovementStatus(evidence.finality.movement);
+  return evidence.finality.status !== "confirmed_success" ||
+    indexedStatus === null ||
+    indexedStatus !== "confirmed_success" ||
+    indexedStatus !== evidence.finality.status;
+}
+
 function rawFinality(payload: unknown): TronTransactionProviderEvidenceV1["finality"]["status"] | null {
   const value = record(payload);
   if (!value || !Array.isArray(value.ret) || value.ret.length === 0) return null;
@@ -595,7 +616,7 @@ export function createSelectiveTransactionEnricher(deps: {
     }, signal);
     account(full, "full");
     aborted(signal);
-    const rawNegative = raw.kind === "evidence" && raw.evidence.finality.status !== "confirmed_success"
+    const rawNegative = raw.kind === "evidence" && rawEvidenceHasAdverseFinality(raw.evidence)
       ? raw
       : null;
     if (full.kind === "capped") {
