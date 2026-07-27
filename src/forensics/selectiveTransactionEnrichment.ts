@@ -21,6 +21,7 @@ import type {
 } from "../types";
 
 const HASH = /^[0-9a-f]{64}$/u;
+const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/u;
 const POLICY_VERSION = "selective-transaction-enrichment-v1" as const;
 const RAW_PROVIDER = {
   provider: "tron_fullnode",
@@ -34,8 +35,10 @@ const FULL_PROVIDER = {
 export type SelectiveTransactionEnrichmentMode = "subject" | "intermediate_boundary";
 
 export type RouteLinkedAssertionInput = {
-  status?: string;
-  evidenceJson?: unknown;
+  chain: string;
+  address: string;
+  status: string;
+  evidenceJson: unknown;
 };
 
 export type SelectiveTransactionEnrichmentInput = {
@@ -72,7 +75,8 @@ export type SelectiveTransactionEnricher = {
 type ProviderResolution =
   | { kind: "evidence"; id: string; evidence: TronTransactionProviderEvidenceV1; savedHit: boolean; inFlightHit: boolean; providerRequest: boolean; awaitMs: number }
   | { kind: "unavailable"; observedPayload?: unknown; savedHit: boolean; inFlightHit: boolean; providerRequest: boolean; awaitMs: number }
-  | { kind: "corrupt"; savedHit: boolean; inFlightHit: boolean; providerRequest: boolean; awaitMs: number };
+  | { kind: "corrupt"; savedHit: boolean; inFlightHit: boolean; providerRequest: boolean; awaitMs: number }
+  | { kind: "capped"; savedHit: boolean; inFlightHit: boolean; providerRequest: boolean; awaitMs: number };
 
 type CandidateResolution = {
   decision: TransactionEnrichmentDecisionV1;
@@ -110,22 +114,65 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function exactAssertionHashes(assertions: readonly RouteLinkedAssertionInput[]): Set<string> {
+function strictAssertionLinks(assertion: RouteLinkedAssertionInput): {
+  hashes: Set<string>;
+  addresses: Set<string>;
+} | null {
+  if (assertion.chain !== "tron" || assertion.status !== "active" || !TRON_ADDRESS.test(assertion.address)) return null;
+  const evidence = record(assertion.evidenceJson);
+  if (!evidence) return null;
   const hashes = new Set<string>();
-  for (const assertion of assertions) {
-    if (assertion.status !== undefined && assertion.status !== "active") continue;
-    const evidence = record(assertion.evidenceJson);
-    if (!evidence) continue;
-    for (const value of [evidence.approvalTxHash, evidence.drainTxHash]) {
-      if (typeof value === "string" && HASH.test(value.toLowerCase())) hashes.add(value.toLowerCase());
-    }
-    if (Array.isArray(evidence.pathTxHashes)) {
-      for (const value of evidence.pathTxHashes) {
-        if (typeof value === "string" && HASH.test(value.toLowerCase())) hashes.add(value.toLowerCase());
-      }
+  for (const key of ["approvalTxHash", "drainTxHash"] as const) {
+    const value = evidence[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string" || !HASH.test(value.toLowerCase())) return null;
+    hashes.add(value.toLowerCase());
+  }
+  if (evidence.pathTxHashes !== undefined) {
+    if (!Array.isArray(evidence.pathTxHashes)) return null;
+    for (const value of evidence.pathTxHashes) {
+      if (typeof value !== "string" || !HASH.test(value.toLowerCase())) return null;
+      hashes.add(value.toLowerCase());
     }
   }
-  return hashes;
+  const addresses = new Set<string>();
+  for (const key of [
+    "subjectAddress",
+    "victimAddress",
+    "spenderAddress",
+    "firstReceiverAddress",
+    "fromAddress",
+    "toAddress",
+    "callerAddress",
+    "contractAddress"
+  ] as const) {
+    const value = evidence[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string" || !TRON_ADDRESS.test(value)) return null;
+    addresses.add(value);
+  }
+  if (evidence.pathAddresses !== undefined) {
+    if (!Array.isArray(evidence.pathAddresses)) return null;
+    for (const value of evidence.pathAddresses) {
+      if (typeof value !== "string" || !TRON_ADDRESS.test(value)) return null;
+      addresses.add(value);
+    }
+  }
+  return hashes.size > 0 || addresses.size > 0 ? { hashes, addresses } : null;
+}
+
+function assertionMatchesCandidate(input: {
+  assertion: RouteLinkedAssertionInput;
+  candidateHash: string;
+  candidateAddresses: ReadonlySet<string>;
+  routeAddresses: ReadonlySet<string>;
+}): boolean {
+  const links = strictAssertionLinks(input.assertion);
+  if (!links || [...links.addresses].some((address) => !input.routeAddresses.has(address))) return false;
+  return (
+    input.candidateAddresses.has(input.assertion.address) ||
+    links.hashes.has(input.candidateHash)
+  );
 }
 
 function addTrigger(target: FullTransactionInfoTrigger[], trigger: FullTransactionInfoTrigger): void {
@@ -154,7 +201,12 @@ export function buildSelectiveTransactionCandidates(
   }
   const forcedHard = new Set((input.hardTxHashes ?? []).map(normalizeHash));
   const unresolved = new Set((input.unresolvedEconomicRoleTxHashes ?? []).map(normalizeHash));
-  const asserted = exactAssertionHashes(input.assertions ?? []);
+  const routeAddresses = new Set(input.routeEdges.flatMap((edge) => [
+    edge.fromAddress,
+    edge.toAddress,
+    ...(edge.callerAddress ? [edge.callerAddress] : []),
+    ...(edge.contractAddress ? [edge.contractAddress] : [])
+  ]));
   const candidates: SelectiveTransactionCandidate[] = [];
   for (const [txHash, group] of byHash) {
     const triggers: FullTransactionInfoTrigger[] = [];
@@ -168,7 +220,18 @@ export function buildSelectiveTransactionCandidates(
     if (unresolved.has(txHash)) {
       addTrigger(triggers, "unresolved_economic_role");
     }
-    if (asserted.has(txHash)) addTrigger(triggers, "exact_route_linked_assertion");
+    const candidateAddresses = new Set(group.routeEdges.flatMap((edge) => [
+      edge.fromAddress,
+      edge.toAddress,
+      ...(edge.callerAddress ? [edge.callerAddress] : []),
+      ...(edge.contractAddress ? [edge.contractAddress] : [])
+    ]));
+    if ((input.assertions ?? []).some((assertion) => assertionMatchesCandidate({
+      assertion,
+      candidateHash: txHash,
+      candidateAddresses,
+      routeAddresses
+    }))) addTrigger(triggers, "exact_route_linked_assertion");
     const priority = forcedHard.has(txHash) || triggers.length > 0 ? "hard" : "optional";
     candidates.push({
       id: `selective-tx:${txHash}`,
@@ -250,6 +313,32 @@ function movementWitness(movement: ForensicRouteEdge): TransactionProviderMoveme
   };
 }
 
+function savedRawEvidenceMatchesCurrentMovement(
+  evidence: TronTransactionProviderEvidenceV1,
+  movement: ForensicRouteEdge | undefined
+): boolean {
+  if (evidence.endpoint !== "gettransactionbyid" || !movement) return false;
+  const current = movementWitness(movement);
+  const saved = evidence.finality.movement;
+  if (!current || !saved) return false;
+  const sameRichIdentity =
+    (current.transferId ?? null) === (saved.transferId ?? null) &&
+    (current.eventIndex ?? null) === (saved.eventIndex ?? null) &&
+    (current.provider ?? null) === (saved.provider ?? null) &&
+    (current.providerRowOrdinalInTx ?? null) === (saved.providerRowOrdinalInTx ?? null);
+  if (!sameRichIdentity) return false;
+  try {
+    return transactionProviderFinalityWitnessSha256({
+      identity: evidence,
+      status: evidence.finality.status,
+      payload: evidence.payload,
+      movement: current
+    }) === evidence.finality.witnessSha256;
+  } catch {
+    return false;
+  }
+}
+
 function rawFinality(payload: unknown): TronTransactionProviderEvidenceV1["finality"]["status"] | null {
   const value = record(payload);
   if (!value || !Array.isArray(value.ret) || value.ret.length === 0) return null;
@@ -328,6 +417,7 @@ export function createSelectiveTransactionEnricher(deps: {
     txHash: string;
     endpoint: "raw" | "full";
     movement: ForensicRouteEdge | undefined;
+    acquireProviderSlot?: () => boolean;
   }, signal?: AbortSignal): Promise<ProviderResolution> {
     const providerIdentity = identity(input.txHash, input.endpoint);
     const evidenceId = transactionProviderEvidenceId(providerIdentity);
@@ -345,6 +435,9 @@ export function createSelectiveTransactionEnricher(deps: {
       const started = deps.now().getTime();
       const result = await shared;
       return { ...result, savedHit: false, inFlightHit: true, providerRequest: false, awaitMs: Math.max(0, deps.now().getTime() - started) };
+    }
+    if (input.acquireProviderSlot && !input.acquireProviderSlot()) {
+      return { kind: "capped", savedHit: false, inFlightHit: false, providerRequest: false, awaitMs: 0 };
     }
     const promise = (async (): Promise<ProviderResolution> => {
       const started = deps.now().getTime();
@@ -439,7 +532,7 @@ export function createSelectiveTransactionEnricher(deps: {
     aborted(signal);
     const triggers = [...candidate.triggerCodes];
     let parsed: RawTransactionPreflightV1 | null = null;
-    if (raw.kind === "corrupt") {
+    if (raw.kind === "corrupt" || raw.kind === "capped") {
       return {
         ...metrics,
         decision: {
@@ -470,8 +563,17 @@ export function createSelectiveTransactionEnricher(deps: {
       if (raw.kind === "evidence" && raw.evidence.finality.status !== "confirmed_success") {
         addTrigger(triggers, "raw_edge_mismatch");
       }
+      if (raw.kind === "evidence" && !savedRawEvidenceMatchesCurrentMovement(raw.evidence, movement)) {
+        addTrigger(triggers, "raw_edge_mismatch");
+      }
     }
-    if (raw.kind === "evidence" && triggers.length === 0 && parsed && rawPlain(parsed) && movementPlain(movement)) {
+    if (
+      raw.kind === "evidence" &&
+      triggers.length === 0 &&
+      parsed && rawPlain(parsed) &&
+      movementPlain(movement) &&
+      savedRawEvidenceMatchesCurrentMovement(raw.evidence, movement)
+    ) {
       const saved = await saveDecision({
         candidate,
         decision: "plain_usdt_raw_proven",
@@ -482,7 +584,16 @@ export function createSelectiveTransactionEnricher(deps: {
       aborted(signal);
       return { ...metrics, ...saved, incomplete: false };
     }
-    if (!acquireFullSlot()) {
+    aborted(signal);
+    const full = await loadProvider({
+      txHash: candidate.txHash,
+      endpoint: "full",
+      movement,
+      acquireProviderSlot: acquireFullSlot
+    }, signal);
+    account(full, "full");
+    aborted(signal);
+    if (full.kind === "capped") {
       return {
         ...metrics,
         decision: {
@@ -499,17 +610,13 @@ export function createSelectiveTransactionEnricher(deps: {
         incomplete: true
       };
     }
-    aborted(signal);
-    const full = await loadProvider({ txHash: candidate.txHash, endpoint: "full", movement }, signal);
-    account(full, "full");
-    aborted(signal);
     if (full.kind !== "evidence") {
       return {
         ...metrics,
         decision: {
           txHash: candidate.txHash,
           candidateId: candidate.id,
-          priority: candidate.priority,
+          priority: "hard",
           triggerCodes: triggers,
           decision: "technical_unknown",
           providerEvidenceIds: raw.kind === "evidence" ? [raw.id] : [],

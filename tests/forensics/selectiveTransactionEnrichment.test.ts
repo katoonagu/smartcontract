@@ -196,16 +196,56 @@ describe("selective transaction enrichment", () => {
     const route = edge();
     const exact = harness();
     const exactResult = await exact.enricher.enrich(inputFor(route, {
-      assertions: [{ status: "active", evidenceJson: { drainTxHash: HASH_A } }]
+      assertions: [{
+        chain: "tron",
+        address: FROM,
+        status: "active",
+        evidenceJson: { drainTxHash: HASH_A, pathAddresses: [FROM, TO] }
+      }]
     }));
     expect(exactResult.decisions[0].triggerCodes).toContain("exact_route_linked_assertion");
     expect(exactResult.fullProviderRequests).toBe(1);
 
     const flat = harness();
     const flatResult = await flat.enricher.enrich(inputFor(route, {
-      assertions: [{ status: "active", evidenceJson: { label: "drainer", notes: HASH_A } }]
+      assertions: [{
+        chain: "tron",
+        address: FROM,
+        status: "active",
+        evidenceJson: { label: "drainer", notes: HASH_A }
+      }]
     }));
     expect(flatResult.fullProviderRequests).toBe(0);
+  });
+
+  it.each([
+    ["other chain", { chain: "eth", address: FROM, status: "active", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [FROM, TO] } }],
+    ["other address", { chain: "tron", address: OTHER, status: "active", evidenceJson: { drainTxHash: "b".repeat(64) } }],
+    ["foreign path", { chain: "tron", address: OTHER, status: "active", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [OTHER] } }],
+    ["inactive", { chain: "tron", address: FROM, status: "inactive", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [FROM, TO] } }],
+    ["retired", { chain: "tron", address: FROM, status: "retired", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [FROM, TO] } }],
+    ["false positive", { chain: "tron", address: FROM, status: "false_positive", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [FROM, TO] } }],
+    ["malformed path", { chain: "tron", address: FROM, status: "active", evidenceJson: { drainTxHash: HASH_A, pathAddresses: [123] } }]
+  ])("rejects a non-authoritative %s assertion", async (_label, assertion) => {
+    const route = edge();
+    const h = harness();
+    const result = await h.enricher.enrich(inputFor(route, { assertions: [assertion] }));
+    expect(result.fullProviderRequests).toBe(0);
+    expect(result.decisions[0].triggerCodes).not.toContain("exact_route_linked_assertion");
+  });
+
+  it("accepts a foreign assertion address only when exact hash and structured route addresses bind it", async () => {
+    const route = edge();
+    const h = harness();
+    const result = await h.enricher.enrich(inputFor(route, {
+      assertions: [{
+        chain: "tron",
+        address: OTHER,
+        status: "active",
+        evidenceJson: { approvalTxHash: HASH_A, pathAddresses: [FROM, TO] }
+      }]
+    }));
+    expect(result.decisions[0].triggerCodes).toContain("exact_route_linked_assertion");
   });
 
   it.each([
@@ -233,7 +273,12 @@ describe("selective transaction enrichment", () => {
     const h = harness();
     const result = await h.enricher.enrich({
       ...inputFor(route),
-      assertions: [{ evidenceJson: { label: "REVIEW", category: "unknown", serviceLikelihood: 0.99 } }]
+      assertions: [{
+        chain: "tron",
+        address: FROM,
+        status: "active",
+        evidenceJson: { label: "REVIEW", category: "unknown", serviceLikelihood: 0.99 }
+      }]
     });
     expect(result.fullProviderRequests).toBe(0);
   });
@@ -261,6 +306,21 @@ describe("selective transaction enrichment", () => {
     expect(second.savedEvidenceHits).toBe(2);
     expect(h.rawCalls).toEqual([]);
     expect(h.fullCalls).toEqual([]);
+  });
+
+  it("does not reuse a saved raw plain proof for a different rich event identity with the same tuple", async () => {
+    const original = edge();
+    const h = harness();
+    await h.enricher.enrich(inputFor(original));
+    h.rawCalls.length = 0;
+    h.fullCalls.length = 0;
+    const differentEvent = edge(HASH_A, { transferId: "different-transfer", eventIndex: 7 });
+    const result = await h.enricher.enrich(inputFor(differentEvent));
+    expect(h.rawCalls).toEqual([]);
+    expect(result.fullProviderRequests).toBe(1);
+    expect(result.decisions[0]).toMatchObject({ priority: "hard" });
+    expect(result.decisions[0].triggerCodes).toContain("raw_edge_mismatch");
+    expect(result.decisions[0].decision).not.toBe("plain_usdt_raw_proven");
   });
 
   it("shares one in-flight provider promise per exact evidence identity", async () => {
@@ -428,5 +488,37 @@ describe("selective transaction enrichment", () => {
     const overflow = result.decisions.filter((item) => item.decision === "missing_evidence");
     expect(overflow).toHaveLength(2);
     expect(overflow.every((item) => item.triggerCodes.includes("unresolved_economic_role") && item.continueTraversal)).toBe(true);
+  });
+
+  it("reuses saved full evidence beyond the fifth intermediate candidate without consuming the provider cap", async () => {
+    const routes = Array.from({ length: 7 }, (_, index) => edge(index.toString(16).padStart(64, "0")));
+    const h = harness();
+    const enrichmentInput: SelectiveTransactionEnrichmentInput = {
+      mode: "subject",
+      routeEdges: routes,
+      movements: routes,
+      unresolvedEconomicRoleTxHashes: routes.map((route) => route.txHash)
+    };
+    await h.enricher.enrich(enrichmentInput);
+    h.rawCalls.length = 0;
+    h.fullCalls.length = 0;
+    const result = await h.enricher.enrich({ ...enrichmentInput, mode: "intermediate_boundary" });
+    expect(result.fullProviderRequests).toBe(0);
+    expect(result.savedEvidenceHits).toBe(14);
+    expect(result.decisions.some((decision) => decision.decision === "missing_evidence")).toBe(false);
+    expect(result.coverageStatus).toBe("complete");
+  });
+
+  it.each(["unavailable", "corrupt"])("promotes a dynamic raw %s trigger to hard audit priority", async (kind) => {
+    const h = harness(kind === "unavailable"
+      ? {
+          getRawTransaction: async () => { throw new Error("raw unavailable"); },
+          getFullTransactionInfo: async () => { throw new Error("full unavailable"); }
+        }
+      : { getSavedEvidence: async () => { throw new Error("corrupt saved row"); } });
+    const result = await h.enricher.enrich(inputFor(edge()));
+    expect(result.hardCandidateCount).toBe(1);
+    expect(result.decisions[0]).toMatchObject({ priority: "hard", decision: "technical_unknown" });
+    expect(result.decisions[0].triggerCodes).toContain("raw_unavailable_or_ambiguous");
   });
 });
