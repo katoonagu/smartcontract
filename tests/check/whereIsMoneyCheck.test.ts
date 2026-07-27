@@ -624,6 +624,74 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.transactionInfoEnrichment?.technicalStatus).toBe("technical_unknown");
     expect(report.transactionInfoEnrichment?.decisions.some((item) => item.decision === "plain_usdt_raw_proven")).toBe(false);
   });
+
+  it("keeps hard transferFrom evidence when every optional parser budget is zero", async () => {
+    const txHash = "c".repeat(64);
+    const transferFromEdge = edge(txHash, victim, subject, "1000000", "2026-05-22T10:00:00.000Z", "transfer_from");
+    const enrich = vi.fn(async (enrichmentInput: { routeEdges: readonly ForensicRouteEdge[] }) => {
+      const decisions = enrichmentInput.routeEdges.map((item) => ({
+        txHash: item.txHash,
+        candidateId: `selective-tx:${item.txHash}`,
+        priority: "hard" as const,
+        triggerCodes: ["non_plain_transfer_method" as const],
+        decision: "full_transaction_info_confirmed" as const,
+        providerEvidenceIds: [`full:${item.txHash}`],
+        decisionEvidenceId: `decision:${item.txHash}`,
+        continueTraversal: false
+      }));
+      return {
+        policyVersion: "selective-transaction-enrichment-v1" as const,
+        coverageStatus: "complete" as const,
+        technicalStatus: "proven" as const,
+        candidateCount: decisions.length,
+        hardCandidateCount: decisions.length,
+        rawProviderRequests: 0,
+        fullProviderRequests: 0,
+        savedEvidenceHits: decisions.length,
+        inFlightHits: 0,
+        schedulerAwaitMs: 0,
+        evidenceIds: decisions.flatMap((item) => item.providerEvidenceIds),
+        decisions,
+        adverseGate: "complete" as const,
+        inferredStopAllowed: true,
+        continueTraversal: false
+      };
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => address === subject ? [transferFromEdge] : [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      selectiveTransactionEnricher: {
+        enrich,
+        getFullTransactionInfo: async (hash) => hash === txHash
+          ? { ownerAddress: spender, trigger_info: { methodName: "transferFrom" } }
+          : null
+      },
+      listTrc20ApprovalChanges: async (query) => [approval({
+        ownerAddress: query.ownerAddress,
+        spenderAddress: query.spenderAddress,
+        amountRaw: "1000000"
+      })]
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 0,
+      maxContractTransactionInfoFetches: 0
+    });
+
+    expect(report.approvalDrainProvenanceProfiles).toEqual([
+      expect.objectContaining({ drainTxHash: txHash })
+    ]);
+    expect(report.contractDrivenTransferProfiles).toEqual([
+      expect.objectContaining({ txHash, method: "transferFrom" })
+    ]);
+  });
+
   it("keeps an exact GasFree account on the path and reaches its upstream Binance funder", async () => {
     const principalTxHash = "tx-exact-gasfree-principal";
     const getTransaction = vi.fn(async (txHash: string) =>

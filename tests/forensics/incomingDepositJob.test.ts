@@ -14,6 +14,14 @@ import { TargetedHistoryWaitingForIndex } from "../../src/forensics/targetedHist
 import { buildScoringAuditRow } from "../../src/risk/scoringAudit";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import {
+  createSelectiveTransactionEnricher,
+  type SelectiveTransactionEnrichmentInput
+} from "../../src/forensics/selectiveTransactionEnrichment";
+import {
+  transactionProviderEvidenceId,
+  type TronTransactionProviderEvidenceV1
+} from "../../src/storage/transactionEvidenceRepository";
+import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
   type CrossChainTransfer,
@@ -30,6 +38,7 @@ import type {
 } from "../../src/forensics/evmExplorerClient";
 import type {
   AddressLabel,
+  ForensicRouteEdge,
   IncomingDepositRiskReport,
   IndexedTronUsdtTransfer,
   ServiceClassification,
@@ -1938,11 +1947,84 @@ describe("buildIncomingDepositReport", () => {
     }
   });
 
-  it("aborts the claimed incoming run and publishes nothing when enrichment heartbeat loses its CAS", async () => {
+  it("aborts a delayed shared raw enrichment on claim loss without full, next-candidate, completion, or delivery", async () => {
     let updates = 0;
     let observedAborted = false;
     const complete = vi.fn(async () => true);
     const record = vi.fn(async () => true);
+    const firstHash = depositTxHash;
+    const nextHash = "e".repeat(64);
+    const rawCalls: string[] = [];
+    const fullCalls: string[] = [];
+    const saved = new Map<string, TronTransactionProviderEvidenceV1>();
+    let releaseRaw!: (payload: unknown) => void;
+    let signalRawStarted!: () => void;
+    const rawStarted = new Promise<void>((resolve) => { signalRawStarted = resolve; });
+    const delayedRaw = new Promise<unknown>((resolve) => { releaseRaw = resolve; });
+    const movement = (txHash: string): ForensicRouteEdge => ({
+      id: `edge:${txHash}`,
+      txHash,
+      transferId: `transfer:${txHash}`,
+      eventIndex: 0,
+      provider: "tronscan",
+      providerRowOrdinalInTx: 0,
+      fromAddress: validProgressJson.sender,
+      toAddress: validProgressJson.watchedWallet,
+      amountRaw: "1000000",
+      timestamp: new Date(validProgressJson.timestamp),
+      method: "transfer",
+      edgeType: "normal_transfer",
+      callerAddress: validProgressJson.sender,
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      confirmed: true,
+      reverted: false,
+      economicRole: "principal"
+    });
+    const firstMovement = movement(firstHash);
+    const nextMovement = movement(nextHash);
+    const wordAddress = TronWeb.address.toHex(validProgressJson.watchedWallet).slice(2).padStart(64, "0").toLowerCase();
+    const rawPayload = {
+      txID: firstHash,
+      raw_data: {
+        contract: [{
+          type: "TriggerSmartContract",
+          parameter: {
+            type_url: "type.googleapis.com/protocol.TriggerSmartContract",
+            value: {
+              owner_address: TronWeb.address.toHex(validProgressJson.sender),
+              contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
+              data: `a9059cbb${wordAddress}${(1_000_000).toString(16).padStart(64, "0")}`
+            }
+          }
+        }]
+      },
+      ret: [{ contractRet: "SUCCESS" }]
+    };
+    const enricher = createSelectiveTransactionEnricher({
+      getSavedEvidence: async (identity) => saved.get(transactionProviderEvidenceId(identity)) ?? null,
+      saveProviderEvidence: async (evidence) => {
+        const id = transactionProviderEvidenceId(evidence);
+        saved.set(id, evidence);
+        return { id };
+      },
+      saveDecisionEvidence: async (evidence) => ({ id: `decision:${evidence.txHash}` }),
+      getRawTransaction: async (txHash) => {
+        rawCalls.push(txHash);
+        if (txHash === firstHash) {
+          signalRawStarted();
+          return delayedRaw;
+        }
+        return null;
+      },
+      getFullTransactionInfo: async (txHash) => {
+        fullCalls.push(txHash);
+        return null;
+      },
+      now: () => new Date("2026-07-27T00:00:30.000Z"),
+      maxConcurrentSubmissions: 1
+    });
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job(validProgressJson),
@@ -1956,17 +2038,37 @@ describe("buildIncomingDepositReport", () => {
       recordObservedTransactionRisk: record,
       formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
       buildReport: async ({ persistProgress, abortSignal }) => {
+        const claimedRun = enricher.enrich({
+          mode: "subject",
+          routeEdges: [firstMovement, nextMovement],
+          movements: [firstMovement, nextMovement]
+        }, { signal: abortSignal });
+        const otherWaiter = enricher.enrich({
+          mode: "subject",
+          routeEdges: [firstMovement],
+          movements: [firstMovement]
+        });
+        await rawStarted;
+        let claimLoss: unknown;
         try {
           await persistProgress?.({ jobHeartbeatAt: "2026-07-27T00:00:30.000Z" });
+        } catch (error) {
+          claimLoss = error;
         } finally {
           observedAborted = abortSignal?.aborted === true;
         }
-        return report();
+        releaseRaw(rawPayload);
+        await expect(claimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
+        await expect(otherWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
+        throw claimLoss;
       }
     });
 
     expect(handled).toBe(true);
     expect(observedAborted).toBe(true);
+    expect(rawCalls).toEqual([firstHash]);
+    expect(fullCalls).toEqual([]);
+    expect(saved.size).toBeGreaterThan(0);
     expect(complete).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
   });
@@ -2117,6 +2219,86 @@ describe("buildIncomingDepositReport", () => {
       "report_infer_sender_role",
       "report_assemble"
     ]));
+  });
+
+  it("merges outer selective evidence, exact assertions, heartbeat, and incomplete coverage into the report", async () => {
+    const fundingHash = "f".repeat(64);
+    const assertion = {
+      chain: "tron",
+      address: validProgressJson.sender,
+      status: "active",
+      evidenceJson: { approvalTxHash: depositTxHash }
+    };
+    const listActiveRouteAssertions = vi.fn(async () => [assertion]);
+    const persistProgress = vi.fn(async (patch) => patch);
+    const enrich = vi.fn(async (enrichmentInput: SelectiveTransactionEnrichmentInput, options?: {
+      onCandidateResolved?: (input: { completed: number; total: number }) => Promise<void> | void;
+    }) => {
+      await options?.onCandidateResolved?.({ completed: 1, total: 1 });
+      const outer = enrichmentInput.routeEdges.some((routeEdge) => routeEdge.txHash === depositTxHash);
+      return {
+        policyVersion: "selective-transaction-enrichment-v1" as const,
+        coverageStatus: outer ? "coverage_incomplete" as const : "complete" as const,
+        technicalStatus: outer ? "technical_unknown" as const : "proven" as const,
+        candidateCount: 1,
+        hardCandidateCount: outer ? 1 : 0,
+        rawProviderRequests: 0,
+        fullProviderRequests: 0,
+        savedEvidenceHits: 1,
+        inFlightHits: 0,
+        schedulerAwaitMs: 0,
+        evidenceIds: outer ? ["outer-only-evidence"] : [],
+        decisions: [],
+        adverseGate: outer ? "incomplete" as const : "complete" as const,
+        inferredStopAllowed: !outer,
+        continueTraversal: outer
+      };
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => address === validProgressJson.sender
+          ? [indexedTransfer({
+              txHash: fundingHash,
+              fromAddress: "TFunder111111111111111111111111111111",
+              toAddress: address,
+              amountRaw: validProgressJson.amountRaw,
+              blockTimestamp: new Date("2026-05-29T13:30:00.000Z")
+            })]
+          : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        selectiveTransactionEnricher: { enrich, getFullTransactionInfo: async () => null },
+        listActiveRouteAssertions,
+        listIndexedMovementsByHashes: async () => [],
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp),
+      persistProgress
+    });
+
+    expect(result.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      evidenceIds: expect.arrayContaining(["outer-only-evidence"])
+    });
+    expect(result.warnings).toContain(
+      "Transaction evidence incomplete: at least one incoming-deposit outer route candidate lacks final evidence."
+    );
+    expect(listActiveRouteAssertions).toHaveBeenCalledWith(expect.objectContaining({
+      addresses: expect.arrayContaining([validProgressJson.sender, validProgressJson.watchedWallet]),
+      txHashes: [depositTxHash]
+    }));
+    expect(enrich.mock.calls.some((call) => (call[0] as { assertions?: unknown[] }).assertions?.[0] === assertion)).toBe(true);
+    expect(persistProgress).toHaveBeenCalledWith(expect.objectContaining({ jobHeartbeatAt: expect.any(String) }));
   });
 
   it("composes fast sender risk and deterministic contract analysis without fresh LLM output", async () => {

@@ -94,6 +94,10 @@ code_refs:
   owned by the central scheduler; the CLI delay flag may only raise the
   contract-bucket floor. A false legacy job progress CAS aborts the caller and
   forbids stale completion or delivery preparation.
+- Hard transaction hashes remain candidates without indexed movement rows and
+  bypass only optional parser/exploration limits, never the shared resolver.
+  Incoming combines outer and nested Where enrichment evidence and propagates
+  any outer incompleteness into report coverage and completion evidence IDs.
 - Matrix v4 gives unknown addresses zero by default and creates risk only from
   evidence or confirmed behavior combinations. Hard floors are not diluted by
   safe volume.

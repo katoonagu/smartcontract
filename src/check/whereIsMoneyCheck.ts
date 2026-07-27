@@ -851,11 +851,11 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return mergeForensicRouteEdges([...byKey.values()]);
 }
 
-function mergeTransactionInfoEnrichment(
-  results: readonly SelectiveTransactionEnrichmentResult[]
+export function mergeTransactionInfoEnrichment(
+  results: readonly WhereTransactionInfoEnrichmentSummary[]
 ): WhereTransactionInfoEnrichmentSummary | undefined {
   if (results.length === 0) return undefined;
-  const decisions = new Map<string, SelectiveTransactionEnrichmentResult["decisions"][number]>();
+  const decisions = new Map<string, WhereTransactionInfoEnrichmentSummary["decisions"][number]>();
   for (const result of results) {
     for (const decision of result.decisions) decisions.set(decision.txHash, decision);
   }
@@ -1945,10 +1945,16 @@ export async function runWhereIsMoneyCheck(
       .filter((decision) => decision.priority === "hard")
       .map((decision) => decision.txHash)
   );
+  const hardApprovalEdges = dedupeEdges(
+    allFetchedEdges.filter((edge) =>
+      hardEnrichmentHashes.has(edge.txHash.toLowerCase()) || contractDrivenSignalRank(edge) > 0
+    )
+  );
   const approvalEdges = dedupeEdges([
-    ...optionalApprovalEdges,
-    ...allFetchedEdges.filter((edge) => hardEnrichmentHashes.has(edge.txHash.toLowerCase()))
+    ...hardApprovalEdges,
+    ...optionalApprovalEdges.filter((edge) => !hardEnrichmentHashes.has(edge.txHash.toLowerCase()))
   ]);
+  const parserCandidateLimit = approvalEdges.length;
   const hasApprovalEnrichmentDeps = Boolean(
     (deps.selectiveTransactionEnricher || deps.getTransaction) && deps.listTrc20ApprovalChanges
   );
@@ -1956,7 +1962,7 @@ export async function runWhereIsMoneyCheck(
     ? hardEnrichmentHashes.size > 0
       ? `Optional approval exploration disabled; checked ${hardEnrichmentHashes.size} hard evidence transaction(s).`
       : "Approval/contract enrichment disabled for this run."
-    : effectiveApprovalCandidateLimit <= 0
+    : effectiveApprovalCandidateLimit <= 0 && hardApprovalEdges.length === 0
       ? "Optional approval/contract enrichment skipped because its context budget is zero."
     : approvalEdges.length > 0 && !hasApprovalEnrichmentDeps
       ? "Approval/contract enrichment skipped because transaction or approval lookup dependencies are unavailable."
@@ -1975,7 +1981,7 @@ export async function runWhereIsMoneyCheck(
       getCachedClassification,
       getTransaction: getResolvedFullTransaction,
       getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-      maxCandidates: effectiveApprovalCandidateLimit
+      maxCandidates: parserCandidateLimit
     });
     const approvalDrainAnalysis = await buildApprovalDrainProvenanceAnalysis({
       subjectAddress: sourceAddress,
@@ -1987,7 +1993,7 @@ export async function runWhereIsMoneyCheck(
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
-      maxCandidates: effectiveApprovalCandidateLimit,
+      maxCandidates: parserCandidateLimit,
       approvalChangeLookupLimit: 10
     }).catch(() => ({ profiles: [], reviewFindings: [] }));
     throwIfAborted(input.abortSignal);
@@ -2001,14 +2007,14 @@ export async function runWhereIsMoneyCheck(
   }
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
     subjectAddress: sourceAddress,
-    edges: allFetchedEdges,
+    edges: approvalEdges,
     classifications,
     approvalDrainProvenanceProfiles,
     getTransaction: deps.selectiveTransactionEnricher || deps.getTransaction
       ? getResolvedFullTransaction
       : undefined,
     fetchEdgesForAddress,
-    maxTransactionInfoFetches: input.maxContractTransactionInfoFetches ?? 2000,
+    maxTransactionInfoFetches: new Set(approvalEdges.map((edge) => edge.txHash.toLowerCase())).size,
     maxSourceActivityChecks: Math.min(20, input.maxContractTransactionInfoFetches ?? 20),
     incomingClassificationMode: "method_prefiltered"
   });

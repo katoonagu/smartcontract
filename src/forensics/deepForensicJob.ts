@@ -1848,11 +1848,10 @@ export async function runSingleDeepForensicJobCycle(
 
     const deepSelectiveEvidenceIds = new Set<string>();
     const resolveDeepTransaction = async (txHash: string): Promise<unknown | null> => {
-      if (!deps.selectiveTransactionEnricher || !deps.listIndexedMovementsByHashes) {
+      if (!deps.selectiveTransactionEnricher) {
         return deps.getTransaction?.(txHash).catch(() => null) ?? null;
       }
-      const movements = await deps.listIndexedMovementsByHashes([txHash]);
-      if (movements.length === 0) return deps.getTransaction?.(txHash).catch(() => null) ?? null;
+      const movements = await deps.listIndexedMovementsByHashes?.([txHash]) ?? [];
       const addresses = [...new Set(movements.flatMap((edge) => [edge.fromAddress, edge.toAddress]))];
       const assertions = await deps.listActiveRouteAssertions?.({ addresses, txHashes: [txHash] }) ?? [];
       const enrichment = await deps.selectiveTransactionEnricher.enrich({

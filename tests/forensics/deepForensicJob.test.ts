@@ -11,6 +11,11 @@ import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSign
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
+import { createSelectiveTransactionEnricher } from "../../src/forensics/selectiveTransactionEnrichment";
+import {
+  transactionProviderEvidenceId,
+  type TronTransactionProviderEvidenceV1
+} from "../../src/storage/transactionEvidenceRepository";
 
 const subject = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
 const transit = "TTransit111111111111111111111111111111";
@@ -380,6 +385,83 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("routes a hard Deep transaction through selective evidence even when the local index has no movement", async () => {
+    vi.resetModules();
+    const txHash = "d".repeat(64);
+    const legacyGetTransaction = vi.fn(async () => ({ legacy: true }));
+    const persistedFull = { hash: txHash, confirmed: true, contractRet: "SUCCESS", trigger_info: { methodName: "Verify20" } };
+    const saved = new Map<string, TronTransactionProviderEvidenceV1>();
+    const rawProvider = vi.fn(async () => ({
+      txID: txHash,
+      raw_data: {
+        contract: [{
+          type: "TriggerSmartContract",
+          parameter: {
+            type_url: "type.googleapis.com/protocol.TriggerSmartContract",
+            value: {
+              owner_address: TronWeb.address.toHex(subject),
+              contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
+              data: `a9059cbb${TronWeb.address.toHex(transit).slice(2).padStart(64, "0")}${(1_000_000).toString(16).padStart(64, "0")}`
+            }
+          }
+        }]
+      },
+      ret: [{ contractRet: "SUCCESS" }]
+    }));
+    const fullProvider = vi.fn(async () => persistedFull);
+    const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
+      getSavedEvidence: async (identity) => saved.get(transactionProviderEvidenceId(identity)) ?? null,
+      saveProviderEvidence: async (evidence) => {
+        const id = transactionProviderEvidenceId(evidence);
+        saved.set(id, evidence);
+        return { id };
+      },
+      saveDecisionEvidence: async (evidence) => ({ id: `deep:decision:${evidence.txHash}` }),
+      getRawTransaction: rawProvider,
+      getFullTransactionInfo: fullProvider,
+      now: () => new Date("2026-07-27T00:00:00.000Z")
+    });
+    const runDeepAddressForensicCheck = vi.fn(async (deps: { getTransaction?: (hash: string) => Promise<unknown> }) => {
+      const repeated = await Promise.all([
+        deps.getTransaction?.(txHash),
+        deps.getTransaction?.(txHash)
+      ]);
+      expect(repeated).toEqual([persistedFull, persistedFull]);
+      return emptyDeepReport();
+    });
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+      await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getTransaction: legacyGetTransaction,
+        selectiveTransactionEnricher,
+        listIndexedMovementsByHashes: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(rawProvider).toHaveBeenCalledTimes(1);
+      expect(fullProvider).toHaveBeenCalledTimes(1);
+      expect(legacyGetTransaction).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        rawEvidenceIds: expect.arrayContaining([`deep:decision:${txHash}`])
+      }));
+      expect(completeForensicCheckJob.mock.calls[0]?.[0].rawEvidenceIds.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
   it("preserves distinct indexed events and deduplicates a repeated indexed identity in where runtime edges", async () => {
     vi.resetModules();
     const fetchedRuns: ForensicRouteEdge[][] = [];
@@ -6176,3 +6258,4 @@ describe("deep forensic job runner", () => {
     }));
   });
 });
+import { TronWeb } from "tronweb";

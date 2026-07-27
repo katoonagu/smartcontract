@@ -195,6 +195,27 @@ function repositoryHarness(overrides: {
 }
 
 describe("selective transaction enrichment", () => {
+  it("keeps an explicit hard hash even when indexed movement and route rows are absent", async () => {
+    const { enricher, rawCalls, fullCalls } = harness();
+
+    const result = await enricher.enrich({
+      mode: "subject",
+      routeEdges: [],
+      movements: [],
+      hardTxHashes: [HASH_A]
+    });
+
+    expect(result.candidateCount).toBe(1);
+    expect(result.hardCandidateCount).toBe(1);
+    expect(result.decisions[0]).toMatchObject({
+      txHash: HASH_A,
+      priority: "hard",
+      decision: "full_transaction_info_confirmed"
+    });
+    expect(rawCalls).toEqual([HASH_A]);
+    expect(fullCalls).toEqual([HASH_A]);
+  });
+
   it("deduplicates normalized hashes and constructs deterministic hard-first candidates without provider work", () => {
     const upper = edge(HASH_A.toUpperCase());
     const optional = edge("b".repeat(64));

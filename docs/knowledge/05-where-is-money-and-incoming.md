@@ -87,6 +87,12 @@ parsers; optional context may be capped, but hard subject evidence is not.
 Exact route-linked active assertions override optional approval mode, while
 flat labels do not authorize a full request.
 
+Incoming merges selective results from its deposit/funding pre-processing and
+post-processing with the nested Where result. Those outer calls pass exact
+active assertions and emit claim-fenced heartbeat progress. Their evidence IDs
+are completion-owned too; an incomplete outer result makes the combined
+transaction coverage partial instead of being hidden by a complete Where run.
+
 If raw and full providers both fail to produce final evidence, the report keeps
 a stable transaction-evidence-incomplete note, sets local coverage partial,
 and publishes no clean enrichment fact. Where and Incoming completion persist

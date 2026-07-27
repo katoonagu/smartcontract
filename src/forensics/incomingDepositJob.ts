@@ -10,7 +10,7 @@ import {
   incomingRiskBandFromUnifiedScore,
   incomingUnifiedRiskSummary
 } from "../risk/unifiedIncomingDepositRisk";
-import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
+import { mergeTransactionInfoEnrichment, runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { normalizeBotLocale } from "../bot/i18n";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
@@ -61,7 +61,8 @@ import type {
   WalletRole,
   WhereCandidateWindowRequest,
   WhereIsMoneyHardBadEvidence,
-  WhereIsMoneyReport
+  WhereIsMoneyReport,
+  WhereTransactionInfoEnrichmentSummary
 } from "../types";
 import { buildAddressBehaviorProfile } from "./addressBehavior";
 import { buildBoundaryExposureProfile } from "./boundaryExposure";
@@ -1473,16 +1474,34 @@ export async function buildIncomingDepositReport(
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const getLegacyTransaction = (txHash: string): Promise<unknown | null> =>
     input.deps.getTransaction(txHash).catch(() => null);
+  const outerTransactionEnrichment: WhereTransactionInfoEnrichmentSummary[] = [];
   const getResolvedTransaction = async (routeEdge: ForensicRouteEdge): Promise<unknown | null> => {
     if (!input.deps.selectiveTransactionEnricher) {
       return getLegacyTransaction(routeEdge.txHash);
     }
     const indexedMovements = await input.deps.listIndexedMovementsByHashes?.([routeEdge.txHash]) ?? [routeEdge];
-    await input.deps.selectiveTransactionEnricher.enrich({
+    const routeAddresses = [...new Set([
+      routeEdge.fromAddress,
+      routeEdge.toAddress,
+      routeEdge.callerAddress,
+      routeEdge.contractAddress
+    ].filter((address): address is string => Boolean(address)))];
+    const assertions = await input.deps.listActiveRouteAssertions?.({
+      addresses: routeAddresses,
+      txHashes: [routeEdge.txHash.toLowerCase()]
+    }).catch(() => []) ?? [];
+    const enrichment = await input.deps.selectiveTransactionEnricher.enrich({
       mode: "subject",
       routeEdges: [routeEdge],
-      movements: indexedMovements
-    }, { signal: input.abortSignal });
+      movements: indexedMovements,
+      assertions
+    }, {
+      signal: input.abortSignal,
+      onCandidateResolved: input.persistProgress
+        ? async () => { await input.persistProgress!({ jobHeartbeatAt: new Date().toISOString() }); }
+        : undefined
+    });
+    outerTransactionEnrichment.push(enrichment);
     return input.deps.selectiveTransactionEnricher.getFullTransactionInfo(routeEdge.txHash);
   };
   const resolveEconomicContext = async (routeEdge: ForensicRouteEdge): Promise<ForensicRouteEdge> => {
@@ -2023,8 +2042,27 @@ export async function buildIncomingDepositReport(
           }
         })
       );
+  const transactionInfoEnrichment = mergeTransactionInfoEnrichment([
+    ...outerTransactionEnrichment,
+    ...(whereReport.transactionInfoEnrichment ? [whereReport.transactionInfoEnrichment] : [])
+  ]);
+  const enrichmentIncomplete = transactionInfoEnrichment?.coverageStatus === "coverage_incomplete";
+  const effectiveWhereReport: WhereIsMoneyReport = enrichmentIncomplete
+    ? {
+        ...whereReport,
+        transactionInfoEnrichment,
+        coverage: {
+          ...whereReport.coverage,
+          partial: true,
+          notes: uniqueStrings([
+            ...whereReport.coverage.notes,
+            "Transaction evidence incomplete: at least one incoming-deposit outer route candidate lacks final evidence."
+          ])
+        }
+      }
+    : { ...whereReport, ...(transactionInfoEnrichment ? { transactionInfoEnrichment } : {}) };
   const reportFromWhere = incomingReportFromWhere({
-    whereReport,
+    whereReport: effectiveWhereReport,
     fastSenderRisk,
     senderStablecoinState,
     deposit: seedDeposit,
@@ -2044,8 +2082,8 @@ export async function buildIncomingDepositReport(
     ...reportFromWhere,
     fundingCoverage,
     corridorSummary: incomingCorridorSummary(reportFromWhere.originPaths),
-    ...(whereReport.transactionInfoEnrichment
-      ? { transactionInfoEnrichment: whereReport.transactionInfoEnrichment }
+    ...(transactionInfoEnrichment
+      ? { transactionInfoEnrichment }
       : {})
   };
   const senderRole = await measureReportStage("infer_sender_role", () =>

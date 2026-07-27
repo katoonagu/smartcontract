@@ -45,3 +45,11 @@ transaction hashes chosen by its existing economic-role and approval logic.
 Its parsers still receive finalized full payloads, while raw preflight,
 immutable reuse, tx-hash deduplication, scheduler pacing, and persisted
 enrichment evidence IDs are shared with Where and Incoming.
+
+An explicitly hard Deep transaction remains a resolver candidate even when no
+indexed movement row exists. It is then raw/full-resolved or reported unknown;
+Deep does not bypass the resolver with a direct transaction-info request.
+Economic and approval numeric limits bound optional exploration only. Exact
+transferFrom, Verify20, permit, non-plain, and other hard parser candidates are
+kept outside those optional limits, and Deep owns no private full-payload
+promise cache.

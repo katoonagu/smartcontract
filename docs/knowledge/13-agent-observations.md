@@ -475,3 +475,15 @@ technical maintenance fence before canary invocation, keep it out of product
 results/work/cleanup, and fail closed on any prior marker. Capture phase bytes
 through stdout, pass runtime values without a pathname, compare them exactly,
 and let Node exclusively create/sync final memory children.
+
+## 2026-07-27: Hard Enrichment Must Survive Every Downstream Limit
+
+Agent mistake: the shared resolver classified hard transactions correctly,
+but downstream approval, contract, Incoming outer, and Deep adapters could
+still discard their payloads through optional numeric caps, missing-movement
+fallbacks, or unmerged summaries.
+
+Correct rule: follow a hard candidate through the complete runtime path, not
+only through provider selection. It must reach every applicable semantic
+parser, remain resolver-owned without an indexed row, contribute evidence IDs
+and incomplete coverage, and be stopped immediately when claim fencing fails.

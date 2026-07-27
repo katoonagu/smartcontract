@@ -205,6 +205,9 @@ export function buildSelectiveTransactionCandidates(
     if (group) pushUnique(group.movements, movement);
   }
   const forcedHard = new Set((input.hardTxHashes ?? []).map(normalizeHash));
+  for (const txHash of forcedHard) {
+    if (!byHash.has(txHash)) byHash.set(txHash, { routeEdges: [], movements: [] });
+  }
   const unresolved = new Set((input.unresolvedEconomicRoleTxHashes ?? []).map(normalizeHash));
   const routeAddresses = new Set(input.routeEdges.flatMap((edge) => [
     edge.fromAddress,

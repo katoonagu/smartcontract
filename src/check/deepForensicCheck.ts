@@ -1857,7 +1857,6 @@ export async function runDeepAddressForensicCheck(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput
 ): Promise<DeepAddressForensicReport> {
-  const transactionCache = new Map<string, Promise<unknown | null>>();
   const gasFreeSettlementCache = new Map<string, Promise<GasFreeSettlement | null>>();
   const requestedEconomicEdgeTransactionInfoFetchLimit = input.economicEdgeTransactionInfoFetchLimit
     ?? DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT;
@@ -1868,42 +1867,23 @@ export async function runDeepAddressForensicCheck(
   const normalizedMaxApprovalDrainCandidates = Number.isFinite(requestedMaxApprovalDrainCandidates)
     ? Math.max(0, Math.floor(requestedMaxApprovalDrainCandidates))
     : DEFAULT_MAX_APPROVAL_DRAIN_CANDIDATES;
-  const approvalDrainCandidateLimit = Math.min(
-    economicEdgeTransactionInfoFetchLimit,
-    normalizedMaxApprovalDrainCandidates
-  );
-  const hardEvidenceTransactionInfoReserve = deps.getTransaction && deps.listTrc20ApprovalChanges
-    ? approvalDrainCandidateLimit
-    : 0;
-  const ordinaryTransactionInfoFetchLimit = Math.max(
-    0,
-    economicEdgeTransactionInfoFetchLimit - hardEvidenceTransactionInfoReserve
-  );
+  const approvalDrainCandidateLimit = normalizedMaxApprovalDrainCandidates;
+  const ordinaryTransactionInfoFetchLimit = economicEdgeTransactionInfoFetchLimit;
   const skippedEconomicCandidateHashes = new Set<string>();
   const budgetSkippedTransactionHashes = new Set<string>();
-  let transactionInfoFetches = 0;
+  const submittedOrdinaryTransactionHashes = new Set<string>();
   const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
-    const cached = transactionCache.get(txHash);
-    if (cached) return cached;
-    if (transactionInfoFetches >= ordinaryTransactionInfoFetchLimit) {
+    if (!submittedOrdinaryTransactionHashes.has(txHash) && submittedOrdinaryTransactionHashes.size >= ordinaryTransactionInfoFetchLimit) {
       budgetSkippedTransactionHashes.add(txHash);
       return Promise.resolve(null);
     }
-    transactionInfoFetches += 1;
+    submittedOrdinaryTransactionHashes.add(txHash);
     budgetSkippedTransactionHashes.delete(txHash);
-    const pending = deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
-    transactionCache.set(txHash, pending);
-    return pending;
+    return deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
   };
   const getHardEvidenceCachedTransaction = (txHash: string): Promise<unknown | null> => {
-    const cached = transactionCache.get(txHash);
-    if (cached) return cached;
-    if (transactionInfoFetches >= economicEdgeTransactionInfoFetchLimit) return Promise.resolve(null);
-    transactionInfoFetches += 1;
     budgetSkippedTransactionHashes.delete(txHash);
-    const pending = deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
-    transactionCache.set(txHash, pending);
-    return pending;
+    return deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
   };
   const resolveEconomicEdges = async (edges: ForensicRouteEdge[]): Promise<ForensicRouteEdge[]> => {
     if (!deps.getTransaction) return edges;
@@ -1919,7 +1899,7 @@ export async function runDeepAddressForensicCheck(
         skippedEconomicCandidateHashes.add(txHash);
         continue;
       }
-      if (!transactionCache.has(txHash) && transactionInfoFetches >= ordinaryTransactionInfoFetchLimit) {
+      if (!submittedOrdinaryTransactionHashes.has(txHash) && submittedOrdinaryTransactionHashes.size >= ordinaryTransactionInfoFetchLimit) {
         skippedEconomicCandidateHashes.add(txHash);
         continue;
       }
@@ -2222,17 +2202,22 @@ export async function runDeepAddressForensicCheck(
     windowEnd: input.windowEnd,
     profiles: assetContinuationProfiles
   });
+  const hardApprovalEdges = provenanceEdges.filter((edge) => contractDrivenSignalRank(edge) > 0);
+  const optionalApprovalEdges = provenanceEdges
+    .filter((edge) => contractDrivenSignalRank(edge) === 0)
+    .slice(0, approvalDrainCandidateLimit);
+  const approvalParserEdges = dedupeEdges([...hardApprovalEdges, ...optionalApprovalEdges]);
   const approvalDrainAnalysis = deps.getTransaction && deps.listTrc20ApprovalChanges
     ? await buildApprovalDrainProvenanceAnalysis({
       subjectAddress: input.sourceAddress,
-      edges: provenanceEdges,
+      edges: approvalParserEdges,
       classifications,
       deps: {
         getTransaction: getHardEvidenceCachedTransaction,
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
-      maxCandidates: approvalDrainCandidateLimit,
+      maxCandidates: approvalParserEdges.length,
       candidateRankingMode: "suspicion_aware",
       approvalChangeLookupLimit: input.approvalChangeLookupLimit
     }).catch(() => ({ profiles: [], reviewFindings: [] }))
@@ -2268,17 +2253,27 @@ export async function runDeepAddressForensicCheck(
     edges: sourceTransfers.edges,
     maxApprovalDrainCandidates: approvalDrainCandidateLimit
   });
+  const hardContractEdges = directBoundaryEdges.filter((edge) => contractDrivenSignalRank(edge) > 0);
+  const optionalContractEdges = directBoundaryEdges
+    .filter((edge) => contractDrivenSignalRank(edge) === 0)
+    .slice(0, contractDrivenTxInfoFetchLimit);
+  const contractParserEdges = dedupeEdges([...hardContractEdges, ...optionalContractEdges]);
+  const hardContractTransactionHashes = new Set(hardContractEdges.map((edge) => edge.txHash));
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
     subjectAddress: input.sourceAddress,
-    edges: directBoundaryEdges,
+    edges: contractParserEdges,
     classifications,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
-    getTransaction: deps.getTransaction ? getCachedTransaction : undefined,
+    getTransaction: deps.getTransaction
+      ? (txHash) => hardContractTransactionHashes.has(txHash)
+        ? getHardEvidenceCachedTransaction(txHash)
+        : getCachedTransaction(txHash)
+      : undefined,
     fetchEdgesForAddress: async (address) => {
       const result = await fetchEdgesForAddress(deps.tronClient, input, address, 1, { allowRecentFallback: true });
       return result.edges;
     },
-    maxTransactionInfoFetches: contractDrivenTxInfoFetchLimit,
+    maxTransactionInfoFetches: new Set(contractParserEdges.map((edge) => edge.txHash)).size,
     maxSourceActivityChecks: Math.min(20, contractDrivenTxInfoFetchLimit),
     incomingClassificationMode: "all_incoming"
   });
@@ -2486,7 +2481,7 @@ export async function runDeepAddressForensicCheck(
     ...transferCoverageNotes,
     ...(directHardEvidence?.missingChecks ?? []),
     ...(skippedEconomicCandidateHashes.size > 0
-      ? [`Economic edge transaction enrichment limited to ${ordinaryTransactionInfoFetchLimit} ordinary transaction-detail calls within the ${economicEdgeTransactionInfoFetchLimit} run-wide limit; ${skippedEconomicCandidateHashes.size} plausible GasFree candidate transaction hashes remained ordinary and untagged.`]
+      ? [`Economic edge transaction enrichment limited to ${ordinaryTransactionInfoFetchLimit} optional transaction-detail calls; ${skippedEconomicCandidateHashes.size} plausible GasFree candidate transaction hashes remained ordinary and untagged.`]
       : []),
   ])];
   const coverage = {
