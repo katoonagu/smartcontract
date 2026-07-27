@@ -9,6 +9,7 @@ import { runForensicJobBatch } from "../../src/forensics/forensicJobBatch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
+import { logger as defaultLogger } from "../../src/logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
@@ -6482,7 +6483,7 @@ describe("deep forensic job runner", () => {
     const completeForensicCheckJob = vi.fn(async (input: DeepForensicCompletionInput) => input.id !== firstJob.id);
     const indexWalletIntelligenceJob = vi.fn(async () => undefined);
     const recordRiskEvaluation = vi.fn(async () => undefined);
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const warn = vi.spyOn(defaultLogger, "warn").mockImplementation(() => undefined);
     try {
       const deps: DeepForensicJobRunnerDeps = {
         claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
@@ -6495,8 +6496,7 @@ describe("deep forensic job runner", () => {
         recordRiskEvaluation,
         tronClient: { listRelatedTrc20Transfers: async () => [] },
         getLabelsForAddress: async () => [],
-        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
-        logger
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
       };
       const handled = await runForensicJobBatch({
         maxJobs: 2,
@@ -6509,12 +6509,13 @@ describe("deep forensic job runner", () => {
       expect(completeForensicCheckJob.mock.calls[1][0].id).toBe(secondJob.id);
       expect(recordRiskEvaluation).toHaveBeenCalledTimes(1);
       expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
-      expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+      expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
         jobId: firstJob.id,
         error: "lost_forensic_job_claim"
       }));
     } finally {
       abort.mockRestore();
+      warn.mockRestore();
     }
   });
 
