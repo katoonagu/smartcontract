@@ -12,6 +12,7 @@ import {
   buildWhereLatencyReplayV1,
   analyzeWhereLatencyReplay,
   assertWhereLatencyReplayAcceptance,
+  collectExpectedOrdinaryOfficialUsdtTxHashes,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
   createDependencyInvocationTapeRecorder,
@@ -341,6 +342,13 @@ try {
     frozenClockIso,
     job: { sourceAddress: jobSource, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), options },
     routeCriticalTxHashes: routeHashes,
+    expectedOrdinaryOfficialUsdtTxHashes: collectExpectedOrdinaryOfficialUsdtTxHashes({
+      routeCriticalTxHashes: routeHashes,
+      rawTransactions,
+      indexedMovementRows: indexedRows.map(indexedSnapshotRow),
+      assertionRows: assertions as unknown as Record<string, unknown>[],
+      knownHardTxHashes: unresolvedEconomicRoleInputs.flatMap((item) => item.txHash ? [item.txHash] : [])
+    }),
     routeCriticalAddresses: routeAddresses,
     dependencies: capture.invocations,
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],

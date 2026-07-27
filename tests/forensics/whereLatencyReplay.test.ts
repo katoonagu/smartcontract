@@ -10,11 +10,13 @@ import { resolveLegacyWhereIsMoneyRunInput } from "../../src/forensics/deepForen
 import {
   assertLegacyWhereSourceRevision,
   analyzeWhereLatencyReplay,
+  assertWhereLatencyReplayAcceptance,
   assertWhereReplayConsumed,
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
   collectRouteCriticalAddresses,
   collectRouteCriticalTransactionHashes,
+  collectExpectedOrdinaryOfficialUsdtTxHashes,
   createDependencyInvocationTapeRecorder,
   createWhereReplayDeps,
   LEGACY_WHERE_BEHAVIOR_SOURCE_TREE_HASH,
@@ -75,6 +77,7 @@ const base = {
   } as any),
   resolvedOptions: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" },
   routeCriticalTxHashes: ["a".repeat(64)],
+  expectedOrdinaryOfficialUsdtTxHashes: ["a".repeat(64)],
   routeCriticalAddresses: ["TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd"],
   frozenClockIso: "2026-07-26T00:00:00.000Z",
   job: { sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z", options: { maxDepth: 20, sourceAddress: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd", windowStart: "2026-01-01T00:00:00.000Z", windowEnd: "2026-07-01T00:00:00.000Z" } },
@@ -204,6 +207,22 @@ describe("where latency replay v1", () => {
       legacyObservedTransactionHashes: ["g".repeat(64)]
     })).toEqual(["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64), "e".repeat(64), "h".repeat(64), "i".repeat(64), "f".repeat(64), "g".repeat(64)]);
   });
+  it("freezes ordinary official-USDT hashes from baseline tape independently of resolver decisions", () => {
+    const input = {
+      routeCriticalTxHashes: base.routeCriticalTxHashes,
+      rawTransactions: base.rawTransactions,
+      indexedMovementRows: base.indexedMovements[0]!.rows
+    };
+    expect(collectExpectedOrdinaryOfficialUsdtTxHashes(input)).toEqual(["a".repeat(64)]);
+    expect(collectExpectedOrdinaryOfficialUsdtTxHashes({
+      ...input,
+      knownHardTxHashes: ["a".repeat(64)]
+    })).toEqual([]);
+    expect(collectExpectedOrdinaryOfficialUsdtTxHashes({
+      ...input,
+      assertionRows: [{ chain: "tron", address: base.job.sourceAddress, status: "active", evidenceJson: { approvalTxHash: "a".repeat(64) } }]
+    })).toEqual([]);
+  });
   it("round-trips canonical, hash-bound envelope and replays a recorded dependency", async () => {
     const { canonicalJson } = built();
     const replay = parseWhereLatencyReplayV1(canonicalJson);
@@ -215,6 +234,9 @@ describe("where latency replay v1", () => {
     const noRouteList = structuredClone(built().envelope) as any;
     delete noRouteList.routeCriticalTxHashes;
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noRouteList))).toThrow("where_latency_replay_route_critical_hash_missing");
+    const noOrdinaryManifest = structuredClone(built().envelope) as any;
+    delete noOrdinaryManifest.expectedOrdinaryOfficialUsdtTxHashes;
+    expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson(noOrdinaryManifest))).toThrow("where_latency_replay_expected_ordinary_manifest_invalid");
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, baselineGitCommit: "b".repeat(40) }))).toThrow("where_latency_replay_baseline_binding_missing");
     expect(() => parseWhereLatencyReplayV1(canonicalizeArtifactJson({ ...built().envelope, version: 2 }))).toThrow("where_latency_replay_version_unsupported");
     expect(() => parseWhereLatencyReplayV1(JSON.stringify(built().envelope, null, 2))).toThrow("where_latency_replay_json_not_canonical");
@@ -602,6 +624,53 @@ describe("where latency replay v1", () => {
       decisions: [{ decision: "technical_unknown", continueTraversal: true }]
     });
     expect(analysis.firstRun.report.coverage).not.toEqual(analysis.expectedStableFacts.coverage);
+  });
+
+  it("accepts an explicitly incomplete manifest with missing raw tape and reports technical-unknown coverage", async () => {
+    const incomplete = structuredClone(await successfulReplay());
+    incomplete.rawTransactions = [];
+
+    const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(canonicalizeArtifactJson(incomplete)));
+
+    expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      decisions: [{ decision: "technical_unknown", continueTraversal: true }]
+    });
+  });
+
+  it("accepts an explicitly incomplete manifest with missing hard-required full tape and reports technical-unknown coverage", async () => {
+    const incomplete = structuredClone(await successfulReplay({
+      assertionRows: [{
+        chain: "tron",
+        address: base.job.sourceAddress,
+        status: "active",
+        evidenceJson: { approvalTxHash: "a".repeat(64) }
+      }]
+    }));
+    incomplete.dependencies = incomplete.dependencies
+      .filter((entry) => entry.method !== "getTransaction")
+      .map((entry, sequence) => ({ ...entry, sequence }));
+    delete incomplete.baselineRequestCounts.getTransaction;
+
+    const analysis = await analyzeWhereLatencyReplay(parseWhereLatencyReplayV1(canonicalizeArtifactJson(incomplete)));
+
+    expect(analysis.stableFactsEqual).toBe(false);
+    expect(analysis.firstRun.report.transactionInfoEnrichment).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      decisions: [{ decision: "technical_unknown", continueTraversal: true }]
+    });
+  });
+
+  it("fails acceptance when the new resolver reclassifies a frozen ordinary hash and makes a full call", async () => {
+    const raw = structuredClone(base.rawTransactions[0]!.response) as any;
+    raw.raw_data.contract[0].parameter.value.data = `deadbeef${raw.raw_data.contract[0].parameter.value.data.slice(8)}`;
+    const analysis = await analyzeWhereLatencyReplay(await successfulReplay({ rawResponse: raw }));
+
+    expect(analysis.firstRun.report.transactionInfoEnrichment?.decisions[0]).toMatchObject({ priority: "hard" });
+    expect(() => assertWhereLatencyReplayAcceptance(analysis)).toThrow("where_latency_replay_plain_transfer_full_request");
   });
 
   it("runs the canonical replay command from a fixture without capture configuration or writes", async () => {

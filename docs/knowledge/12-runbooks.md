@@ -56,17 +56,23 @@ old process starts; the database remains at the forward schema.
 The Stage B replay is read-only: it parses the checked-in canonical legacy tape,
 runs selective transaction enrichment twice against one in-memory evidence
 store, and prints only baseline/new raw/full request counts plus
-`stableFactsEqual`.
+`stableFactsEqual`. The fixture freezes a canonical
+`expectedOrdinaryOfficialUsdtTxHashes` manifest from baseline raw/indexed facts;
+the post-Stage-B resolver cannot redefine that set to evade the zero-full-call
+gate.
 
 ```powershell
 npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/txc-legacy-where-latency-v1.json
 ```
 
-It fails closed for a missing, noncanonical, incomplete, or provenance-invalid
-tape; it never falls back to a database or network provider. The real TXc tape
-is not currently checked in, so this acceptance command and concurrency `2`
-remain blocked as recorded in `10-open-problems.md`. Synthetic tests validate
-the offline machinery but are not release evidence.
+It fails closed for a missing file, noncanonical envelope, malformed evidence,
+or provenance-invalid tape; it never falls back to a database or network
+provider. A structurally valid route manifest may explicitly lack a raw or
+hard-required full response: replay then produces incomplete/technical-unknown
+coverage and cannot pass acceptance. The real TXc tape is not currently checked
+in, so this acceptance command and concurrency `2` remain blocked as recorded
+in `10-open-problems.md`. Synthetic tests validate the offline machinery but
+are not release evidence.
 
 ## Adaptive Provider Configuration
 

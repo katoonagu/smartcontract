@@ -3,6 +3,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { runWhereIsMoneyCheck, type RunWhereIsMoneyCheckInput, type WhereIsMoneyDeps } from "../check/whereIsMoneyCheck";
 import type { AppConfig } from "../config";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import {
   transactionProviderEvidenceId,
   type TransactionEnrichmentDecisionEvidenceV1,
@@ -13,6 +14,7 @@ import type { ForensicRouteEdge, IndexedTronUsdtTransfer, WhereIsMoneyReport } f
 import { canonicalizeArtifactJson, fingerprintCanonicalArtifact } from "./canonicalJson";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { createSelectiveTransactionEnricher } from "./selectiveTransactionEnrichment";
+import { parseRawTransactionPreflightV1 } from "../tron/rawTransactionPreflight";
 
 export type StableWhereFactsV1 = Omit<WhereIsMoneyReport, "transactionInfoEnrichment">;
 export const LEGACY_WHERE_REPLAY_BASELINE_COMMIT = "4861f22e697652c688489ef4be6ab9698cd6ef9f";
@@ -81,6 +83,7 @@ export type WhereLatencyReplayV1 = {
   frozenClockIso: string;
   job: Record<string, unknown>;
   routeCriticalTxHashes: string[];
+  expectedOrdinaryOfficialUsdtTxHashes: string[];
   routeCriticalAddresses: string[];
   dependencies: ReplayDependency[];
   indexedMovements: Array<{ txHashes: string[]; rows: Array<Record<string, unknown>> }>;
@@ -113,6 +116,7 @@ export type WhereLatencyReplayRunV1 = {
 export type WhereLatencyReplayAnalysisV1 = {
   schema: "where-latency-replay-analysis-v1";
   expectedStableFacts: StableWhereFactsV1;
+  expectedOrdinaryOfficialUsdtTxHashes: string[];
   stableFactsEqual: boolean;
   explicitStableFactsEqual: Record<(typeof EXPLICIT_STABLE_FIELDS)[number], boolean>;
   requestCounts: {
@@ -630,24 +634,40 @@ function assertEnvelope(envelope: WhereLatencyReplayV1): void {
     || [...routeHashes].some((hash) => !expectedRouteHashes.has(hash))) {
     fail("where_latency_replay_route_critical_hash_missing");
   }
-  for (const txHash of routeHashes) {
-    if (!movementHashes.has(txHash)) fail("where_latency_replay_indexed_movement_missing");
-    const raw = envelope.rawTransactions.find((entry) => entry.txHash === txHash);
-    if (!raw || raw.payloadSha256 !== sha256(raw.response)) fail("where_latency_replay_raw_transaction_missing");
+  if (!Array.isArray(envelope.expectedOrdinaryOfficialUsdtTxHashes)) {
+    fail("where_latency_replay_expected_ordinary_manifest_invalid");
+  }
+  const expectedOrdinaryHashes = canonicalStringSet(envelope.expectedOrdinaryOfficialUsdtTxHashes.map((hash) => hash.toLowerCase()));
+  if (expectedOrdinaryHashes.length !== envelope.expectedOrdinaryOfficialUsdtTxHashes.length
+    || expectedOrdinaryHashes.some((hash, index) => hash !== envelope.expectedOrdinaryOfficialUsdtTxHashes[index])
+    || expectedOrdinaryHashes.some((hash) => !routeHashes.has(hash))) {
+    fail("where_latency_replay_expected_ordinary_manifest_invalid");
+  }
+  const rawHashes = new Set<string>();
+  for (const raw of envelope.rawTransactions) {
+    const txHash = raw.txHash.toLowerCase();
+    if (rawHashes.has(txHash) || !routeHashes.has(txHash) || raw.payloadSha256 !== sha256(raw.response)) {
+      fail("where_latency_replay_raw_transaction_invalid");
+    }
+    rawHashes.add(txHash);
     const response = asObject(raw.response, "where_latency_replay_raw_transaction_invalid");
-    if (typeof response.txID !== "string" || response.txID.toLowerCase() !== txHash.toLowerCase()) {
+    if (typeof response.txID !== "string" || response.txID.toLowerCase() !== txHash) {
       fail("where_latency_replay_raw_transaction_binding_mismatch");
     }
-    const full = envelope.dependencies.find((entry) => requestKey(entry.method, entry.args) === requestKey("getTransaction", [txHash])
-      && "response" in entry);
-    if (!full || (full.origin !== "legacy_observed" && full.origin !== "supplemental_stage_b_fixture")) {
-      fail("where_latency_replay_transaction_info_missing");
+  }
+  for (const full of envelope.dependencies.filter((entry) => entry.method === "getTransaction")) {
+    const txHash = typeof full.args[0] === "string" ? full.args[0].toLowerCase() : "";
+    if (!routeHashes.has(txHash) || full.args.length !== 1) fail("where_latency_replay_transaction_info_identity_mismatch");
+    if ("response" in full) {
+      const response = asObject(full.response, "where_latency_replay_transaction_info_identity_missing");
+      const identity = response.txID ?? response.hash ?? response.id;
+      if (typeof identity !== "string" || identity.toLowerCase() !== txHash) {
+        fail("where_latency_replay_transaction_info_identity_mismatch");
+      }
     }
-    const fullResponse = asObject(full.response, "where_latency_replay_transaction_info_identity_missing");
-    const fullIdentity = fullResponse.txID ?? fullResponse.hash ?? fullResponse.id;
-    if (typeof fullIdentity !== "string" || fullIdentity.toLowerCase() !== txHash.toLowerCase()) {
-      fail("where_latency_replay_transaction_info_identity_mismatch");
-    }
+  }
+  for (const txHash of routeHashes) {
+    if (!movementHashes.has(txHash)) fail("where_latency_replay_indexed_movement_missing");
   }
   const routeAddresses = canonicalStringSet(envelope.routeCriticalAddresses);
   if (routeAddresses.length === 0) fail("where_latency_replay_route_critical_address_missing");
@@ -1001,6 +1021,45 @@ function replayIndexedMovement(row: Record<string, unknown>): ForensicRouteEdge 
   return indexedTransferToRouteEdge(transfer);
 }
 
+export function collectExpectedOrdinaryOfficialUsdtTxHashes(input: {
+  routeCriticalTxHashes: readonly string[];
+  rawTransactions: readonly { txHash: string; response: unknown }[];
+  indexedMovementRows: readonly Record<string, unknown>[];
+  assertionRows?: readonly Record<string, unknown>[];
+  knownHardTxHashes?: readonly string[];
+}): string[] {
+  const knownHard = new Set((input.knownHardTxHashes ?? []).map((hash) => hash.toLowerCase()));
+  const rawByHash = new Map(input.rawTransactions.map((entry) => [entry.txHash.toLowerCase(), entry.response]));
+  const movements = input.indexedMovementRows.map(replayIndexedMovement);
+  const assertions = (input.assertionRows ?? []).map(replayAssertion);
+  const ordinary: string[] = [];
+  for (const txHash of canonicalStringSet(input.routeCriticalTxHashes.map((hash) => hash.toLowerCase()))) {
+    if (knownHard.has(txHash)) continue;
+    const raw = rawByHash.get(txHash);
+    if (raw === undefined) continue;
+    const parsed = parseRawTransactionPreflightV1(raw);
+    const matching = movements.filter((edge) => edge.txHash.toLowerCase() === txHash);
+    if (parsed.status !== "parsed" || !parsed.successful
+      || parsed.contractAddress !== TRON_USDT_CONTRACT_ADDRESS || parsed.selector !== "a9059cbb"
+      || matching.length !== 1) continue;
+    const edge = matching[0]!;
+    if (edge.method !== "transfer" || edge.edgeType !== "normal_transfer"
+      || edge.contractAddress !== TRON_USDT_CONTRACT_ADDRESS || edge.confirmed !== true || edge.reverted !== false
+      || edge.contractRet?.toUpperCase() !== "SUCCESS" || edge.finalResult?.toUpperCase() !== "SUCCESS"
+      || edge.callerAddress !== parsed.callerAddress || edge.fromAddress !== parsed.callerAddress
+      || edge.toAddress !== parsed.recipientAddress || edge.amountRaw !== parsed.amountRaw) continue;
+    const candidateAddresses = new Set([
+      edge.fromAddress,
+      edge.toAddress,
+      ...(edge.callerAddress ? [edge.callerAddress] : []),
+      ...(edge.contractAddress ? [edge.contractAddress] : [])
+    ]);
+    if (assertions.some((assertion) => assertionMatches(assertion, candidateAddresses, new Set([txHash])))) continue;
+    ordinary.push(txHash);
+  }
+  return ordinary;
+}
+
 function replayAssertion(row: Record<string, unknown>) {
   if (typeof row.chain !== "string" || typeof row.address !== "string" || typeof row.status !== "string"
     || !row.evidenceJson || typeof row.evidenceJson !== "object" || Array.isArray(row.evidenceJson)) {
@@ -1116,6 +1175,7 @@ export async function analyzeWhereLatencyReplay(replay: WhereLatencyReplayV1): P
       async getFullTransactionInfo(txHash) {
         const normalized = txHash.toLowerCase();
         fullCallHashes.push(normalized);
+        if (!rawTape.has(normalized)) fail("where_latency_replay_raw_tape_missing");
         const entry = fullTape.get(normalized);
         if (!entry) fail("where_latency_replay_full_tape_missing");
         return replayOutcome(entry);
@@ -1162,6 +1222,7 @@ export async function analyzeWhereLatencyReplay(replay: WhereLatencyReplayV1): P
   return {
     schema: "where-latency-replay-analysis-v1",
     expectedStableFacts: replay.expectedStableFacts,
+    expectedOrdinaryOfficialUsdtTxHashes: replay.expectedOrdinaryOfficialUsdtTxHashes,
     stableFactsEqual: sameStableValue(projected, replay.expectedStableFacts),
     explicitStableFactsEqual: Object.fromEntries(EXPLICIT_STABLE_FIELDS.map((field) => [
       field,
@@ -1179,17 +1240,15 @@ export async function analyzeWhereLatencyReplay(replay: WhereLatencyReplayV1): P
 }
 
 export function assertWhereLatencyReplayAcceptance(analysis: WhereLatencyReplayAnalysisV1): void {
-  if (!analysis.stableFactsEqual) fail("where_latency_replay_stable_fact_mismatch");
-  for (const [field, equal] of Object.entries(analysis.explicitStableFactsEqual)) {
-    if (!equal) fail(`where_latency_replay_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
-  }
-  const plainHashes = new Set((analysis.firstRun.report.transactionInfoEnrichment?.decisions ?? [])
-    .filter((decision) => decision.decision === "plain_usdt_raw_proven")
-    .map((decision) => decision.txHash));
+  const plainHashes = new Set(analysis.expectedOrdinaryOfficialUsdtTxHashes);
   if (analysis.firstRun.fullCallHashes.some((hash) => plainHashes.has(hash))) {
     fail("where_latency_replay_plain_transfer_full_request");
   }
   if (analysis.maxFullCallsPerIdentity > 1) fail("where_latency_replay_duplicate_full_request");
+  if (!analysis.stableFactsEqual) fail("where_latency_replay_stable_fact_mismatch");
+  for (const [field, equal] of Object.entries(analysis.explicitStableFactsEqual)) {
+    if (!equal) fail(`where_latency_replay_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+  }
   if (analysis.requestCounts.firstRun.full >= analysis.requestCounts.baseline.full) {
     fail("where_latency_replay_full_request_reduction_missing");
   }
