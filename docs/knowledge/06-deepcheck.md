@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-27
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -39,3 +39,9 @@ contracts hold. A technical Deep failure produces no partial user report.
 
 The Unified contract is implemented and tested. Delivery ownership does not
 gate isolated Deep execution.
+
+Stage B legacy Deep reuses the process-wide selective resolver for indexed
+transaction hashes chosen by its existing economic-role and approval logic.
+Its parsers still receive finalized full payloads, while raw preflight,
+immutable reuse, tx-hash deduplication, scheduler pacing, and persisted
+enrichment evidence IDs are shared with Where and Incoming.

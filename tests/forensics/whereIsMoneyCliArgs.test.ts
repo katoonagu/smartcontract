@@ -27,8 +27,8 @@ describe("where is money CLI args", () => {
       maxEdgesPerAddress: 100,
       approvalEnrichmentMode: "triggered",
       maxApprovalCandidates: 30,
-      maxContractTransactionInfoFetches: 30,
-      contractTransactionInfoMinIntervalMs: 15000,
+      maxContractTransactionInfoFetches: null,
+      contractTransactionInfoMinIntervalMs: null,
       crossChainStage2Enabled: false,
       crossChainManualDeepMode: false,
       // Null lets the CLI runner apply config.crossChainStage2MaxProviderCalls.
@@ -36,6 +36,20 @@ describe("where is money CLI args", () => {
     });
     expect(parsed.windowEnd.toISOString()).toBe("2026-05-26T00:00:00.000Z");
     expect(parsed.windowStart.toISOString()).toBe("2026-02-25T00:00:00.000Z");
+  });
+
+  it("leaves selective-enrichment caps and pacing unset unless the operator supplies them", () => {
+    const defaults = parseWhereIsMoneyCliArgs(["--source", source]);
+    expect(defaults.maxContractTransactionInfoFetches).toBeNull();
+    expect(defaults.contractTransactionInfoMinIntervalMs).toBeNull();
+
+    const overridden = parseWhereIsMoneyCliArgs([
+      "--source", source,
+      "--contract-tx-info", "7",
+      "--contract-tx-info-delay-ms", "2500"
+    ]);
+    expect(overridden.maxContractTransactionInfoFetches).toBe(7);
+    expect(overridden.contractTransactionInfoMinIntervalMs).toBe(2500);
   });
 
   it("ignores the script path when called with process.argv.slice(1)", () => {
@@ -189,7 +203,7 @@ describe("where is money CLI args", () => {
     ])).toThrow(/--cross-chain-max-provider-calls must be an integer between 1 and 500/);
   });
 
-  it("accepts the documented contract transaction-info delay default when passed explicitly", () => {
+  it("accepts a slower contract transaction-info pacing override when passed explicitly", () => {
     const parsed = parseWhereIsMoneyCliArgs([
       "--source",
       source,
@@ -198,6 +212,13 @@ describe("where is money CLI args", () => {
     ]);
 
     expect(parsed.contractTransactionInfoMinIntervalMs).toBe(15000);
+  });
+
+  it("rejects selective-enrichment flags without values", () => {
+    expect(() => parseWhereIsMoneyCliArgs(["--source", source, "--contract-tx-info"]))
+      .toThrow(/--contract-tx-info must be an integer/);
+    expect(() => parseWhereIsMoneyCliArgs(["--source", source, "--contract-tx-info-delay-ms"]))
+      .toThrow(/--contract-tx-info-delay-ms must be an integer/);
   });
 
   it("parses positional decimal requested USDT amount into micro-units", () => {
@@ -346,7 +367,7 @@ describe("where is money CLI args", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("forensic:where-is-money");
     expect(WHERE_IS_MONEY_USAGE).toContain("--amount 1000.25");
     expect(WHERE_IS_MONEY_USAGE).toContain("[--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200]");
-    expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms 15000");
+    expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms <ms>");
   });
 });
 

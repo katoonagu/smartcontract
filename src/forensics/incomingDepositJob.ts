@@ -18,6 +18,7 @@ import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
+import type { RouteLinkedAssertionInput, SelectiveTransactionEnricher } from "./selectiveTransactionEnrichment";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
 import {
@@ -140,6 +141,9 @@ export type IncomingDepositRuntimeDeps = {
   getContractIntelligenceProfile(address: string): Promise<ContractRiskContext | null>;
   enrichContractClassification?(address: string): Promise<ContractEnrichmentResult>;
   getTransaction(txHash: string): Promise<unknown>;
+  selectiveTransactionEnricher?: SelectiveTransactionEnricher;
+  listActiveRouteAssertions?(input: { addresses: string[]; txHashes: string[] }): Promise<RouteLinkedAssertionInput[]>;
+  listIndexedMovementsByHashes?(txHashes: string[]): Promise<ForensicRouteEdge[]>;
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile | null>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
@@ -175,6 +179,7 @@ export type BuildIncomingDepositReportInput = {
   localIndexMaterializationMaxRows?: number;
   timing?: IncomingDepositTimingRecorder;
   persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+  abortSignal?: AbortSignal;
 };
 
 export type RunSingleIncomingDepositJobCycleDeps = {
@@ -231,6 +236,7 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     timestamp: Date;
     timing?: IncomingDepositTimingRecorder;
     persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+    abortSignal?: AbortSignal;
   }): Promise<IncomingDepositRiskReport>;
 };
 
@@ -249,7 +255,6 @@ const ADAPTIVE_CORRIDOR_EXPANSION_MAX_EDGES_PER_ADDRESS = 60;
 const ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO = 0.05;
 const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
-const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
 const INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS = 30_000;
 
 function stringField(value: unknown): string | null {
@@ -1466,16 +1471,22 @@ export async function buildIncomingDepositReport(
   const targetedEnsureErrors = new Map<string, string>();
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
-  const transactionCache = new Map<string, Promise<unknown | null>>();
-  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
-    const cached = transactionCache.get(txHash);
-    if (cached) return cached;
-    const fetched = input.deps.getTransaction(txHash).catch(() => null);
-    transactionCache.set(txHash, fetched);
-    return fetched;
+  const getLegacyTransaction = (txHash: string): Promise<unknown | null> =>
+    input.deps.getTransaction(txHash).catch(() => null);
+  const getResolvedTransaction = async (routeEdge: ForensicRouteEdge): Promise<unknown | null> => {
+    if (!input.deps.selectiveTransactionEnricher) {
+      return getLegacyTransaction(routeEdge.txHash);
+    }
+    const indexedMovements = await input.deps.listIndexedMovementsByHashes?.([routeEdge.txHash]) ?? [routeEdge];
+    await input.deps.selectiveTransactionEnricher.enrich({
+      mode: "subject",
+      routeEdges: [routeEdge],
+      movements: indexedMovements
+    }, { signal: input.abortSignal });
+    return input.deps.selectiveTransactionEnricher.getFullTransactionInfo(routeEdge.txHash);
   };
   const resolveEconomicContext = async (routeEdge: ForensicRouteEdge): Promise<ForensicRouteEdge> => {
-    const context = extractGasFreeEdgeContext(await getCachedTransaction(routeEdge.txHash), routeEdge);
+    const context = extractGasFreeEdgeContext(await getResolvedTransaction(routeEdge), routeEdge);
     return context
       ? {
           ...routeEdge,
@@ -1848,7 +1859,7 @@ export async function buildIncomingDepositReport(
   );
   const depositSeed = incomingSeedTransfer(input);
   const depositEconomicContext = extractGasFreeEdgeContext(
-    await getCachedTransaction(input.depositTxHash),
+    await getResolvedTransaction(seedDeposit),
     seedDeposit
   );
   const forceTransactionSeed = depositEconomicContext?.movement.role === "service_fee";
@@ -1949,7 +1960,10 @@ export async function buildIncomingDepositReport(
       getClassificationForAddress,
       // The transaction seed subject is the watched wallet; the fast risk needed for this report is the sender risk.
       getFastWalletRisk: async () => fastSenderRisk,
-      getTransaction: getCachedTransaction,
+      getTransaction: getLegacyTransaction,
+      selectiveTransactionEnricher: input.deps.selectiveTransactionEnricher,
+      listActiveRouteAssertions: input.deps.listActiveRouteAssertions,
+      listIndexedMovementsByHashes: input.deps.listIndexedMovementsByHashes,
       listTrc20ApprovalChanges: input.deps.listTrc20ApprovalChanges,
       getUsdtRestrictionStatus: async (address, options) => {
         const state = await getStablecoinState(address, options);
@@ -1973,7 +1987,7 @@ export async function buildIncomingDepositReport(
       minAmountPreservationRatio: 0.05,
       recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
       recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
-      contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS,
+      abortSignal: input.abortSignal,
       crossChainStage2Enabled: input.deps.crossChainStage2Enabled,
       crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls
     })
@@ -2029,7 +2043,10 @@ export async function buildIncomingDepositReport(
   const report: IncomingDepositRiskReport = {
     ...reportFromWhere,
     fundingCoverage,
-    corridorSummary: incomingCorridorSummary(reportFromWhere.originPaths)
+    corridorSummary: incomingCorridorSummary(reportFromWhere.originPaths),
+    ...(whereReport.transactionInfoEnrichment
+      ? { transactionInfoEnrichment: whereReport.transactionInfoEnrichment }
+      : {})
   };
   const senderRole = await measureReportStage("infer_sender_role", () =>
     inferIncomingDepositSenderRole({
@@ -2123,7 +2140,8 @@ function activeIncomingDepositReport(report: IncomingDepositRiskReport): Incomin
     subjectExposureProfile: undefined,
     unifiedRiskSummary: undefined,
     reasons: [],
-    warnings: []
+    warnings: [],
+    transactionInfoEnrichment: report.transactionInfoEnrichment
   };
 }
 
@@ -2243,6 +2261,7 @@ export async function runSingleIncomingDepositJobCycle(
   const timing = createIncomingDepositTiming(deps.timingClock);
   const job = await timing.measure("claim_job", () => deps.claimNextForensicCheckJob());
   if (!job) return false;
+  const abortController = new AbortController();
 
   const processingStartedAt = validDate(now());
   const queueWaitMs = msBetween(validDate(job.startedAt), validDate(job.createdAt));
@@ -2267,11 +2286,15 @@ export async function runSingleIncomingDepositJobCycle(
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
     job.progressJson = currentProgress;
     const persist = async (): Promise<void> => {
-      await deps.updateForensicCheckJobProgress?.({
+      const updated = await deps.updateForensicCheckJobProgress?.({
         id: job.id,
         progressJson: currentProgress,
         lastError: null
       });
+      if (updated === false) {
+        abortController.abort();
+        throw new Error("lost_forensic_job_claim");
+      }
     };
     if (stageName) {
       await timing.measure(stageName, persist);
@@ -2295,12 +2318,11 @@ export async function runSingleIncomingDepositJobCycle(
         lastError: null
       });
       if (updated === false) {
-        safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
-          job_id: job.id,
-          error: "progress update not applied"
-        });
+        abortController.abort();
+        throw new Error("lost_forensic_job_claim");
       }
     } catch (error) {
+      if (formatErrorMessage(error) === "lost_forensic_job_claim") throw error;
       safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
         job_id: job.id,
         error: formatErrorMessage(error)
@@ -2371,7 +2393,8 @@ export async function runSingleIncomingDepositJobCycle(
       amountRaw,
       timestamp,
       timing,
-      persistProgress
+      persistProgress,
+      abortSignal: abortController.signal
     }));
     const activeReport = activeIncomingDepositReport(report);
     if (activeReport.depositRiskScore !== null) {
@@ -2438,7 +2461,10 @@ export async function runSingleIncomingDepositJobCycle(
         ...(activeReport as unknown as Record<string, unknown>),
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
       },
-      rawEvidenceIds: [],
+      rawEvidenceIds: [...new Set([
+        ...job.rawEvidenceIds,
+        ...(activeReport.transactionInfoEnrichment?.evidenceIds ?? [])
+      ])],
       observationIds: [],
       lastError: null
     } satisfies CompleteJobInput;
@@ -2465,6 +2491,10 @@ export async function runSingleIncomingDepositJobCycle(
     logTiming("completed");
     return true;
   } catch (error) {
+    if (formatErrorMessage(error) === "lost_forensic_job_claim"
+      || formatErrorMessage(error) === "selective_transaction_enrichment_aborted") {
+      return true;
+    }
     if (error instanceof TargetedHistoryWaitingForIndex) {
       return true;
     }

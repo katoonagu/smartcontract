@@ -13,8 +13,8 @@ export type ParsedWhereIsMoneyCliArgs = {
   maxEdgesPerAddress: number;
   approvalEnrichmentMode: "off" | "triggered" | "always";
   maxApprovalCandidates: number;
-  maxContractTransactionInfoFetches: number;
-  contractTransactionInfoMinIntervalMs: number;
+  maxContractTransactionInfoFetches: number | null;
+  contractTransactionInfoMinIntervalMs: number | null;
   crossChainStage2Enabled: boolean;
   crossChainManualDeepMode: boolean;
   crossChainMaxProviderCalls: number | null;
@@ -32,17 +32,16 @@ export const WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS = 150;
 export const WHERE_IS_MONEY_DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as const;
 export const WHERE_IS_MONEY_DEFAULT_MAX_APPROVAL_CANDIDATES = 30;
 export const WHERE_IS_MONEY_MAX_APPROVAL_CANDIDATES = 100;
-export const WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO = 30;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO = 100;
-export const WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS = 15000;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS = 60000;
 export const WHERE_IS_MONEY_DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 export const WHERE_IS_MONEY_MAX_CROSS_CHAIN_PROVIDER_CALLS = 500;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms <ms>] [--cross-chain-stage2] [--cross-chain-manual-deep]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms <ms>] [--cross-chain-stage2] [--cross-chain-manual-deep]",
+  "  --contract-tx-info-delay-ms is a contract-endpoint pacing override; the central safety floor still applies."
 ].join("\n");
 
 const VALUE_FLAGS = new Set([
@@ -249,20 +248,30 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     min: 0,
     max: WHERE_IS_MONEY_MAX_APPROVAL_CANDIDATES
   });
-  const maxContractTransactionInfoFetches = parseIntegerInRange({
-    args,
-    name: "--contract-tx-info",
-    fallback: WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO,
-    min: 0,
-    max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO
-  });
-  const contractTransactionInfoMinIntervalMs = parseIntegerInRange({
-    args,
-    name: "--contract-tx-info-delay-ms",
-    fallback: WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS,
-    min: 0,
-    max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS
-  });
+  if (hasFlag(args, "--contract-tx-info") && argValue(args, "--contract-tx-info") === undefined) {
+    throw new Error(`--contract-tx-info must be an integer between 0 and ${WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO}.\n${WHERE_IS_MONEY_USAGE}`);
+  }
+  if (hasFlag(args, "--contract-tx-info-delay-ms") && argValue(args, "--contract-tx-info-delay-ms") === undefined) {
+    throw new Error(`--contract-tx-info-delay-ms must be an integer between 0 and ${WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS}.\n${WHERE_IS_MONEY_USAGE}`);
+  }
+  const maxContractTransactionInfoFetches = hasFlag(args, "--contract-tx-info")
+    ? parseIntegerInRange({
+        args,
+        name: "--contract-tx-info",
+        fallback: 0,
+        min: 0,
+        max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO
+      })
+    : null;
+  const contractTransactionInfoMinIntervalMs = hasFlag(args, "--contract-tx-info-delay-ms")
+    ? parseIntegerInRange({
+        args,
+        name: "--contract-tx-info-delay-ms",
+        fallback: 0,
+        min: 0,
+        max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS
+      })
+    : null;
   const crossChainStage2Enabled = args.includes("--cross-chain-stage2");
   const crossChainManualDeepMode = args.includes("--cross-chain-manual-deep");
   const hasCrossChainMaxProviderCalls = hasFlag(args, "--cross-chain-max-provider-calls");

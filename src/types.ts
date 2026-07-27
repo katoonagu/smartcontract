@@ -1252,6 +1252,7 @@ export type IncomingDepositRiskReport = ForensicScoreValidity & {
   unifiedRiskSummary?: IncomingDepositUnifiedRiskSummary;
   reasons: string[];
   warnings: string[];
+  transactionInfoEnrichment?: WhereTransactionInfoEnrichmentSummary;
 };
 
 export type RiskCaseEvidenceType =

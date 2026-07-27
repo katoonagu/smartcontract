@@ -43,6 +43,7 @@ import {
   type StrictScoreBlockedReason
 } from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
+import type { RouteLinkedAssertionInput, SelectiveTransactionEnricher } from "./selectiveTransactionEnrichment";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
@@ -68,6 +69,9 @@ export type DeepForensicJobRunnerDeps = Omit<
     direction?: "both";
   }): Promise<IndexedTronUsdtTransfer[]>;
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<TimelineBearingStablecoinRestrictionProfile>;
+  selectiveTransactionEnricher?: SelectiveTransactionEnricher;
+  listActiveRouteAssertions?(input: { addresses: string[]; txHashes: string[] }): Promise<RouteLinkedAssertionInput[]>;
+  listIndexedMovementsByHashes?(txHashes: string[]): Promise<ForensicRouteEdge[]>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
     id: string;
@@ -231,7 +235,6 @@ export function resolveLegacyWhereIsMoneyRunInput(
     maxEdgesPerAddress: options.maxEdgesPerAddress ?? 100,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
     recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
-    contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
     crossChainStage2Enabled: shouldRunCrossChainStage2ForJob(job, options),
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
     crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
@@ -774,17 +777,21 @@ export function createLegacyWhereIsMoneyExecution(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   options: DeepForensicJobRunnerOptions = {},
-  runtime: { now?: () => number } = {}
+  runtime: { now?: () => number; abortSignal?: AbortSignal; abortController?: AbortController } = {}
 ): LegacyWhereIsMoneyExecution {
   let currentProgress = job.progressJson;
   const persistProgress = async (patch: ForensicJobProgressPatch): Promise<Record<string, unknown>> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
     job.progressJson = currentProgress;
-    await deps.updateForensicCheckJobProgress?.({
+    const updated = await deps.updateForensicCheckJobProgress?.({
       id: job.id,
       progressJson: currentProgress,
       lastError: null
     });
+    if (updated === false) {
+      runtime.abortController?.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
     return currentProgress;
   };
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
@@ -1605,6 +1612,9 @@ export function createLegacyWhereIsMoneyExecution(
     getClassificationForAddress,
     getFastWalletRisk: async () => fastRiskReport,
     ...(deps.getTransaction ? { getTransaction: deps.getTransaction } : {}),
+    ...(deps.selectiveTransactionEnricher ? { selectiveTransactionEnricher: deps.selectiveTransactionEnricher } : {}),
+    ...(deps.listActiveRouteAssertions ? { listActiveRouteAssertions: deps.listActiveRouteAssertions } : {}),
+    ...(deps.listIndexedMovementsByHashes ? { listIndexedMovementsByHashes: deps.listIndexedMovementsByHashes } : {}),
     ...(deps.listTrc20ApprovalChanges ? { listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges } : {}),
     getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
     ...(deps.getContractIntelligenceProfile
@@ -1621,6 +1631,7 @@ export function createLegacyWhereIsMoneyExecution(
   const runInput: RunWhereIsMoneyCheckInput = {
     ...resolveLegacyWhereIsMoneyRunInput(job, options),
     ...(runtime.now ? { now: runtime.now } : {}),
+    ...(runtime.abortSignal ? { abortSignal: runtime.abortSignal } : {}),
     onProgress: async (patch) => {
       await persistProgress(patch);
     }
@@ -1638,9 +1649,13 @@ export function createLegacyWhereIsMoneyExecution(
 async function runWhereIsMoneyJob(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
-  options: DeepForensicJobRunnerOptions
+  options: DeepForensicJobRunnerOptions,
+  abortController?: AbortController
 ): Promise<boolean> {
-  const execution = createLegacyWhereIsMoneyExecution(deps, job, options);
+  const execution = createLegacyWhereIsMoneyExecution(deps, job, options, {
+    abortSignal: abortController?.signal,
+    abortController
+  });
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
   let report: WhereIsMoneyReport;
   try {
@@ -1680,7 +1695,10 @@ async function runWhereIsMoneyJob(
         contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
         ...strictBlockedResultJson(reason)
       },
-      rawEvidenceIds: [],
+      rawEvidenceIds: [...new Set([
+        ...job.rawEvidenceIds,
+        ...(report.transactionInfoEnrichment?.evidenceIds ?? [])
+      ])],
       observationIds: [],
       lastError: reason
     });
@@ -1717,7 +1735,10 @@ async function runWhereIsMoneyJob(
       contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
       contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? []
     },
-    rawEvidenceIds: [],
+    rawEvidenceIds: [...new Set([
+      ...job.rawEvidenceIds,
+      ...(report.transactionInfoEnrichment?.evidenceIds ?? [])
+    ])],
     observationIds: [],
     lastError: null
   } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
@@ -1738,6 +1759,7 @@ export async function runSingleDeepForensicJobCycle(
 ): Promise<boolean> {
   const job = await deps.claimNextForensicCheckJob();
   if (!job) return false;
+  const abortController = new AbortController();
 
   try {
     if (job.kind === "where_is_money_check") {
@@ -1768,7 +1790,7 @@ export async function runSingleDeepForensicJobCycle(
           : {};
         const statusReason = targetedStatusReasonField(targetedIndex.statusReason);
         if (statusReason === "partial_provider_cap") {
-          return await runWhereIsMoneyJob(deps, job, options);
+          return await runWhereIsMoneyJob(deps, job, options, abortController);
         }
         const mapped = targetedHistoryTerminalStatus(
           statusReason,
@@ -1792,15 +1814,19 @@ export async function runSingleDeepForensicJobCycle(
         });
         return true;
       }
-      return await runWhereIsMoneyJob(deps, job, options);
+      return await runWhereIsMoneyJob(deps, job, options, abortController);
     }
 
     job.progressJson = mergeForensicJobProgress(job.progressJson, { jobPhase: "address_deep_trace" });
-    await deps.updateForensicCheckJobProgress?.({
+    const claimedProgress = await deps.updateForensicCheckJobProgress?.({
       id: job.id,
       progressJson: job.progressJson,
       lastError: null
     });
+    if (claimedProgress === false) {
+      abortController.abort();
+      return true;
+    }
 
     const allTimeMode = deepCheckAllTimeModeField(job.progressJson.allTimeDeepCheckMode) ?? options.allTimeDeepCheckMode ?? "partial";
     const allTimeSubjectIndexState = allTimeMode === "strict" && deps.ensureAddressUsdtHistory
@@ -1820,9 +1846,29 @@ export async function runSingleDeepForensicJobCycle(
       });
     }
 
+    const deepSelectiveEvidenceIds = new Set<string>();
+    const resolveDeepTransaction = async (txHash: string): Promise<unknown | null> => {
+      if (!deps.selectiveTransactionEnricher || !deps.listIndexedMovementsByHashes) {
+        return deps.getTransaction?.(txHash).catch(() => null) ?? null;
+      }
+      const movements = await deps.listIndexedMovementsByHashes([txHash]);
+      if (movements.length === 0) return deps.getTransaction?.(txHash).catch(() => null) ?? null;
+      const addresses = [...new Set(movements.flatMap((edge) => [edge.fromAddress, edge.toAddress]))];
+      const assertions = await deps.listActiveRouteAssertions?.({ addresses, txHashes: [txHash] }) ?? [];
+      const enrichment = await deps.selectiveTransactionEnricher.enrich({
+        mode: "subject",
+        routeEdges: movements,
+        movements,
+        assertions,
+        hardTxHashes: [txHash]
+      }, { signal: abortController.signal });
+      for (const evidenceId of enrichment.evidenceIds) deepSelectiveEvidenceIds.add(evidenceId);
+      return deps.selectiveTransactionEnricher.getFullTransactionInfo(txHash);
+    };
     const { getAddressUsdtIndexState, ...deepCheckBaseDeps } = deps;
     const deepCheckDeps: DeepAddressForensicDeps = {
       ...deepCheckBaseDeps,
+      ...(deps.getTransaction ? { getTransaction: resolveDeepTransaction } : {}),
       ...(getAddressUsdtIndexState
         ? {
             getAddressUsdtIndexState: (address: string) => getAddressUsdtIndexState({
@@ -1862,7 +1908,8 @@ export async function runSingleDeepForensicJobCycle(
       secondLayerMaxActiveWalletsPerJob: nonNegativeIntegerField(job.progressJson.secondLayerMaxActiveWalletsPerJob) ?? options.secondLayerMaxActiveWalletsPerJob,
       directHardEvidenceLiveLimit: options.directHardEvidenceLiveLimit,
       directHardEvidenceConcurrency: options.directHardEvidenceConcurrency,
-      apiKeyConfigured: options.apiKeyConfigured
+      apiKeyConfigured: options.apiKeyConfigured,
+      abortSignal: abortController.signal
     });
     const secondLayerProfile = report.secondLayerRelationshipProfiles;
     if (secondLayerProfile && secondLayerProfile.queueRequests.length > 0 && deps.queueAddressUsdtHistory) {
@@ -1958,7 +2005,11 @@ export async function runSingleDeepForensicJobCycle(
         coverage: report.coverage,
         coverageDebug: { ...report.coverageDebug, jobId: job.id, status }
       },
-      rawEvidenceIds: report.rawEvidence.map((evidence) => evidence.id),
+      rawEvidenceIds: [...new Set([
+        ...job.rawEvidenceIds,
+        ...report.rawEvidence.map((evidence) => evidence.id),
+        ...deepSelectiveEvidenceIds
+      ])],
       observationIds: report.observations.map((observation) => observation.id),
       lastError: null
     } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
@@ -1973,6 +2024,9 @@ export async function runSingleDeepForensicJobCycle(
     return true;
   } catch (error) {
     const message = errorMessage(error);
+    if (message === "lost_forensic_job_claim" || message === "selective_transaction_enrichment_aborted") {
+      return true;
+    }
     if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
       const reason = strictScoreBlockedReasonFromError(error);
       const strictMessage = strictErrorMessageFromTargetedHistoryError(error);

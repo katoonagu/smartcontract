@@ -78,3 +78,16 @@ unknown and incomplete.
 
 This contract is implemented and tested. Delivery ownership is separate from
 the analysis path and does not gate isolated execution.
+
+Stage B Where and Incoming use the shared selective resolver for
+balance-forming, money-origin, GasFree, approval, and contract context. Plain
+`REVIEW` paths receive raw proof without automatically fetching full details.
+All eight hard triggers still reach full evidence and the existing semantic
+parsers; optional context may be capped, but hard subject evidence is not.
+Exact route-linked active assertions override optional approval mode, while
+flat labels do not authorize a full request.
+
+If raw and full providers both fail to produce final evidence, the report keeps
+a stable transaction-evidence-incomplete note, sets local coverage partial,
+and publishes no clean enrichment fact. Where and Incoming completion persist
+the resolver evidence IDs alongside IDs already owned by the job.

@@ -1595,6 +1595,20 @@ describe("deep forensic job runner", () => {
       subjectAddress: subject,
       decision: "REVIEW",
       riskScore: 42,
+      transactionInfoEnrichment: {
+        policyVersion: "selective-transaction-enrichment-v1",
+        coverageStatus: "complete",
+        technicalStatus: "proven",
+        candidateCount: 1,
+        hardCandidateCount: 0,
+        rawProviderRequests: 1,
+        fullProviderRequests: 0,
+        savedEvidenceHits: 0,
+        inFlightHits: 0,
+        schedulerAwaitMs: 0,
+        evidenceIds: ["raw:evidence", "decision:evidence"],
+        decisions: []
+      },
       coverage: {
         partial: true,
         notes: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
@@ -1636,11 +1650,10 @@ describe("deep forensic job runner", () => {
       });
 
       expect(handled).toBe(true);
-      expect(runWhereIsMoneyCheck.mock.calls[0]?.[1]).toMatchObject({
-        contractTransactionInfoMinIntervalMs: 1000
-      });
+      expect(runWhereIsMoneyCheck.mock.calls[0]?.[1]).not.toHaveProperty("contractTransactionInfoMinIntervalMs");
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
         status: "completed",
+        rawEvidenceIds: ["raw:evidence", "decision:evidence"],
         progressJson: expect.objectContaining({
           whereIsMoneyCoverage: whereReport.coverage
         }),

@@ -89,6 +89,11 @@ code_refs:
   transaction-info only for the eight versioned evidence triggers. Subject
   hard triggers are uncapped; intermediate-boundary full requests are capped
   at five and overflow must continue traversal as explicit missing evidence.
+- One process-wide selective resolver is the transaction-evidence authority
+  for Stage B Where, Incoming, Deep, and calibration paths. Endpoint pacing is
+  owned by the central scheduler; the CLI delay flag may only raise the
+  contract-bucket floor. A false legacy job progress CAS aborts the caller and
+  forbids stale completion or delivery preparation.
 - Matrix v4 gives unknown addresses zero by default and creates risk only from
   evidence or confirmed behavior combinations. Hard floors are not diluted by
   safe volume.

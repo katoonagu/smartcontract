@@ -68,8 +68,13 @@ export type SelectiveTransactionEnrichmentResult = WhereTransactionInfoEnrichmen
 export type SelectiveTransactionEnricher = {
   enrich(
     input: SelectiveTransactionEnrichmentInput,
-    options?: { signal?: AbortSignal }
+    options?: {
+      signal?: AbortSignal;
+      onCandidateResolved?: (input: { completed: number; total: number }) => Promise<void> | void;
+    }
   ): Promise<SelectiveTransactionEnrichmentResult>;
+  /** Reads only already-persisted final full evidence; it never dispatches a provider request. */
+  getFullTransactionInfo(txHash: string): Promise<unknown | null>;
 };
 
 type ProviderResolution =
@@ -727,6 +732,14 @@ export function createSelectiveTransactionEnricher(deps: {
   }
 
   return {
+    async getFullTransactionInfo(txHash) {
+      try {
+        const saved = await deps.getSavedEvidence(identity(normalizeHash(txHash), "full"));
+        return saved?.endpoint === "transaction-info" ? saved.payload : null;
+      } catch {
+        return null;
+      }
+    },
     async enrich(input, options = {}) {
       aborted(options.signal);
       const candidates = buildSelectiveTransactionCandidates(input);
@@ -734,6 +747,7 @@ export function createSelectiveTransactionEnricher(deps: {
       let cursor = 0;
       let fullSlots = 0;
       let stopped = false;
+      let completed = 0;
       const acquireFullSlot = () => {
         if (input.mode === "subject") return true;
         if (fullSlots >= 5) return false;
@@ -747,6 +761,10 @@ export function createSelectiveTransactionEnricher(deps: {
           if (index >= candidates.length) return;
           try {
             results[index] = await resolveCandidate(candidates[index], options.signal, acquireFullSlot);
+            aborted(options.signal);
+            completed += 1;
+            await options.onCandidateResolved?.({ completed, total: candidates.length });
+            aborted(options.signal);
           } catch (error) {
             if ((error as Error).message === "selective_transaction_enrichment_aborted") stopped = true;
             throw error;

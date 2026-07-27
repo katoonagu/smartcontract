@@ -41,6 +41,11 @@ import { detectDrainEpisode } from "../forensics/drainEpisode";
 import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
+import type {
+  RouteLinkedAssertionInput,
+  SelectiveTransactionEnricher,
+  SelectiveTransactionEnrichmentResult
+} from "../forensics/selectiveTransactionEnrichment";
 import { exactFastHardEvidence } from "../risk/fastEvidence";
 import { assembleFreshScoreResultV2, materializeFreshScoreBindingV2 } from "../risk/scoreAnchorV2";
 import {
@@ -79,7 +84,8 @@ import type {
   SubjectExposureEvent,
   FreshWhereIsMoneyReportV2,
   WhereCandidateWindowRequest,
-  WhereIsMoneyReport
+  WhereIsMoneyReport,
+  WhereTransactionInfoEnrichmentSummary
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
 
@@ -109,6 +115,12 @@ export type WhereIsMoneyDeps = {
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
   getFastWalletRisk?(address: string): Promise<RiskReport | null>;
   getTransaction?(txHash: string): Promise<unknown>;
+  selectiveTransactionEnricher?: SelectiveTransactionEnricher;
+  listIndexedMovementsByHashes?(txHashes: string[]): Promise<ForensicRouteEdge[]>;
+  listActiveRouteAssertions?(input: {
+    addresses: string[];
+    txHashes: string[];
+  }): Promise<RouteLinkedAssertionInput[]>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
@@ -141,8 +153,8 @@ export type RunWhereIsMoneyCheckInput = {
   recentFallbackTransferLimit?: number;
   approvalEnrichmentMode?: "off" | "triggered" | "always";
   maxApprovalCandidates?: number;
-  maxContractTransactionInfoFetches?: number;
-  contractTransactionInfoMinIntervalMs?: number;
+  maxContractTransactionInfoFetches?: number | null;
+  contractTransactionInfoMinIntervalMs?: number | null;
   crossChainStage2Enabled?: boolean;
   crossChainManualDeepMode?: boolean;
   crossChainMaxProviderCalls?: number;
@@ -162,18 +174,12 @@ const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
 const DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as NonNullable<RunWhereIsMoneyCheckInput["approvalEnrichmentMode"]>;
 const DEFAULT_MAX_APPROVAL_CANDIDATES = 30;
 // ponytail: high ceiling for current mass Verify20 campaigns; move to paged/background enrichment if providers throttle.
-const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 2000;
-const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 const TRACE_PROGRESS_ADDRESS_INTERVAL = 5;
 const TRACE_PROGRESS_MIN_INTERVAL_MS = 15_000;
 const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
 const MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS = 20;
 const MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS = MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
   return (left ?? "").trim().toLowerCase() === (right ?? "").trim().toLowerCase();
@@ -845,6 +851,35 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return mergeForensicRouteEdges([...byKey.values()]);
 }
 
+function mergeTransactionInfoEnrichment(
+  results: readonly SelectiveTransactionEnrichmentResult[]
+): WhereTransactionInfoEnrichmentSummary | undefined {
+  if (results.length === 0) return undefined;
+  const decisions = new Map<string, SelectiveTransactionEnrichmentResult["decisions"][number]>();
+  for (const result of results) {
+    for (const decision of result.decisions) decisions.set(decision.txHash, decision);
+  }
+  const mergedDecisions = [...decisions.values()].sort((left, right) => left.txHash.localeCompare(right.txHash));
+  return {
+    policyVersion: "selective-transaction-enrichment-v1",
+    coverageStatus: results.some((result) => result.coverageStatus === "coverage_incomplete")
+      ? "coverage_incomplete"
+      : "complete",
+    technicalStatus: results.some((result) => result.technicalStatus === "technical_unknown")
+      ? "technical_unknown"
+      : "proven",
+    candidateCount: mergedDecisions.length,
+    hardCandidateCount: mergedDecisions.filter((decision) => decision.priority === "hard").length,
+    rawProviderRequests: results.reduce((sum, result) => sum + result.rawProviderRequests, 0),
+    fullProviderRequests: results.reduce((sum, result) => sum + result.fullProviderRequests, 0),
+    savedEvidenceHits: results.reduce((sum, result) => sum + result.savedEvidenceHits, 0),
+    inFlightHits: results.reduce((sum, result) => sum + result.inFlightHits, 0),
+    schedulerAwaitMs: results.reduce((sum, result) => sum + result.schedulerAwaitMs, 0),
+    evidenceIds: [...new Set(results.flatMap((result) => result.evidenceIds))],
+    decisions: mergedDecisions
+  };
+}
+
 function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: ForensicRouteEdge): ForensicRouteEdge {
   if (!current) return next;
   const currentRank = contractDrivenSignalRank(current);
@@ -1376,18 +1411,82 @@ export async function runWhereIsMoneyCheck(
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const repairedExactWindowEdges: ForensicRouteEdge[] = [];
   const classifications = new Map<string, ServiceClassification | null>();
-  const transactionCache = new Map<string, Promise<unknown | null>>();
-  const exactGasFreeAccounts = new Set<string>();
-  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
-    if (!deps.getTransaction) return Promise.resolve(null);
-    const existing = transactionCache.get(txHash);
-    if (existing) return existing;
-    const request = deps.getTransaction(txHash).catch(() => null);
-    transactionCache.set(txHash, request);
-    return request;
+  const enrichmentResults: SelectiveTransactionEnrichmentResult[] = [];
+  const indexedMovementCache = new Map<string, ForensicRouteEdge[]>();
+  let lastEnrichmentHeartbeatAt = Number.NEGATIVE_INFINITY;
+  const enrichTransactions = async (enrichmentInput: {
+    routeEdges: ForensicRouteEdge[];
+    movements?: ForensicRouteEdge[];
+    assertions?: RouteLinkedAssertionInput[];
+    hardTxHashes?: string[];
+    unresolvedEconomicRoleTxHashes?: string[];
+    emitHeartbeat?: boolean;
+  }): Promise<SelectiveTransactionEnrichmentResult | null> => {
+    if (!deps.selectiveTransactionEnricher || enrichmentInput.routeEdges.length === 0) return null;
+    const missingHashes = [...new Set(enrichmentInput.routeEdges.map((edge) => edge.txHash.toLowerCase()))]
+      .filter((hash) => !indexedMovementCache.has(hash));
+    if (deps.listIndexedMovementsByHashes && missingHashes.length > 0) {
+      const indexed = await deps.listIndexedMovementsByHashes(missingHashes);
+      for (const hash of missingHashes) indexedMovementCache.set(hash, []);
+      for (const edge of indexed) {
+        const hash = edge.txHash.toLowerCase();
+        indexedMovementCache.set(hash, [...(indexedMovementCache.get(hash) ?? []), edge]);
+      }
+    }
+    const indexedMovements = enrichmentInput.routeEdges.flatMap((edge) =>
+      indexedMovementCache.get(edge.txHash.toLowerCase()) ?? []
+    );
+    let heartbeatFailure: unknown;
+    let heartbeatWrite = Promise.resolve();
+    const writeHeartbeat = (force: boolean): Promise<void> => {
+      heartbeatWrite = heartbeatWrite.then(async () => {
+        const current = nowMs();
+        if (!force && current - lastEnrichmentHeartbeatAt < 30_000) return;
+        lastEnrichmentHeartbeatAt = current;
+        await emitProgress({ jobHeartbeatAt: new Date(current).toISOString() });
+      }).catch((error) => {
+        heartbeatFailure ??= error;
+      });
+      return heartbeatWrite;
+    };
+    const heartbeatTimer = enrichmentInput.emitHeartbeat && input.onProgress
+      ? setInterval(() => { void writeHeartbeat(false); }, 30_000)
+      : null;
+    let result: SelectiveTransactionEnrichmentResult;
+    try {
+      result = await deps.selectiveTransactionEnricher.enrich({
+        mode: "subject",
+        routeEdges: enrichmentInput.routeEdges,
+        movements: indexedMovements.length > 0
+          ? indexedMovements
+          : enrichmentInput.movements ?? enrichmentInput.routeEdges,
+        assertions: enrichmentInput.assertions,
+        hardTxHashes: enrichmentInput.hardTxHashes,
+        unresolvedEconomicRoleTxHashes: enrichmentInput.unresolvedEconomicRoleTxHashes
+      }, {
+        signal: input.abortSignal,
+        ...(enrichmentInput.emitHeartbeat ? {
+          onCandidateResolved: ({ completed, total }) => writeHeartbeat(completed === total)
+        } : {})
+      });
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      await heartbeatWrite;
+    }
+    if (heartbeatFailure) throw heartbeatFailure;
+    enrichmentResults.push(result);
+    return result;
   };
+  const getResolvedFullTransaction = async (txHash: string): Promise<unknown | null> => {
+    if (deps.selectiveTransactionEnricher) {
+      return deps.selectiveTransactionEnricher.getFullTransactionInfo(txHash);
+    }
+    return deps.getTransaction?.(txHash).catch(() => null) ?? null;
+  };
+  const exactGasFreeAccounts = new Set<string>();
   const resolveEconomicContext = async (routeEdge: ForensicRouteEdge): Promise<ForensicRouteEdge> => {
-    const context = extractGasFreeEdgeContext(await getCachedTransaction(routeEdge.txHash), routeEdge);
+    await enrichTransactions({ routeEdges: [routeEdge] });
+    const context = extractGasFreeEdgeContext(await getResolvedFullTransaction(routeEdge.txHash), routeEdge);
     if (!context) return routeEdge;
     exactGasFreeAccounts.add(context.settlement.accountAddress);
     return {
@@ -1807,65 +1906,66 @@ export async function runWhereIsMoneyCheck(
   let approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]> = [];
   const approvalMode = input.approvalEnrichmentMode ?? DEFAULT_APPROVAL_ENRICHMENT_MODE;
   const maxApprovalCandidates = input.maxApprovalCandidates ?? DEFAULT_MAX_APPROVAL_CANDIDATES;
-  const maxTxInfoFetches = input.maxContractTransactionInfoFetches ?? DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES;
-  const txInfoMinIntervalMs = Math.max(
-    0,
-    input.contractTransactionInfoMinIntervalMs ?? DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
-  );
-  const effectiveApprovalCandidateLimit = Math.max(0, Math.min(maxApprovalCandidates, maxTxInfoFetches));
+  const effectiveApprovalCandidateLimit = Math.max(0, Math.min(
+    maxApprovalCandidates,
+    input.maxContractTransactionInfoFetches ?? Number.POSITIVE_INFINITY
+  ));
   const allFetchedEdges = dedupeEdges([
     ...balanceFormingTransfers.map(balanceTransferToEdge),
     ...edgeCache.values()
   ].flat());
-  const selectedApprovalEdges = selectApprovalEnrichmentEdges({
+  const optionalApprovalEdges = selectApprovalEnrichmentEdges({
     edges: allFetchedEdges,
     originPaths,
     maxCandidates: effectiveApprovalCandidateLimit,
     mode: approvalMode
   });
-  const approvalEdges = selectedApprovalEdges;
-  const hasApprovalEnrichmentDeps = Boolean(deps.getTransaction && deps.listTrc20ApprovalChanges);
+  const routeAddresses = [...new Set(allFetchedEdges.flatMap((edge) => [
+    edge.fromAddress,
+    edge.toAddress,
+    ...(edge.callerAddress ? [edge.callerAddress] : []),
+    ...(edge.contractAddress ? [edge.contractAddress] : [])
+  ]))];
+  const routeTxHashes = [...new Set(allFetchedEdges.map((edge) => edge.txHash.toLowerCase()))];
+  const routeAssertions = await deps.listActiveRouteAssertions?.({
+    addresses: routeAddresses,
+    txHashes: routeTxHashes
+  }).catch(() => []) ?? [];
+  await enrichTransactions({
+    routeEdges: allFetchedEdges,
+    assertions: routeAssertions,
+    emitHeartbeat: true,
+    unresolvedEconomicRoleTxHashes: approvalMode === "off"
+      ? []
+      : optionalApprovalEdges.map((edge) => edge.txHash)
+  });
+  const transactionInfoEnrichment = mergeTransactionInfoEnrichment(enrichmentResults);
+  const hardEnrichmentHashes = new Set(
+    (transactionInfoEnrichment?.decisions ?? [])
+      .filter((decision) => decision.priority === "hard")
+      .map((decision) => decision.txHash)
+  );
+  const approvalEdges = dedupeEdges([
+    ...optionalApprovalEdges,
+    ...allFetchedEdges.filter((edge) => hardEnrichmentHashes.has(edge.txHash.toLowerCase()))
+  ]);
+  const hasApprovalEnrichmentDeps = Boolean(
+    (deps.selectiveTransactionEnricher || deps.getTransaction) && deps.listTrc20ApprovalChanges
+  );
   const approvalBudgetNote = approvalMode === "off"
-    ? "Approval/contract enrichment disabled for this run."
+    ? hardEnrichmentHashes.size > 0
+      ? `Optional approval exploration disabled; checked ${hardEnrichmentHashes.size} hard evidence transaction(s).`
+      : "Approval/contract enrichment disabled for this run."
     : effectiveApprovalCandidateLimit <= 0
-      ? "Approval/contract enrichment skipped because the transaction-info budget is zero."
+      ? "Optional approval/contract enrichment skipped because its context budget is zero."
     : approvalEdges.length > 0 && !hasApprovalEnrichmentDeps
       ? "Approval/contract enrichment skipped because transaction or approval lookup dependencies are unavailable."
     : approvalEdges.length > 0
       ? `Approval/contract enrichment budget: checked ${approvalEdges.length} candidate edge(s).`
       : "Approval/contract enrichment skipped because no contract/service trigger was found.";
   let approvalEnrichmentOutcomeNote: string | null = null;
-  if (approvalMode !== "off" && approvalEdges.length > 0 && deps.getTransaction && deps.listTrc20ApprovalChanges) {
+  if (approvalEdges.length > 0 && hasApprovalEnrichmentDeps && deps.listTrc20ApprovalChanges) {
     throwIfAborted(input.abortSignal);
-    let transactionInfoFetches = 0;
-    let transactionInfoSuccesses = 0;
-    let transactionInfoFailures = 0;
-    const transactionInfoCache = new Map<string, Promise<unknown | null>>();
-    let transactionInfoQueue = Promise.resolve();
-    let lastTransactionInfoCompletedAt = nowMs() - txInfoMinIntervalMs;
-    const getBudgetedTransaction = (txHash: string): Promise<unknown | null> => {
-      const cached = transactionInfoCache.get(txHash);
-      if (cached) return cached;
-      if (transactionInfoFetches >= maxTxInfoFetches) return Promise.resolve(null);
-      transactionInfoFetches += 1;
-      const fetched = transactionInfoQueue.then(async () => {
-        throwIfAborted(input.abortSignal);
-        const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - nowMs();
-        if (waitMs > 0) await sleep(waitMs);
-        throwIfAborted(input.abortSignal);
-        const transaction = await getCachedTransaction(txHash);
-        lastTransactionInfoCompletedAt = nowMs();
-        if (transaction === null) {
-          transactionInfoFailures += 1;
-        } else {
-          transactionInfoSuccesses += 1;
-        }
-        return transaction;
-      });
-      transactionInfoQueue = fetched.then(() => undefined, () => undefined);
-      transactionInfoCache.set(txHash, fetched);
-      return fetched;
-    };
     const edgeAddresses = new Set(approvalEdges.flatMap((edge) => [edge.fromAddress, edge.toAddress]));
     await Promise.all([...edgeAddresses].map((address) => getCachedClassification(address)));
     throwIfAborted(input.abortSignal);
@@ -1873,7 +1973,7 @@ export async function runWhereIsMoneyCheck(
       edges: approvalEdges,
       classifications,
       getCachedClassification,
-      getTransaction: getBudgetedTransaction,
+      getTransaction: getResolvedFullTransaction,
       getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
       maxCandidates: effectiveApprovalCandidateLimit
     });
@@ -1883,7 +1983,7 @@ export async function runWhereIsMoneyCheck(
       classifications,
       contractProfiles,
       deps: {
-        getTransaction: getBudgetedTransaction,
+        getTransaction: getResolvedFullTransaction,
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
@@ -1894,9 +1994,9 @@ export async function runWhereIsMoneyCheck(
     approvalDrainProvenanceProfiles = approvalDrainAnalysis.profiles;
     approvalDrainReviewFindings = approvalDrainAnalysis.reviewFindings;
     if (approvalEdges.length > 0) {
-      approvalEnrichmentOutcomeNote = transactionInfoFailures > 0
-        ? `Approval/contract enrichment result: transaction-info fetched ${transactionInfoSuccesses}/${transactionInfoFetches} candidate tx(s); ${transactionInfoFailures} candidate tx(s) were unavailable or rate-limited.`
-        : `Approval/contract enrichment result: transaction-info fetched ${transactionInfoSuccesses}/${transactionInfoFetches} candidate tx(s).`;
+      approvalEnrichmentOutcomeNote = transactionInfoEnrichment?.coverageStatus === "coverage_incomplete"
+        ? "Approval/contract enrichment result: final transaction evidence is incomplete for at least one candidate."
+        : `Approval/contract enrichment result: resolved ${approvalEdges.length} candidate edge(s) through shared transaction evidence.`;
     }
   }
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
@@ -1904,10 +2004,12 @@ export async function runWhereIsMoneyCheck(
     edges: allFetchedEdges,
     classifications,
     approvalDrainProvenanceProfiles,
-    getTransaction: deps.getTransaction ? getCachedTransaction : undefined,
+    getTransaction: deps.selectiveTransactionEnricher || deps.getTransaction
+      ? getResolvedFullTransaction
+      : undefined,
     fetchEdgesForAddress,
-    maxTransactionInfoFetches: maxTxInfoFetches,
-    maxSourceActivityChecks: Math.min(20, maxTxInfoFetches),
+    maxTransactionInfoFetches: input.maxContractTransactionInfoFetches ?? 2000,
+    maxSourceActivityChecks: Math.min(20, input.maxContractTransactionInfoFetches ?? 20),
     incomingClassificationMode: "method_prefiltered"
   });
   const combined = combineMoneyOriginDecision(provenanceOriginPaths.length > 0 ? provenanceOriginPaths : originPaths);
@@ -1940,7 +2042,8 @@ export async function runWhereIsMoneyCheck(
     maxDepth,
     fetchedAddressCount: fetchedAddresses.size,
     questionStatus: "applicable",
-    partial: selection.partial || globalAddressBudgetExhausted || provenanceOriginPaths.some((path) => path.verdict === "REVIEW"),
+    partial: selection.partial || globalAddressBudgetExhausted || provenanceOriginPaths.some((path) => path.verdict === "REVIEW")
+      || transactionInfoEnrichment?.coverageStatus === "coverage_incomplete",
     notes: [
       selection.provenanceScope === "recent_flow"
         ? "Recent-flow approximation: current balance is low, so the report analyzes recent meaningful wallet flow rather than current balance origin."
@@ -1951,6 +2054,9 @@ export async function runWhereIsMoneyCheck(
       ...(globalAddressBudgetExhausted ? [`Trace reached global maxAddressFetches=${maxAddressFetches}; source remains partially proven.`] : []),
       approvalBudgetNote,
       ...(approvalEnrichmentOutcomeNote ? [approvalEnrichmentOutcomeNote] : []),
+      ...(transactionInfoEnrichment?.technicalStatus === "technical_unknown"
+        ? ["Transaction evidence incomplete: raw and full transaction providers did not produce final evidence."]
+        : []),
       ...provenanceOriginPaths
         .filter((path) => path.verdict === "REVIEW")
         .map((path) => `${path.balanceTransferTxHash}: ${path.reasons[0]}`)
@@ -2239,6 +2345,7 @@ export async function runWhereIsMoneyCheck(
     riskScore,
     decisionReasons,
     coverage: finalCoverage,
-    layerSummary
+    layerSummary,
+    ...(transactionInfoEnrichment ? { transactionInfoEnrichment } : {})
   });
 }

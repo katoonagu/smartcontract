@@ -32,6 +32,7 @@ import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress, type CounterPatch } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
+import { createSelectiveTransactionEnricher } from "./forensics/selectiveTransactionEnrichment";
 import {
   runSingleForensicTelegramDeliveryCycle,
   type ForensicTelegramDeliveryRepository
@@ -95,6 +96,7 @@ import {
   getAddressMetadata,
   listFreshTaggedAddressMetadataAt,
   getForensicCheckJob,
+  getTransactionProviderEvidence,
   getTelegramUserProfile,
   getTheftReport,
   getStaleAddressMetadata,
@@ -132,6 +134,7 @@ import {
   findLatestSavedWalletRiskByAddresses,
   getWalletIntelligenceAddressDetail,
   listAddressLabels,
+  listActiveAddressLabelAssertionsForRoute,
   markDigestSent,
   markUserAlertAnalyzing,
   listWalletApprovalsBySpenderForTelegramUser,
@@ -149,6 +152,8 @@ import {
   upsertForensicJobWait,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
   saveWalletApprovalAllowanceStateV2,
   createOrReuseForensicCheckJob,
   getLatestDeepForensicCheckJobForAddress,
@@ -456,6 +461,24 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
+const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
+  getSavedEvidence: (identity) => getTransactionProviderEvidence(db, identity),
+  saveProviderEvidence: (evidence) => saveTransactionProviderEvidence(db, evidence),
+  saveDecisionEvidence: (evidence) => saveTransactionEnrichmentDecisionEvidence(db, evidence),
+  getRawTransaction: (txHash) => tronClient.getRawTransaction(txHash),
+  getFullTransactionInfo: (txHash) => tronClient.getTransaction(txHash),
+  now: () => new Date()
+});
+const selectiveRouteAssertions = async (input: { addresses: string[]; txHashes: string[] }) =>
+  (await listActiveAddressLabelAssertionsForRoute(db, { chain: "tron", ...input })).map((assertion) => ({
+    chain: assertion.chain,
+    address: assertion.address,
+    status: assertion.status,
+    evidenceJson: assertion.evidenceJson
+  }));
+const indexedMovementsByHashes = async (txHashes: string[]) =>
+  (await listIndexedTronUsdtTransfersByHashes(db, [...new Set(txHashes.map((hash) => hash.toLowerCase()))]))
+    .map(indexedTransferToRouteEdge);
 const unifiedSnapshotSource = createTronConfirmedSnapshotSource({
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
   fullNodeApiKey: config.tronFullNodeApiKey,
@@ -2519,6 +2542,9 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     logger
   }),
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
+  selectiveTransactionEnricher,
+  listActiveRouteAssertions: selectiveRouteAssertions,
+  listIndexedMovementsByHashes: indexedMovementsByHashes,
   getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
   ensureAddressUsdtHistory,
@@ -3095,6 +3121,9 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       getContractIntelligenceProfile: (address) => getCachedOrLiveContractIntelligenceProfile(address),
       getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
+      selectiveTransactionEnricher,
+      listActiveRouteAssertions: selectiveRouteAssertions,
+      listIndexedMovementsByHashes: indexedMovementsByHashes,
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
       crossChainDiscoveryProvider,
       evmEvidenceProvider,

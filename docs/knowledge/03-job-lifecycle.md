@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-26
+last_verified: 2026-07-27
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -35,6 +35,13 @@ reinterpreted as Unified results.
 A technical/provider stop must remain distinguishable from a risk decision.
 Legacy retries keep their current ownership rules; operators must not grant
 both legacy and Unified workers delivery ownership.
+
+Stage B legacy Where and Incoming workers bind one `AbortController` to each
+claimed job. A false progress/heartbeat compare-and-set is claim loss: the
+worker aborts selective enrichment, starts no later candidate, and cannot
+complete, publish, or prepare delivery. Enrichment heartbeats are written at
+most once per 30 seconds and on the final candidate. Completed jobs merge the
+provider and decision evidence IDs into existing `raw_evidence_ids`.
 
 ## Unified Lifecycle
 

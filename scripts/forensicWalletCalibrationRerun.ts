@@ -21,8 +21,13 @@ import { closeDb, createDb, type Db } from "../src/storage/db";
 import {
   getAddressMetadata,
   getContractIntelligenceProfile,
+  getTransactionProviderEvidence,
+  listActiveAddressLabelAssertionsForRoute,
   listAddressLabels,
   listIndexedTronUsdtTransfersForAddress,
+  listIndexedTronUsdtTransfersByHashes,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile
 } from "../src/storage/repositories";
@@ -37,6 +42,52 @@ import type {
   WhereIsMoneyReport
 } from "../src/types";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
+import { createSelectiveTransactionEnricher } from "../src/forensics/selectiveTransactionEnrichment";
+
+export function buildCalibrationWhereRuntime(input: {
+  db: Db;
+  tronClient: Pick<TronscanClient, "getRawTransaction" | "getTransaction">;
+}) {
+  const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
+    getSavedEvidence: (identity) => getTransactionProviderEvidence(input.db, identity),
+    saveProviderEvidence: (evidence) => saveTransactionProviderEvidence(input.db, evidence),
+    saveDecisionEvidence: (evidence) => saveTransactionEnrichmentDecisionEvidence(input.db, evidence),
+    getRawTransaction: (txHash) => input.tronClient.getRawTransaction(txHash),
+    getFullTransactionInfo: (txHash) => input.tronClient.getTransaction(txHash),
+    now: () => new Date()
+  });
+  return {
+    selectiveTransactionEnricher,
+    listActiveRouteAssertions: async ({ addresses, txHashes }: { addresses: string[]; txHashes: string[] }) =>
+      (await listActiveAddressLabelAssertionsForRoute(input.db, { chain: "tron", addresses, txHashes }))
+        .map((assertion) => ({
+          chain: assertion.chain,
+          address: assertion.address,
+          status: assertion.status,
+          evidenceJson: assertion.evidenceJson
+        })),
+    listIndexedMovementsByHashes: async (txHashes: string[]) =>
+      (await listIndexedTronUsdtTransfersByHashes(input.db, [...new Set(txHashes)]))
+        .map(indexedTransferToRouteEdge)
+  };
+}
+
+export function calibrationWhereRunOptions(signal: AbortSignal) {
+  return {
+    mode: "wallet_profile" as const,
+    maxDepth: 4,
+    beamWidth: 8,
+    maxAddressFetches: 60,
+    maxEdgesPerAddress: 80,
+    recentFallbackMinTransferCount: 100,
+    recentFallbackTransferLimit: 100,
+    approvalEnrichmentMode: "triggered" as const,
+    maxApprovalCandidates: 8,
+    maxContractTransactionInfoFetches: 8,
+    crossChainStage2Enabled: false,
+    abortSignal: signal
+  };
+}
 
 const DEFAULT_ADDRESSES = [
   "THRSTA7nfbBNsM8tCL4yfA4jsFC4Yw8Pet",
@@ -459,6 +510,7 @@ async function main(): Promise<void> {
     scheduler,
     logger: runtimeLogger
   });
+  const calibrationWhereRuntime = buildCalibrationWhereRuntime({ db, tronClient });
   const windowEnd = startedAt;
   const windowStart = new Date(windowEnd.getTime() - args.windowDays * 24 * 60 * 60 * 1000);
   const stablecoinStateCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
@@ -675,28 +727,16 @@ async function main(): Promise<void> {
           getLabelsForAddress: (lookupAddress) => listAddressLabels(db, lookupAddress),
           getClassificationForAddress,
           getFastWalletRisk,
-          getTransaction: (txHash) => tronClient.getTransaction(txHash),
+          ...calibrationWhereRuntime,
           listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
           getUsdtRestrictionStatus: (lookupAddress, options) => tronClient.getUsdtRestrictionStatus(lookupAddress, options),
           getContractIntelligenceProfile: (lookupAddress) => getCachedOrLiveContractProfile(db, tronClient, lookupAddress)
         }, {
-          mode: "wallet_profile",
           sourceAddress: address,
           windowStart,
           windowEnd,
-          maxDepth: 4,
-          beamWidth: 8,
-          maxAddressFetches: 60,
-          maxEdgesPerAddress: 80,
-          recentFallbackMinTransferCount: 100,
-          recentFallbackTransferLimit: 100,
-          approvalEnrichmentMode: "triggered",
-          maxApprovalCandidates: 8,
-          maxContractTransactionInfoFetches: 8,
-          contractTransactionInfoMinIntervalMs: 2_000,
-          crossChainStage2Enabled: false,
+          ...calibrationWhereRunOptions(signal),
           deepServiceExposureProfiles: deepReport?.serviceExposureProfiles ?? [],
-          abortSignal: signal
         })
       );
       if (where.ok) whereReport = where.value;
@@ -777,7 +817,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(JSON.stringify({ event: "calibration_run_failed", error: messageFromError(error) }));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(JSON.stringify({ event: "calibration_run_failed", error: messageFromError(error) }));
+    process.exitCode = 1;
+  });
+}

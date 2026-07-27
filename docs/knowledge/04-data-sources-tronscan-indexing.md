@@ -102,6 +102,12 @@ finality never counts as success. Flat labels, review status, unknown identity,
 and service likelihood alone do not authorize the full request. Provider
 payloads remain only in immutable raw evidence; reports carry IDs and policy
 decisions.
+The production process constructs one selective resolver over the singleton
+database, Tron client, and scheduler. Where, Incoming, Deep, and calibration
+reuse that instance. Candidate hashes are deduplicated before indexed movement
+lookup, and active rich assertions are queried only for route addresses and
+hashes. Existing approval, contract, and GasFree parsers read persisted final
+full evidence; checker-local pacing is not a second scheduler.
 Raw endpoint finality and the exact current indexed movement fields are
 preserved as separate canonical contexts in the same witness; neither source
 overwrites or synthesizes the other. Their disagreement is adverse proven

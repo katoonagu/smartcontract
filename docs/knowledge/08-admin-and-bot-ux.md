@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-27
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -20,6 +20,11 @@ code_refs:
 The deployed bot still sends legacy mode-specific results and uses the current
 Admin views/workers. Technical stops must not be presented as risk decisions.
 Delivery ownership remains explicit and independent of analysis execution.
+
+Stage B progress exposes selective-enrichment heartbeat updates no more often
+than every 30 seconds plus the final candidate. Transaction evidence IDs are
+audit metadata on completed Where/Incoming jobs; provider payloads stay in
+immutable evidence storage and are not copied into bot reports.
 
 ## Unified Admin And Bot UX
 

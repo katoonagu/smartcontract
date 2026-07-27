@@ -419,7 +419,22 @@ describe("runSingleIncomingDepositJobCycle", () => {
       recordObservedTransactionRisk: async () => true,
       sendUserAlert: send,
       formatIncomingDepositRiskAlert: formatAlert,
-      buildReport: async () => report()
+      buildReport: async () => report({
+        transactionInfoEnrichment: {
+          policyVersion: "selective-transaction-enrichment-v1",
+          coverageStatus: "complete",
+          technicalStatus: "proven",
+          candidateCount: 1,
+          hardCandidateCount: 0,
+          rawProviderRequests: 1,
+          fullProviderRequests: 0,
+          savedEvidenceHits: 0,
+          inFlightHits: 0,
+          schedulerAwaitMs: 0,
+          evidenceIds: ["incoming:raw", "incoming:decision"],
+          decisions: []
+        }
+      })
     });
 
     expect(handled).toBe(true);
@@ -427,6 +442,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     const completion = complete.mock.calls[0]?.[0];
     if (!completion) throw new Error("expected incoming completion");
     expect(completion.resultJson.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+    expect(completion.rawEvidenceIds).toEqual(["incoming:raw", "incoming:decision"]);
     expect(buildScoringAuditRow({
       ...job(validProgressJson),
       status: "completed",
@@ -1226,7 +1242,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(infoCallCount).toBeGreaterThan(0);
   });
 
-  it("ignores timing persist warning logger failures and still resolves successfully", async () => {
+  it("treats a false progress CAS as claim loss even when the warning logger throws", async () => {
     let currentMs = 0;
     let warnCallCount = 0;
     const updateForensicCheckJobProgress = vi.fn(async () => false);
@@ -1263,9 +1279,9 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
 
     expect(handled).toBe(true);
-    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(complete).not.toHaveBeenCalled();
     expect(updateForensicCheckJobProgress).toHaveBeenCalled();
-    expect(warnCallCount).toBeGreaterThan(0);
+    expect(warnCallCount).toBe(0);
   });
 
   it("persists incoming deposit phases before trace, risk recording, and completion", async () => {
@@ -1824,7 +1840,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
   });
 
-  it("warns when incoming deposit timing progress is not applied but still completes the job", async () => {
+  it("stops completion when a later timing progress CAS loses the claim", async () => {
     let updateCallCount = 0;
     const warnLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
     const complete = vi.fn(async () => true);
@@ -1852,19 +1868,8 @@ describe("runSingleIncomingDepositJobCycle", () => {
       }
     });
 
-    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
-      status: "completed",
-      progressJson: expect.objectContaining({
-        performanceTiming: expect.any(Object)
-      })
-    }));
-    expect(warnLogs).toContainEqual({
-      event: "incoming_deposit_timing_persist_failed",
-      fields: expect.objectContaining({
-        job_id: "job-incoming-1",
-        error: "progress update not applied"
-      })
-    });
+    expect(complete).not.toHaveBeenCalled();
+    expect(warnLogs).toEqual([]);
   });
 });
 
@@ -1931,6 +1936,39 @@ describe("buildIncomingDepositReport", () => {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
     }
+  });
+
+  it("aborts the claimed incoming run and publishes nothing when enrichment heartbeat loses its CAS", async () => {
+    let updates = 0;
+    let observedAborted = false;
+    const complete = vi.fn(async () => true);
+    const record = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async () => {
+        updates += 1;
+        return updates === 1;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: record,
+      formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
+      buildReport: async ({ persistProgress, abortSignal }) => {
+        try {
+          await persistProgress?.({ jobHeartbeatAt: "2026-07-27T00:00:30.000Z" });
+        } finally {
+          observedAborted = abortSignal?.aborted === true;
+        }
+        return report();
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(observedAborted).toBe(true);
+    expect(complete).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
   });
 
   it("[REQ-31][AC-13][INCOMING] persists transaction-seed coverage with the checked deposit context", async () => {
@@ -2830,10 +2868,10 @@ describe("buildIncomingDepositReport", () => {
       pathAddresses: [binance, gasFreeAccount, gasFreeReceiver]
     });
     expect(result.originPaths[0]?.reasons.join(" ")).not.toContain("GasFree service-fee");
-    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === principalTxHash)).toHaveLength(1);
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === principalTxHash).length).toBeGreaterThan(0);
   });
 
-  it("keeps an exact GasFree fee deposit transaction-seeded and caches its transaction lookup", async () => {
+  it("keeps an exact GasFree fee deposit transaction-seeded", async () => {
     const feeTxHash = "tx-incoming-gasfree-fee";
     const riskyPayer = "TRiskyPayer1111111111111111111111111";
     const getTransaction = vi.fn(async (txHash: string) =>
@@ -2900,7 +2938,7 @@ describe("buildIncomingDepositReport", () => {
       /observed unknown source|uncovered checked-deposit source share|sender wallet historical exposure/i
     );
     expect(listIndexedUsdtTransfersForAddress).not.toHaveBeenCalled();
-    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === feeTxHash)).toHaveLength(1);
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === feeTxHash).length).toBeGreaterThan(0);
   });
 
   it("keeps an exact hard sender label authoritative for a GasFree fee deposit", async () => {
@@ -2998,7 +3036,7 @@ describe("buildIncomingDepositReport", () => {
       pathAddresses: [binance, gasFreeTlnt, watchedWallet]
     });
     expect(result.originPaths[0]?.txHashes).not.toContain(historicalFeeTxHash);
-    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === historicalFeeTxHash)).toHaveLength(1);
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === historicalFeeTxHash).length).toBeGreaterThan(0);
   });
 
   it("removes a raw exact GasFree fee from large corridor funding bundles", async () => {

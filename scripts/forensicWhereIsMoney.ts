@@ -8,8 +8,13 @@ import {
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
+  getTransactionProviderEvidence,
+  listActiveAddressLabelAssertionsForRoute,
   listAddressLabels,
   listIndexedTronUsdtTransfersForAddress,
+  listIndexedTronUsdtTransfersByHashes,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
   upsertContractIntelligenceProfile,
   upsertContractLlmVerdictCache
 } from "../src/storage/repositories";
@@ -28,6 +33,7 @@ import { withLlmEnrichmentRetry } from "../src/forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "../src/forensics/rangeClient";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { createTronUsdtContinuationProvider } from "../src/forensics/tronContinuationProvider";
+import { createSelectiveTransactionEnricher } from "../src/forensics/selectiveTransactionEnrichment";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
 import { proofLevelTitle } from "../src/risk/proofLevels";
 import { TronscanClient } from "../src/tron/tronClient";
@@ -95,7 +101,10 @@ const scheduler = createTronscanScheduler({
   endpointMinIntervalMs: {
     transfer: config.tronscanTransferRequestMinIntervalMs,
     approval: config.tronscanApprovalRequestMinIntervalMs,
-    contract: config.tronscanContractRequestMinIntervalMs,
+    contract: Math.max(
+      config.tronscanContractRequestMinIntervalMs,
+      args.contractTransactionInfoMinIntervalMs ?? config.tronscanContractRequestMinIntervalMs
+    ),
     fullnode: config.tronscanFullNodeRequestMinIntervalMs,
     trongrid: config.tronGridRequestMinIntervalMs
   },
@@ -114,6 +123,14 @@ const tronClient = new TronscanClient({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler
+});
+const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
+  getSavedEvidence: (identity) => getTransactionProviderEvidence(db, identity),
+  saveProviderEvidence: (evidence) => saveTransactionProviderEvidence(db, evidence),
+  saveDecisionEvidence: (evidence) => saveTransactionEnrichmentDecisionEvidence(db, evidence),
+  getRawTransaction: (txHash) => tronClient.getRawTransaction(txHash),
+  getFullTransactionInfo: (txHash) => tronClient.getTransaction(txHash),
+  now: () => new Date()
 });
 const crossChainContinuationProviders = crossChainStage2Enabled
   ? [
@@ -257,7 +274,18 @@ try {
     fetchLatestEdgesForAddress,
     getLabelsForAddress: (address) => listAddressLabels(db, address),
     getClassificationForAddress,
-    getTransaction: (txHash) => tronClient.getTransaction(txHash),
+    selectiveTransactionEnricher,
+    listActiveRouteAssertions: async ({ addresses, txHashes }) =>
+      (await listActiveAddressLabelAssertionsForRoute(db, { chain: "tron", addresses, txHashes }))
+        .map((assertion) => ({
+          chain: assertion.chain,
+          address: assertion.address,
+          status: assertion.status,
+          evidenceJson: assertion.evidenceJson
+        })),
+    listIndexedMovementsByHashes: async (txHashes) =>
+      (await listIndexedTronUsdtTransfersByHashes(db, [...new Set(txHashes)]))
+        .map(indexedTransferToRouteEdge),
     listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
     getUsdtRestrictionStatus: (address, options) => tronClient.getUsdtRestrictionStatus(address, options),
     getContractIntelligenceProfile: (address) => getCachedOrLiveContractProfile(address),
