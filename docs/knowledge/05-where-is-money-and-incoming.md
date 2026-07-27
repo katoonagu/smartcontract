@@ -97,3 +97,9 @@ If raw and full providers both fail to produce final evidence, the report keeps
 a stable transaction-evidence-incomplete note, sets local coverage partial,
 and publishes no clean enrichment fact. Where and Incoming completion persist
 the resolver evidence IDs alongside IDs already owned by the job.
+
+Where and Incoming runner-owned writes require the non-null claim generation
+returned by PostgreSQL. Claim loss stops traversal/enrichment at the worker
+boundary: an in-flight shared provider promise may settle only as reusable
+immutable evidence, while no later fallback, risk record, result, or Telegram
+delivery intent may be attached to the reclaimed job.

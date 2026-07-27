@@ -138,6 +138,9 @@ export function createForensicRuntimeOrchestration(
       if (job.kind === "address_fast_check") {
         throw new Error("address_fast_check cannot be claimed by forensic orchestration");
       }
+      if (!job.startedAt) {
+        throw new Error("claimed_forensic_job_missing_started_at");
+      }
       const completion = await input.buildClaimedJobCompletion(job);
       const telegramDelivery = completion.telegramPayload
         ? createPendingForensicTelegramDelivery({
@@ -147,8 +150,9 @@ export function createForensicRuntimeOrchestration(
             effect: completion.telegramEffect
           })
         : null;
-      await completeForensicCheckJob(input.db, {
+      const completed = await completeForensicCheckJob(input.db, {
         id: job.id,
+        claimStartedAt: job.startedAt,
         status: completion.status,
         progressJson: telegramDelivery
           ? { ...completion.progressJson, telegramDelivery }
@@ -158,6 +162,9 @@ export function createForensicRuntimeOrchestration(
         observationIds: completion.observationIds,
         lastError: completion.lastError
       });
+      if (!completed) {
+        input.logger?.warn?.("lost_forensic_job_claim", { jobId: job.id });
+      }
     }
   };
 

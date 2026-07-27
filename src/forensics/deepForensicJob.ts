@@ -80,6 +80,7 @@ export type DeepForensicJobRunnerDeps = Omit<
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
     id: string;
+    claimStartedAt: Date;
     status: "completed" | "partial" | "failed";
     progressJson: Record<string, unknown>;
     resultJson: Record<string, unknown>;
@@ -95,11 +96,13 @@ export type DeepForensicJobRunnerDeps = Omit<
   }): Promise<void>;
   updateForensicCheckJobProgress?(input: {
     id: string;
+    claimStartedAt: Date;
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
   releaseForensicCheckJobToWaiting?(input: {
     id: string;
+    claimStartedAt: Date;
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
@@ -112,10 +115,15 @@ export type DeepForensicJobRunnerDeps = Omit<
     lastError: string | null;
   }): Promise<boolean>;
   recordRiskEvaluation(input: {
+    jobId: string;
+    claimStartedAt: Date;
     rawEvidence: RawEvidenceInput[];
     observations: RiskSignalObservationInput[];
-  }): Promise<void>;
-  upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
+  }): Promise<boolean | void>;
+  upsertAddressLabelAssertion?(input: AddressLabelAssertionInput & {
+    jobId: string;
+    claimStartedAt: Date;
+  }): Promise<unknown | false>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
   crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
@@ -146,6 +154,7 @@ export type DeepForensicJobRunnerDeps = Omit<
     queuedReason: string;
   }): Promise<TronAddressUsdtIndexState>;
   queueAddressUsdtHistory?(input: {
+    claimStartedAt: Date;
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
@@ -162,6 +171,7 @@ export type DeepForensicJobRunnerDeps = Omit<
   }): Promise<TronAddressUsdtIndexState>;
   upsertForensicJobWait?(input: {
     jobId: string;
+    claimStartedAt: Date;
     address: string;
     targetTimestamp: Date;
     requestKind?: TronAddressUsdtIndexRequestKind | null;
@@ -172,7 +182,7 @@ export type DeepForensicJobRunnerDeps = Omit<
     requiredFor: "where_hop" | "incoming_hop";
     statusReason?: TronAddressUsdtCoverageStatusReason | null;
     lastError?: string | null;
-  }): Promise<void>;
+  }): Promise<boolean | void>;
   markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
     address: string;
     targetTimestamp: Date | null;
@@ -426,7 +436,9 @@ async function persistDerivedDarknetExchangeProximityLabel(
   const firstSeenAt = path?.firstTransferAt ?? counterpartyProfile?.firstTransferAt;
   const lastSeenAt = path?.lastTransferAt ?? counterpartyProfile?.lastTransferAt;
 
-  await deps.upsertAddressLabelAssertion({
+  const saved = await deps.upsertAddressLabelAssertion({
+    jobId: job.id,
+    claimStartedAt: job.startedAt!,
     id: assertionId,
     chain: "tron",
     address: report.subjectAddress,
@@ -475,6 +487,7 @@ async function persistDerivedDarknetExchangeProximityLabel(
     lastSeenAt: new Date(lastSeenAt ?? report.windowEnd.toISOString())
   });
 
+  if (saved === false) throw new Error("lost_forensic_job_claim");
   return {
     label: "darknet_exchange_proximity",
     assertionId
@@ -497,7 +510,9 @@ async function persistDerivedApprovalDrainProximityLabel(
   const observationId = report.observations.find((observation) => observation.code === "forensic_approval_drain_provenance")?.id ?? null;
   const assertionId = `derived_tron_approval_drain_proximity_${report.subjectAddress}`;
 
-  await deps.upsertAddressLabelAssertion({
+  const saved = await deps.upsertAddressLabelAssertion({
+    jobId: job.id,
+    claimStartedAt: job.startedAt!,
     id: assertionId,
     chain: "tron",
     address: report.subjectAddress,
@@ -541,6 +556,7 @@ async function persistDerivedApprovalDrainProximityLabel(
     lastSeenAt: new Date(profile.drainAt)
   });
 
+  if (saved === false) throw new Error("lost_forensic_job_claim");
   return {
     label: "approval_drain_proximity",
     assertionId
@@ -793,6 +809,7 @@ export function createLegacyWhereIsMoneyExecution(
     job.progressJson = currentProgress;
     const updated = await deps.updateForensicCheckJobProgress?.({
       id: job.id,
+      claimStartedAt: job.startedAt!,
       progressJson: currentProgress,
       lastError: null
     });
@@ -1061,6 +1078,7 @@ export function createLegacyWhereIsMoneyExecution(
       const ensured = Promise.resolve()
         .then(() => ensureTargetedHistoryOrWait({
           jobId: job.id,
+          claimStartedAt: job.startedAt!,
           address,
           targetTimestamp: maxTimestamp,
           queuedReason: "where_is_money_hop",
@@ -1535,6 +1553,7 @@ export function createLegacyWhereIsMoneyExecution(
   const requestCandidateWindows = canWaitForTargetedIndex
     ? (requests: WhereCandidateWindowRequest[]): Promise<true> => ensureCandidateWindowsOrWait({
         jobId: job.id,
+        claimStartedAt: job.startedAt!,
         requests: requests.slice(0, 20),
         progressJson: currentProgress,
         deps: {
@@ -1574,6 +1593,7 @@ export function createLegacyWhereIsMoneyExecution(
   const ensureBroadTargetedHistories = canWaitForTargetedIndex
     ? (requests: BroadTargetedHistoryRequest[]): Promise<true> => ensureTargetedHistoriesOrWait({
         jobId: job.id,
+        claimStartedAt: job.startedAt!,
         requests: requests.map((request) => ({
           ...request,
           requiredFor: "where_hop" as const
@@ -1697,6 +1717,7 @@ async function runWhereIsMoneyJob(
     const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
     await deps.completeForensicCheckJob({
       id: job.id,
+      claimStartedAt: job.startedAt!,
       status: "failed",
       progressJson: progressWithDelivery({
         ...strictProviderLimitedProgressJson(execution.getCurrentProgress(), reason),
@@ -1736,6 +1757,7 @@ async function runWhereIsMoneyJob(
     : {};
   const completion = {
     id: job.id,
+    claimStartedAt: job.startedAt!,
     status,
     progressJson: progressWithDelivery({
       ...execution.getCurrentProgress(),
@@ -1760,13 +1782,15 @@ async function runWhereIsMoneyJob(
     lastError: null
   } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
   const completed = await deps.completeForensicCheckJob(completion);
-  if (completed) {
-    await indexWalletIntelligenceBestEffort(deps, job, {
-      progressJson: completion.progressJson,
-      resultJson: completion.resultJson,
-      status
-    });
+  if (!completed) {
+    abortController?.abort();
+    throw new Error("lost_forensic_job_claim");
   }
+  await indexWalletIntelligenceBestEffort(deps, job, {
+    progressJson: completion.progressJson,
+    resultJson: completion.resultJson,
+    status
+  });
   return true;
   } finally {
     await execution.dispose();
@@ -1779,6 +1803,7 @@ export async function runSingleDeepForensicJobCycle(
 ): Promise<boolean> {
   const job = await deps.claimNextForensicCheckJob();
   if (!job) return false;
+  if (!job.startedAt) throw new Error("claimed_forensic_job_missing_started_at");
   const abortController = new AbortController();
   let enrichmentHeartbeat: ForensicEnrichmentHeartbeatCoordinator | null = null;
 
@@ -1792,6 +1817,7 @@ export async function runSingleDeepForensicJobCycle(
         const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
         await deps.completeForensicCheckJob({
           id: job.id,
+          claimStartedAt: job.startedAt,
           status: "failed",
           progressJson: progressWithDelivery(job.progressJson, delivery),
           resultJson: {
@@ -1820,6 +1846,7 @@ export async function runSingleDeepForensicJobCycle(
         const delivery = await buildForensicJobFailureDelivery(deps, job, mapped.scoreBlockedReason);
         await deps.completeForensicCheckJob({
           id: job.id,
+          claimStartedAt: job.startedAt,
           status: "failed",
           progressJson: progressWithDelivery(job.progressJson, delivery),
           resultJson: {
@@ -1841,6 +1868,7 @@ export async function runSingleDeepForensicJobCycle(
     job.progressJson = mergeForensicJobProgress(job.progressJson, { jobPhase: "address_deep_trace" });
     const claimedProgress = await deps.updateForensicCheckJobProgress?.({
       id: job.id,
+      claimStartedAt: job.startedAt,
       progressJson: job.progressJson,
       lastError: null
     });
@@ -1857,6 +1885,7 @@ export async function runSingleDeepForensicJobCycle(
         });
         const updated = await deps.updateForensicCheckJobProgress?.({
           id: job.id,
+          claimStartedAt: job.startedAt!,
           progressJson: job.progressJson,
           lastError: null
         });
@@ -1878,6 +1907,7 @@ export async function runSingleDeepForensicJobCycle(
       : null;
     if (allTimeMode === "partial" && deps.queueAddressUsdtHistory) {
       await deps.queueAddressUsdtHistory({
+        claimStartedAt: job.startedAt,
         address: job.subjectAddress,
         coverageMode: "all_time",
         requestedByJobId: job.id,
@@ -1960,6 +1990,7 @@ export async function runSingleDeepForensicJobCycle(
       for (const request of secondLayerProfile.queueRequests) {
         const targetTimestamp = "targetTimestamp" in request ? request.targetTimestamp : undefined;
         const queuedInput = {
+          claimStartedAt: job.startedAt,
           address: request.address,
           coverageMode: request.coverageMode,
           requestedByJobId: job.id,
@@ -1991,10 +2022,16 @@ export async function runSingleDeepForensicJobCycle(
         };
       }
     }
-    await deps.recordRiskEvaluation({
+    const recordedRisk = await deps.recordRiskEvaluation({
+      jobId: job.id,
+      claimStartedAt: job.startedAt,
       rawEvidence: report.rawEvidence,
       observations: report.observations
     });
+    if (recordedRisk === false) {
+      abortController.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
     const derivedLabels = [
       await persistDerivedDarknetExchangeProximityLabel(deps, job, report),
       await persistDerivedApprovalDrainProximityLabel(deps, job, report)
@@ -2004,6 +2041,7 @@ export async function runSingleDeepForensicJobCycle(
     const { allTime: allTimeCoverage, ...progressCoverage } = report.coverage;
     const completion = {
       id: job.id,
+      claimStartedAt: job.startedAt,
       status,
       progressJson: progressWithDelivery({
         ...job.progressJson,
@@ -2057,13 +2095,15 @@ export async function runSingleDeepForensicJobCycle(
       lastError: null
     } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
     const completed = await deps.completeForensicCheckJob(completion);
-    if (completed) {
-      await indexWalletIntelligenceBestEffort(deps, job, {
-        progressJson: completion.progressJson,
-        resultJson: completion.resultJson,
-        status
-      });
+    if (!completed) {
+      abortController.abort();
+      throw new Error("lost_forensic_job_claim");
     }
+    await indexWalletIntelligenceBestEffort(deps, job, {
+      progressJson: completion.progressJson,
+      resultJson: completion.resultJson,
+      status
+    });
     return true;
   } catch (error) {
     const message = errorMessage(error);
@@ -2076,6 +2116,7 @@ export async function runSingleDeepForensicJobCycle(
       const delivery = await buildForensicJobFailureDelivery(deps, job, strictMessage);
       await deps.completeForensicCheckJob({
         id: job.id,
+        claimStartedAt: job.startedAt,
         status: "failed",
         progressJson: progressWithDelivery(
           strictProviderLimitedProgressJson(job.progressJson, reason),
@@ -2103,6 +2144,7 @@ export async function runSingleDeepForensicJobCycle(
       const delivery = await buildForensicJobFailureDelivery(deps, job, message);
       await deps.completeForensicCheckJob({
         id: job.id,
+        claimStartedAt: job.startedAt,
         status: "failed",
         progressJson: progressWithDelivery(progressJson, delivery),
         resultJson: {
@@ -2121,6 +2163,7 @@ export async function runSingleDeepForensicJobCycle(
     const delivery = await buildForensicJobFailureDelivery(deps, job, message);
     await deps.completeForensicCheckJob({
       id: job.id,
+      claimStartedAt: job.startedAt,
       status: "failed",
       progressJson: progressWithDelivery(job.progressJson, delivery),
       resultJson: {},

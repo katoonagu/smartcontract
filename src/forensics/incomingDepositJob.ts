@@ -109,6 +109,7 @@ import { buildIncomingCoverageV2 } from "./forensicCoverageV2";
 
 type CompleteJobInput = {
   id: string;
+  claimStartedAt: Date;
   status: "completed" | "partial" | "failed";
   progressJson: Record<string, unknown>;
   resultJson: Record<string, unknown>;
@@ -202,12 +203,19 @@ export type RunSingleIncomingDepositJobCycleDeps = {
   }): Promise<void>;
   updateForensicCheckJobProgress?(input: {
     id: string;
+    claimStartedAt: Date;
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
-  recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  recordObservedTransactionRisk(input: {
+    jobId: string;
+    claimStartedAt: Date;
+    txHash: string;
+    watchedWalletId: string;
+    report: RiskReport;
+  }): Promise<boolean>;
   hasUndismissedAddressPoisoningCandidateForIncoming(input: {
     watchedWalletId: string;
     incomingTxHash: string;
@@ -1951,6 +1959,7 @@ export async function buildIncomingDepositReport(
   const requestCandidateWindows = targetedWaiterDeps
     ? (requests: WhereCandidateWindowRequest[]): Promise<true> => ensureCandidateWindowsOrWait({
         jobId: input.job.id,
+        claimStartedAt: input.job.startedAt!,
         requests: requests.slice(0, 20),
         queuedReason: "incoming_candidate_window",
         requiredFor: "incoming_hop",
@@ -1965,6 +1974,7 @@ export async function buildIncomingDepositReport(
         targetTimestamp: Date;
       }): Promise<true> => ensureTargetedHistoryOrWait({
         jobId: input.job.id,
+        claimStartedAt: input.job.startedAt!,
         address: target.address,
         targetTimestamp: target.targetTimestamp,
         queuedReason: "incoming_deposit_hop",
@@ -2323,6 +2333,7 @@ export async function runSingleIncomingDepositJobCycle(
   const timing = createIncomingDepositTiming(deps.timingClock);
   const job = await timing.measure("claim_job", () => deps.claimNextForensicCheckJob());
   if (!job) return false;
+  if (!job.startedAt) throw new Error("claimed_forensic_job_missing_started_at");
   const abortController = new AbortController();
 
   const processingStartedAt = validDate(now());
@@ -2350,6 +2361,7 @@ export async function runSingleIncomingDepositJobCycle(
     const persist = async (): Promise<void> => {
       const updated = await deps.updateForensicCheckJobProgress?.({
         id: job.id,
+        claimStartedAt: job.startedAt!,
         progressJson: currentProgress,
         lastError: null
       });
@@ -2376,6 +2388,7 @@ export async function runSingleIncomingDepositJobCycle(
     try {
       const updated = await deps.updateForensicCheckJobProgress?.({
         id: job.id,
+        claimStartedAt: job.startedAt!,
         progressJson: currentProgress,
         lastError: null
       });
@@ -2419,6 +2432,7 @@ export async function runSingleIncomingDepositJobCycle(
     await persistPerformanceTiming();
     const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
+      claimStartedAt: job.startedAt!,
       status: "failed",
       progressJson: failureDelivery
         ? { ...currentProgress, telegramDelivery: failureDelivery }
@@ -2471,9 +2485,19 @@ export async function runSingleIncomingDepositJobCycle(
     if (activeReport.depositRiskScore !== null) {
       const riskReport = riskReportFromIncoming(sender, activeReport, activeReport.depositRiskScore);
       await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
-      await timing.measure("record_risk", () =>
-        deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
+      const recorded = await timing.measure("record_risk", () =>
+        deps.recordObservedTransactionRisk({
+          jobId: job.id,
+          claimStartedAt: job.startedAt!,
+          txHash: depositTxHash,
+          watchedWalletId,
+          report: riskReport
+        })
       );
+      if (!recorded) {
+        abortController.abort();
+        throw new Error("lost_forensic_job_claim");
+      }
     }
 
     let telegramDelivery: ForensicTelegramDeliveryV1 | null = null;
@@ -2524,6 +2548,7 @@ export async function runSingleIncomingDepositJobCycle(
     await persistPerformanceTiming();
     const completion = {
       id: job.id,
+      claimStartedAt: job.startedAt!,
       status: "completed",
       progressJson: telegramDelivery
         ? { ...currentProgress, telegramDelivery }
@@ -2540,25 +2565,27 @@ export async function runSingleIncomingDepositJobCycle(
       lastError: null
     } satisfies CompleteJobInput;
     const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
-    if (completed) {
-      if (!telegramDelivery) {
-        try {
-          await timing.measure("mark_alert_sent", () =>
-            deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId })
-          );
-        } catch (markError) {
-          safeLoggerWarn(logger, "incoming_deposit_mark_alert_sent_failed", {
-            job_id: job.id,
-            error: formatErrorMessage(markError)
-          });
-        }
-      }
-      await indexWalletIntelligenceBestEffort(deps, job, {
-        progressJson: completion.progressJson,
-        resultJson: completion.resultJson,
-        status: completion.status
-      });
+    if (!completed) {
+      abortController.abort();
+      throw new Error("lost_forensic_job_claim");
     }
+    if (!telegramDelivery) {
+      try {
+        await timing.measure("mark_alert_sent", () =>
+          deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId })
+        );
+      } catch (markError) {
+        safeLoggerWarn(logger, "incoming_deposit_mark_alert_sent_failed", {
+          job_id: job.id,
+          error: formatErrorMessage(markError)
+        });
+      }
+    }
+    await indexWalletIntelligenceBestEffort(deps, job, {
+      progressJson: completion.progressJson,
+      resultJson: completion.resultJson,
+      status: completion.status
+    });
     logTiming("completed");
     return true;
   } catch (error) {
@@ -2574,6 +2601,7 @@ export async function runSingleIncomingDepositJobCycle(
     await persistPerformanceTiming();
     const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
+      claimStartedAt: job.startedAt!,
       status: "failed",
       progressJson: failureDelivery
         ? { ...currentProgress, telegramDelivery: failureDelivery }

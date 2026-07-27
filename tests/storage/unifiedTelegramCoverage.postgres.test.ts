@@ -141,6 +141,7 @@ postgresDescribe("unified Telegram CoverageV2 PostgreSQL acceptance", () => {
 
     await expect(completeForensicCheckJob(db, {
       id: queued.id,
+      claimStartedAt: claimed!.startedAt!,
       status: "completed",
       progressJson: { jobPhase: "completed", fixtureId: "COVERAGE_24_10_14" },
       resultJson: {

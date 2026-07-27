@@ -90,6 +90,7 @@ type WaitReconciliation = {
 
 type CompletionInput = {
   id: string;
+  claimStartedAt: Date;
   status: TerminalStatus;
   progressJson: JsonObject;
   resultJson: JsonObject;
@@ -258,6 +259,7 @@ function completionInput(
 ): CompletionInput {
   return {
     id,
+    claimStartedAt: NOW,
     status: "completed",
     progressJson: { jobPhase: "completed", telegramDelivery: pendingDelivery(id, kind, effect) },
     resultJson,

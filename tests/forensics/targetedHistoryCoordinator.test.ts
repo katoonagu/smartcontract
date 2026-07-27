@@ -1,13 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ensureCandidateWindowsOrWait,
-  ensureTargetedHistoriesOrWait,
-  ensureTargetedHistoryOrWait,
+  ensureCandidateWindowsOrWait as ensureCandidateWindowsOrWaitClaimed,
+  ensureTargetedHistoriesOrWait as ensureTargetedHistoriesOrWaitClaimed,
+  ensureTargetedHistoryOrWait as ensureTargetedHistoryOrWaitClaimed,
   TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex
 } from "../../src/forensics/targetedHistoryCoordinator";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronAddressUsdtIndexState } from "../../src/types";
+
+const TEST_CLAIM_STARTED_AT = new Date("2026-07-03T00:00:00.000Z");
+const ensureTargetedHistoryOrWait = (
+  input: Omit<Parameters<typeof ensureTargetedHistoryOrWaitClaimed>[0], "claimStartedAt">
+) => ensureTargetedHistoryOrWaitClaimed({ ...input, claimStartedAt: TEST_CLAIM_STARTED_AT });
+const ensureTargetedHistoriesOrWait = (
+  input: Omit<Parameters<typeof ensureTargetedHistoriesOrWaitClaimed>[0], "claimStartedAt">
+) => ensureTargetedHistoriesOrWaitClaimed({ ...input, claimStartedAt: TEST_CLAIM_STARTED_AT });
+const ensureCandidateWindowsOrWait = (
+  input: Omit<Parameters<typeof ensureCandidateWindowsOrWaitClaimed>[0], "claimStartedAt">
+) => ensureCandidateWindowsOrWaitClaimed({ ...input, claimStartedAt: TEST_CLAIM_STARTED_AT });
 
 function targetedState(overrides: Partial<TronAddressUsdtIndexState> = {}): TronAddressUsdtIndexState {
   const now = new Date("2026-07-03T00:00:00.000Z");

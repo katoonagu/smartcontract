@@ -402,6 +402,13 @@ function incomingMaterializationRows(input: {
 }
 
 describe("runSingleIncomingDepositJobCycle", () => {
+  it("rejects a claimed job without a claim generation", async () => {
+    await expect(runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => ({ ...job(validProgressJson), startedAt: null })
+    } as unknown as Parameters<typeof runSingleIncomingDepositJobCycle>[0]))
+      .rejects.toThrow("claimed_forensic_job_missing_started_at");
+  });
+
   it("queues one latest final heartbeat behind an unresolved periodic job heartbeat", async () => {
     let releasePeriodic!: () => void;
     let signalPeriodicStarted!: () => void;

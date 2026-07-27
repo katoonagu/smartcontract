@@ -37,6 +37,13 @@ Current production workers retain their existing queue and pagination
 semantics until cutover. More API keys improve throughput but do not prove
 history completeness.
 
+When legacy Where, Incoming, or Deep requests address-history index work, the
+queue upsert is performed in the same transaction as a lock on that job's exact
+claim generation. A reclaimed worker therefore cannot create or reopen index
+work for the newer attempt. Non-job indexing callers keep their existing
+entrypoint, while immutable provider artifacts may settle unreferenced after a
+claim is lost.
+
 ## Unified Data Contract
 
 Every Unified run pins one confirmed snapshot block number, hash, and

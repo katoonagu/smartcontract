@@ -61,3 +61,9 @@ queues one latest final write behind an in-flight periodic CAS. A false CAS
 aborts every Deep caller for that job immediately; it does not cancel shared
 provider promises, but stale callers cannot start full/next work or attach
 evidence/results.
+
+Deep also fences its pre-completion risk evidence, derived label assertions,
+history queue requests, waits, progress, and terminal result to the exact
+non-null `started_at` generation returned by claim. Losing that generation is
+a technical ownership stop, not a result: no label, score, wallet-intelligence
+index, or Telegram delivery may be published by the stale attempt.

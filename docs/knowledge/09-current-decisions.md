@@ -97,6 +97,11 @@ code_refs:
   keep that CAS alive during pending selective provider work with one
   job-scoped coordinator and non-overlapping heartbeat per 30 seconds plus one
   queued latest final-candidate write.
+- Legacy forensic `started_at` is a strictly advancing, millisecond-safe claim
+  generation. Stale recovery preserves it on requeue, and every authoritative
+  runner write is fenced to it either by compare-and-set or by a row lock held
+  through the side-effect transaction. Claim loss yields the stable
+  `lost_forensic_job_claim` stop and cannot prepare delivery.
 - Hard transaction hashes remain candidates without indexed movement rows and
   bypass only optional parser/exploration limits, never the shared resolver.
   Incoming combines outer and nested Where enrichment evidence and propagates

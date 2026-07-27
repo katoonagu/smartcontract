@@ -148,10 +148,12 @@ import {
   recordApprovalPollSuccess,
   recordApprovalRisk,
   recordObservedTransactionRisk,
+  recordClaimedObservedTransactionRisk,
   releaseForensicCheckJobToWaiting,
   upsertForensicJobWait,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  saveClaimedRiskEvaluationEvidence,
   saveTransactionEnrichmentDecisionEvidence,
   saveTransactionProviderEvidence,
   saveWalletApprovalAllowanceStateV2,
@@ -162,6 +164,7 @@ import {
   indexWalletIntelligenceJobPayload,
   listWalletIntelligenceAddressSummaries,
   queueTronAddressUsdtIndexState,
+  queueClaimedTronAddressUsdtIndexState,
   saveCompletedDeepSecondLayerContext,
   settleForensicTelegramDelivery,
   settleRecoveredForensicDeliveryIntentPreparation,
@@ -169,6 +172,7 @@ import {
   updateForensicCheckJobProgress,
   updateTheftReportAdminState,
   upsertAddressLabelAssertion,
+  upsertClaimedAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   upsertIndexedTronUsdtTransfers,
@@ -2558,31 +2562,37 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     candidateTxHash: input.candidateTxHash ?? null
   }),
   getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
-  queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
-    address: input.address,
-    coverageMode: input.coverageMode,
-    targetTimestamp: input.targetTimestamp ?? null,
-    requestKind: input.requestKind ?? "broad_targeted",
-    windowStartTimestamp: input.windowStartTimestamp ?? null,
-    windowEndTimestamp: input.windowEndTimestamp ?? null,
-    relatedHopTxHash: input.relatedHopTxHash ?? null,
-    candidateTxHash: input.candidateTxHash ?? null,
-    queuedReason: input.queuedReason,
-    requestedByJobId: input.requestedByJobId ?? null,
-    priority: input.queuedReason === "incoming_candidate_window" ? 240 : 250,
-    nextRunAt: new Date(),
-    budgetPages: input.budgetPages ??
-      (input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
-        ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+  queueAddressUsdtHistory: async (input) => {
+    const state = await queueClaimedTronAddressUsdtIndexState(db, {
+      jobId: input.requestedByJobId!,
+      claimStartedAt: input.claimStartedAt,
+      address: input.address,
+      coverageMode: input.coverageMode,
+      targetTimestamp: input.targetTimestamp ?? null,
+      requestKind: input.requestKind ?? "broad_targeted",
+      windowStartTimestamp: input.windowStartTimestamp ?? null,
+      windowEndTimestamp: input.windowEndTimestamp ?? null,
+      relatedHopTxHash: input.relatedHopTxHash ?? null,
+      candidateTxHash: input.candidateTxHash ?? null,
+      queuedReason: input.queuedReason,
+      requestedByJobId: input.requestedByJobId ?? null,
+      priority: input.queuedReason === "incoming_candidate_window" ? 240 : 250,
+      nextRunAt: new Date(),
+      budgetPages: input.budgetPages ??
+        (input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
+          ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+          : input.coverageMode === "targeted" && input.queuedReason === "incoming_candidate_window"
+            ? 200
+            : null),
+      maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
+        ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
         : input.coverageMode === "targeted" && input.queuedReason === "incoming_candidate_window"
-          ? 200
-          : null),
-    maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
-      ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
-      : input.coverageMode === "targeted" && input.queuedReason === "incoming_candidate_window"
-        ? input.maxAttempts ?? 3
-        : input.maxAttempts ?? null
-  }),
+          ? input.maxAttempts ?? 3
+          : input.maxAttempts ?? null
+    });
+    if (!state) throw new Error("lost_forensic_job_claim");
+    return state;
+  },
   releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
   upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
   markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
@@ -3114,8 +3124,17 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       indexWalletIntelligenceJob: indexWalletIntelligenceCompletedJob,
       updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
       releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
-      recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
-      upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
+      recordRiskEvaluation: (evaluation) => saveClaimedRiskEvaluationEvidence(db, {
+        jobId: evaluation.jobId,
+        claimStartedAt: evaluation.claimStartedAt,
+        rawEvidence: evaluation.rawEvidence,
+        observations: evaluation.observations
+      }),
+      upsertAddressLabelAssertion: (input) => upsertClaimedAddressLabelAssertion(db, {
+        ...input,
+        jobId: input.jobId,
+        claimStartedAt: input.claimStartedAt
+      }),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getAddressMetadata: (address) => getCachedOrLiveAddressMetadata(address),
       getContractIntelligenceProfile: (address) => getCachedOrLiveContractIntelligenceProfile(address),
@@ -3150,7 +3169,9 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
           relatedHopTxHash?: string | null;
           candidateTxHash?: string | null;
         };
-        return queueTronAddressUsdtIndexState(db, {
+        return queueClaimedTronAddressUsdtIndexState(db, {
+          jobId: requestInput.requestedByJobId!,
+          claimStartedAt: requestInput.claimStartedAt,
           address: requestInput.address,
           coverageMode: requestInput.coverageMode,
           targetTimestamp: requestInput.targetTimestamp ?? null,
@@ -3181,6 +3202,9 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
               ? requestInput.maxAttempts ?? 3
               : requestInput.maxAttempts ?? null,
           allowRunningRequeue: requestInput.allowRunningRequeue === true
+        }).then((state) => {
+          if (!state) throw new Error("lost_forensic_job_claim");
+          return state;
         });
       },
       buildJobResultPayload: async (job, report, status) => {
@@ -3367,7 +3391,13 @@ async function incomingDepositOnce(): Promise<void> {
         updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
         markUserAlertSent: (input) => markUserAlertSent(db, input),
         markUserAlertFailed: (input) => markUserAlertFailed(db, input),
-        recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
+        recordObservedTransactionRisk: (input) => recordClaimedObservedTransactionRisk(db, {
+          jobId: input.jobId,
+          claimStartedAt: input.claimStartedAt,
+          txHash: input.txHash,
+          watchedWalletId: input.watchedWalletId,
+          report: input.report
+        }),
         hasUndismissedAddressPoisoningCandidateForIncoming: (input) =>
           hasUndismissedAddressPoisoningCandidateForIncoming(db, {
             watchedWalletId: input.watchedWalletId,

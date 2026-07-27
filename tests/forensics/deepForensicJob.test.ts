@@ -385,6 +385,13 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("rejects a claimed job without a claim generation", async () => {
+    await expect(runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => ({ ...job(), startedAt: null })
+    } as unknown as Parameters<typeof runSingleDeepForensicJobCycle>[0]))
+      .rejects.toThrow("claimed_forensic_job_missing_started_at");
+  });
+
   it("routes a hard Deep transaction through selective evidence even when the local index has no movement", async () => {
     vi.resetModules();
     const txHash = "d".repeat(64);
@@ -1019,6 +1026,7 @@ describe("deep forensic job runner", () => {
 
     expect(handled).toBe(true);
     expect(queueAddressUsdtHistory).toHaveBeenCalledWith({
+      claimStartedAt: sourceJob.startedAt,
       address: walletA,
       coverageMode: "all_time",
       requestedByJobId: sourceJob.id,
@@ -2371,6 +2379,7 @@ describe("deep forensic job runner", () => {
       }));
       expect(upsertForensicJobWait).toHaveBeenCalledWith({
         jobId: sourceJob.id,
+        claimStartedAt: sourceJob.startedAt,
         address: hopAddress,
         targetTimestamp: hopTimestamp,
         requiredFor: "where_hop",

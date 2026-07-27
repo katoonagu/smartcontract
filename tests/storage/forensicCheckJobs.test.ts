@@ -21,6 +21,11 @@ import {
   patchWaitingForensicJobsTargetedIndexProgress,
   recoverStaleForensicCheckJobs,
   releaseForensicCheckJobToWaiting,
+  queueClaimedTronAddressUsdtIndexState,
+  recordClaimedObservedTransactionRisk,
+  saveClaimedRiskEvaluationEvidence,
+  upsertClaimedAddressLabelAssertion,
+  updateForensicCheckJobProgress,
   saveCompletedDeepSecondLayerContext,
   saveAddressFastCheckJob,
   upsertForensicJobWait
@@ -191,6 +196,8 @@ function assertRecoverySql(sql: string): void {
   expect(sql).toContain("'lastRecoveredAt', $5::text");
   expect(sql).toContain("completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end");
   expect(sql).toContain("updated_at = $5::timestamptz");
+  expect(sql).toContain("started_at = job.started_at");
+  expect(sql).not.toContain("started_at = case when decisions.next_status = 'queued' then null");
   expect(sql).not.toContain("jobHeartbeatAt')::timestamptz");
 }
 
@@ -256,7 +263,7 @@ function simulateRecoveredRows(rows: Record<string, unknown>[], params: unknown[
           staleRecoveryReason: recoveryReason
         },
         last_error: requeued ? null : recoveryReason,
-        started_at: requeued ? null : row.started_at,
+        started_at: row.started_at,
         completed_at: requeued ? null : recoveredAt,
         updated_at: recoveredAt
       };
@@ -324,7 +331,7 @@ function createMockDb(
             rowCount: 1
           };
         }
-        if (sql.includes("for update skip locked")) {
+        if (sql.includes("for update of job skip locked")) {
           return {
             rows: [
               {
@@ -639,7 +646,7 @@ describe("forensic check job repositories", () => {
 
     expect(job?.status).toBe("running");
     expect(job?.progressJson).toEqual({});
-    expect(queries[0].sql.toLowerCase()).toContain("for update skip locked");
+    expect(queries[0].sql.toLowerCase()).toContain("for update of job skip locked");
     expect(queries[0].sql).toContain("kind <> 'address_fast_check'");
     expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
     expect(queries[0].sql).not.toContain("and not (");
@@ -669,6 +676,7 @@ describe("forensic check job repositories", () => {
 
     const released = await releaseForensicCheckJobToWaiting(db, {
       id: "job-1",
+      claimStartedAt: new Date("2026-06-01T00:00:00.000Z"),
       progressJson,
       lastError
     });
@@ -707,6 +715,7 @@ describe("forensic check job repositories", () => {
 
     await upsertForensicJobWait(db, {
       jobId: "job-1",
+      claimStartedAt: new Date("2026-06-01T00:00:00.000Z"),
       address: "THop111111111111111111111111111111111",
       targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
       requiredFor: "where_hop",
@@ -871,6 +880,7 @@ describe("forensic check job repositories", () => {
 
     await upsertForensicJobWait(db, {
       jobId: "where-job-window-waits",
+      claimStartedAt: PLAN3_RECONCILIATION_NOW,
       address: "TWaitWindow111111111111111111111111111",
       targetTimestamp: end,
       requiredFor: "where_hop",
@@ -882,6 +892,7 @@ describe("forensic check job repositories", () => {
     });
     await upsertForensicJobWait(db, {
       jobId: "where-job-window-waits",
+      claimStartedAt: PLAN3_RECONCILIATION_NOW,
       address: "TWaitWindow111111111111111111111111111",
       targetTimestamp: end,
       requiredFor: "where_hop",
@@ -907,6 +918,7 @@ describe("forensic check job repositories", () => {
 
     await upsertForensicJobWait(db, {
       jobId: "where-job-broad-wait",
+      claimStartedAt: PLAN3_RECONCILIATION_NOW,
       address: "TWaitBroad1111111111111111111111111111",
       targetTimestamp: end,
       requiredFor: "where_hop"
@@ -1248,6 +1260,7 @@ describe("forensic check job repositories", () => {
     const { db, queries } = createMockDb();
     await completeForensicCheckJob(db, {
       id: "job-1",
+      claimStartedAt: new Date("2026-06-01T00:00:00.000Z"),
       status: "completed",
       progressJson: { scannedPages: 2 },
       resultJson: { score: 40 },
@@ -1264,7 +1277,8 @@ describe("forensic check job repositories", () => {
       { score: 40 },
       JSON.stringify(["raw-1"]),
       JSON.stringify(["obs-1"]),
-      null
+      null,
+      new Date("2026-06-01T00:00:00.000Z")
     ]);
   });
 
@@ -1693,7 +1707,7 @@ describe("forensic check job repositories", () => {
     expect(result.requeued.map((job) => job.id)).toEqual(["where-job-1", "deep-job-1"]);
     expect(result.requeued[0]).toMatchObject({
       status: "queued",
-      startedAt: null,
+      startedAt: new Date("2026-06-03T00:00:00.000Z"),
       progressJson: {
         jobPhase: "queued_after_stale_recovery",
         retryCount: 2,
@@ -2023,8 +2037,8 @@ async function insertRepositoryWaitParent(
   await db.query(
     `insert into forensic_check_jobs (
        id, kind, subject_address, status, window_start, window_end,
-       progress_json, result_json, created_at, updated_at
-     ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $9)`,
+       progress_json, result_json, started_at, created_at, updated_at
+     ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $10)`,
     [
       input.id,
       input.kind ?? "where_is_money_check",
@@ -2037,6 +2051,7 @@ async function insertRepositoryWaitParent(
         preservedLegacyField: { keep: true }
       }),
       JSON.stringify({ fixtureId: input.id }),
+      PLAN3_RECONCILIATION_NOW,
       new Date(`2026-07-15T11:${String(10 + input.id.length).padStart(2, "0")}:00.000Z`)
     ]
   );
@@ -2171,6 +2186,7 @@ function repositoryCompletionInput(
 ) {
   return {
     id,
+    claimStartedAt: PLAN3_RECONCILIATION_NOW,
     status: "completed" as const,
     progressJson: {
       jobPhase: "completed",
@@ -2409,6 +2425,7 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
         let upsertError: unknown;
         const upsertPromise = upsertForensicJobWait(db, {
           jobId: id,
+          claimStartedAt: PLAN3_RECONCILIATION_NOW,
           address: `THop-${id}-1`,
           targetTimestamp,
           requiredFor: "where_hop"
@@ -2454,10 +2471,11 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
 
       await expect(upsertForensicJobWait(db, {
         jobId: id,
+        claimStartedAt: PLAN3_RECONCILIATION_NOW,
         address: `THop-${id}-late`,
         targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
         requiredFor: "where_hop"
-      })).rejects.toThrow("forensic_job_wait_parent_not_waitable");
+      })).resolves.toBe(false);
       const waits = await db.query(
         `select status, count(*)::integer as count
          from forensic_job_waits where job_id = $1 group by status order by status`,
@@ -2473,10 +2491,11 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
       await insertRepositoryWaitParent(db, { id: runningId, status: "running" });
       await expect(upsertForensicJobWait(db, {
         jobId: runningId,
+        claimStartedAt: PLAN3_RECONCILIATION_NOW,
         address: `THop-${runningId}`,
         targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
         requiredFor: "where_hop"
-      })).resolves.toBeUndefined();
+      })).resolves.toBe(true);
       const runningWaits = await db.query(
         "select status from forensic_job_waits where job_id = $1",
         [runningId]
@@ -2488,10 +2507,11 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
         await insertRepositoryWaitParent(db, { id, status });
         await expect(upsertForensicJobWait(db, {
           jobId: id,
+          claimStartedAt: PLAN3_RECONCILIATION_NOW,
           address: `THop-${id}`,
           targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
           requiredFor: "where_hop"
-        })).rejects.toThrow("forensic_job_wait_parent_not_waitable");
+        })).resolves.toBe(false);
       }
       const finalWaits = await db.query(
         "select count(*)::integer as count from forensic_job_waits where job_id like 'where-final-registration-%'"
@@ -2649,6 +2669,155 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
 });
 
 plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => {
+  it("fences every stale worker mutation to the exact claim generation", async () => {
+    await withRepositoryWaitSchema("claim_generation_race", async (db) => {
+      const id = "claim-generation-race";
+      await insertRepositoryDeliveryJob(db, { id, status: "queued" });
+      const workerA = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+      expect(workerA?.startedAt).not.toBeNull();
+      const tokenA = workerA!.startedAt!;
+
+      await expect(recoverStaleForensicCheckJobs(db, {
+        staleRunningBefore: tokenA,
+        recoveredAt: new Date(tokenA.getTime() + 1),
+        maxRetries: 3,
+        limit: 10
+      })).resolves.toEqual({ requeued: [], failed: [] });
+
+      await db.query(
+        `update forensic_check_jobs
+         set progress_json = progress_json || jsonb_build_object('jobHeartbeatAt', $2::text)
+         where id = $1`,
+        [id, new Date(tokenA.getTime() - 60_000).toISOString()]
+      );
+      const recovered = await recoverStaleForensicCheckJobs(db, {
+        staleRunningBefore: new Date(tokenA.getTime() - 30_000),
+        recoveredAt: new Date(tokenA.getTime() + 2),
+        maxRetries: 3,
+        limit: 10
+      });
+      expect(recovered.requeued).toHaveLength(1);
+      expect(recovered.requeued[0].startedAt?.toISOString()).toBe(tokenA.toISOString());
+
+      const workerB = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+      const tokenB = workerB!.startedAt!;
+      expect(tokenB.toISOString()).not.toBe(tokenA.toISOString());
+
+      await expect(updateForensicCheckJobProgress(db, {
+        id, claimStartedAt: tokenA, progressJson: { worker: "A" }
+      })).resolves.toBe(false);
+      await expect(upsertForensicJobWait(db, {
+        jobId: id,
+        claimStartedAt: tokenA,
+        address: "THop111111111111111111111111111111111",
+        targetTimestamp: tokenA,
+        requiredFor: "where_hop"
+      })).resolves.toBe(false);
+      await expect(releaseForensicCheckJobToWaiting(db, {
+        id, claimStartedAt: tokenA, progressJson: { jobPhase: "waiting_for_targeted_index" }
+      })).resolves.toBe(false);
+      await expect(completeForensicCheckJob(db, {
+        ...repositoryCompletionInput(id),
+        claimStartedAt: tokenA
+      })).resolves.toBe(false);
+      await expect(completeForensicCheckJob(db, {
+        ...repositoryCompletionInput(id),
+        claimStartedAt: tokenA,
+        status: "failed",
+        lastError: "worker_a_failure"
+      })).resolves.toBe(false);
+      await expect(queueClaimedTronAddressUsdtIndexState(db, {
+        jobId: id,
+        claimStartedAt: tokenA,
+        address: "THop111111111111111111111111111111111",
+        coverageMode: "targeted",
+        targetTimestamp: tokenA,
+        queuedReason: "where_is_money_hop",
+        requestedByJobId: id
+      })).resolves.toBe(false);
+      await expect(saveClaimedRiskEvaluationEvidence(db, {
+        jobId: id,
+        claimStartedAt: tokenA,
+        rawEvidence: [],
+        observations: []
+      })).resolves.toBe(false);
+      await expect(upsertClaimedAddressLabelAssertion(db, {
+        jobId: id,
+        claimStartedAt: tokenA,
+        id: "stale-derived-label",
+        chain: "tron",
+        address: "THop111111111111111111111111111111111",
+        label: "needs_review",
+        category: "needs_review",
+        confidence: "medium",
+        severity: "medium",
+        status: "active",
+        sourceName: "forensic_route_search"
+      })).resolves.toBe(false);
+      await expect(recordClaimedObservedTransactionRisk(db, {
+        jobId: id,
+        claimStartedAt: tokenA,
+        txHash: "stale-risk-tx",
+        watchedWalletId: "stale-wallet",
+        report: {
+          subjectAddress: "THop111111111111111111111111111111111",
+          level: "LOW",
+          score: 0,
+          reasons: []
+        }
+      })).resolves.toBe(false);
+
+      await expect(completeForensicCheckJob(db, {
+        ...repositoryCompletionInput(id),
+        claimStartedAt: tokenB
+      })).resolves.toBe(true);
+      await expect(completeForensicCheckJob(db, {
+        ...repositoryCompletionInput(id),
+        claimStartedAt: tokenB
+      })).resolves.toBe(false);
+      const deliveries = await db.query(
+        `select count(*)::integer as count from forensic_check_jobs
+         where id = $1 and status = 'completed'
+           and progress_json #>> '{telegramDelivery,state,status}' = 'pending'`,
+        [id]
+      );
+      expect(deliveries.rows[0]?.count).toBe(1);
+    });
+  });
+
+  it("claims deterministic ties and normalizes a prior microsecond token for JavaScript CAS", async () => {
+    await withRepositoryWaitSchema("claim_order_and_clock", async (db) => {
+      for (const id of ["tie-b", "tie-a"]) {
+        await insertRepositoryDeliveryJob(db, { id, status: "queued" });
+      }
+      await db.query(
+        `update forensic_check_jobs set priority = 777, created_at = $1 where id in ('tie-a', 'tie-b')`,
+        [PLAN3_RECONCILIATION_NOW]
+      );
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toMatchObject({ id: "tie-a" });
+
+      await insertRepositoryDeliveryJob(db, { id: "microsecond-token", status: "queued" });
+      await db.query(
+        `update forensic_check_jobs
+         set priority = 999,
+           started_at = clock_timestamp() + interval '1 day' + interval '0.456 milliseconds'
+         where id = 'microsecond-token'`
+      );
+      const expected = await db.query(
+        `select date_trunc('milliseconds', started_at) + interval '1 millisecond' as token
+         from forensic_check_jobs where id = 'microsecond-token'`
+      );
+      const claimed = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+      expect(claimed?.startedAt?.toISOString()).toBe((expected.rows[0].token as Date).toISOString());
+      await expect(updateForensicCheckJobProgress(db, {
+        id: claimed!.id,
+        claimStartedAt: claimed!.startedAt!,
+        progressJson: { roundTrip: true }
+      })).resolves.toBe(true);
+    });
+  });
+
   it("fences completion and claims one bounded lease through attempt-four exhaustion", async () => {
     await withRepositoryWaitSchema("delivery_claim", async (db) => {
       const repository = await loadDeliveryRepository();

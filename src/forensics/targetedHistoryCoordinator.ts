@@ -52,6 +52,7 @@ export type TargetedHistoryWaiterDeps = {
     targetTimestamp: Date;
   }): Promise<TronAddressUsdtIndexState | null>;
   queueAddressUsdtHistory(input: {
+    claimStartedAt: Date;
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
@@ -67,11 +68,13 @@ export type TargetedHistoryWaiterDeps = {
   }): Promise<TronAddressUsdtIndexState>;
   releaseForensicCheckJobToWaiting(input: {
     id: string;
+    claimStartedAt: Date;
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
   upsertForensicJobWait?(input: {
     jobId: string;
+    claimStartedAt: Date;
     address: string;
     targetTimestamp: Date;
     requestKind?: TronAddressUsdtIndexRequestKind | null;
@@ -82,7 +85,7 @@ export type TargetedHistoryWaiterDeps = {
     requiredFor: TargetedHistoryRequiredFor;
     statusReason?: TronAddressUsdtCoverageStatusReason | null;
     lastError?: string | null;
-  }): Promise<void>;
+  }): Promise<boolean | void>;
   markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
     address: string;
     targetTimestamp: Date | null;
@@ -100,6 +103,7 @@ export type TargetedHistoryWaiterDeps = {
 
 export type TargetedHistoryWaitInput = {
   jobId: string;
+  claimStartedAt: Date;
   address: string;
   targetTimestamp: Date;
   queuedReason: string;
@@ -121,6 +125,7 @@ export type TargetedHistoryBatchRequest = {
 
 export type TargetedHistoryBatchWaitInput = {
   jobId: string;
+  claimStartedAt: Date;
   requests: TargetedHistoryBatchRequest[];
   maxRetryBudgetPages?: number | null;
   progressJson: Record<string, unknown>;
@@ -136,6 +141,7 @@ export type TargetedHistoryBatchWaitInput = {
 
 export type CandidateWindowWaitInput = {
   jobId: string;
+  claimStartedAt: Date;
   requests: WhereCandidateWindowRequest[];
   queuedReason?: string;
   requiredFor?: TargetedHistoryRequiredFor;
@@ -252,6 +258,7 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
     : isTargetedHistoryAlreadyInFlight(covering)
       ? covering!
       : await input.deps.queueAddressUsdtHistory({
+          claimStartedAt: input.claimStartedAt,
           address: input.address,
           coverageMode: "targeted",
           targetTimestamp: queueTargetTimestamp,
@@ -263,14 +270,16 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   if (isTargetedHistoryCovered(queued)) return true;
   throwIfTerminal(queued, input.maxRetryBudgetPages);
 
-  await input.deps.upsertForensicJobWait?.({
+  const waitSaved = await input.deps.upsertForensicJobWait?.({
     jobId: input.jobId,
+    claimStartedAt: input.claimStartedAt,
     address: input.address,
     targetTimestamp: input.targetTimestamp,
     requiredFor: input.requiredFor,
     statusReason: queued.statusReason,
     lastError: queued.lastError
   });
+  if (waitSaved === false) throw new Error("lost_forensic_job_claim");
 
   const patch = {
     ...targetedHistoryWaitingProgressPatch({
@@ -286,6 +295,7 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   const progressJson = persisted ?? input.progressJson;
   const released = await input.deps.releaseForensicCheckJobToWaiting({
     id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
     progressJson,
     lastError: null
   });
@@ -398,6 +408,7 @@ export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchW
       : isTargetedHistoryAlreadyInFlight(covering)
         ? covering!
         : await input.deps.queueAddressUsdtHistory({
+            claimStartedAt: input.claimStartedAt,
             address: request.address,
             coverageMode: "targeted",
             targetTimestamp: queueTargetTimestamp,
@@ -419,8 +430,9 @@ export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchW
       continue;
     }
 
-    await input.deps.upsertForensicJobWait?.({
+    const waitSaved = await input.deps.upsertForensicJobWait?.({
       jobId: input.jobId,
+      claimStartedAt: input.claimStartedAt,
       address: request.address,
       targetTimestamp: request.targetTimestamp,
       requestKind: "broad_targeted",
@@ -428,6 +440,7 @@ export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchW
       statusReason: queued.statusReason,
       lastError: queued.lastError
     });
+    if (waitSaved === false) throw new Error("lost_forensic_job_claim");
     pending.push({ request, state: queued, queueTargetTimestamp });
   }
 
@@ -441,6 +454,7 @@ export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchW
   });
   const released = await input.deps.releaseForensicCheckJobToWaiting({
     id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
     progressJson: persisted ?? input.progressJson,
     lastError: null
   });
@@ -526,6 +540,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
     const state = existing && isTargetedHistoryFinished(existing)
       ? existing
       : await input.deps.queueAddressUsdtHistory({
+          claimStartedAt: input.claimStartedAt,
           address: request.address,
           coverageMode: "targeted",
           requestKind: "candidate_window",
@@ -541,8 +556,9 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
         });
     states.push(state);
     if (!isTargetedHistoryFinished(state)) {
-      await input.deps.upsertForensicJobWait?.({
+      const waitSaved = await input.deps.upsertForensicJobWait?.({
         jobId: input.jobId,
+        claimStartedAt: input.claimStartedAt,
         address: request.address,
         targetTimestamp: request.targetTimestamp,
         requestKind: "candidate_window",
@@ -554,6 +570,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
         statusReason: state.statusReason,
         lastError: state.lastError
       });
+      if (waitSaved === false) throw new Error("lost_forensic_job_claim");
     }
   }
   if (states.every(isTargetedHistoryFinished)) return true;
@@ -563,6 +580,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
   }));
   const released = await input.deps.releaseForensicCheckJobToWaiting({
     id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
     progressJson: persisted ?? input.progressJson,
     lastError: null
   });

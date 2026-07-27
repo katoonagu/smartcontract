@@ -10,6 +10,7 @@ import {
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDueApprovalContexts,
+  claimNextForensicCheckJob,
   confirmTheftReportDeposit,
   completeForensicCheckJob,
   getApprovalPollState,
@@ -88,6 +89,7 @@ import {
   updateTheftReportComment,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
+  updateForensicCheckJobProgress,
   upsertAddressLabelCache,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -539,6 +541,64 @@ describe("wallet poll state repositories", () => {
 });
 
 describe("forensic check job repositories", () => {
+  it("orders equal-priority claims by id and refreshes a strictly millisecond-safe claim token", async () => {
+    const now = new Date("2026-07-27T01:02:03.004Z");
+    const { db, queries } = createMockDb(1, [{
+      id: "job-a",
+      kind: "where_is_money_check",
+      subject_address: "TSubject",
+      status: "running",
+      window_start: now,
+      window_end: now,
+      priority: 100,
+      chat_id: null,
+      message_id: null,
+      requested_by: null,
+      progress_json: { jobHeartbeatAt: now.toISOString() },
+      result_json: {},
+      raw_evidence_ids: [],
+      observation_ids: [],
+      last_error: null,
+      created_at: now,
+      updated_at: now,
+      started_at: now,
+      completed_at: null
+    }]);
+
+    const claimed = await claimNextForensicCheckJob(db);
+
+    expect(claimed?.startedAt?.toISOString()).toBe(now.toISOString());
+    expect(queries[0].sql).toContain("order by priority desc, created_at asc, id asc");
+    expect(queries[0].sql).toContain("date_trunc('milliseconds', job.started_at) + interval '1 millisecond'");
+    expect(queries[0].sql).toContain("'jobHeartbeatAt'");
+  });
+
+  it("uses the exact claim token for worker progress and completion CAS", async () => {
+    const claimStartedAt = new Date("2026-07-27T01:02:03.004Z");
+    const { db, queries } = createMockDb(1);
+
+    await updateForensicCheckJobProgress(db, {
+      id: "job-a",
+      claimStartedAt,
+      progressJson: { jobPhase: "running" }
+    });
+    await completeForensicCheckJob(db, {
+      id: "job-a",
+      claimStartedAt,
+      status: "completed",
+      progressJson: {},
+      resultJson: {},
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: null
+    });
+
+    expect(queries[0].sql).toContain("started_at = $4");
+    expect(queries[0].params[3]).toEqual(claimStartedAt);
+    expect(queries[1].sql).toContain("started_at = $8");
+    expect(queries[1].params[7]).toEqual(claimStartedAt);
+  });
+
   it("stores and reads cross-chain corridor result JSON without a provider", async () => {
     const now = new Date("2026-06-01T00:00:00.000Z");
     let storedResultJson: Record<string, unknown> = {};
@@ -589,6 +649,7 @@ describe("forensic check job repositories", () => {
 
     await completeForensicCheckJob(db, {
       id: "job-1",
+      claimStartedAt: now,
       status: "completed",
       progressJson: {},
       resultJson,

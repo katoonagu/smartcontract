@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { PoolClient } from "pg";
 import type {
   AddressPoisoningAlertStatus,
   AddressPoisoningCandidate,
@@ -443,6 +444,36 @@ export type ForensicCheckJobInput = {
   progressJson?: Record<string, unknown>;
 };
 
+export type ForensicJobClaimMutation = {
+  id: string;
+  claimStartedAt: Date;
+};
+
+export type ForensicJobClaim = {
+  jobId: string;
+  claimStartedAt: Date;
+};
+
+async function lockForensicJobClaim(
+  client: PoolClient,
+  claim: ForensicJobClaim,
+  allowWaiting = false
+): Promise<boolean> {
+  const result = await client.query(
+    `select id
+     from forensic_check_jobs
+     where id = $1
+       and started_at = $2
+       and (
+         status = 'running'
+         ${allowWaiting ? "or (status = 'queued' and progress_json->>'jobPhase' = 'waiting_for_targeted_index')" : ""}
+       )
+     for share`,
+    [claim.jobId, claim.claimStartedAt]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export type WalletIntelligenceSupportedJobKind =
   | "address_deep_check"
   | "where_is_money_check"
@@ -625,6 +656,7 @@ export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelle
 
 export type ForensicJobWaitInput = {
   jobId: string;
+  claimStartedAt: Date;
   address: string;
   targetTimestamp: Date;
   requiredFor: ForensicJobWaitRequiredFor;
@@ -5541,6 +5573,33 @@ export async function listActiveRiskLabelsForAddress(db: Db, address: string, ch
   return result.rows.map(mapAddressLabelRow);
 }
 
+export async function recordClaimedObservedTransactionRisk(
+  db: Db,
+  input: ForensicJobClaim & { txHash: string; watchedWalletId: string; report: RiskReport }
+): Promise<boolean> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const result = await client.query(
+      `update observed_transactions
+       set risk_level = $3, risk_score = $4, risk_reasons = $5
+       where tx_hash = $1 and watched_wallet_id = $2`,
+      [input.txHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
+    );
+    await client.query("commit");
+    return (result.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function listActiveAddressLabelAssertionsForRoute(
   db: Db,
   input: { chain: "tron"; addresses: string[]; txHashes: string[] }
@@ -5596,8 +5655,8 @@ export type {
   TronTransactionProviderEvidenceV1
 } from "./transactionEvidenceRepository";
 
-export async function upsertAddressLabelAssertion(
-  db: Db,
+async function upsertAddressLabelAssertionWithClient(
+  client: PoolClient,
   input: AddressLabelAssertionInput
 ): Promise<AddressLabelAssertion> {
   parseRiskLabel(input.label);
@@ -5605,9 +5664,6 @@ export async function upsertAddressLabelAssertion(
   parseRiskSeverity(input.severity);
   parseAddressLabelAssertionStatus(input.status);
 
-  const client = await db.connect();
-  try {
-    await client.query("begin");
     const firstSeenAt = input.firstSeenAt ?? new Date();
     const lastSeenAt = input.lastSeenAt ?? firstSeenAt;
     const assertionResult = await client.query(
@@ -5679,8 +5735,19 @@ export async function upsertAddressLabelAssertion(
       );
     }
 
-    await client.query("commit");
     return mapAddressLabelAssertionRow(assertionResult.rows[0]);
+}
+
+export async function upsertAddressLabelAssertion(
+  db: Db,
+  input: AddressLabelAssertionInput
+): Promise<AddressLabelAssertion> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const assertion = await upsertAddressLabelAssertionWithClient(client, input);
+    await client.query("commit");
+    return assertion;
   } catch (error) {
     await client.query("rollback");
     throw error;
@@ -5958,9 +6025,7 @@ export async function upsertTronAddressUsdtIndexState(
   return mapTronAddressUsdtIndexStateRow(result.rows[0]);
 }
 
-export async function queueTronAddressUsdtIndexState(
-  db: Db,
-  input: {
+export type QueueTronAddressUsdtIndexStateInput = {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
@@ -5977,7 +6042,11 @@ export async function queueTronAddressUsdtIndexState(
     budgetSeconds?: number | null;
     maxAttempts?: number | null;
     allowRunningRequeue?: boolean | null;
-  }
+};
+
+async function queueTronAddressUsdtIndexStateWithQuery(
+  db: Pick<Db, "query">,
+  input: QueueTronAddressUsdtIndexStateInput
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
   const requestKind = requestKindForIndex(input);
@@ -6066,11 +6135,62 @@ export async function queueTronAddressUsdtIndexState(
   if (result.rows[0]) {
     return mapTronAddressUsdtIndexStateRow(result.rows[0]);
   }
-  const existing = await getTronAddressUsdtIndexState(db, input);
+  const existing = await getTronAddressUsdtIndexState(db as Db, input);
   if (!existing) {
     throw new Error("TRON address USDT index state was not returned by guarded queue upsert");
   }
   return existing;
+}
+
+export async function queueTronAddressUsdtIndexState(
+  db: Db,
+  input: QueueTronAddressUsdtIndexStateInput
+): Promise<TronAddressUsdtIndexState> {
+  return queueTronAddressUsdtIndexStateWithQuery(db, input);
+}
+
+export async function queueClaimedTronAddressUsdtIndexState(
+  db: Db,
+  input: QueueTronAddressUsdtIndexStateInput & ForensicJobClaim
+): Promise<TronAddressUsdtIndexState | false> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const state = await queueTronAddressUsdtIndexStateWithQuery(client, input);
+    await client.query("commit");
+    return state;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function upsertClaimedAddressLabelAssertion(
+  db: Db,
+  input: AddressLabelAssertionInput & ForensicJobClaim
+): Promise<AddressLabelAssertion | false> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const assertion = await upsertAddressLabelAssertionWithClient(client, input);
+    await client.query("commit");
+    return assertion;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function claimQueuedTronAddressUsdtIndexStates(
@@ -6727,6 +6847,72 @@ export async function upsertTronUsdtIndexerCursor(db: Db, input: TronUsdtIndexer
   return mapTronUsdtIndexerCursorRow(result.rows[0]);
 }
 
+type RiskEvaluationEvidenceInput = {
+  rawEvidence: RawEvidenceInput[];
+  observations: RiskSignalObservationInput[];
+};
+
+async function saveRiskEvaluationEvidenceWithClient(
+  client: PoolClient,
+  input: RiskEvaluationEvidenceInput
+): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
+
+  for (const evidence of input.rawEvidence) {
+    parseRawEvidenceSourceType(evidence.sourceType);
+    await client.query(
+      `insert into raw_evidence (
+         id, source, source_type, chain, address, tx_hash,
+         observed_transaction_hash, evidence_json
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       on conflict (id) do update set
+         source = excluded.source,
+         source_type = excluded.source_type,
+         chain = excluded.chain,
+         address = excluded.address,
+         tx_hash = excluded.tx_hash,
+         observed_transaction_hash = excluded.observed_transaction_hash,
+         evidence_json = excluded.evidence_json`,
+      [evidence.id, evidence.source, evidence.sourceType, evidence.chain, evidence.address,
+        evidence.txHash, evidence.observedTransactionHash, evidence.evidenceJson]
+    );
+  }
+
+  for (const observation of input.observations) {
+    parseRiskSignalGroup(observation.signalGroup);
+    parseRiskConfidence(observation.confidence);
+    parseRiskSeverity(observation.severity);
+    await client.query(
+      `insert into risk_signal_observations (
+         id, subject_chain, subject_address, subject_tx_hash,
+         observed_transaction_hash, signal_group, code, message,
+         score_impact, confidence, severity, source, policy_version,
+         raw_evidence_id
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       on conflict (id) do update set
+         subject_chain = excluded.subject_chain,
+         subject_address = excluded.subject_address,
+         subject_tx_hash = excluded.subject_tx_hash,
+         observed_transaction_hash = excluded.observed_transaction_hash,
+         signal_group = excluded.signal_group,
+         code = excluded.code,
+         message = excluded.message,
+         score_impact = excluded.score_impact,
+         confidence = excluded.confidence,
+         severity = excluded.severity,
+         source = excluded.source,
+         policy_version = excluded.policy_version,
+         raw_evidence_id = excluded.raw_evidence_id`,
+      [observation.id, observation.subjectChain, observation.subjectAddress,
+        observation.subjectTxHash, observation.observedTransactionHash, observation.signalGroup,
+        observation.code, observation.message, observation.scoreImpact, observation.confidence,
+        observation.severity, observation.source, observation.policyVersion, observation.rawEvidenceId]
+    );
+  }
+}
+
 export async function saveRiskEvaluationEvidence(
   db: Db,
   input: {
@@ -6739,81 +6925,31 @@ export async function saveRiskEvaluationEvidence(
   try {
     await client.query("begin");
 
-    for (const evidence of input.rawEvidence) {
-      parseRawEvidenceSourceType(evidence.sourceType);
-      await client.query(
-        `insert into raw_evidence (
-           id, source, source_type, chain, address, tx_hash,
-           observed_transaction_hash, evidence_json
-         )
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
-         on conflict (id) do update set
-           source = excluded.source,
-           source_type = excluded.source_type,
-           chain = excluded.chain,
-           address = excluded.address,
-           tx_hash = excluded.tx_hash,
-           observed_transaction_hash = excluded.observed_transaction_hash,
-           evidence_json = excluded.evidence_json`,
-        [
-          evidence.id,
-          evidence.source,
-          evidence.sourceType,
-          evidence.chain,
-          evidence.address,
-          evidence.txHash,
-          evidence.observedTransactionHash,
-          evidence.evidenceJson
-        ]
-      );
-    }
-
-    for (const observation of input.observations) {
-      parseRiskSignalGroup(observation.signalGroup);
-      parseRiskConfidence(observation.confidence);
-      parseRiskSeverity(observation.severity);
-      await client.query(
-        `insert into risk_signal_observations (
-           id, subject_chain, subject_address, subject_tx_hash,
-           observed_transaction_hash, signal_group, code, message,
-           score_impact, confidence, severity, source, policy_version,
-           raw_evidence_id
-         )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-         on conflict (id) do update set
-           subject_chain = excluded.subject_chain,
-           subject_address = excluded.subject_address,
-           subject_tx_hash = excluded.subject_tx_hash,
-           observed_transaction_hash = excluded.observed_transaction_hash,
-           signal_group = excluded.signal_group,
-           code = excluded.code,
-           message = excluded.message,
-           score_impact = excluded.score_impact,
-           confidence = excluded.confidence,
-           severity = excluded.severity,
-           source = excluded.source,
-           policy_version = excluded.policy_version,
-           raw_evidence_id = excluded.raw_evidence_id`,
-        [
-          observation.id,
-          observation.subjectChain,
-          observation.subjectAddress,
-          observation.subjectTxHash,
-          observation.observedTransactionHash,
-          observation.signalGroup,
-          observation.code,
-          observation.message,
-          observation.scoreImpact,
-          observation.confidence,
-          observation.severity,
-          observation.source,
-          observation.policyVersion,
-          observation.rawEvidenceId
-        ]
-      );
-    }
+    await saveRiskEvaluationEvidenceWithClient(client, input);
 
     await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function saveClaimedRiskEvaluationEvidence(
+  db: Db,
+  input: RiskEvaluationEvidenceInput & ForensicJobClaim
+): Promise<boolean> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    await saveRiskEvaluationEvidenceWithClient(client, input);
+    await client.query("commit");
+    return true;
   } catch (error) {
     await client.query("rollback");
     throw error;
@@ -6915,20 +7051,35 @@ export async function claimNextForensicCheckJob(
   });
   const kindFilter = kinds.length > 0 ? "and kind = any($1::text[])" : "";
   const result = await db.query(
-    `with next_job as (
-       select id
+    `with claim_clock as materialized (
+       select date_trunc('milliseconds', clock_timestamp()) as now_ms
+     ),
+     next_job as (
+       select job.id,
+         greatest(
+           claim_clock.now_ms,
+           coalesce(
+             date_trunc('milliseconds', job.started_at) + interval '1 millisecond',
+             claim_clock.now_ms
+           )
+         ) as claim_started_at
        from forensic_check_jobs job
+       cross join claim_clock
        where job.status = 'queued'
        and job.kind <> 'address_fast_check'
        ${kindFilter}
        and job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
-       order by priority desc, created_at asc
+       order by priority desc, created_at asc, id asc
        limit 1
-       for update skip locked
+       for update of job skip locked
      )
      update forensic_check_jobs job
      set status = 'running',
-       started_at = coalesce(job.started_at, now()),
+       started_at = next_job.claim_started_at,
+       progress_json = job.progress_json || jsonb_build_object(
+         'jobHeartbeatAt',
+         to_char(next_job.claim_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+       ),
        updated_at = now()
      from next_job
      where job.id = next_job.id
@@ -6944,7 +7095,7 @@ export async function claimNextForensicCheckJob(
 
 export async function releaseForensicCheckJobToWaiting(
   db: Db,
-  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+  input: ForensicJobClaimMutation & { progressJson: Record<string, unknown>; lastError?: string | null }
 ): Promise<boolean> {
   const result = await db.query(
     `update forensic_check_jobs
@@ -6954,18 +7105,19 @@ export async function releaseForensicCheckJobToWaiting(
        updated_at = now()
      where id = $1
        and (
-         status = 'running'
-         or (
-           status = 'queued'
-           and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+           (status = 'running' and started_at = $4)
+           or (
+             status = 'queued'
+             and started_at = $4
+             and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
          )
        )`,
-    [input.id, input.progressJson, input.lastError ?? null]
+    [input.id, input.progressJson, input.lastError ?? null, input.claimStartedAt]
   );
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<void> {
+export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<boolean> {
   const requestKind = requestKindForIndex(input);
   const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
   const windowEndTimestampMs = requestKind === "candidate_window"
@@ -6980,6 +7132,7 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
        select job.id
        from forensic_check_jobs job
        where job.id = $1
+         and job.started_at = $15
          and (
            job.status = 'running'
            or (
@@ -7029,12 +7182,11 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
       windowEndTimestampMs,
       windowEndTimestamp,
       input.relatedHopTxHash ?? null,
-      candidateTxHash
+      candidateTxHash,
+      input.claimStartedAt
     ]
   );
-  if ((result.rowCount ?? 0) === 0) {
-    throw new Error("forensic_job_wait_parent_not_waitable");
-  }
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function markForensicJobWaitCancelledForJob(db: Db, input: { jobId: string }): Promise<number> {
@@ -7736,7 +7888,7 @@ export async function recoverStaleForensicCheckJobs(
          else '{}'::jsonb
        end,
        last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,
-       started_at = case when decisions.next_status = 'queued' then null else job.started_at end,
+       started_at = job.started_at,
        completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end,
        updated_at = $5::timestamptz
      from decisions
@@ -7757,15 +7909,15 @@ export async function recoverStaleForensicCheckJobs(
 
 export async function updateForensicCheckJobProgress(
   db: Db,
-  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+  input: ForensicJobClaimMutation & { progressJson: Record<string, unknown>; lastError?: string | null }
 ): Promise<boolean> {
   const result = await db.query(
     `update forensic_check_jobs
      set progress_json = $2,
        last_error = $3,
        updated_at = now()
-     where id = $1 and status = 'running'`,
-    [input.id, input.progressJson, input.lastError ?? null]
+     where id = $1 and status = 'running' and started_at = $4`,
+    [input.id, input.progressJson, input.lastError ?? null, input.claimStartedAt]
   );
   return (result.rowCount ?? 0) > 0;
 }
@@ -7774,6 +7926,7 @@ export async function completeForensicCheckJob(
   db: Db,
   input: {
     id: string;
+    claimStartedAt: Date;
     status: Exclude<ForensicCheckJobStatus, "queued" | "running" | "cancelled">;
     progressJson: Record<string, unknown>;
     resultJson: Record<string, unknown>;
@@ -7802,6 +7955,7 @@ export async function completeForensicCheckJob(
        updated_at = now()
      where id = $1
        and status = 'running'
+       and started_at = $8
        and (
          coalesce($3::jsonb->'telegramDelivery', 'null'::jsonb) = 'null'::jsonb
          or (
@@ -7827,7 +7981,8 @@ export async function completeForensicCheckJob(
       input.resultJson,
       JSON.stringify(input.rawEvidenceIds),
       JSON.stringify(input.observationIds),
-      input.lastError
+      input.lastError,
+      input.claimStartedAt
     ]
   );
   return (result.rowCount ?? 0) > 0;
