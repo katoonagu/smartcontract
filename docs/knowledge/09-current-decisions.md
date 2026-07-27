@@ -307,9 +307,14 @@ expanding frontier has no percent or ETA.
   expanding traversal frontier.
 - Stage B Where concurrency-two evidence is accepted only from the dedicated
   canary harness after a pre-authorized immutable deployment receipt and clean
-  module graph are verified before runtime import. The canonical isolation
+  single-file ESM adapter bundle are verified before runtime import. The
+  receipt binds exactly one bundle, its bytes, immutable artifact/Git identity,
+  and the exact Node runtime version; execution uses a `data:` URL made from
+  those verified bytes and permits no runtime module imports except explicit
+  static `node:` built-ins. The canonical isolation
   file is byte-bound separately from its semantic receipt, all start/terminal/
-  drain waits are harness-deadlined with abort signals, and authoritative
+  drain waits are harness-deadlined with abort signals and referenced timers,
+  and authoritative
   scheduler ownership must show zero foreign activity and reconcile canary
   counters with the retained process-global deltas. Deep remains a separate
   singleton residual measurement under the same isolation/deadline policy.

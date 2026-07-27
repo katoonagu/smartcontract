@@ -347,12 +347,18 @@ dedicated Where pump, scheduler, forensic repository, and delivery repository;
 an adapter that estimates scheduler counters from database rows is invalid.
 Before any dynamic import, the CLI verifies a separately pre-authorized,
 canonical deployment receipt by its raw-file SHA-256. The receipt binds an
-immutable image/artifact digest, clean Git commit and tree, a sorted module
-graph and graph SHA-256, and the adapter entry path/hash. Every graph file is
-resolved under the canonical deployment root and re-hashed; a missing,
-transitively changed, symlink-escaping, non-canonical, or dirty checkout fails
-before adapter code can execute. The CLI checks the adapter bytes again after
-loading and binds the deployment and adapter identities into every receipt. The
+immutable image/artifact digest, clean Git commit and tree, a single-entry
+module graph and graph SHA-256, and the adapter entry path/hash. Its format must be
+`single_file_esm_bundle_v1`: the graph contains exactly that one self-contained
+adapter bundle plus the explicit `node` implementation and exact Node version
+identity. Relative, absolute, bare-package, CommonJS `require`, and dynamic
+imports are forbidden; only explicit static `node:` built-in imports are
+allowed. The adapter path is resolved under the canonical deployment root and
+its bytes are read and hashed exactly once before execution. A missing,
+symlink-escaping, non-canonical, wrong-format, multi-file, wrong-Node, or dirty
+checkout fails before adapter code can execute. The verified bytes, rather than
+the mutable file path, are then imported through a `data:` URL. The deployment,
+bundle, Node-runtime, and adapter identities are bound into every receipt. The
 adapter must return an observed runtime attestation: cycle registry, instance
 label, runtime-config SHA-256, database fingerprint, Where/Deep concurrency,
 scheduler capacity, and SHA-256 binding identities for the Where pump, Deep
@@ -427,7 +433,8 @@ Long and fresh handler-start waits are harness-bounded at exactly the smaller
 of five seconds and two poll intervals. Terminal waits use
 `WHERE_LATENCY_CANARY_TERMINAL_TIMEOUT_MS`; cleanup uses
 `WHERE_LATENCY_CANARY_DRAIN_TIMEOUT_MS`. Each deadline supplies an
-harness-owned `AbortSignal`. On a start or terminal timeout, new claims are
+harness-owned `AbortSignal`; its timer remains referenced so a stuck operation
+cannot let the process exit before the named timeout. On a start or terminal timeout, new claims are
 stopped and a separately bounded drain is attempted before the command fails.
 
 If both slots are occupied before TXc can be introduced, the receipt is

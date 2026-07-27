@@ -14,6 +14,7 @@ import {
   prepareWhereLatencyCanary,
   resolveWhereLatencyCanaryAdapterIdentity,
   runWhereLatencyCanary,
+  withWhereLatencyCanaryDeadline,
   type WhereLatencyCanaryRuntime,
   type WhereLatencyDeepResidualRuntime
 } from "../../scripts/runWhereLatencyCanary";
@@ -32,7 +33,9 @@ const deploymentIdentity = () => ({
   gitCommit: GIT_COMMIT,
   gitTree: GIT_TREE,
   moduleGraphSha256: "5".repeat(64),
-  adapterEntrySha256: HEX_B
+  adapterEntrySha256: HEX_B,
+  bundleFormat: "single_file_esm_bundle_v1" as const,
+  nodeRuntime: { implementation: "node" as const, version: process.version }
 });
 const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
   schema: "where-latency-canary-database-v1",
@@ -210,19 +213,26 @@ async function receiptFile(
   return path;
 }
 
-async function deploymentFixture(directory: string) {
+async function deploymentFixture(
+  directory: string,
+  adapterSource = [
+    "export function createWhereLatencyCanaryRuntime(){",
+    "return { marker: 'verified-bundle', runtimeAttestation:async()=>({}),",
+    "schedulerIsolationDiagnostics:async()=>({}),schedulerDiagnostics:async()=>({}),",
+    "laneDiagnostics:async()=>({}),enqueueWhereJob:async()=>({}),",
+    "waitForHandlerStart:async()=>({}),waitForTerminal:async()=>({}),",
+    "deliveryDiagnostics:async()=>({}),jobRuntimeState:async()=>({}),",
+    "maxActiveWhereHandlers:()=>0,stopClaimsAndDrain:async()=>{}}}",
+    ""
+  ].join("\n")
+) {
   const root = join(directory, "deployment");
   await mkdir(root);
   const adapterPath = join(root, "adapter.mjs");
-  const dependencyPath = join(root, "dependency.mjs");
-  await writeFile(adapterPath, "export const adapter = true;\n", "utf8");
-  await writeFile(dependencyPath, "export const dependency = true;\n", "utf8");
+  await writeFile(adapterPath, adapterSource, "utf8");
   const hashFile = async (path: string) => createHash("sha256")
     .update(await readFile(path)).digest("hex");
-  const moduleGraph = [
-    { path: "adapter.mjs", sha256: await hashFile(adapterPath) },
-    { path: "dependency.mjs", sha256: await hashFile(dependencyPath) }
-  ];
+  const moduleGraph = [{ path: "adapter.mjs", sha256: await hashFile(adapterPath) }];
   const payload = {
     schema: "where-latency-canary-deployment-v1",
     version: 1,
@@ -230,6 +240,8 @@ async function deploymentFixture(directory: string) {
     immutableArtifactDigest: `sha256:${"4".repeat(64)}`,
     gitCommit: GIT_COMMIT,
     gitTree: GIT_TREE,
+    bundleFormat: "single_file_esm_bundle_v1",
+    nodeRuntime: { implementation: "node", version: process.version },
     moduleGraph,
     moduleGraphSha256: fingerprintCanonicalArtifact(moduleGraph),
     adapterEntryPath: "adapter.mjs",
@@ -244,7 +256,7 @@ async function deploymentFixture(directory: string) {
   return {
     root,
     adapterPath,
-    dependencyPath,
+    adapterSource,
     receiptPath,
     receipt,
     unboundConfig,
@@ -975,34 +987,74 @@ describe("Where latency canary", () => {
     })).rejects.toThrow("where_latency_deep_residual_drain_timeout");
   });
 
-  it("rejects a changed transitive module before invoking the runtime importer", async () => {
+  it("keeps correctness deadlines referenced and reaches the named timeout", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadlineHandle: ReturnType<typeof setTimeout> | null = null;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = originalSetTimeout(callback, delay, ...args);
+      deadlineHandle = handle;
+      return handle;
+    }) as typeof setTimeout);
+    await expect(withWhereLatencyCanaryDeadline(
+      2,
+      "where_latency_canary_test_deadline",
+      async () => await new Promise<never>(() => undefined)
+    )).rejects.toThrow("where_latency_canary_test_deadline");
+    expect((deadlineHandle as NodeJS.Timeout | null)?.hasRef()).toBe(true);
+  });
+
+  it("executes verified bundle bytes even if the adapter path changes after read", async () => {
     const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const fixture = await deploymentFixture(directory);
-    await writeFile(fixture.dependencyPath, "export const dependency = false;\n", "utf8");
-    const importModule = vi.fn();
+    const loaded = await loadVerifiedWhereLatencyRuntimeBridge({
+      config: fixture.unboundConfig,
+      modulePath: fixture.adapterPath,
+      deploymentReceiptPath: fixture.receiptPath,
+      expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
+      expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
+      inspectCheckout: vi.fn(async () => {
+        await writeFile(fixture.adapterPath, "throw new Error('swapped path executed');\n", "utf8");
+        return {
+        commit: GIT_COMMIT,
+        tree: GIT_TREE,
+        status: ""
+        };
+      })
+    });
+    expect((loaded.runtime as WhereLatencyCanaryRuntime & { marker: string }).marker)
+      .toBe("verified-bundle");
+  });
 
+  it.each([
+    ["relative", "import './dependency.mjs';\nexport const adapter = true;\n"],
+    ["bare", "import 'some-package';\nexport const adapter = true;\n"],
+    ["dynamic", "export const adapter = import('node:fs');\n"]
+  ])("rejects %s runtime imports before invoking the importer", async (_name, source) => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const fixture = await deploymentFixture(directory, source);
+    const importModule = vi.fn();
     await expect(loadVerifiedWhereLatencyRuntimeBridge({
       config: fixture.unboundConfig,
       modulePath: fixture.adapterPath,
       deploymentReceiptPath: fixture.receiptPath,
       expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
       expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
-      inspectCheckout: vi.fn(async () => ({
-        commit: GIT_COMMIT,
-        tree: GIT_TREE,
-        status: ""
-      })),
+      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
       importModule
-    })).rejects.toThrow("where_latency_canary_deployment_graph_file_changed");
+    })).rejects.toThrow("where_latency_canary_bundle_import_forbidden");
     expect(importModule).not.toHaveBeenCalled();
   });
 
-  it("rejects a changed module-graph binding and dirty checkout before runtime import", async () => {
+  it("rejects wrong bundle format, multi-file graph, and dirty checkout before runtime import", async () => {
     const graphDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const graphFixture = await deploymentFixture(graphDirectory);
     const graphReceipt = {
       ...graphFixture.receipt,
-      moduleGraphSha256: "9".repeat(64)
+      bundleFormat: "transitive_modules_v1"
     };
     const graphPayload = { ...graphReceipt };
     delete (graphPayload as Partial<typeof graphReceipt>).sha256;
@@ -1021,8 +1073,39 @@ describe("Where latency canary", () => {
       expectedImmutableArtifactDigest: graphFixture.expectedImmutableArtifactDigest,
       inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
       importModule: graphImporter
-    })).rejects.toThrow("where_latency_canary_deployment_graph_sha256_mismatch");
+    })).rejects.toThrow("where_latency_canary_bundle_format_invalid");
     expect(graphImporter).not.toHaveBeenCalled();
+
+    const multiDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
+    const multiFixture = await deploymentFixture(multiDirectory);
+    const multiGraph = [
+      ...multiFixture.receipt.moduleGraph,
+      { path: "dependency.mjs", sha256: "8".repeat(64) }
+    ];
+    const multiReceipt = {
+      ...multiFixture.receipt,
+      moduleGraph: multiGraph,
+      moduleGraphSha256: fingerprintCanonicalArtifact(multiGraph)
+    };
+    const multiPayload = { ...multiReceipt };
+    delete (multiPayload as Partial<typeof multiReceipt>).sha256;
+    const multiRewritten = {
+      ...multiReceipt,
+      sha256: fingerprintCanonicalArtifact(multiPayload)
+    };
+    const multiBytes = `${canonicalizeArtifactJson(multiRewritten)}\n`;
+    await writeFile(multiFixture.receiptPath, multiBytes, "utf8");
+    const multiImporter = vi.fn();
+    await expect(loadVerifiedWhereLatencyRuntimeBridge({
+      config: multiFixture.unboundConfig,
+      modulePath: multiFixture.adapterPath,
+      deploymentReceiptPath: multiFixture.receiptPath,
+      expectedDeploymentReceiptFileSha256: createHash("sha256").update(multiBytes).digest("hex"),
+      expectedImmutableArtifactDigest: multiFixture.expectedImmutableArtifactDigest,
+      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
+      importModule: multiImporter
+    })).rejects.toThrow("where_latency_canary_bundle_graph_must_be_single_file");
+    expect(multiImporter).not.toHaveBeenCalled();
 
     const dirtyDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const dirtyFixture = await deploymentFixture(dirtyDirectory);

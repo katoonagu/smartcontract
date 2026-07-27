@@ -3,9 +3,10 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { TronWeb } from "tronweb";
+import ts from "typescript";
 import { loadConfig } from "../src/config";
 import {
   canonicalizeArtifactJson,
@@ -46,6 +47,8 @@ export type WhereLatencyCanaryDeploymentIdentity = {
   gitTree: string;
   moduleGraphSha256: string;
   adapterEntrySha256: string;
+  bundleFormat: "single_file_esm_bundle_v1";
+  nodeRuntime: { implementation: "node"; version: string };
 };
 
 export type WhereLatencyCanaryRuntimeAttestation = {
@@ -401,6 +404,9 @@ function assertAdapterIdentity(value: WhereLatencyCanaryAdapterIdentity): void {
 function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): void {
   if (
     value?.schema !== "where-latency-canary-deployment-identity-v1" ||
+    value.bundleFormat !== "single_file_esm_bundle_v1" ||
+    value.nodeRuntime?.implementation !== "node" ||
+    value.nodeRuntime.version !== process.version ||
     !/^sha256:[a-f0-9]{64}$/.test(value.immutableArtifactDigest) ||
     !/^[a-f0-9]{40}$/.test(value.gitCommit) ||
     !/^[a-f0-9]{40}$/.test(value.gitTree)
@@ -884,7 +890,7 @@ function delta(end: number, start: number, code: string): number {
   return result;
 }
 
-async function withDeadline<T>(
+export async function withWhereLatencyCanaryDeadline<T>(
   timeoutMs: number,
   code: string,
   operation: (signal: AbortSignal) => Promise<T>
@@ -896,7 +902,6 @@ async function withDeadline<T>(
       controller.abort(new Error(code));
       reject(new Error(code));
     }, timeoutMs);
-    timer.unref?.();
   });
   try {
     return await Promise.race([operation(controller.signal), timeout]);
@@ -904,6 +909,8 @@ async function withDeadline<T>(
     if (timer !== null) clearTimeout(timer);
   }
 }
+
+const withDeadline = withWhereLatencyCanaryDeadline;
 
 function runPayload(input: Omit<WhereLatencyCanaryRunReceipt, "sha256">): WhereLatencyCanaryRunReceipt {
   return withHash(input);
@@ -1510,6 +1517,8 @@ type DeploymentReceiptPayload = {
   immutableArtifactDigest: string;
   gitCommit: string;
   gitTree: string;
+  bundleFormat: "single_file_esm_bundle_v1";
+  nodeRuntime: { implementation: "node"; version: string };
   moduleGraph: DeploymentModuleGraphEntry[];
   moduleGraphSha256: string;
   adapterEntryPath: string;
@@ -1557,6 +1566,9 @@ function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
     !/^sha256:[a-f0-9]{64}$/.test(receipt.immutableArtifactDigest) ||
     !/^[a-f0-9]{40}$/.test(receipt.gitCommit) ||
     !/^[a-f0-9]{40}$/.test(receipt.gitTree) ||
+    typeof receipt.bundleFormat !== "string" ||
+    receipt.nodeRuntime?.implementation !== "node" ||
+    typeof receipt.nodeRuntime.version !== "string" || !receipt.nodeRuntime.version ||
     !Array.isArray(receipt.moduleGraph) || receipt.moduleGraph.length < 1 ||
     typeof receipt.adapterEntryPath !== "string"
   ) throw new Error("where_latency_canary_deployment_receipt_invalid");
@@ -1580,6 +1592,40 @@ function assertContained(root: string, child: string): void {
   if (pathFromRoot === "" || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
     throw new Error("where_latency_canary_deployment_graph_escape");
   }
+}
+
+function assertSingleFileBundleImports(bytes: Buffer): void {
+  const source = ts.createSourceFile(
+    "where-latency-canary-adapter.mjs",
+    bytes.toString("utf8"),
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.JS
+  );
+  const diagnostics = (source as ts.SourceFile & {
+    parseDiagnostics?: readonly ts.Diagnostic[];
+  }).parseDiagnostics ?? [];
+  if (diagnostics.length > 0) throw new Error("where_latency_canary_bundle_syntax_invalid");
+  const assertSpecifier = (specifier: ts.Expression | undefined) => {
+    if (!specifier || !ts.isStringLiteralLike(specifier) || !specifier.text.startsWith("node:")) {
+      throw new Error("where_latency_canary_bundle_import_forbidden");
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      if (node.moduleSpecifier) assertSpecifier(node.moduleSpecifier);
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      throw new Error("where_latency_canary_bundle_import_forbidden");
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      throw new Error("where_latency_canary_bundle_import_forbidden");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
 }
 
 export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
@@ -1631,47 +1677,50 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
   if (deploymentRoot !== receipt.deploymentRoot) {
     throw new Error("where_latency_canary_deployment_root_not_canonical");
   }
-  for (const entry of receipt.moduleGraph) {
-    if (!record(entry) || typeof entry.path !== "string") {
-      throw new Error("where_latency_canary_deployment_graph_invalid");
-    }
+  if (receipt.bundleFormat !== "single_file_esm_bundle_v1") {
+    throw new Error("where_latency_canary_bundle_format_invalid");
   }
-  const canonicalGraph = [...receipt.moduleGraph]
-    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
-  if (canonicalizeArtifactJson(canonicalGraph) !== canonicalizeArtifactJson(receipt.moduleGraph)) {
-    throw new Error("where_latency_canary_deployment_graph_not_canonical");
+  if (
+    receipt.nodeRuntime.implementation !== "node" ||
+    receipt.nodeRuntime.version !== process.version
+  ) {
+    throw new Error("where_latency_canary_node_runtime_identity_mismatch");
   }
-  if (new Set(receipt.moduleGraph.map((entry) => entry.path)).size !== receipt.moduleGraph.length) {
-    throw new Error("where_latency_canary_deployment_graph_duplicate");
+  if (receipt.moduleGraph.length !== 1) {
+    throw new Error("where_latency_canary_bundle_graph_must_be_single_file");
   }
+  const adapterEntry = receipt.moduleGraph[0];
+  if (!record(adapterEntry) || typeof adapterEntry.path !== "string") {
+    throw new Error("where_latency_canary_deployment_graph_invalid");
+  }
+  assertSafeGraphPath(adapterEntry.path);
+  assertSha256(adapterEntry.sha256, "where_latency_canary_deployment_graph_invalid");
   if (fingerprintCanonicalArtifact(receipt.moduleGraph) !== receipt.moduleGraphSha256) {
     throw new Error("where_latency_canary_deployment_graph_sha256_mismatch");
   }
-  const graphRealPaths = new Map<string, string>();
-  for (const entry of receipt.moduleGraph) {
-    if (!record(entry)) throw new Error("where_latency_canary_deployment_graph_invalid");
-    assertSafeGraphPath(entry.path);
-    assertSha256(entry.sha256, "where_latency_canary_deployment_graph_invalid");
-    const moduleRealPath = await realpath(resolve(deploymentRoot, ...entry.path.split("/")));
-    assertContained(deploymentRoot, moduleRealPath);
-    if (!(await stat(moduleRealPath)).isFile()) {
-      throw new Error("where_latency_canary_deployment_graph_invalid");
-    }
-    const actualSha256 = createHash("sha256").update(await readFile(moduleRealPath)).digest("hex");
-    if (actualSha256 !== entry.sha256) {
-      throw new Error("where_latency_canary_deployment_graph_file_changed");
-    }
-    graphRealPaths.set(entry.path, moduleRealPath);
-  }
   assertSafeGraphPath(receipt.adapterEntryPath);
-  const adapterEntry = receipt.moduleGraph.find(({ path }) => path === receipt.adapterEntryPath);
-  if (!adapterEntry || adapterEntry.sha256 !== receipt.adapterEntrySha256) {
+  if (
+    adapterEntry.path !== receipt.adapterEntryPath ||
+    adapterEntry.sha256 !== receipt.adapterEntrySha256
+  ) {
     throw new Error("where_latency_canary_deployment_adapter_not_bound");
   }
-  const adapterRealPath = graphRealPaths.get(receipt.adapterEntryPath)!;
+  const adapterRealPath = await realpath(
+    resolve(deploymentRoot, ...adapterEntry.path.split("/"))
+  );
+  assertContained(deploymentRoot, adapterRealPath);
   if (await realpath(resolve(input.modulePath)) !== adapterRealPath) {
     throw new Error("where_latency_canary_deployment_adapter_path_mismatch");
   }
+  if (!(await stat(adapterRealPath)).isFile()) {
+    throw new Error("where_latency_canary_deployment_graph_invalid");
+  }
+  const adapterBytes = await readFile(adapterRealPath);
+  const actualAdapterSha256 = createHash("sha256").update(adapterBytes).digest("hex");
+  if (actualAdapterSha256 !== adapterEntry.sha256) {
+    throw new Error("where_latency_canary_deployment_graph_file_changed");
+  }
+  assertSingleFileBundleImports(adapterBytes);
   const checkout = await (input.inspectCheckout ?? inspectGitCheckout)(deploymentRoot);
   if (
     checkout.commit !== receipt.gitCommit || checkout.tree !== receipt.gitTree ||
@@ -1685,7 +1734,9 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     gitCommit: receipt.gitCommit,
     gitTree: receipt.gitTree,
     moduleGraphSha256: receipt.moduleGraphSha256,
-    adapterEntrySha256: receipt.adapterEntrySha256
+    adapterEntrySha256: receipt.adapterEntrySha256,
+    bundleFormat: receipt.bundleFormat,
+    nodeRuntime: { ...receipt.nodeRuntime }
   };
   const adapterIdentity: WhereLatencyCanaryAdapterIdentity = {
     schema: "where-latency-canary-adapter-v1",
@@ -1693,12 +1744,8 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     moduleContentSha256: receipt.adapterEntrySha256
   };
   const imported = await (input.importModule ?? ((specifier) => import(specifier)))(
-    `${pathToFileURL(adapterRealPath).href}?sha256=${receipt.adapterEntrySha256}`
+    `data:text/javascript;base64,${adapterBytes.toString("base64")}#sha256=${receipt.adapterEntrySha256}`
   );
-  const afterIdentity = await resolveWhereLatencyCanaryAdapterIdentity(adapterRealPath);
-  if (afterIdentity.moduleContentSha256 !== receipt.adapterEntrySha256) {
-    throw new Error("where_latency_canary_runtime_adapter_changed_during_load");
-  }
   if (typeof imported.createWhereLatencyCanaryRuntime !== "function") {
     throw new Error("where_latency_canary_runtime_adapter_invalid");
   }
@@ -1765,7 +1812,7 @@ export async function resolveWhereLatencyCanaryAdapterIdentity(
 
 export function defineWhereLatencyCanaryRuntimeAdapter(
   factory: (
-    input: WhereLatencyCanaryUnboundConfig
+    input: WhereLatencyCanaryRuntimeFactoryConfig
   ) => WhereLatencyCanaryRuntime | Promise<WhereLatencyCanaryRuntime>
 ): typeof factory {
   return factory;
