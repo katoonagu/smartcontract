@@ -173,6 +173,10 @@ async function releaseReplayGit(cwd: string, args: string[], code: string): Prom
   }
 }
 
+export function assertWhereLatencyReplayRepositoryStatusClean(status: string): void {
+  if (status.trim().length > 0) fail("where_latency_replay_repository_dirty");
+}
+
 export async function readReleaseWhereLatencyReplayFixture(input: {
   cwd: string;
   fixturePath: string;
@@ -212,10 +216,10 @@ export async function readReleaseWhereLatencyReplayFixture(input: {
   );
   const status = await releaseReplayGit(
     repositoryRoot,
-    ["status", "--porcelain=v1", "--untracked-files=all", "--", WHERE_LATENCY_REPLAY_FIXTURE_PATH],
-    "where_latency_replay_fixture_status_unavailable"
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    "where_latency_replay_repository_status_unavailable"
   );
-  if (status.length > 0) fail("where_latency_replay_fixture_dirty");
+  assertWhereLatencyReplayRepositoryStatusClean(status);
   const currentBlob = await releaseReplayGit(
     repositoryRoot,
     ["hash-object", "--no-filters", "--", WHERE_LATENCY_REPLAY_FIXTURE_PATH],

@@ -11,6 +11,7 @@ import {
   assertLegacyWhereSourceRevision,
   analyzeWhereLatencyReplay,
   assertWhereLatencyReplayAcceptance,
+  assertWhereLatencyReplayRepositoryStatusClean,
   assertWhereReplayConsumed,
   buildWhereLatencyReplayV1,
   assertExpectedStableWhereFacts,
@@ -778,6 +779,20 @@ describe("where latency replay v1", () => {
       cwd: join(process.cwd(), "src"),
       fixturePath: "tests/fixtures/forensics/txc-legacy-where-latency-v1.json"
     })).rejects.toThrow("where_latency_replay_repository_root_required");
+  });
+
+  it.each([
+    ["dirty tracked source", " M src/forensics/selectiveTransactionEnrichment.ts"],
+    ["staged tracked source", "M  src/check/whereIsMoneyCheck.ts"],
+    ["untracked source", "?? src/shadowResolver.ts"]
+  ])("rejects %s before release replay", (_label, status) => {
+    expect(() => assertWhereLatencyReplayRepositoryStatusClean(status))
+      .toThrow("where_latency_replay_repository_dirty");
+  });
+
+  it("accepts an empty whole-repository porcelain status", () => {
+    expect(() => assertWhereLatencyReplayRepositoryStatusClean("\n"))
+      .not.toThrow();
   });
 
   it("serializes canonical replay counts with immutable repository fixture identity", async () => {

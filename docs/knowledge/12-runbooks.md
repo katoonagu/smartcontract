@@ -70,10 +70,13 @@ npm.cmd run forensic:where-latency:replay -- --fixture tests/fixtures/forensics/
 
 Run this command only from the repository root. The release CLI accepts no
 other fixture path, requires the canonical fixture to be tracked in HEAD with
-no staged or unstaged change, and verifies that its current raw bytes hash to
-the exact HEAD blob. It fails closed in a source archive without Git. Synthetic
-fixtures are supported only through unit-level analysis APIs and cannot be used
-by the release command.
+the repository index and worktree completely clean against HEAD, including no
+staged, unstaged, or untracked files (standard Git ignore rules apply), and
+verifies that the fixture's current raw bytes hash to the exact HEAD blob. This
+prevents executed TypeScript, module-resolution inputs, or dependencies from
+differing from the commit named in the receipt. It fails closed in a source
+archive without Git. Synthetic fixtures are supported only through unit-level
+analysis APIs and cannot be used by the release command.
 
 It fails closed for a missing file, noncanonical envelope, malformed evidence,
 or provenance-invalid tape; it never falls back to a database or network
