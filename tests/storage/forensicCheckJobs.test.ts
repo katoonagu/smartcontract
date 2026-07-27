@@ -3015,6 +3015,58 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
     });
   });
 
+  it("claims unique Where jobs by priority/FIFO/ID without crossing lanes or claiming waits", async () => {
+    await withRepositoryWaitSchema("where_claim_fairness", async (db) => {
+      for (const input of [
+        { id: "where-tie-b", kind: "where_is_money_check" as const },
+        { id: "where-tie-a", kind: "where_is_money_check" as const },
+        { id: "where-old", kind: "where_is_money_check" as const },
+        { id: "where-high", kind: "where_is_money_check" as const },
+        { id: "where-wait", kind: "where_is_money_check" as const },
+        { id: "incoming-high", kind: "incoming_deposit_check" as const },
+        { id: "deep-high", kind: "address_deep_check" as const }
+      ]) {
+        await insertRepositoryDeliveryJob(db, { ...input, status: "queued" });
+      }
+      await db.query(`
+        update forensic_check_jobs
+        set priority = case
+            when id in ('where-high', 'incoming-high', 'deep-high') then 900
+            else 500
+          end,
+          created_at = case
+            when id = 'where-old' then $1::timestamptz
+            else $2::timestamptz
+          end,
+          progress_json = case
+            when id = 'where-wait' then '{"jobPhase":"waiting_for_targeted_index"}'::jsonb
+            else '{}'::jsonb
+          end
+      `, [new Date("2026-07-15T09:00:00.000Z"), new Date("2026-07-15T10:00:00.000Z")]);
+
+      const claimed = await Promise.all([
+        claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }),
+        claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] })
+      ]);
+      expect(new Set(claimed.map((job) => job?.id))).toEqual(new Set(["where-high", "where-old"]));
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toMatchObject({ id: "where-tie-a" });
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toMatchObject({ id: "where-tie-b" });
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toBeNull();
+
+      const untouched = await db.query(
+        "select id, status from forensic_check_jobs where id in ('where-wait', 'incoming-high', 'deep-high') order by id"
+      );
+      expect(untouched.rows).toEqual([
+        { id: "deep-high", status: "queued" },
+        { id: "incoming-high", status: "queued" },
+        { id: "where-wait", status: "queued" }
+      ]);
+    });
+  });
+
   it("fences completion and claims one bounded lease through attempt-four exhaustion", async () => {
     await withRepositoryWaitSchema("delivery_claim", async (db) => {
       const repository = await loadDeliveryRepository();

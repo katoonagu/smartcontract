@@ -61,6 +61,15 @@ delivery intent, and dispatches no later provider work. The per-job worker
 handles and logs this ownership stop as a completed polling-cycle item so one
 lost claim cannot prevent later queued jobs from running in the same batch.
 
+The legacy Where lane uses a bounded, work-conserving slot pump. A timer poll
+performs wait reconciliation and stale recovery once, then claims one
+`where_is_money_check` per free slot. A finished or released-to-waiting job
+requests an immediate serialized refill; an empty claim waits for the next
+timer tick. The pump retains only active handler promises, has no local pending
+queue, and drains them during shutdown. `FORENSIC_WHERE_WORKER_CONCURRENCY`
+is validated from 1 through 2 and defaults to 1. Incoming and Deep keep their
+existing independent workers and batch settings.
+
 ## Unified Lifecycle
 
 Schema 033 introduces one durable `CheckRequest`, one `UnifiedCheckRun`,

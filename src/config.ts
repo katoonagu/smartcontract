@@ -82,6 +82,8 @@ export type AppConfig = {
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
   forensicWherePollIntervalMs: number;
+  forensicWhereWorkerConcurrency: number;
+  /** @deprecated Where no longer uses this; retained for the Incoming fallback. */
   forensicWhereJobsPerPoll: number;
   forensicIncomingPollIntervalMs: number;
   forensicIncomingJobsPerPoll: number;
@@ -588,6 +590,12 @@ export function loadConfig(): AppConfig {
       "FORENSIC_WHERE_POLL_INTERVAL_MS",
       process.env.FORENSIC_WHERE_POLL_INTERVAL_MS ?? "2000",
       1000
+    ),
+    forensicWhereWorkerConcurrency: parseIntegerInRange(
+      "FORENSIC_WHERE_WORKER_CONCURRENCY",
+      process.env.FORENSIC_WHERE_WORKER_CONCURRENCY ?? "1",
+      1,
+      2
     ),
     forensicWhereJobsPerPoll: parsePositiveInteger(
       "FORENSIC_WHERE_JOBS_PER_POLL",

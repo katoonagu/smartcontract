@@ -451,6 +451,7 @@ function createConfig(): AppConfig {
     tronscanDashboardMaxPages: 5,
     tronscanDashboardForceRefreshCooldownMs: 60_000,
     forensicWherePollIntervalMs: 2_000,
+    forensicWhereWorkerConcurrency: 1,
     forensicWhereJobsPerPoll: 3,
     forensicIncomingPollIntervalMs: 2_000,
     forensicIncomingJobsPerPoll: 3,

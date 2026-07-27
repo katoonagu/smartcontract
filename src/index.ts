@@ -23,7 +23,8 @@ import { refreshDeepCheckSecondLayerFromIndex } from "./forensics/deepSecondLaye
 import { createEvmContinuationProvider } from "./forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
-import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
+import { runClaimedForensicJob, runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "./forensics/deepForensicJob";
+import { createForensicSlotPump } from "./forensics/forensicSlotPump";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
 import { indexedTransferToRouteEdge } from "./forensics/localTronUsdtIndex";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
@@ -2120,7 +2121,6 @@ const adminDashboard = await maybeStartAdminDashboard({
 if (adminDashboard) logger.info("admin_dashboard_started", { url: adminDashboard.url });
 
 let activePoll: Promise<void> | null = null;
-let activeWhereForensicPoll: Promise<void> | null = null;
 let activeDeepForensicPoll: Promise<void> | null = null;
 let activeIncomingDepositPoll: Promise<void> | null = null;
 let activeAddressIndexPoll: Promise<void> | null = null;
@@ -3135,11 +3135,8 @@ async function indexWalletIntelligenceCompletedJob(input: {
   });
 }
 
-async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
-  await recoverStaleForensicJobsOnce();
-  const processed = await runForensicJobBatch({
-    maxJobs,
-    runSingleCycle: () => runSingleDeepForensicJobCycle({
+function createDeepForensicJobRunnerDeps(kinds: ForensicCheckJobKind[]): DeepForensicJobRunnerDeps {
+  return {
       tronClient,
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
@@ -3267,13 +3264,47 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       },
       buildJobFailurePayload: buildForensicJobFailurePayload,
       buildWhereIsMoneyJobFailurePayload: buildForensicJobFailurePayload
-    }, {
-      ...deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured),
-      targetedHistoryMaxBudgetPages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP
-    })
+  };
+}
+
+const deepForensicJobRunnerOptions = {
+  ...deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured),
+  targetedHistoryMaxBudgetPages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP
+};
+
+async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
+  await recoverStaleForensicJobsOnce();
+  const deps = createDeepForensicJobRunnerDeps(kinds);
+  const processed = await runForensicJobBatch({
+    maxJobs,
+    runSingleCycle: () => runSingleDeepForensicJobCycle(deps, deepForensicJobRunnerOptions)
   });
   return processed;
 }
+
+const whereForensicRunnerDeps = createDeepForensicJobRunnerDeps(["where_is_money_check"]);
+const whereForensicPump = createForensicSlotPump({
+  concurrency: config.forensicWhereWorkerConcurrency,
+  beforePoll: async () => {
+    await runRecordedRuntimeCycle(
+      "wait_reconciliation",
+      () => forensicRuntimeOrchestration.runBeforeWherePoll(),
+      (summary) => summary
+    );
+    await recoverStaleForensicJobsOnce();
+  },
+  claimOne: () => claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }),
+  runClaimed: (job) => runRecordedRuntimeCycle(
+    "where_forensic",
+    () => runClaimedForensicJob(whereForensicRunnerDeps, job, deepForensicJobRunnerOptions),
+    () => ({ sourceQueryCompleted: true, examinedCount: 1, completedCount: 1 })
+  ).then(() => undefined),
+  onHandlerError: (error) => {
+    logger.error("where_forensic_job_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
 
 async function whereForensicOnce(): Promise<void> {
   const deliveryCycle = forensicTelegramDeliveryWork.run();
@@ -3282,24 +3313,7 @@ async function whereForensicOnce(): Promise<void> {
       diagnosticCode: "forensic_telegram_delivery_cycle_failed"
     });
   });
-  if (activeWhereForensicPoll) return activeWhereForensicPoll;
-  activeWhereForensicPoll = runRecordedRuntimeCycle(
-    "wait_reconciliation",
-    () => forensicRuntimeOrchestration.runBeforeWherePoll(),
-    (summary) => summary
-  )
-    .then(() => runRecordedRuntimeCycle(
-      "where_forensic",
-      () => runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll),
-      (handled) => ({ sourceQueryCompleted: true, examinedCount: handled, completedCount: handled })
-    ))
-    .then((handled) => {
-      if (handled > 0) logger.info("where_forensic_jobs_processed", { handled });
-    })
-    .finally(() => {
-      activeWhereForensicPoll = null;
-    });
-  return activeWhereForensicPoll;
+  await whereForensicPump.poll();
 }
 
 async function addressIndexOnce(): Promise<void> {
@@ -3614,12 +3628,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     }
   }
 
-  if (activeWhereForensicPoll) {
-    try {
-      await activeWhereForensicPoll;
-    } catch (error) {
-      logger.error("active_where_forensic_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
-    }
+  try {
+    await whereForensicPump.stopAndDrain();
+  } catch (error) {
+    logger.error("active_where_forensic_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
   }
 
   if (activeDeepForensicPoll) {

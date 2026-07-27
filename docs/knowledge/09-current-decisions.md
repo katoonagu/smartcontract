@@ -102,6 +102,12 @@ code_refs:
   runner write is fenced to it either by compare-and-set or by a row lock held
   through the side-effect transaction. Claim loss yields the stable
   `lost_forensic_job_claim` stop and cannot prepare delivery.
+- Stage B replaces only the serial Where batch with a bounded slot pump.
+  `FORENSIC_WHERE_WORKER_CONCURRENCY` is the sole Where claim-capacity setting
+  (1 by default, 2 only for an isolated accepted canary). The legacy
+  `FORENSIC_WHERE_JOBS_PER_POLL` value remains parsed solely because Incoming
+  still inherits it when `FORENSIC_INCOMING_JOBS_PER_POLL` is absent. Deep and
+  Incoming concurrency, guards, and polling intervals are unchanged.
 - Hard transaction hashes remain candidates without indexed movement rows and
   bypass only optional parser/exploration limits, never the shared resolver.
   Incoming combines outer and nested Where enrichment evidence and propagates

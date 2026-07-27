@@ -1805,12 +1805,11 @@ async function runWhereIsMoneyJob(
   }
 }
 
-export async function runSingleDeepForensicJobCycle(
+export async function runClaimedForensicJob(
   deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
   options: DeepForensicJobRunnerOptions = {}
-): Promise<boolean> {
-  const job = await deps.claimNextForensicCheckJob();
-  if (!job) return false;
+): Promise<void> {
   if (!job.startedAt) throw new Error("claimed_forensic_job_missing_started_at");
   const abortController = new AbortController();
   let claimLostLogged = false;
@@ -1857,7 +1856,7 @@ export async function runSingleDeepForensicJobCycle(
           if (!abortController.signal.aborted) abortController.abort();
           throw new Error("lost_forensic_job_claim");
         }
-        return true;
+        return;
       }
       if (job.progressJson.jobPhase === "provider_limited") {
         const targetedIndex = isRecord(job.progressJson.targetedIndex)
@@ -1865,7 +1864,8 @@ export async function runSingleDeepForensicJobCycle(
           : {};
         const statusReason = targetedStatusReasonField(targetedIndex.statusReason);
         if (statusReason === "partial_provider_cap") {
-          return await runWhereIsMoneyJob(deps, job, options, abortController);
+          await runWhereIsMoneyJob(deps, job, options, abortController);
+          return;
         }
         const mapped = targetedHistoryTerminalStatus(
           statusReason,
@@ -1892,9 +1892,10 @@ export async function runSingleDeepForensicJobCycle(
           if (!abortController.signal.aborted) abortController.abort();
           throw new Error("lost_forensic_job_claim");
         }
-        return true;
+        return;
       }
-      return await runWhereIsMoneyJob(deps, job, options, abortController);
+      await runWhereIsMoneyJob(deps, job, options, abortController);
+      return;
     }
 
     job.progressJson = mergeForensicJobProgress(job.progressJson, { jobPhase: "address_deep_trace" });
@@ -1906,7 +1907,7 @@ export async function runSingleDeepForensicJobCycle(
     });
     if (claimedProgress === false) {
       logClaimLostOnce("initial_progress");
-      return true;
+      return;
     }
     enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
       intervalMs: options.transactionEnrichmentHeartbeatIntervalMs,
@@ -2142,15 +2143,15 @@ export async function runSingleDeepForensicJobCycle(
       resultJson: completion.resultJson,
       status
     });
-    return true;
+    return;
   } catch (error) {
     const message = errorMessage(error);
     if (message === "lost_forensic_job_claim") {
       logClaimLostOnce("claimed_job_cycle");
-      return true;
+      return;
     }
     if (message === "selective_transaction_enrichment_aborted") {
-      return true;
+      return;
     }
     if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
       const reason = strictScoreBlockedReasonFromError(error);
@@ -2175,9 +2176,9 @@ export async function runSingleDeepForensicJobCycle(
       });
       if (!completed) {
         logClaimLostOnce("strict_failure_completion");
-        return true;
+        return;
       }
-      return true;
+      return;
     }
     if (job.kind === "where_is_money_check" && error instanceof TargetedHistoryTerminalError) {
       const progressJson = mergeForensicJobProgress(job.progressJson, targetedHistoryReadyProgressPatch({
@@ -2206,9 +2207,9 @@ export async function runSingleDeepForensicJobCycle(
       });
       if (!completed) {
         logClaimLostOnce("targeted_terminal_completion");
-        return true;
+        return;
       }
-      return true;
+      return;
     }
     const delivery = await buildForensicJobFailureDelivery(deps, job, message);
     const completed = await deps.completeForensicCheckJob({
@@ -2223,10 +2224,20 @@ export async function runSingleDeepForensicJobCycle(
     });
     if (!completed) {
       logClaimLostOnce("failure_completion");
-      return true;
+      return;
     }
-    return true;
+    return;
   } finally {
     await enrichmentHeartbeat?.dispose();
   }
+}
+
+export async function runSingleDeepForensicJobCycle(
+  deps: DeepForensicJobRunnerDeps,
+  options: DeepForensicJobRunnerOptions = {}
+): Promise<boolean> {
+  const job = await deps.claimNextForensicCheckJob();
+  if (!job) return false;
+  await runClaimedForensicJob(deps, job, options);
+  return true;
 }

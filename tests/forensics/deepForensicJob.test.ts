@@ -4,7 +4,7 @@ import {
   type DeepAddressForensicReport
 } from "../../src/check/deepForensicCheck";
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
-import { runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
+import { runClaimedForensicJob, runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
 import { runForensicJobBatch } from "../../src/forensics/forensicJobBatch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
@@ -387,6 +387,15 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("executes an externally claimed job without issuing another claim", async () => {
+    const claimNextForensicCheckJob = vi.fn(async () => null);
+    await expect(runClaimedForensicJob({
+      claimNextForensicCheckJob
+    } as unknown as DeepForensicJobRunnerDeps, { ...job(), startedAt: null }))
+      .rejects.toThrow("claimed_forensic_job_missing_started_at");
+    expect(claimNextForensicCheckJob).not.toHaveBeenCalled();
+  });
+
   it("rejects a claimed job without a claim generation", async () => {
     await expect(runSingleDeepForensicJobCycle({
       claimNextForensicCheckJob: async () => ({ ...job(), startedAt: null })

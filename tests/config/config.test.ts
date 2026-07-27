@@ -94,6 +94,7 @@ describe("loadConfig", () => {
     expect(config.unifiedIsolatedWorkerOnly).toBe(false);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
+    expect(config.forensicWhereWorkerConcurrency).toBe(1);
     expect(config.forensicWhereJobsPerPoll).toBe(3);
     expect(config.forensicIncomingPollIntervalMs).toBe(2000);
     expect(config.forensicIncomingJobsPerPoll).toBe(3);
@@ -132,6 +133,13 @@ describe("loadConfig", () => {
     expect(config.adminDashboardPort).toBe(8787);
     expect(config.adminDashboardToken).toBe(null);
     expect(config.runtimeInstanceLabel).toBeUndefined();
+  });
+
+  it.each(["0", "3", "1.5"])("rejects invalid Where worker concurrency %s", (value) => {
+    setRequiredEnv({ FORENSIC_WHERE_WORKER_CONCURRENCY: value });
+    expect(() => loadConfig()).toThrow(
+      "FORENSIC_WHERE_WORKER_CONCURRENCY must be a safe integer between 1 and 2"
+    );
   });
 
   it.each(["0", "100", "100.000001", "9007199254740993000000.123456", "9".repeat(78)])(
@@ -387,6 +395,7 @@ describe("loadConfig", () => {
       TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
       TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
       FORENSIC_WHERE_POLL_INTERVAL_MS: "3000",
+      FORENSIC_WHERE_WORKER_CONCURRENCY: "2",
       FORENSIC_WHERE_JOBS_PER_POLL: "5",
       FORENSIC_INCOMING_POLL_INTERVAL_MS: "7000",
       FORENSIC_INCOMING_JOBS_PER_POLL: "9",
@@ -443,6 +452,7 @@ describe("loadConfig", () => {
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
     expect(config.forensicWherePollIntervalMs).toBe(3000);
+    expect(config.forensicWhereWorkerConcurrency).toBe(2);
     expect(config.forensicWhereJobsPerPoll).toBe(5);
     expect(config.forensicIncomingPollIntervalMs).toBe(7000);
     expect(config.forensicIncomingJobsPerPoll).toBe(9);
