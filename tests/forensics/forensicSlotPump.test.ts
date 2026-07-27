@@ -147,6 +147,61 @@ describe("createForensicSlotPump", () => {
     await pump.stopAndDrain();
   });
 
+  it("serializes a handler-finally refill behind timer reconciliation", async () => {
+    const first = deferred();
+    const reconciliation = deferred();
+    const jobs = [1, 2];
+    const claimOne = vi.fn(async () => jobs.shift() ?? null);
+    let polls = 0;
+    const pump = createForensicSlotPump({
+      concurrency: 1,
+      beforePoll: async () => {
+        polls += 1;
+        if (polls === 2) await reconciliation.promise;
+      },
+      claimOne,
+      runClaimed: async (job) => {
+        if (job === 1) await first.promise;
+      },
+      onHandlerError: vi.fn()
+    });
+    await pump.poll();
+    const timerPoll = pump.poll();
+    await flush();
+    first.resolve();
+    await flush();
+    expect(claimOne).toHaveBeenCalledTimes(1);
+    reconciliation.resolve();
+    await timerPoll;
+    await flush();
+    expect(claimOne).toHaveBeenCalledTimes(3);
+    expect(polls).toBe(2);
+    await pump.stopAndDrain();
+  });
+
+  it("reports a failed fire-and-forget refill without an unhandled rejection", async () => {
+    const first = deferred();
+    const failure = new Error("claim failed");
+    let claims = 0;
+    const onHandlerError = vi.fn();
+    const pump = createForensicSlotPump({
+      concurrency: 1,
+      beforePoll: async () => {},
+      claimOne: async () => {
+        claims += 1;
+        if (claims === 1) return 1;
+        throw failure;
+      },
+      runClaimed: async () => first.promise,
+      onHandlerError
+    });
+    await pump.poll();
+    first.resolve();
+    await flush();
+    expect(onHandlerError).toHaveBeenCalledWith(failure);
+    await pump.stopAndDrain();
+  });
+
   it("runs beforePoll once per timer poll but not for immediate refills", async () => {
     const first = deferred();
     const jobs = [1, 2];
@@ -169,14 +224,26 @@ describe("createForensicSlotPump", () => {
     await pump.stopAndDrain();
   });
 
-  it("does not block independent Deep and Incoming lanes", async () => {
+  it("leaves the filtered single-handler Deep and Incoming lanes independent", async () => {
     const where = deferred();
+    const laneGates = { deep: deferred(), incoming: deferred() };
     const entered: string[] = [];
-    const jobs = ["where"];
+    const filters: string[][] = [];
+    const active = { deep: 0, incoming: 0 };
+    const maximum = { deep: 0, incoming: 0 };
+    const jobsByKind = new Map([
+      ["where_is_money_check", ["where"]],
+      ["address_deep_check", ["deep"]],
+      ["incoming_deposit_check", ["incoming"]]
+    ]);
+    const claimFiltered = async (kinds: string[]) => {
+      filters.push(kinds);
+      return jobsByKind.get(kinds[0])?.shift() ?? null;
+    };
     const pump = createForensicSlotPump({
       concurrency: 1,
       beforePoll: async () => {},
-      claimOne: async () => jobs.shift() ?? null,
+      claimOne: () => claimFiltered(["where_is_money_check"]),
       runClaimed: async () => {
         entered.push("where");
         await where.promise;
@@ -184,11 +251,34 @@ describe("createForensicSlotPump", () => {
       onHandlerError: vi.fn()
     });
     await pump.poll();
-    await Promise.all([
-      Promise.resolve().then(() => entered.push("deep")),
-      Promise.resolve().then(() => entered.push("incoming"))
-    ]);
+
+    const runFakeLegacyCycle = async (lane: "deep" | "incoming", kind: string) => {
+      const claimed = await claimFiltered([kind]);
+      if (!claimed) return false;
+      active[lane] += 1;
+      maximum[lane] = Math.max(maximum[lane], active[lane]);
+      entered.push(lane);
+      await laneGates[lane].promise;
+      active[lane] -= 1;
+      return true;
+    };
+    const deepCycle = runFakeLegacyCycle("deep", "address_deep_check");
+    const incomingCycle = runFakeLegacyCycle("incoming", "incoming_deposit_check");
+    await flush();
     expect(entered).toEqual(["where", "deep", "incoming"]);
+    expect(filters).toEqual([
+      ["where_is_money_check"],
+      ["address_deep_check"],
+      ["incoming_deposit_check"]
+    ]);
+    expect(maximum).toEqual({ deep: 1, incoming: 1 });
+
+    laneGates.deep.resolve();
+    laneGates.incoming.resolve();
+    await Promise.all([
+      deepCycle,
+      incomingCycle
+    ]);
     where.resolve();
     await pump.stopAndDrain();
   });

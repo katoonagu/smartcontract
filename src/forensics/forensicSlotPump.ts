@@ -19,15 +19,30 @@ export function createForensicSlotPump<Job>(input: {
   let activePumpPoll: Promise<void> | null = null;
   let activeTimerPoll: Promise<void> | null = null;
   let refillRequested = false;
+  let timerPollRequested = false;
   let stopping = false;
 
-  const requestRefill = (): Promise<void> => {
+  const reportError = (error: unknown): void => {
+    try {
+      input.onHandlerError(error);
+    } catch {
+      // ponytail: diagnostics must not strand a capacity slot.
+    }
+  };
+
+  const requestPump = (): Promise<void> => {
     if (stopping) return activePumpPoll ?? Promise.resolve();
-    refillRequested = true;
     if (activePumpPoll) return activePumpPoll;
 
     activePumpPoll = (async () => {
-      while (refillRequested && !stopping) {
+      while ((timerPollRequested || refillRequested) && !stopping) {
+        if (timerPollRequested) {
+          timerPollRequested = false;
+          await input.beforePoll();
+          refillRequested = true;
+        }
+        if (!refillRequested) continue;
+
         refillRequested = false;
         while (activeHandlers.size < input.concurrency && !stopping) {
           const job = await input.claimOne();
@@ -36,23 +51,21 @@ export function createForensicSlotPump<Job>(input: {
           let handler!: Promise<void>;
           handler = Promise.resolve()
             .then(() => input.runClaimed(job))
-            .catch((error) => {
-              try {
-                input.onHandlerError(error);
-              } catch {
-                // ponytail: diagnostics must not strand a capacity slot.
-              }
-            })
+            .catch(reportError)
             .finally(() => {
               activeHandlers.delete(handler);
-              void requestRefill();
+              if (stopping) return;
+              refillRequested = true;
+              void requestPump().catch(reportError);
             });
           activeHandlers.add(handler);
         }
       }
     })().finally(() => {
       activePumpPoll = null;
-      if (refillRequested && !stopping) void requestRefill();
+      if ((timerPollRequested || refillRequested) && !stopping) {
+        void requestPump().catch(reportError);
+      }
     });
     return activePumpPoll;
   };
@@ -61,11 +74,8 @@ export function createForensicSlotPump<Job>(input: {
     poll(): Promise<void> {
       if (stopping) return Promise.resolve();
       if (activeTimerPoll) return activeTimerPoll;
-      activeTimerPoll = (async () => {
-        await input.beforePoll();
-        if (stopping) return;
-        await requestRefill();
-      })().finally(() => {
+      timerPollRequested = true;
+      activeTimerPoll = requestPump().finally(() => {
         activeTimerPoll = null;
       });
       return activeTimerPoll;
@@ -78,6 +88,7 @@ export function createForensicSlotPump<Job>(input: {
     async stopAndDrain(): Promise<void> {
       stopping = true;
       refillRequested = false;
+      timerPollRequested = false;
       await activeTimerPoll;
       await activePumpPoll;
       await Promise.all([...activeHandlers]);

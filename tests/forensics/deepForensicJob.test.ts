@@ -6,6 +6,7 @@ import {
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runClaimedForensicJob, runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
 import { runForensicJobBatch } from "../../src/forensics/forensicJobBatch";
+import { createForensicSlotPump } from "../../src/forensics/forensicSlotPump";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
@@ -2449,6 +2450,84 @@ describe("deep forensic job runner", () => {
         })
       }));
       expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("immediately refills the slot after runClaimedForensicJob releases a targeted wait", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
+    const hopAddress = "THopImmediateRefill111111111111111111";
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      throw new Error("wait should release the claimed slot");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runClaimedForensicJob: runClaimedWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const runnerDeps = {
+        claimNextForensicCheckJob: async () => null,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => ({
+          ...queuedIndexState(hopAddress),
+          coverageMode: "targeted",
+          status: "queued",
+          targetTimestamp: hopTimestamp,
+          requestedByJobId: sourceJob.id,
+          queuedReason: "where_is_money_hop"
+        })),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any;
+      const nextJob = { ...sourceJob, id: "job-after-targeted-wait" };
+      const jobs = [sourceJob, nextJob];
+      let releaseNext!: () => void;
+      const nextGate = new Promise<void>((resolve) => { releaseNext = resolve; });
+      let markNextStarted!: () => void;
+      const nextStarted = new Promise<void>((resolve) => { markNextStarted = resolve; });
+      const claimOne = vi.fn(async () => jobs.shift() ?? null);
+      const pump = createForensicSlotPump({
+        concurrency: 1,
+        beforePoll: async () => {},
+        claimOne,
+        runClaimed: async (claimedJob) => {
+          if (claimedJob.id === nextJob.id) {
+            markNextStarted();
+            await nextGate;
+            return;
+          }
+          await runClaimedWithMock(runnerDeps, claimedJob);
+        },
+        onHandlerError: (error) => { throw error; }
+      });
+
+      await pump.poll();
+      await nextStarted;
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+        id: sourceJob.id,
+        progressJson: expect.objectContaining({ jobPhase: "waiting_for_targeted_index" })
+      }));
+      expect(claimOne).toHaveBeenCalledTimes(2);
+      releaseNext();
+      await pump.stopAndDrain();
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
