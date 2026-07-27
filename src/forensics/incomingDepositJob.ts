@@ -2449,7 +2449,12 @@ export async function runSingleIncomingDepositJobCycle(
     }));
     if (!completed) {
       if (!abortController.signal.aborted) abortController.abort();
-      throw new Error("lost_forensic_job_claim");
+      safeLoggerWarn(logger, "forensic_job_claim_lost", {
+        job_id: job.id,
+        stage: "invalid_job_failure_completion",
+        error: "lost_forensic_job_claim"
+      });
+      return true;
     }
     if (depositTxHash && watchedWalletId) {
       try {
@@ -2576,7 +2581,12 @@ export async function runSingleIncomingDepositJobCycle(
     const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
     if (!completed) {
       if (!abortController.signal.aborted) abortController.abort();
-      throw new Error("lost_forensic_job_claim");
+      safeLoggerWarn(logger, "forensic_job_claim_lost", {
+        job_id: job.id,
+        stage: "terminal_completion",
+        error: "lost_forensic_job_claim"
+      });
+      return true;
     }
     if (!telegramDelivery) {
       try {
@@ -2625,7 +2635,12 @@ export async function runSingleIncomingDepositJobCycle(
     }));
     if (!completed) {
       if (!abortController.signal.aborted) abortController.abort();
-      throw new Error("lost_forensic_job_claim");
+      safeLoggerWarn(logger, "forensic_job_claim_lost", {
+        job_id: job.id,
+        stage: "failure_completion",
+        error: "lost_forensic_job_claim"
+      });
+      return true;
     }
     try {
       await timing.measure("mark_alert_failed", () =>

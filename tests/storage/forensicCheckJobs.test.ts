@@ -2283,24 +2283,6 @@ async function waitForBlockedWaitUpsert(db: pg.Pool): Promise<void> {
   throw new Error("Timed out waiting for blocked forensic wait upsert");
 }
 
-async function waitForBlockedClaimRecovery(db: pg.Pool): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const result = await db.query(
-      `select count(*)::integer as count
-       from pg_stat_activity
-       where pid <> pg_backend_pid()
-         and datname = current_database()
-         and state = 'active'
-         and wait_event_type = 'Lock'
-         and query ilike '%with stale_jobs as%'`
-    );
-    if ((result.rows[0]?.count ?? 0) > 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for blocked forensic claim recovery");
-}
-
 async function withRepositoryWaitSchema(
   label: string,
   run: (db: pg.Pool) => Promise<void>
@@ -2824,9 +2806,9 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
     });
   });
 
-  it("holds recovery behind a live FOR UPDATE claim guard and rejects worker A after worker B reclaims", async () => {
+  it("lets stale recovery skip a live FOR UPDATE claim, then recover it after commit", async () => {
     await withRepositoryWaitSchema("claim_for_update_race", async (db) => {
-      const id = "claim-for-share-race";
+      const id = "claim-for-update-race";
       await db.query("create table claim_side_effects (worker text primary key)");
       await insertRepositoryDeliveryJob(db, { id, status: "queued" });
       const workerA = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
@@ -2862,32 +2844,34 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
       const recoveryClient = await db.connect();
       await recoveryClient.query("set statement_timeout = '2s'");
       await recoveryClient.query("set lock_timeout = '2s'");
-      let recoverySettled = false;
-      const recovery = recoverStaleForensicCheckJobs(recoveryClient as unknown as Db, {
-        staleRunningBefore: new Date(tokenA.getTime() - 30_000),
-        recoveredAt: new Date(tokenA.getTime() + 1),
-        maxRetries: 3,
-        limit: 10
-      }).finally(() => { recoverySettled = true; });
-      let waitError: unknown;
+      let firstRecovery: Awaited<ReturnType<typeof recoverStaleForensicCheckJobs>> | null = null;
+      let recoveryError: unknown;
       try {
-        await waitForBlockedClaimRecovery(db);
-        expect(recoverySettled).toBe(false);
+        firstRecovery = await recoverStaleForensicCheckJobs(recoveryClient as unknown as Db, {
+          staleRunningBefore: new Date(tokenA.getTime() - 30_000),
+          recoveredAt: new Date(tokenA.getTime() + 1),
+          maxRetries: 3,
+          limit: 10
+        });
       } catch (error) {
-        waitError = error;
+        recoveryError = error;
       } finally {
+        recoveryClient.release();
         releaseGuard();
       }
 
-      try {
-        await expect(guardedWrite).resolves.toEqual({ claimed: true, value: "written" });
-        await expect(recovery).resolves.toMatchObject({ requeued: [expect.objectContaining({ id })] });
-      } finally {
-        recoveryClient.release();
-      }
-      if (waitError) throw waitError;
+      await expect(guardedWrite).resolves.toEqual({ claimed: true, value: "written" });
+      if (recoveryError) throw recoveryError;
+      expect(firstRecovery).toEqual({ requeued: [], failed: [] });
       await expect(db.query("select worker from claim_side_effects order by worker"))
         .resolves.toMatchObject({ rows: [{ worker: "A" }] });
+
+      await expect(recoverStaleForensicCheckJobs(db, {
+        staleRunningBefore: new Date(tokenA.getTime() - 30_000),
+        recoveredAt: new Date(tokenA.getTime() + 2),
+        maxRetries: 3,
+        limit: 10
+      })).resolves.toMatchObject({ requeued: [expect.objectContaining({ id })] });
 
       const workerB = await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
       expect(workerB!.startedAt!.toISOString()).not.toBe(tokenA.toISOString());

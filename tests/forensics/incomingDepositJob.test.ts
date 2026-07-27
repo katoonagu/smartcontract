@@ -1674,6 +1674,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     const complete = vi.fn(async () => false);
     const markFailed = vi.fn(async () => true);
     const send = vi.fn(async () => undefined);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
     try {
       await expect(runSingleIncomingDepositJobCycle({
@@ -1683,13 +1684,18 @@ describe("runSingleIncomingDepositJobCycle", () => {
         markUserAlertFailed: markFailed,
         recordObservedTransactionRisk: vi.fn(async () => true),
         sendUserAlert: send,
+        logger,
         buildJobFailurePayload: async () => failurePayload("cas-lost"),
         formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" as const }),
         buildReport: async () => {
           throw new Error("risk builder unavailable");
         }
-      })).rejects.toThrow("lost_forensic_job_claim");
+      })).resolves.toBe(true);
       expect(abort).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+        job_id: "job-incoming-1",
+        error: "lost_forensic_job_claim"
+      }));
     } finally {
       abort.mockRestore();
     }

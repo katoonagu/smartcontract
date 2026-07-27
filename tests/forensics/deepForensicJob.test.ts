@@ -5,6 +5,7 @@ import {
 } from "../../src/check/deepForensicCheck";
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
+import { runForensicJobBatch } from "../../src/forensics/forensicJobBatch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
@@ -6473,29 +6474,45 @@ describe("deep forensic job runner", () => {
     }
   });
 
-  it("throws stable claim loss when failure completion CAS is false", async () => {
+  it("handles failure-completion claim loss and lets the batch run the next job", async () => {
     const abort = vi.spyOn(AbortController.prototype, "abort");
-    const completeForensicCheckJob = vi.fn(async () => false);
+    const firstJob = job();
+    const secondJob = { ...job(), id: "job-2" };
+    const queuedJobs = [firstJob, secondJob];
+    const completeForensicCheckJob = vi.fn(async (input: DeepForensicCompletionInput) => input.id !== firstJob.id);
     const indexWalletIntelligenceJob = vi.fn(async () => undefined);
     const recordRiskEvaluation = vi.fn(async () => undefined);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     try {
-      await expect(runSingleDeepForensicJobCycle({
-        claimNextForensicCheckJob: async () => job(),
+      const deps: DeepForensicJobRunnerDeps = {
+        claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
         completeForensicCheckJob,
-        updateForensicCheckJobProgress: async () => {
-          throw new Error("progress_failed");
+        updateForensicCheckJobProgress: async (input) => {
+          if (input.id === firstJob.id) throw new Error("progress_failed");
+          return true;
         },
         indexWalletIntelligenceJob,
         recordRiskEvaluation,
         tronClient: { listRelatedTrc20Transfers: async () => [] },
         getLabelsForAddress: async () => [],
-        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
-      })).rejects.toThrow("lost_forensic_job_claim");
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+        logger
+      };
+      const handled = await runForensicJobBatch({
+        maxJobs: 2,
+        runSingleCycle: () => runSingleDeepForensicJobCycle(deps)
+      });
 
+      expect(handled).toBe(2);
       expect(abort).toHaveBeenCalledTimes(1);
-      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
-      expect(recordRiskEvaluation).not.toHaveBeenCalled();
-      expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(2);
+      expect(completeForensicCheckJob.mock.calls[1][0].id).toBe(secondJob.id);
+      expect(recordRiskEvaluation).toHaveBeenCalledTimes(1);
+      expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+        jobId: firstJob.id,
+        error: "lost_forensic_job_claim"
+      }));
     } finally {
       abort.mockRestore();
     }

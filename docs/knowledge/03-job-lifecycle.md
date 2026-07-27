@@ -57,7 +57,9 @@ completion, index queue or inline index write, risk-evidence, derived-assertion,
 and Incoming observed-risk mutation is
 compare-and-set or transactionally locked to that generation. A stale worker
 receives `lost_forensic_job_claim`, aborts its resolver, publishes no result or
-delivery intent, and dispatches no later provider work.
+delivery intent, and dispatches no later provider work. The per-job worker
+handles and logs this ownership stop as a completed polling-cycle item so one
+lost claim cannot prevent later queued jobs from running in the same batch.
 
 ## Unified Lifecycle
 

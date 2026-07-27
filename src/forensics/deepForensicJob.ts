@@ -2159,7 +2159,12 @@ export async function runSingleDeepForensicJobCycle(
       });
       if (!completed) {
         if (!abortController.signal.aborted) abortController.abort();
-        throw new Error("lost_forensic_job_claim");
+        deps.logger?.warn("forensic_job_claim_lost", {
+          jobId: job.id,
+          stage: "strict_failure_completion",
+          error: "lost_forensic_job_claim"
+        });
+        return true;
       }
       return true;
     }
@@ -2190,7 +2195,12 @@ export async function runSingleDeepForensicJobCycle(
       });
       if (!completed) {
         if (!abortController.signal.aborted) abortController.abort();
-        throw new Error("lost_forensic_job_claim");
+        deps.logger?.warn("forensic_job_claim_lost", {
+          jobId: job.id,
+          stage: "targeted_terminal_completion",
+          error: "lost_forensic_job_claim"
+        });
+        return true;
       }
       return true;
     }
@@ -2207,7 +2217,12 @@ export async function runSingleDeepForensicJobCycle(
     });
     if (!completed) {
       if (!abortController.signal.aborted) abortController.abort();
-      throw new Error("lost_forensic_job_claim");
+      deps.logger?.warn("forensic_job_claim_lost", {
+        jobId: job.id,
+        stage: "failure_completion",
+        error: "lost_forensic_job_claim"
+      });
+      return true;
     }
     return true;
   } finally {
