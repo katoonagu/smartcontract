@@ -313,6 +313,37 @@ function movementWitness(movement: ForensicRouteEdge): TransactionProviderMoveme
   };
 }
 
+function rawProviderMovementWitness(
+  movement: ForensicRouteEdge,
+  status: TronTransactionProviderEvidenceV1["finality"]["status"]
+): TransactionProviderMovementWitnessV1 | null {
+  if (
+    !forensicRouteEdgeHasExactMovementIdentity(movement) ||
+    !movement.contractAddress || !movement.callerAddress
+  ) return null;
+  const result = status === "confirmed_success"
+    ? "SUCCESS"
+    : status === "confirmed_reverted" ? "REVERT" : "FAILED";
+  return {
+    txHash: normalizeHash(movement.txHash),
+    ...(movement.transferId ? { transferId: movement.transferId } : {}),
+    ...(movement.eventIndex !== undefined ? { eventIndex: movement.eventIndex } : {}),
+    ...(movement.provider ? { provider: movement.provider } : {}),
+    ...(movement.providerRowOrdinalInTx !== undefined
+      ? { providerRowOrdinalInTx: movement.providerRowOrdinalInTx }
+      : {}),
+    contractAddress: movement.contractAddress,
+    callerAddress: movement.callerAddress,
+    fromAddress: movement.fromAddress,
+    toAddress: movement.toAddress,
+    amountRaw: movement.amountRaw,
+    confirmed: true,
+    reverted: status === "confirmed_reverted",
+    contractRet: result,
+    finalResult: result
+  };
+}
+
 function savedRawEvidenceMatchesCurrentMovement(
   evidence: TronTransactionProviderEvidenceV1,
   movement: ForensicRouteEdge | undefined
@@ -449,7 +480,9 @@ export function createSelectiveTransactionEnricher(deps: {
         observedPayload = payload;
         const status = input.endpoint === "raw" ? rawFinality(payload) : fullFinality(payload);
         if (!status) return { kind: "unavailable", observedPayload: payload, savedHit: false, inFlightHit: false, providerRequest: true, awaitMs: Math.max(0, deps.now().getTime() - started) };
-        const witness = input.endpoint === "raw" && input.movement ? movementWitness(input.movement) : null;
+        const witness = input.endpoint === "raw" && input.movement
+          ? rawProviderMovementWitness(input.movement, status)
+          : null;
         if (input.endpoint === "raw" && !witness) {
           return { kind: "unavailable", observedPayload: payload, savedHit: false, inFlightHit: false, providerRequest: true, awaitMs: Math.max(0, deps.now().getTime() - started) };
         }
@@ -593,7 +626,21 @@ export function createSelectiveTransactionEnricher(deps: {
     }, signal);
     account(full, "full");
     aborted(signal);
+    const rawNegative = raw.kind === "evidence" && raw.evidence.finality.status !== "confirmed_success"
+      ? raw
+      : null;
     if (full.kind === "capped") {
+      if (rawNegative) {
+        const saved = await saveDecision({
+          candidate,
+          decision: "confirmed_failed_or_reverted",
+          triggerCodes: triggers,
+          providers: [{ id: rawNegative.id, evidence: rawNegative.evidence }],
+          witnessSha256: rawNegative.evidence.finality.witnessSha256
+        });
+        aborted(signal);
+        return { ...metrics, ...saved, incomplete: true };
+      }
       return {
         ...metrics,
         decision: {
@@ -611,6 +658,17 @@ export function createSelectiveTransactionEnricher(deps: {
       };
     }
     if (full.kind !== "evidence") {
+      if (rawNegative) {
+        const saved = await saveDecision({
+          candidate,
+          decision: "confirmed_failed_or_reverted",
+          triggerCodes: triggers,
+          providers: [{ id: rawNegative.id, evidence: rawNegative.evidence }],
+          witnessSha256: rawNegative.evidence.finality.witnessSha256
+        });
+        aborted(signal);
+        return { ...metrics, ...saved, incomplete: true };
+      }
       return {
         ...metrics,
         decision: {
@@ -627,26 +685,19 @@ export function createSelectiveTransactionEnricher(deps: {
         incomplete: true
       };
     }
-    if (
-      raw.kind === "evidence" &&
-      raw.evidence.finality.status !== "confirmed_success" &&
-      full.evidence.finality.status === "confirmed_success"
-    ) {
-      return {
-        ...metrics,
-        decision: {
-          txHash: candidate.txHash,
-          candidateId: candidate.id,
-          priority: "hard",
-          triggerCodes: triggers,
-          decision: "technical_unknown",
-          providerEvidenceIds: [raw.id, full.id],
-          decisionEvidenceId: null,
-          continueTraversal: true
-        },
-        evidenceIds: [raw.id, full.id],
-        incomplete: true
-      };
+    if (rawNegative) {
+      const saved = await saveDecision({
+        candidate,
+        decision: "confirmed_failed_or_reverted",
+        triggerCodes: triggers,
+        providers: [
+          { id: rawNegative.id, evidence: rawNegative.evidence },
+          { id: full.id, evidence: full.evidence }
+        ],
+        witnessSha256: rawNegative.evidence.finality.witnessSha256
+      });
+      aborted(signal);
+      return { ...metrics, ...saved, incomplete: true };
     }
     const failed = full.evidence.finality.status !== "confirmed_success";
     const providers = [

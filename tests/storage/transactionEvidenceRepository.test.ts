@@ -618,6 +618,43 @@ describe("transaction evidence repository", () => {
       evidence: { decision: "full_transaction_info_confirmed" }
     });
   });
+
+  it("gives different normalized trigger sets distinct deterministic decision identities", async () => {
+    const store = memoryDb();
+    const full = fullEvidence();
+    const fullId = (await saveTransactionProviderEvidence(store.db, full)).id;
+    const base = {
+      version: "transaction-enrichment-decision-evidence-v1" as const,
+      policyVersion: "selective-transaction-enrichment-v1" as const,
+      chain: "tron" as const,
+      txHash: HASH_A,
+      decision: "full_transaction_info_confirmed" as const,
+      providerEvidenceIds: [fullId],
+      movementWitnessSha256: full.finality.witnessSha256
+    };
+    const unresolved = await saveTransactionEnrichmentDecisionEvidence(store.db, {
+      ...base,
+      triggerCodes: ["unresolved_economic_role"]
+    });
+    const assertion = await saveTransactionEnrichmentDecisionEvidence(store.db, {
+      ...base,
+      triggerCodes: ["exact_route_linked_assertion"]
+    });
+    const reordered = await saveTransactionEnrichmentDecisionEvidence(store.db, {
+      ...base,
+      triggerCodes: ["unresolved_economic_role", "exact_route_linked_assertion", "unresolved_economic_role"]
+    });
+    const canonical = await saveTransactionEnrichmentDecisionEvidence(store.db, {
+      ...base,
+      triggerCodes: ["exact_route_linked_assertion", "unresolved_economic_role"]
+    });
+    expect(unresolved.id).not.toBe(assertion.id);
+    expect(reordered.id).toBe(canonical.id);
+    expect(reordered.evidence.triggerCodes).toEqual([
+      "exact_route_linked_assertion",
+      "unresolved_economic_role"
+    ]);
+  });
 });
 
 const postgresDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;

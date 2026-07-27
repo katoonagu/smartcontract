@@ -7,10 +7,14 @@ import {
 } from "../../src/forensics/selectiveTransactionEnrichment";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import {
+  getTransactionProviderEvidence,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
   transactionProviderEvidenceId,
   type TransactionProviderEvidenceIdentityV1,
   type TronTransactionProviderEvidenceV1
 } from "../../src/storage/transactionEvidenceRepository";
+import type { Db } from "../../src/storage/db";
 import type { ForensicRouteEdge, FullTransactionInfoTrigger } from "../../src/types";
 
 const HASH_A = "a".repeat(64);
@@ -128,6 +132,66 @@ function harness(overrides: {
     maxConcurrentSubmissions: overrides.maxConcurrentSubmissions
   });
   return { enricher, rawCalls, fullCalls, decisionCalls, saved };
+}
+
+function repositoryHarness(overrides: {
+  getRawTransaction: (hash: string) => Promise<unknown>;
+  getFullTransactionInfo: (hash: string) => Promise<unknown>;
+}) {
+  type Row = {
+    id: string;
+    source: string;
+    source_type: string;
+    chain: string;
+    address: null;
+    tx_hash: string;
+    observed_transaction_hash: string;
+    evidence_json: unknown;
+  };
+  const rows = new Map<string, Row>();
+  const db = {
+    async query(sql: string, params: unknown[] = []) {
+      if (/^\s*insert into raw_evidence/i.test(sql)) {
+        const [id, source, sourceType, chain, txHash, evidenceJson] = params.map(String);
+        if (!rows.has(id)) {
+          rows.set(id, {
+            id,
+            source,
+            source_type: sourceType,
+            chain,
+            address: null,
+            tx_hash: txHash,
+            observed_transaction_hash: txHash,
+            evidence_json: JSON.parse(evidenceJson)
+          });
+        }
+        return { rows: [], rowCount: 1 };
+      }
+      const row = rows.get(String(params[0]));
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+  } as unknown as Db;
+  const rawCalls: string[] = [];
+  const fullCalls: string[] = [];
+  return {
+    rawCalls,
+    fullCalls,
+    rows,
+    enricher: createSelectiveTransactionEnricher({
+      getSavedEvidence: (identity) => getTransactionProviderEvidence(db, identity),
+      saveProviderEvidence: async (evidence) => saveTransactionProviderEvidence(db, evidence),
+      saveDecisionEvidence: async (evidence) => saveTransactionEnrichmentDecisionEvidence(db, evidence),
+      getRawTransaction: async (hash) => {
+        rawCalls.push(hash);
+        return overrides.getRawTransaction(hash);
+      },
+      getFullTransactionInfo: async (hash) => {
+        fullCalls.push(hash);
+        return overrides.getFullTransactionInfo(hash);
+      },
+      now: () => new Date("2026-07-26T12:00:00.000Z")
+    })
+  };
 }
 
 describe("selective transaction enrichment", () => {
@@ -357,7 +421,7 @@ describe("selective transaction enrichment", () => {
     expect([...h.saved.values()].some((item) => item.endpoint === "gettransactionbyid" && item.finality.status !== "confirmed_success")).toBe(true);
     expect(result.decisions[0].decision).not.toBe("plain_usdt_raw_proven");
     expect(result.fullProviderRequests).toBe(1);
-    expect(result).toMatchObject({ coverageStatus: "coverage_incomplete", technicalStatus: "technical_unknown" });
+    expect(result).toMatchObject({ coverageStatus: "coverage_incomplete", technicalStatus: "proven" });
   });
 
   it.each(["FAILED", "REVERT"])("persists/reuses finalized full %s as proven incomplete evidence", async (contractRet) => {
@@ -520,5 +584,46 @@ describe("selective transaction enrichment", () => {
     expect(result.hardCandidateCount).toBe(1);
     expect(result.decisions[0]).toMatchObject({ priority: "hard", decision: "technical_unknown" });
     expect(result.decisions[0].triggerCodes).toContain("raw_unavailable_or_ambiguous");
+  });
+
+  it("keeps finalized raw failure adverse when indexed movement and full response say SUCCESS", async () => {
+    const route = edge();
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "FAILED" }),
+      getFullTransactionInfo: async (hash) => fullPayload(hash, "SUCCESS")
+    });
+    const result = await h.enricher.enrich(inputFor(route));
+    expect(result).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "proven",
+      adverseGate: "incomplete",
+      inferredStopAllowed: false,
+      decisions: [{ decision: "confirmed_failed_or_reverted", priority: "hard" }]
+    });
+    expect(result.decisions[0].providerEvidenceIds).toHaveLength(2);
+    expect(result.evidenceIds.some((id) => id.startsWith("transaction-enrichment-decision-evidence-v1:"))).toBe(true);
+  });
+
+  it.each(["FAILED", "REVERT"])("reuses saved finalized raw %s as proven adverse evidence when full stays transient", async (contractRet) => {
+    const route = edge();
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet }),
+      getFullTransactionInfo: async () => { throw new Error("transient full failure"); }
+    });
+    const first = await h.enricher.enrich(inputFor(route));
+    const second = await h.enricher.enrich(inputFor(route));
+    for (const result of [first, second]) {
+      expect(result).toMatchObject({
+        coverageStatus: "coverage_incomplete",
+        technicalStatus: "proven",
+        adverseGate: "incomplete",
+        inferredStopAllowed: false,
+        decisions: [{ decision: "confirmed_failed_or_reverted", priority: "hard" }]
+      });
+      expect(result.decisions[0].providerEvidenceIds).toHaveLength(1);
+    }
+    expect(h.rawCalls).toEqual([HASH_A]);
+    expect(h.fullCalls).toEqual([HASH_A, HASH_A]);
+    expect(second.savedEvidenceHits).toBeGreaterThanOrEqual(1);
   });
 });

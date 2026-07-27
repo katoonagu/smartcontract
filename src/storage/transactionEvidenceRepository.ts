@@ -566,7 +566,7 @@ function normalizeDecision(
     throw new TypeError("transaction_enrichment_decision_evidence_invalid");
   }
   const txHash = normalizedHash(evidence.txHash, "transaction_enrichment_decision_evidence_invalid");
-  const triggerCodes = [...new Set(evidence.triggerCodes)];
+  const triggerCodes = [...new Set(evidence.triggerCodes)].sort();
   if (triggerCodes.some((code) => !TRIGGERS.has(code))) {
     throw new TypeError("transaction_enrichment_decision_evidence_invalid");
   }
@@ -588,6 +588,7 @@ function decisionEvidenceId(evidence: TransactionEnrichmentDecisionEvidenceV1): 
     chain: evidence.chain,
     txHash: evidence.txHash,
     decision: evidence.decision,
+    triggerCodes: evidence.triggerCodes,
     providerEvidenceIds: evidence.providerEvidenceIds,
     movementWitnessSha256: evidence.movementWitnessSha256
   })}`;

@@ -102,6 +102,13 @@ finality never counts as success. Flat labels, review status, unknown identity,
 and service likelihood alone do not authorize the full request. Provider
 payloads remain only in immutable raw evidence; reports carry IDs and policy
 decisions.
+Raw endpoint finality is preserved even when it contradicts the linked indexed
+movement: the witness keeps the movement identity and economic fields but binds
+failed/reverted finality to the raw result. That contradiction is adverse
+proven evidence and can never become a complete clean decision because a later
+full response says success. Decision-evidence identity also includes the
+normalized trigger-code set, so distinct audited reasons over the same provider
+evidence remain distinct immutable decisions.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,
