@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +13,7 @@ import {
 import {
   buildWhereLatencyCanaryIsolationReceipt,
   captureWhereLatencyDeepResidual,
+  createWhereLatencyCanaryBridgeInvoker,
   loadVerifiedWhereLatencyRuntimeBridge,
   prepareWhereLatencyCanary,
   resolveWhereLatencyCanaryAdapterIdentity,
@@ -31,6 +32,9 @@ const GIT_COMMIT = "1".repeat(40);
 const GIT_TREE = "2".repeat(40);
 const VM_EXEC_ARGV = ["--experimental-vm-modules", "--import", "tsx"];
 const execFileAsync = promisify(execFile);
+const BRIDGE_KEYS = generateKeyPairSync("ed25519");
+const BRIDGE_PUBLIC_DER = BRIDGE_KEYS.publicKey.export({ format: "der", type: "spki" });
+const BRIDGE_PUBLIC_SHA256 = createHash("sha256").update(BRIDGE_PUBLIC_DER).digest("hex");
 const deploymentIdentity = () => ({
   schema: "where-latency-canary-deployment-identity-v1" as const,
   deploymentReceiptFileSha256: "3".repeat(64),
@@ -45,7 +49,9 @@ const deploymentIdentity = () => ({
     version: process.version,
     execArgv: [...process.execArgv]
   },
-  allowedNodeBuiltins: []
+  allowedNodeBuiltins: [],
+  bridgeProtocolVersion: "where-latency-canary-bridge-v1" as const,
+  bridgePublicKeySpkiSha256: BRIDGE_PUBLIC_SHA256
 });
 const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
   schema: "where-latency-canary-database-v1",
@@ -87,6 +93,7 @@ const config = () => ({
   drainTimeoutMs: 10_000,
   runtimeConfigIdentity: HEX_A,
   runtimeBridgeUrl: "http://127.0.0.1:43123",
+  runtimeBridgeTimeoutMs: 10_000,
   adapterIdentity: {
     schema: "where-latency-canary-adapter-v1" as const,
     moduleRealPath: "C:/deployment/whereCanaryAdapter.mjs",
@@ -227,8 +234,9 @@ async function receiptFile(
 async function deploymentFixture(
   directory: string,
   adapterSource = [
+    "import { invoke as bridgeInvoke } from 'canary:bridge';",
     "export function createWhereLatencyCanaryRuntime(){",
-    "return { marker: 'verified-bundle', runtimeAttestation:async()=>({}),",
+    "void bridgeInvoke; return { marker: 'verified-bundle', runtimeAttestation:async()=>({}),",
     "schedulerIsolationDiagnostics:async()=>({}),schedulerDiagnostics:async()=>({}),",
     "laneDiagnostics:async()=>({}),enqueueWhereJob:async()=>({}),",
     "waitForHandlerStart:async()=>({}),waitForTerminal:async()=>({}),",
@@ -259,6 +267,9 @@ async function deploymentFixture(
       execArgv: [...(options.execArgv ?? process.execArgv)]
     },
     allowedNodeBuiltins: [...(options.allowedNodeBuiltins ?? [])],
+    bridgeProtocolVersion: "where-latency-canary-bridge-v1",
+    bridgePublicKeySpkiDerBase64: Buffer.from(BRIDGE_PUBLIC_DER).toString("base64"),
+    bridgePublicKeySpkiSha256: BRIDGE_PUBLIC_SHA256,
     moduleGraph,
     moduleGraphSha256: fingerprintCanonicalArtifact(moduleGraph),
     adapterEntryPath: "adapter.mjs",
@@ -377,6 +388,7 @@ describe("Where latency canary", () => {
     ["concurrency two", { workerConcurrency: 1 }, "where_latency_canary_concurrency_two_required"],
     ["Deep singleton", { deepWorkerConcurrency: 2 }, "where_latency_canary_deep_concurrency_must_remain_one"],
     ["loopback runtime bridge", { runtimeBridgeUrl: "https://example.com" }, "where_latency_canary_runtime_bridge_url_invalid"],
+    ["runtime bridge timeout", { runtimeBridgeTimeoutMs: 0 }, "where_latency_canary_runtime_bridge_timeout_invalid"],
     ["exact cycle allowlist", { enabledRuntimeCycles: ["where", "address_index", "deep"] }, "where_latency_canary_cycle_allowlist_invalid"]
   ])("rejects preparation without %s", async (_label, changed, code) => {
     await expect(prepareWhereLatencyCanary({
@@ -1051,6 +1063,106 @@ describe("Where latency canary", () => {
     expect((deadlineHandle as NodeJS.Timeout | null)?.hasRef()).toBe(true);
   });
 
+  it("authenticates bridge envelopes and rejects impostor, tamper, replay, and binding mismatches", async () => {
+    const nonce = "a".repeat(64);
+    const signedTransport = (
+      privateKey = BRIDGE_KEYS.privateKey,
+      mutate: (value: Record<string, unknown>) => void = () => undefined
+    ) => async (body: string) => {
+      const request = JSON.parse(body) as Record<string, unknown>;
+      const response = { ok: true, seq: request.seq };
+      const signed: Record<string, unknown> = {
+        schema: "where-latency-canary-bridge-response-v1",
+        protocolVersion: "where-latency-canary-bridge-v1",
+        sessionNonce: request.sessionNonce,
+        seq: request.seq,
+        method: request.method,
+        requestSha256: request.requestSha256,
+        responseSha256: fingerprintCanonicalArtifact(response),
+        response
+      };
+      mutate(signed);
+      const envelope = {
+        ...signed,
+        signature: sign(
+          null,
+          Buffer.from(canonicalizeArtifactJson(signed)),
+          privateKey
+        ).toString("base64")
+      };
+      return {
+        status: 200,
+        contentType: "application/json",
+        body: Buffer.from(canonicalizeArtifactJson(envelope)) as Uint8Array
+      };
+    };
+    const invoke = (transport: ReturnType<typeof signedTransport>) =>
+      createWhereLatencyCanaryBridgeInvoker({
+        url: "http://127.0.0.1:43123",
+        timeoutMs: 100,
+        publicKey: BRIDGE_KEYS.publicKey,
+        sessionNonce: nonce,
+        transport
+      });
+
+    await expect(invoke(signedTransport()).invoke(
+      "schedulerDiagnostics",
+      JSON.stringify({ sample: true })
+    )).resolves.toEqual({ ok: true, seq: 1 });
+
+    const impostor = generateKeyPairSync("ed25519");
+    await expect(invoke(signedTransport(impostor.privateKey)).invoke(
+      "schedulerDiagnostics", "{}"
+    )).rejects.toThrow("where_latency_canary_bridge_signature_invalid");
+    await expect(invoke(signedTransport(BRIDGE_KEYS.privateKey, (value) => {
+      value.responseSha256 = "0".repeat(64);
+    })).invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_response_hash_mismatch");
+    for (const [field, value] of [
+      ["seq", 2],
+      ["method", "laneDiagnostics"],
+      ["requestSha256", "0".repeat(64)]
+    ] as const) {
+      await expect(invoke(signedTransport(BRIDGE_KEYS.privateKey, (signed) => {
+        signed[field] = value;
+      })).invoke("schedulerDiagnostics", "{}"))
+        .rejects.toThrow("where_latency_canary_bridge_response_binding_mismatch");
+    }
+
+    let replayBody: Uint8Array | null = null;
+    const base = signedTransport();
+    const replayTransport = async (body: string) => {
+      if (replayBody === null) replayBody = (await base(body)).body;
+      return { status: 200, contentType: "application/json", body: replayBody };
+    };
+    const replayInvoker = invoke(replayTransport);
+    await replayInvoker.invoke("schedulerDiagnostics", "{}");
+    await expect(replayInvoker.invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_response_binding_mismatch");
+    await expect(invoke(async () => ({
+      status: 200,
+      contentType: "application/json",
+      body: Buffer.from("not-json")
+    })).invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_response_not_json");
+    await expect(invoke(async () => ({
+      status: 200,
+      contentType: "application/json",
+      body: Buffer.alloc(1024 * 1024 + 1)
+    })).invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_response_too_large");
+    await expect(invoke(signedTransport()).invoke("unknownMethod", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_method_forbidden");
+    await expect(createWhereLatencyCanaryBridgeInvoker({
+      url: "http://127.0.0.1:43123",
+      timeoutMs: 2,
+      publicKey: BRIDGE_KEYS.publicKey,
+      sessionNonce: nonce,
+      transport: async () => await new Promise<never>(() => undefined)
+    }).invoke("schedulerDiagnostics", "{}"))
+      .rejects.toThrow("where_latency_canary_bridge_timeout");
+  });
+
   it("executes verified bundle bytes even if the adapter path changes after read", async () => {
     const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const fixture = await deploymentFixture(directory, undefined, {
@@ -1141,31 +1253,8 @@ describe("Where latency canary", () => {
           }
         `
       },
-      {
-        name: "http-callback",
-        allowed: ["node:http"],
-        source: `
-          import { get } from "node:http";
-          export async function createWhereLatencyCanaryRuntime(config) {
-            const marker = await new Promise((resolve, reject) => {
-              const request = get(config.runtimeBridgeUrl, function (response) {
-                const responseBlocked = response.constructor === undefined && Object.getPrototypeOf(response) === null;
-                let body = "";
-                let chunkBlocked = true;
-                let callbackThisBlocked = true;
-                response.on("data", function (chunk) {
-                  chunkBlocked = chunkBlocked && chunk.constructor === undefined && Object.getPrototypeOf(chunk) === null;
-                  callbackThisBlocked = callbackThisBlocked && this.constructor === undefined && Object.getPrototypeOf(this) === null;
-                  body += chunk.toString();
-                });
-                response.on("end", () => resolve(body + ":" + responseBlocked + ":" + chunkBlocked + ":" + callbackThisBlocked));
-              });
-              request.on("error", reject);
-            });
-            return { marker };
-          }
-        `
-      },
+      { name: "http-forbidden", allowed: [], source: "import 'node:http'; export function createWhereLatencyCanaryRuntime(){ return {}; }" },
+      { name: "https-forbidden", allowed: [], source: "import 'node:https'; export function createWhereLatencyCanaryRuntime(){ return {}; }" },
       { name: "create-require", allowed: [], source: "import { createRequire } from 'node:module'; export function createWhereLatencyCanaryRuntime(){ return createRequire(import.meta.url); }" },
       { name: "relative", allowed: [], source: "import './dependency.mjs'; export function createWhereLatencyCanaryRuntime(){}" },
       { name: "bare", allowed: [], source: "import 'some-package'; export function createWhereLatencyCanaryRuntime(){}" },
@@ -1184,31 +1273,21 @@ describe("Where latency canary", () => {
       { name: "unused-declaration", allowed: ["node:buffer"], source: "export function createWhereLatencyCanaryRuntime(){ return {}; }" }
     ];
     const result = await runVmChild(directory, `
-      import http from "node:http";
       const api = await import(process.env.CANARY_SCRIPT_URL);
       const cases = JSON.parse(Buffer.from(process.env.PROBE_CASES, "base64").toString("utf8"));
-      const bridge = http.createServer((_request, response) => response.end("bridge"));
-      await new Promise((resolve) => bridge.listen(0, "127.0.0.1", resolve));
-      const address = bridge.address();
       const results = [];
-      try {
-        for (const item of cases) {
-          try {
-            const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
-              bytes: Buffer.from(item.source),
-              identifier: "where-latency-canary:test:" + item.name,
-              allowedNodeBuiltins: item.allowed,
-              factoryConfig: item.name === "http-callback"
-                ? { runtimeBridgeUrl: "http://127.0.0.1:" + address.port }
-                : {}
-            });
-            results.push({ name: item.name, ok: true, marker: runtime.marker ?? null });
-          } catch (error) {
-            results.push({ name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) });
-          }
+      for (const item of cases) {
+        try {
+          const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
+            bytes: Buffer.from(item.source),
+            identifier: "where-latency-canary:test:" + item.name,
+            allowedNodeBuiltins: item.allowed,
+            factoryConfig: {}
+          });
+          results.push({ name: item.name, ok: true, marker: runtime.marker ?? null });
+        } catch (error) {
+          results.push({ name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) });
         }
-      } finally {
-        await new Promise((resolve) => bridge.close(resolve));
       }
       process.stdout.write(JSON.stringify(results));
     `, {
@@ -1220,11 +1299,11 @@ describe("Where latency canary", () => {
       .toMatchObject({ ok: true, marker: "callback-ok:true" });
     expect(result.find(({ name }) => name === "promise-error-roundtrip"))
       .toMatchObject({ ok: true, marker: "true:value:vm-callback-throw" });
-    expect(result.find(({ name }) => name === "http-callback"))
-      .toMatchObject({ ok: true, marker: "bridge:true:true:true" });
     expect(result.find(({ name }) => name === "reflective-host-escape"))
       .toMatchObject({ ok: true, marker: true });
     const expectedErrors: Record<string, RegExp> = {
+      "http-forbidden": /where_latency_canary_bundle_builtin_forbidden/,
+      "https-forbidden": /where_latency_canary_bundle_builtin_forbidden/,
       "create-require": /where_latency_canary_bundle_builtin_forbidden/,
       relative: /where_latency_canary_bundle_import_forbidden/,
       bare: /where_latency_canary_bundle_import_forbidden/,
@@ -1246,6 +1325,76 @@ describe("Where latency canary", () => {
       expect(entry, name).toMatchObject({ ok: false });
       expect(entry?.error, name).toMatch(error);
     }
+  });
+
+  it("keeps runtime methods, host promises, and AbortSignal behind the bidirectional membrane", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-vm-"));
+    const source = `
+      export function createWhereLatencyCanaryRuntime() {
+        const runtime = {
+          async inspect(signal, fulfilled, rejected) {
+            let rejection;
+            try { await rejected; } catch (error) {
+              rejection = {
+                message: error.message,
+                blocked: error.constructor === undefined && Object.getPrototypeOf(error) === null
+              };
+            }
+            return {
+              thisOk: this === runtime,
+              signalBlocked: signal.constructor === undefined && Object.getPrototypeOf(signal) === null,
+              reasonBlocked: signal.reason.constructor === undefined && Object.getPrototypeOf(signal.reason) === null,
+              promiseBlocked: fulfilled.constructor === undefined && Object.getPrototypeOf(fulfilled) === null,
+              aborted: signal.aborted,
+              fulfilled: await fulfilled,
+              rejection
+            };
+          },
+          add(left, right) { return left + right; }
+        };
+        return runtime;
+      }
+    `;
+    const result = await runVmChild(directory, `
+      const api = await import(process.env.CANARY_SCRIPT_URL);
+      const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
+        bytes: Buffer.from(process.env.PROBE_SOURCE, "base64"),
+        identifier: "where-latency-canary:test:runtime-result-boundary",
+        allowedNodeBuiltins: [],
+        factoryConfig: {}
+      });
+      const controller = new AbortController();
+      controller.abort(new Error("host-abort"));
+      const inspected = await runtime.inspect(
+        controller.signal,
+        Promise.resolve("host-value"),
+        Promise.reject(new Error("host-reject"))
+      );
+      process.stdout.write(JSON.stringify({
+        thisOk: inspected.thisOk,
+        signalBlocked: inspected.signalBlocked,
+        reasonBlocked: inspected.reasonBlocked,
+        promiseBlocked: inspected.promiseBlocked,
+        aborted: inspected.aborted,
+        fulfilled: inspected.fulfilled,
+        rejectionMessage: inspected.rejection.message,
+        rejectionBlocked: inspected.rejection.blocked,
+        sum: runtime.add(2, 3)
+      }));
+    `, {
+      PROBE_SOURCE: Buffer.from(source).toString("base64")
+    });
+    expect(result).toEqual({
+      thisOk: true,
+      signalBlocked: true,
+      reasonBlocked: true,
+      promiseBlocked: true,
+      aborted: true,
+      fulfilled: "host-value",
+      rejectionMessage: "host-reject",
+      rejectionBlocked: true,
+      sum: 5
+    });
   });
 
   it("fails closed when vm.SourceTextModule is unavailable", async () => {

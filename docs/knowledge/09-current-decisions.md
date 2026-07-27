@@ -313,11 +313,18 @@ expanding frontier has no percent or ETA.
   Execution uses `vm.SourceTextModule` over those verified bytes in a restricted
   context with string/WASM code generation disabled. Its custom linker rejects
   relative, absolute, bare, `data:`, undeclared/unsafe builtin, and all dynamic
-  imports; its only direct builtins are buffer, HTTP(S), timers, and URL. The
-  bundle is a loopback client to a pre-existing attested runtime bridge bound
-  to the real pump/scheduler/repositories; it does not instantiate those
-  components. A bidirectional membrane covers host callbacks, Promise/event
-  values, returns, and errors. Missing VM-module support fails closed. The canonical isolation
+  imports; its only direct builtins are buffer, timers, and URL. The bundle
+  maps the runtime contract onto the virtual `canary:bridge` import and cannot
+  open a socket. The trusted host alone calls the pre-existing attested
+  loopback runtime bridge bound to the real pump/scheduler/repositories; it
+  does not instantiate those components. The deployment receipt binds the
+  bridge protocol and canonical Ed25519 public-key SPKI fingerprint. Every
+  request/response is bound to a fresh run nonce, monotonic sequence, exact
+  allowlisted method, and canonical request/response hashes; the host verifies
+  the bridge signature before returning bounded structured-cloned JSON. A
+  bidirectional membrane covers host callbacks, Promise/event values, runtime
+  methods and `this`, returns, and errors. Missing VM-module support fails
+  closed. The canonical isolation
   file is byte-bound separately from its semantic receipt, all start/terminal/
   drain waits are harness-deadlined with abort signals and referenced timers,
   and authoritative

@@ -1,6 +1,13 @@
 import "dotenv/config";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  randomBytes,
+  randomUUID,
+  verify as verifySignature,
+  type KeyObject
+} from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,8 +38,7 @@ const DEEP_RESIDUAL_ALLOWED_CYCLES = [
 const ISOLATION_SCHEMA = "where-latency-canary-isolation-v1";
 const RUN_SCHEMA = "where-latency-canary-run-v1";
 const SAFE_CANARY_NODE_BUILTINS = [
-  "node:buffer", "node:http", "node:https", "node:timers",
-  "node:timers/promises", "node:url"
+  "node:buffer", "node:timers", "node:timers/promises", "node:url"
 ] as const;
 const SAFE_CANARY_NODE_BUILTIN_SET = new Set<string>(SAFE_CANARY_NODE_BUILTINS);
 
@@ -55,6 +61,8 @@ export type WhereLatencyCanaryDeploymentIdentity = {
   bundleFormat: "single_file_esm_bundle_v1";
   nodeRuntime: { implementation: "node"; version: string; execArgv: string[] };
   allowedNodeBuiltins: string[];
+  bridgeProtocolVersion: "where-latency-canary-bridge-v1";
+  bridgePublicKeySpkiSha256: string;
 };
 
 export type WhereLatencyCanaryRuntimeAttestation = {
@@ -88,6 +96,7 @@ export type WhereLatencyCanaryConfig = {
   drainTimeoutMs: number;
   runtimeConfigIdentity: string;
   runtimeBridgeUrl: string;
+  runtimeBridgeTimeoutMs: number;
   adapterIdentity: WhereLatencyCanaryAdapterIdentity;
   deploymentIdentity: WhereLatencyCanaryDeploymentIdentity;
 };
@@ -358,6 +367,9 @@ function validateBaseConfig(config: WhereLatencyCanaryUnboundConfig): void {
   if (!Number.isSafeInteger(config.drainTimeoutMs) || config.drainTimeoutMs < 1) {
     throw new Error("where_latency_canary_drain_timeout_invalid");
   }
+  if (!Number.isSafeInteger(config.runtimeBridgeTimeoutMs) || config.runtimeBridgeTimeoutMs < 1) {
+    throw new Error("where_latency_canary_runtime_bridge_timeout_invalid");
+  }
   assertSha256(config.runtimeConfigIdentity, "where_latency_canary_runtime_config_identity_invalid");
   let bridgeUrl: URL;
   try {
@@ -439,6 +451,7 @@ function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): 
     canonicalizeArtifactJson(value.nodeRuntime.execArgv) !==
       canonicalizeArtifactJson(process.execArgv) ||
     !Array.isArray(value.allowedNodeBuiltins) ||
+    value.bridgeProtocolVersion !== "where-latency-canary-bridge-v1" ||
     !/^sha256:[a-f0-9]{64}$/.test(value.immutableArtifactDigest) ||
     !/^[a-f0-9]{40}$/.test(value.gitCommit) ||
     !/^[a-f0-9]{40}$/.test(value.gitTree)
@@ -446,7 +459,8 @@ function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): 
   for (const identity of [
     value.deploymentReceiptFileSha256,
     value.moduleGraphSha256,
-    value.adapterEntrySha256
+    value.adapterEntrySha256,
+    value.bridgePublicKeySpkiSha256
   ]) assertSha256(identity, "where_latency_canary_deployment_identity_invalid");
   canonicalAllowedNodeBuiltins(
     value.allowedNodeBuiltins,
@@ -569,6 +583,7 @@ function configProjection(
     runtimeInstanceLabel: config.runtimeInstanceLabel.trim(),
     runtimeConfigIdentity: config.runtimeConfigIdentity,
     runtimeBridgeUrl: config.runtimeBridgeUrl,
+    runtimeBridgeTimeoutMs: config.runtimeBridgeTimeoutMs,
     adapterIdentity: { ...config.adapterIdentity },
     deploymentIdentity: { ...config.deploymentIdentity },
     enabledRuntimeCycles: [...cycles],
@@ -1544,7 +1559,11 @@ function canaryConfigFromEnvironment(): WhereLatencyCanaryUnboundConfig {
     runtimeConfigIdentity:
       process.env.WHERE_LATENCY_CANARY_RUNTIME_CONFIG_SHA256?.trim() ?? "",
     runtimeBridgeUrl:
-      process.env.WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_URL?.trim() ?? ""
+      process.env.WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_URL?.trim() ?? "",
+    runtimeBridgeTimeoutMs: positiveIntegerEnv(
+      "WHERE_LATENCY_CANARY_RUNTIME_BRIDGE_TIMEOUT_MS",
+      10_000
+    )
   };
 }
 
@@ -1559,6 +1578,9 @@ type DeploymentReceiptPayload = {
   bundleFormat: "single_file_esm_bundle_v1";
   nodeRuntime: { implementation: "node"; version: string; execArgv: string[] };
   allowedNodeBuiltins: string[];
+  bridgeProtocolVersion: "where-latency-canary-bridge-v1";
+  bridgePublicKeySpkiDerBase64: string;
+  bridgePublicKeySpkiSha256: string;
   moduleGraph: DeploymentModuleGraphEntry[];
   moduleGraphSha256: string;
   adapterEntryPath: string;
@@ -1606,15 +1628,37 @@ function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
     !Array.isArray(receipt.nodeRuntime.execArgv) ||
     receipt.nodeRuntime.execArgv.some((value) => typeof value !== "string") ||
     !Array.isArray(receipt.allowedNodeBuiltins) ||
+    receipt.bridgeProtocolVersion !== "where-latency-canary-bridge-v1" ||
+    typeof receipt.bridgePublicKeySpkiDerBase64 !== "string" ||
     !Array.isArray(receipt.moduleGraph) || receipt.moduleGraph.length < 1 ||
     typeof receipt.adapterEntryPath !== "string"
   ) throw new Error("where_latency_canary_deployment_receipt_invalid");
   for (const hash of [
     receipt.moduleGraphSha256,
     receipt.adapterEntrySha256,
-    receipt.runtimeConfigIdentity
+    receipt.runtimeConfigIdentity,
+    receipt.bridgePublicKeySpkiSha256
   ]) assertSha256(hash, "where_latency_canary_deployment_receipt_invalid");
   return receipt;
+}
+
+function verifiedBridgePublicKey(receipt: DeploymentReceipt): KeyObject {
+  const bytes = Buffer.from(receipt.bridgePublicKeySpkiDerBase64, "base64");
+  if (bytes.toString("base64") !== receipt.bridgePublicKeySpkiDerBase64) {
+    throw new Error("where_latency_canary_bridge_public_key_invalid");
+  }
+  let key: KeyObject;
+  try {
+    key = createPublicKey({ key: bytes, format: "der", type: "spki" });
+  } catch {
+    throw new Error("where_latency_canary_bridge_public_key_invalid");
+  }
+  const canonical = key.export({ format: "der", type: "spki" });
+  if (
+    key.asymmetricKeyType !== "ed25519" || !Buffer.from(canonical).equals(bytes) ||
+    createHash("sha256").update(bytes).digest("hex") !== receipt.bridgePublicKeySpkiSha256
+  ) throw new Error("where_latency_canary_bridge_public_key_invalid");
+  return key;
 }
 
 function assertSafeGraphPath(path: string): void {
@@ -1631,8 +1675,185 @@ function assertContained(root: string, child: string): void {
   }
 }
 
+const BRIDGE_METHODS = new Set([
+  "runtimeAttestation", "schedulerIsolationDiagnostics", "schedulerDiagnostics",
+  "laneDiagnostics", "enqueueWhereJob", "waitForHandlerStart", "jobRuntimeState",
+  "waitForTerminal", "deliveryDiagnostics", "maxActiveWhereHandlers",
+  "stopClaimsAndDrain", "enqueueDeepJob", "waitForDeepHandlerStart",
+  "deepJobDiagnostics", "memoryDiagnostics", "stopDeepClaimsAndDrain"
+]);
+const BRIDGE_MAX_REQUEST_BYTES = 256 * 1024;
+const BRIDGE_MAX_RESPONSE_BYTES = 1024 * 1024;
+
+type BridgeTransport = (
+  body: string,
+  signal: AbortSignal
+) => Promise<{ status: number; contentType: string; body: Uint8Array }>;
+
+async function loopbackBridgeTransport(
+  url: string,
+  body: string,
+  signal: AbortSignal
+): Promise<{ status: number; contentType: string; body: Uint8Array }> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+    signal
+  });
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("where_latency_canary_bridge_empty_response");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    size += chunk.value.byteLength;
+    if (size > BRIDGE_MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("where_latency_canary_bridge_response_too_large");
+    }
+    chunks.push(chunk.value);
+  }
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? "",
+    body: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size)
+  };
+}
+
+export function createWhereLatencyCanaryBridgeInvoker(input: {
+  url: string;
+  timeoutMs: number;
+  publicKey: KeyObject;
+  transport?: BridgeTransport;
+  sessionNonce?: string;
+}): {
+  sessionNonce: string;
+  invoke(method: string, requestJson: string, signal?: AbortSignal): Promise<unknown>;
+} {
+  if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1) {
+    throw new Error("where_latency_canary_bridge_timeout_invalid");
+  }
+  if (input.publicKey.type !== "public" || input.publicKey.asymmetricKeyType !== "ed25519") {
+    throw new Error("where_latency_canary_bridge_public_key_invalid");
+  }
+  const sessionNonce = input.sessionNonce ?? randomBytes(32).toString("hex");
+  if (!/^[a-f0-9]{64}$/.test(sessionNonce)) {
+    throw new Error("where_latency_canary_bridge_session_invalid");
+  }
+  let nextSequence = 1;
+  const completed = new Set<number>();
+  return {
+    sessionNonce,
+    async invoke(method, requestJson, callerSignal) {
+      if (!BRIDGE_METHODS.has(method)) {
+        throw new Error("where_latency_canary_bridge_method_forbidden");
+      }
+      if (typeof requestJson !== "string") {
+        throw new Error("where_latency_canary_bridge_request_not_json");
+      }
+      if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal)) {
+        throw new Error("where_latency_canary_bridge_signal_invalid");
+      }
+      if (Buffer.byteLength(requestJson, "utf8") > BRIDGE_MAX_REQUEST_BYTES) {
+        throw new Error("where_latency_canary_bridge_request_too_large");
+      }
+      let request: unknown;
+      try {
+        request = JSON.parse(requestJson);
+      } catch {
+        throw new Error("where_latency_canary_bridge_request_not_json");
+      }
+      const seq = nextSequence++;
+      const requestSha256 = fingerprintCanonicalArtifact(request);
+      const requestEnvelope = {
+        schema: "where-latency-canary-bridge-request-v1",
+        protocolVersion: "where-latency-canary-bridge-v1",
+        sessionNonce,
+        seq,
+        method,
+        requestSha256,
+        request
+      };
+      const controller = new AbortController();
+      const abort = () => controller.abort(callerSignal?.reason);
+      callerSignal?.addEventListener("abort", abort, { once: true });
+      if (callerSignal?.aborted) abort();
+      let rejectDeadline: ((error: Error) => void) | null = null;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        rejectDeadline = reject;
+      });
+      const timer = setTimeout(() => {
+        const error = new Error("where_latency_canary_bridge_timeout");
+        controller.abort(error);
+        rejectDeadline?.(error);
+      }, input.timeoutMs);
+      let transported: Awaited<ReturnType<BridgeTransport>>;
+      try {
+        transported = await Promise.race([
+          (input.transport ?? ((body, signal) =>
+            loopbackBridgeTransport(input.url, body, signal)))(
+            canonicalizeArtifactJson(requestEnvelope),
+            controller.signal
+          ),
+          deadline
+        ]);
+      } finally {
+        clearTimeout(timer);
+        callerSignal?.removeEventListener("abort", abort);
+      }
+      if (
+        transported.status !== 200 ||
+        !transported.contentType.toLowerCase().startsWith("application/json")
+      ) throw new Error("where_latency_canary_bridge_http_invalid");
+      if (transported.body.byteLength > BRIDGE_MAX_RESPONSE_BYTES) {
+        throw new Error("where_latency_canary_bridge_response_too_large");
+      }
+      const responseText = Buffer.from(transported.body).toString("utf8");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        throw new Error("where_latency_canary_bridge_response_not_json");
+      }
+      if (responseText !== canonicalizeArtifactJson(parsed) || !record(parsed)) {
+        throw new Error("where_latency_canary_bridge_response_not_canonical");
+      }
+      const { signature, ...signed } = parsed;
+      if (
+        signed.schema !== "where-latency-canary-bridge-response-v1" ||
+        signed.protocolVersion !== "where-latency-canary-bridge-v1" ||
+        signed.sessionNonce !== sessionNonce || signed.seq !== seq ||
+        signed.method !== method || signed.requestSha256 !== requestSha256 ||
+        completed.has(seq)
+      ) throw new Error("where_latency_canary_bridge_response_binding_mismatch");
+      if (
+        typeof signed.responseSha256 !== "string" ||
+        signed.responseSha256 !== fingerprintCanonicalArtifact(signed.response)
+      ) throw new Error("where_latency_canary_bridge_response_hash_mismatch");
+      if (typeof signature !== "string") {
+        throw new Error("where_latency_canary_bridge_signature_invalid");
+      }
+      const signatureBytes = Buffer.from(signature, "base64");
+      if (
+        signatureBytes.toString("base64") !== signature ||
+        !verifySignature(
+          null,
+          Buffer.from(canonicalizeArtifactJson(signed)),
+          input.publicKey,
+          signatureBytes
+        )
+      ) throw new Error("where_latency_canary_bridge_signature_invalid");
+      completed.add(seq);
+      return structuredClone(signed.response);
+    }
+  };
+}
+
 function createVmCapabilityMembrane(): {
   wrap: (value: unknown) => unknown;
+  toHost: (value: unknown) => unknown;
 } {
   const hostToVm = new WeakMap<object, object>();
   const vmFacadeToHost = new WeakMap<object, object>();
@@ -1747,7 +1968,7 @@ function createVmCapabilityMembrane(): {
     return createFacade(value, toVm, toHost, vmToHost, hostFacadeToVm);
   };
 
-  return { wrap: toVm };
+  return { wrap: toVm, toHost };
 }
 
 export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
@@ -1755,6 +1976,8 @@ export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
   identifier: string;
   allowedNodeBuiltins: readonly string[];
   factoryConfig: WhereLatencyCanaryRuntimeFactoryConfig;
+  bridgeInvoke?: (method: string, requestJson: string, signal?: AbortSignal) => Promise<unknown>;
+  requireBridge?: boolean;
 }): Promise<WhereLatencyCanaryRuntime> {
   if (
     typeof vm.SourceTextModule !== "function" ||
@@ -1791,6 +2014,7 @@ export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
   ) as WhereLatencyCanaryRuntimeFactoryConfig;
   delete sandbox.__whereCanaryConfigJson;
   const linkedBuiltins = new Set<string>();
+  let bridgeLinked = false;
   const module = new vm.SourceTextModule(input.bytes.toString("utf8"), {
     context,
     identifier: input.identifier,
@@ -1803,6 +2027,15 @@ export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
     }
   });
   await module.link(async (specifier) => {
+    if (specifier === "canary:bridge") {
+      if (!input.bridgeInvoke || bridgeLinked) {
+        throw new Error("where_latency_canary_bridge_import_invalid");
+      }
+      bridgeLinked = true;
+      return new vm.SyntheticModule(["invoke"], function setBridgeExport() {
+        this.setExport("invoke", membrane.wrap(input.bridgeInvoke));
+      }, { context, identifier: "where-latency-canary:bridge" });
+    }
     if (!specifier.startsWith("node:")) {
       throw new Error("where_latency_canary_bundle_import_forbidden");
     }
@@ -1823,13 +2056,16 @@ export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
     canonicalizeArtifactJson([...linkedBuiltins].sort()) !==
     canonicalizeArtifactJson(declaredBuiltins)
   ) throw new Error("where_latency_canary_bundle_builtin_binding_mismatch");
+  if (input.requireBridge && !bridgeLinked) {
+    throw new Error("where_latency_canary_bridge_import_required");
+  }
   await module.evaluate({ timeout: 5_000 });
   const factory = (module.namespace as Record<string, unknown>)
     .createWhereLatencyCanaryRuntime;
   if (typeof factory !== "function") {
     throw new Error("where_latency_canary_runtime_adapter_invalid");
   }
-  return await factory(factoryConfig) as WhereLatencyCanaryRuntime;
+  return membrane.toHost(await factory(factoryConfig)) as WhereLatencyCanaryRuntime;
 }
 
 export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
@@ -1887,6 +2123,7 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     receipt.allowedNodeBuiltins,
     "where_latency_canary_allowed_builtins_invalid"
   );
+  const bridgePublicKey = verifiedBridgePublicKey(receipt);
   if (receipt.moduleGraph.length !== 1) {
     throw new Error("where_latency_canary_bundle_graph_must_be_single_file");
   }
@@ -1949,7 +2186,9 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
       ...receipt.nodeRuntime,
       execArgv: [...receipt.nodeRuntime.execArgv]
     },
-    allowedNodeBuiltins
+    allowedNodeBuiltins,
+    bridgeProtocolVersion: receipt.bridgeProtocolVersion,
+    bridgePublicKeySpkiSha256: receipt.bridgePublicKeySpkiSha256
   };
   const adapterIdentity: WhereLatencyCanaryAdapterIdentity = {
     schema: "where-latency-canary-adapter-v1",
@@ -1960,7 +2199,13 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     bytes: adapterBytes,
     identifier: `where-latency-canary:adapter:${receipt.adapterEntrySha256}`,
     allowedNodeBuiltins,
-    factoryConfig: { ...input.config, deploymentIdentity }
+    factoryConfig: { ...input.config, deploymentIdentity },
+    bridgeInvoke: createWhereLatencyCanaryBridgeInvoker({
+      url: input.config.runtimeBridgeUrl,
+      timeoutMs: input.config.runtimeBridgeTimeoutMs,
+      publicKey: bridgePublicKey
+    }).invoke,
+    requireBridge: true
   });
   for (const method of [
     "runtimeAttestation", "schedulerIsolationDiagnostics", "schedulerDiagnostics",
