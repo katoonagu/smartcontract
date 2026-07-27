@@ -2318,6 +2318,47 @@ export type ContractAnalysisCaseFile = {
   standaloneContractContext?: StandaloneContractContext;
 };
 
+export type FullTransactionInfoTrigger =
+  | "non_official_usdt_contract"
+  | "non_plain_transfer_selector"
+  | "non_plain_transfer_method"
+  | "multiple_official_usdt_movements"
+  | "raw_edge_mismatch"
+  | "unresolved_economic_role"
+  | "exact_route_linked_assertion"
+  | "raw_unavailable_or_ambiguous";
+
+export type TransactionEnrichmentDecisionV1 = {
+  txHash: string;
+  candidateId: string;
+  priority: "hard" | "optional";
+  triggerCodes: FullTransactionInfoTrigger[];
+  decision:
+    | "plain_usdt_raw_proven"
+    | "full_transaction_info_confirmed"
+    | "confirmed_failed_or_reverted"
+    | "technical_unknown"
+    | "missing_evidence";
+  providerEvidenceIds: string[];
+  decisionEvidenceId: string | null;
+  continueTraversal: boolean;
+};
+
+export type WhereTransactionInfoEnrichmentSummary = {
+  policyVersion: "selective-transaction-enrichment-v1";
+  coverageStatus: "complete" | "coverage_incomplete";
+  technicalStatus: "proven" | "technical_unknown";
+  candidateCount: number;
+  hardCandidateCount: number;
+  rawProviderRequests: number;
+  fullProviderRequests: number;
+  savedEvidenceHits: number;
+  inFlightHits: number;
+  schedulerAwaitMs: number;
+  evidenceIds: string[];
+  decisions: TransactionEnrichmentDecisionV1[];
+};
+
 export type WhereIsMoneyReport = ForensicScoreValidity & {
   subjectAddress: string;
   currentUsdtBalanceRaw: string | null;
@@ -2354,6 +2395,7 @@ export type WhereIsMoneyReport = ForensicScoreValidity & {
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
   layerSummary?: MoneyOriginLayerSummary;
+  transactionInfoEnrichment?: WhereTransactionInfoEnrichmentSummary;
 };
 
 export type FreshWhereIsMoneyReportV2 = WhereIsMoneyReport & {

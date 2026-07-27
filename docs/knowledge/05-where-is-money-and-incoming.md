@@ -7,6 +7,7 @@ code_refs:
   - src/forensics/incomingDepositJob.ts
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/recentFlowProvenanceSelection.ts
+  - src/forensics/selectiveTransactionEnrichment.ts
   - src/storage/repositories.ts
   - src/unifiedCheck/branchAdapters.ts
   - src/unifiedCheck/report.ts
@@ -64,6 +65,16 @@ value. Inputs are validated and deduplicated, malformed JSON shapes are ignored
 safely, and rows are returned in deterministic assertion-ID order. Flat address
 labels and suggestive category/name text are not assertion authority; the
 selective enrichment policy must repeat its own strict rich-evidence match.
+
+The selective enrichment policy deduplicates route candidates by normalized
+transaction hash and processes known hard candidates before optional context.
+Subject analysis has no numeric ceiling that can drop a hard full-information
+trigger. Intermediate-boundary analysis permits at most five triggered full
+requests; overflow remains explicit missing evidence, keeps the adverse gate
+incomplete, forbids an inferred stop, and continues traversal. A finalized
+failed or reverted transaction is proven technical evidence but never clean;
+unavailable, non-final, conflicting, or corrupt evidence remains technical
+unknown and incomplete.
 
 This contract is implemented and tested. Delivery ownership is separate from
 the analysis path and does not gate isolated execution.

@@ -7,6 +7,7 @@ code_refs:
   - src/tron/tronscanScheduler.ts
   - src/tron/usdtBlacklistTimeline.ts
   - src/storage/transactionEvidenceRepository.ts
+  - src/forensics/selectiveTransactionEnrichment.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/localTronUsdtIndex.ts
   - src/forensics/targetedHistoryCoordinator.ts
@@ -90,6 +91,17 @@ all payload, finality, movement, identity, and hash differences still conflict.
 A `full_transaction_info_confirmed` decision requires an approved enrichment
 trigger, a matching successful full-response witness, and no referenced
 failed or reverted provider row.
+
+Selective transaction enrichment first performs the scheduler-backed raw
+preflight once per normalized transaction hash. It requests full TronScan
+transaction-info only for one of eight explicit evidence triggers: a
+non-official contract, non-plain selector or method, multiple official-USDT
+movements, raw/indexed-edge disagreement, unresolved economic role, an exact
+route-linked assertion, or unavailable/ambiguous raw evidence. Unknown
+finality never counts as success. Flat labels, review status, unknown identity,
+and service likelihood alone do not authorize the full request. Provider
+payloads remain only in immutable raw evidence; reports carry IDs and policy
+decisions.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,

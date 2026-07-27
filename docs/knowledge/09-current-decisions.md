@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-26
+last_verified: 2026-07-27
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -85,6 +85,10 @@ code_refs:
   reconciliation reparses the persisted manifest against the locked run,
   subject, and confirmed snapshot before score/report/delivery mutation.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
+- Route transaction enrichment uses raw preflight by default and full
+  transaction-info only for the eight versioned evidence triggers. Subject
+  hard triggers are uncapped; intermediate-boundary full requests are capped
+  at five and overflow must continue traversal as explicit missing evidence.
 - Matrix v4 gives unknown addresses zero by default and creates risk only from
   evidence or confirmed behavior combinations. Hard floors are not diluted by
   safe volume.
