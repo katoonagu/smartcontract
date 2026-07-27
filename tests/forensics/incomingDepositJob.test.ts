@@ -1857,13 +1857,19 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }));
   });
 
-  it("persists incoming deposit performance timing on completed jobs", async () => {
+  it("persists incoming timing from the post-wait runnable transition", async () => {
     let currentMs = 0;
     const progressUpdates: Record<string, unknown>[] = [];
     const complete = vi.fn(async () => true);
 
     await runSingleIncomingDepositJobCycle({
-      claimNextForensicCheckJob: async () => job(validProgressJson),
+      claimNextForensicCheckJob: async () => ({
+        ...job({
+          ...validProgressJson,
+          jobRunnableQueuedAtMs: Date.parse("2026-05-29T14:02:00.000Z")
+        }),
+        createdAt: new Date("2026-05-01T00:00:00.000Z")
+      }),
       updateForensicCheckJobProgress: async (input) => {
         progressUpdates.push(input.progressJson);
         return true;

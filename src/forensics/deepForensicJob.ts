@@ -68,6 +68,7 @@ export type ForensicLifecycleDiagnosticsSnapshot = {
   configuredSlots: number;
   occupiedSlotsAtPoll: number;
   dbRunningCount: number;
+  /** Process-global; deltas are attributable only inside an isolated canary window. */
   schedulerDispatchedRequestCount: number;
   schedulerFailedRequestCount: number;
   schedulerRateLimitedRequestCount: number;
@@ -793,6 +794,16 @@ function nonNegativeMetric(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, Math.round(value))
     : 0;
+}
+
+function forensicRunnableQueuedAtMs(job: ForensicCheckJob): number {
+  const value = job.progressJson.jobRunnableQueuedAtMs;
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value >= job.createdAt.getTime()
+    && value <= job.startedAt!.getTime()
+    ? value
+    : job.createdAt.getTime();
 }
 
 function emptyTransactionInfoLifecycleMetrics(): TransactionInfoLifecycleMetrics {
@@ -1925,7 +1936,7 @@ export async function runClaimedForensicJob(
   try {
     const lifecycleStart = await captureLifecycleDiagnostics("start");
     if (lifecycleStart) {
-      const queueWaitMs = Math.max(0, Math.round(job.startedAt.getTime() - job.createdAt.getTime()));
+      const queueWaitMs = Math.max(0, job.startedAt.getTime() - forensicRunnableQueuedAtMs(job));
       const lifecycleStartFields = {
         queueWaitMs,
         runnableQueuedCount: lifecycleStart.runnableQueuedCount,
@@ -1950,12 +1961,24 @@ export async function runClaimedForensicJob(
       job.progressJson = mergeForensicJobProgress(job.progressJson, {
         performanceTiming: startTiming
       });
-      const startPersisted = await deps.updateForensicCheckJobProgress?.({
-        id: job.id,
-        claimStartedAt: job.startedAt,
-        progressJson: job.progressJson,
-        lastError: null
-      });
+      let startPersisted: boolean | void = undefined;
+      try {
+        startPersisted = await deps.updateForensicCheckJobProgress?.({
+          id: job.id,
+          claimStartedAt: job.startedAt,
+          progressJson: job.progressJson,
+          lastError: null
+        });
+      } catch {
+        try {
+          (deps.logger ?? defaultLogger).warn("forensic_job_lifecycle_progress_persist_failed", {
+            kind: job.kind,
+            phase: "start"
+          });
+        } catch {
+          // Count-only diagnostics are best-effort.
+        }
+      }
       if (startPersisted === false) {
         logClaimLostOnce("lifecycle_start_progress");
         return;

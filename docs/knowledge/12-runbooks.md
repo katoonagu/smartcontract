@@ -267,6 +267,9 @@ Use the count-only `performanceTiming` and lifecycle logs to compare runnable
 queue age, DB-running jobs, occupied/active slots, selective enrichment, and
 scheduler counter deltas. Runnable age excludes
 `waiting_for_targeted_index`, which belongs to the indexing wait path.
+Scheduler counters are process-global. Treat any concurrent monitor, approval,
+Deep, Incoming, Unified, or other provider consumer as contamination; compute
+a job/canary delta only in the isolated runtime window.
 
 In an isolated concurrency-two canary, `occupiedSlotsAtPoll = 0` or `1`
 leaves capacity for new work. When it is `2`, both slots were already occupied

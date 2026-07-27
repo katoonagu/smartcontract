@@ -142,6 +142,9 @@ Legacy Where/Deep lifecycle diagnostics take monotonic start/end snapshots of
 dispatched, failed, and rate-limited scheduler requests. Their capacity
 fingerprint hashes only boolean/count configuration and concurrency limits; it
 contains no API-key or account-group identifier.
+The counters are process-global and intentionally carry no lane/address label.
+Concurrent provider consumers contaminate a per-job delta, so attribution is
+valid only in the isolated canary window.
 
 An ordered task is not bound to a provider group in advance. It is eligible
 when at least one healthy capable group can execute it under the ordinary

@@ -7095,6 +7095,18 @@ export async function claimNextForensicCheckJob(
      ),
      next_job as (
        select job.id,
+         case
+           when jsonb_typeof(job.progress_json->'jobRunnableQueuedAtMs') = 'number'
+             and coalesce(job.progress_json->>'jobRunnableQueuedAtMs', '') ~ '^[0-9]{13}$'
+           then case
+             when (job.progress_json->>'jobRunnableQueuedAtMs')::bigint
+               between floor(extract(epoch from job.created_at) * 1000)::bigint
+                 and floor(extract(epoch from claim_clock.now_ms) * 1000)::bigint
+             then (job.progress_json->>'jobRunnableQueuedAtMs')::bigint
+             else floor(extract(epoch from job.created_at) * 1000)::bigint
+           end
+           else floor(extract(epoch from job.created_at) * 1000)::bigint
+         end as runnable_queued_at_ms,
          greatest(
            claim_clock.now_ms,
            coalesce(
@@ -7117,7 +7129,8 @@ export async function claimNextForensicCheckJob(
        started_at = next_job.claim_started_at,
        progress_json = job.progress_json || jsonb_build_object(
          'jobHeartbeatAt',
-         to_char(next_job.claim_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         to_char(next_job.claim_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+         'jobRunnableQueuedAtMs', next_job.runnable_queued_at_ms
        ),
        updated_at = now()
      from next_job
@@ -7139,19 +7152,32 @@ export async function getForensicLaneQueueDiagnostics(
   if (kind !== "where_is_money_check" && kind !== "address_deep_check") {
     throw new Error("forensic_lane_diagnostics_kind_unsupported");
   }
+  // The active status predicate matches the existing migration-012 partial index.
   const result = await db.query(
     `select
        count(*) filter (
          where status = 'queued'
            and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
        ) as runnable_queued_count,
-       min(created_at) filter (
+       min(case
+         when jsonb_typeof(progress_json->'jobRunnableQueuedAtMs') = 'number'
+           and coalesce(progress_json->>'jobRunnableQueuedAtMs', '') ~ '^[0-9]{13}$'
+         then case
+           when (progress_json->>'jobRunnableQueuedAtMs')::bigint
+             between floor(extract(epoch from created_at) * 1000)::bigint
+               and floor(extract(epoch from clock_timestamp()) * 1000)::bigint
+           then to_timestamp((progress_json->>'jobRunnableQueuedAtMs')::double precision / 1000)
+           else created_at
+         end
+         else created_at
+       end) filter (
          where status = 'queued'
            and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
        ) as oldest_runnable_queued_at,
        count(*) filter (where status = 'running') as db_running_count
      from forensic_check_jobs
-     where kind = $1`,
+     where kind = $1
+       and status in ('queued', 'running')`,
     [kind]
   );
   const row = result.rows[0] ?? {};
@@ -7414,7 +7440,12 @@ export async function reconcileWaitingForensicCheckJobs(
                'outcome', decisions.outcome,
                'diagnosticCode', decisions.diagnostic_code
              )
-           ),
+           ) || case
+             when decisions.outcome in ('resume_ready', 'resume_terminal') then jsonb_build_object(
+               'jobRunnableQueuedAtMs', floor(extract(epoch from $1::timestamptz) * 1000)::bigint
+             )
+             else '{}'::jsonb
+           end,
            updated_at = $1::timestamptz
          from decisions
          where job.id = decisions.parent_job_id
@@ -7780,12 +7811,14 @@ export async function markStrictProvenanceJobReadyAfterIndex(
 ): Promise<boolean> {
   if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return false;
   const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const readyAt = new Date();
   const result = await db.query(
     `update forensic_check_jobs
      set progress_json = progress_json
        || jsonb_build_object(
          'jobPhase', $2::text,
          'jobHeartbeatAt', $3::text,
+         'jobRunnableQueuedAtMs', $9::bigint,
          'strictProvenance', coalesce(progress_json->'strictProvenance', '{}'::jsonb)
            || jsonb_build_object(
              'phase', $2::text,
@@ -7798,7 +7831,7 @@ export async function markStrictProvenanceJobReadyAfterIndex(
            )
        ),
        last_error = $8,
-       updated_at = now()
+       updated_at = $3::timestamptz
      where id = $1
        and status = 'queued'
        and $2::text in ('reading_local_index', 'provider_limited')
@@ -7809,12 +7842,13 @@ export async function markStrictProvenanceJobReadyAfterIndex(
     [
       input.id,
       phase,
-      new Date().toISOString(),
+      readyAt.toISOString(),
       input.address,
       input.targetTimestamp?.toISOString() ?? null,
       input.indexStatus,
       input.statusReason,
-      input.lastError
+      input.lastError,
+      readyAt.getTime()
     ]
   );
   return (result.rowCount ?? 0) > 0;
@@ -7943,6 +7977,11 @@ export async function recoverStaleForensicCheckJobs(
          'lastRecoveredAt', $5::text,
          'staleRecoveryReason', decisions.recovery_reason
        ) || case
+         when decisions.next_status = 'queued' then jsonb_build_object(
+           'jobRunnableQueuedAtMs', floor(extract(epoch from $5::timestamptz) * 1000)::bigint
+         )
+         else '{}'::jsonb
+       end || case
          when decisions.next_status = 'failed' and job.chat_id is not null then jsonb_build_object(
            'telegramDeliveryIntent', jsonb_build_object(
              'version', 'recovered-forensic-delivery-intent-v1',

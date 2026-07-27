@@ -80,6 +80,14 @@ transaction-enrichment counters start at zero, and each scheduler `AtEnd`
 counter initially equals its matching `AtStart` value. Terminal completion
 replaces those placeholders with the job's final enrichment totals and a
 non-decreasing scheduler snapshot.
+Queue counts and slot occupancy are lane-specific. Scheduler counters are
+process-global monotonic snapshots, not Where/Deep attribution; their delta is
+attributable only when the canary window isolates all other provider consumers.
+Ready transitions persist `jobRunnableQueuedAtMs`; stale recovery refreshes it,
+and claim preserves it. Queue age and `queueWaitMs` therefore start when a job
+becomes runnable after targeted-index waiting. A never-waited job falls back to
+`created_at`. The active aggregate uses the existing migration-012 partial
+index and requires no schema migration.
 
 ## Unified Lifecycle
 

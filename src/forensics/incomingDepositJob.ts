@@ -2222,6 +2222,17 @@ function activeIncomingDepositReport(report: IncomingDepositRiskReport): Incomin
   };
 }
 
+function forensicRunnableQueuedAt(job: ForensicCheckJob): Date {
+  const value = job.progressJson.jobRunnableQueuedAtMs;
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value >= job.createdAt.getTime()
+    && job.startedAt
+    && value <= job.startedAt.getTime()
+    ? new Date(value)
+    : job.createdAt;
+}
+
 function riskReportFromIncoming(
   subjectAddress: string,
   report: IncomingDepositRiskReport,
@@ -2354,7 +2365,7 @@ export async function runSingleIncomingDepositJobCycle(
   };
 
   const processingStartedAt = validDate(now());
-  const queueWaitMs = msBetween(validDate(job.startedAt), validDate(job.createdAt));
+  const queueWaitMs = msBetween(validDate(job.startedAt), validDate(forensicRunnableQueuedAt(job)));
 
   const depositTxHash = stringField(job.progressJson.depositTxHash);
   const watchedWallet = stringField(job.progressJson.watchedWallet);

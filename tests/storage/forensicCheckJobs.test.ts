@@ -197,6 +197,7 @@ function assertRecoverySql(sql: string): void {
   expect(sql).toContain("~ '^[0-9]+$'");
   expect(sql).toContain("'jobHeartbeatAt', $5::text");
   expect(sql).toContain("'lastRecoveredAt', $5::text");
+  expect(sql).toContain("'jobRunnableQueuedAtMs'");
   expect(sql).toContain("completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end");
   expect(sql).toContain("updated_at = $5::timestamptz");
   expect(sql).toContain("started_at = job.started_at");
@@ -263,7 +264,8 @@ function simulateRecoveredRows(rows: Record<string, unknown>[], params: unknown[
           jobHeartbeatAt: recoveredAtIso,
           retryCount: requeued ? count + 1 : count,
           lastRecoveredAt: recoveredAtIso,
-          staleRecoveryReason: recoveryReason
+          staleRecoveryReason: recoveryReason,
+          ...(requeued ? { jobRunnableQueuedAtMs: recoveredAt.getTime() } : {})
         },
         last_error: requeued ? null : recoveryReason,
         started_at: row.started_at,
@@ -652,6 +654,10 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql.toLowerCase()).toContain("for update of job skip locked");
     expect(queries[0].sql).toContain("kind <> 'address_fast_check'");
     expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).toContain("'jobRunnableQueuedAtMs'");
+    expect(queries[0].sql).toContain("job.created_at");
+    expect(queries[0].sql).toContain("~ '^[0-9]{13}$'");
+    expect(queries[0].sql).toContain("between floor(extract(epoch from job.created_at) * 1000)::bigint");
     expect(queries[0].sql).not.toContain("and not (");
   });
 
@@ -696,6 +702,11 @@ describe("forensic check job repositories", () => {
       dbRunningCount: 2
     });
     expect(queries[0].sql).toContain("progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).toContain("status in ('queued', 'running')");
+    expect(queries[0].sql).toContain("jobRunnableQueuedAtMs");
+    expect(queries[0].sql).toContain("else created_at");
+    expect(queries[0].sql).toContain("~ '^[0-9]{13}$'");
+    expect(queries[0].sql).toContain("between floor(extract(epoch from created_at) * 1000)::bigint");
     expect(queries[0].params).toEqual(["where_is_money_check"]);
     const serialized = JSON.stringify(diagnostics);
     for (const value of Object.values(sensitive)) expect(serialized).not.toContain(value);
@@ -822,6 +833,7 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("->>'address' = $4");
     expect(queries[0].sql).toContain("->>'targetTimestamp'");
     expect(queries[0].sql).toContain("is not distinct from $5::text");
+    expect(queries[0].sql).toContain("'jobRunnableQueuedAtMs'");
     expect(queries[0].params[3]).toBe("THop111111111111111111111111111111111");
     expect(queries[0].params[4]).toBe("2026-06-30T11:52:00.000Z");
     expect(queries[0].params[7]).toBeNull();
@@ -917,6 +929,8 @@ describe("forensic check job repositories", () => {
     expect(reconciliationSql).toContain("job.status = 'queued'");
     expect(reconciliationSql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
     expect(reconciliationSql).toContain("'waitReconciliation', jsonb_build_object(");
+    expect(reconciliationSql).toContain("'jobRunnableQueuedAtMs'");
+    expect(reconciliationSql).toContain("decisions.outcome in ('resume_ready', 'resume_terminal')");
     expect(reconciliationSql).toContain("updated_at = $1::timestamptz");
     expect(queries[2].params).toEqual([now, [snapshot.parentJobId]]);
     expect(released).toBe(true);
@@ -1775,7 +1789,8 @@ describe("forensic check job repositories", () => {
         jobPhase: "queued_after_stale_recovery",
         retryCount: 2,
         lastRecoveredAt: "2026-06-03T01:00:00.000Z",
-        staleRecoveryReason: "stale_running_requeued"
+        staleRecoveryReason: "stale_running_requeued",
+        jobRunnableQueuedAtMs: new Date("2026-06-03T01:00:00.000Z").getTime()
       }
     });
     expect(result.requeued[1]?.progressJson.retryCount).toBe(1);

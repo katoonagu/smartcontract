@@ -110,3 +110,6 @@ no address, transaction hash, chat/key identifier, label, or username.
 Incoming keeps its separate lane and existing `queueWaitMs`/stage timing. Its
 timing log is aggregate-only and no longer repeats job, deposit, wallet,
 sender, or Telegram identities.
+Where and Incoming `queueWaitMs` use the persisted post-index runnable
+transition, so targeted-index waiting is not reported as runnable queue delay;
+jobs that never waited retain creation-to-claim timing.

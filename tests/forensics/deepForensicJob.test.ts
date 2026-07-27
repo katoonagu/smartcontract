@@ -399,10 +399,11 @@ describe("deep forensic job runner", () => {
       subjectAddress: "TSensitiveSubjectAddress11111111111111111",
       chatId: "sensitive-chat-id",
       requestedBy: "sensitive-requester-id",
-      createdAt: new Date("2026-05-23T23:59:59.000Z"),
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
       progressJson: {
         jobPhase: "provider_limited",
         targetedIndex: { statusReason: "partial_provider_inconsistent" },
+        jobRunnableQueuedAtMs: Date.parse("2026-05-23T23:59:59.000Z"),
         transactionHash: sensitiveTxHash,
         keyIdentifier: sensitiveKeyIdentifier,
         username: sensitiveUsername,
@@ -490,6 +491,14 @@ describe("deep forensic job runner", () => {
         schedulerRateLimitedRequestCountAtEnd: 4
       })
     }));
+    // Scheduler counters are process-global: unrelated consumers may advance
+    // them even though this Where completion made no transaction-info request.
+    expect(completion.progressJson.performanceTiming).toEqual(expect.objectContaining({
+      transactionInfoRawProviderRequests: 0,
+      transactionInfoFullProviderRequests: 0,
+      schedulerDispatchedRequestCountAtStart: 10,
+      schedulerDispatchedRequestCountAtEnd: 18
+    }));
     expect(logger.info).toHaveBeenCalledWith(
       "forensic_job_lifecycle_started",
       expect.objectContaining({
@@ -519,6 +528,94 @@ describe("deep forensic job runner", () => {
     expect(diagnosticPayload).not.toContain(sensitiveKeyIdentifier);
     expect(diagnosticPayload).not.toContain(sensitiveUsername);
     expect(diagnosticPayload).not.toContain(sensitiveLabel);
+  });
+
+  it("keeps lifecycle progress persistence errors best-effort while preserving valid completion", async () => {
+    const sourceJob = {
+      ...job(),
+      kind: "where_is_money_check" as const,
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: { statusReason: "partial_provider_inconsistent" }
+      }
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const snapshot = {
+      runnableQueuedCount: 0,
+      oldestRunnableQueueAgeMs: null,
+      activeSlots: 1,
+      configuredSlots: 1,
+      occupiedSlotsAtPoll: 0,
+      dbRunningCount: 1,
+      schedulerDispatchedRequestCount: 0,
+      schedulerFailedRequestCount: 0,
+      schedulerRateLimitedRequestCount: 0,
+      schedulerCapacityFingerprint: "capacity"
+    };
+
+    await expect(runClaimedForensicJob({
+      claimNextForensicCheckJob: vi.fn(async () => null),
+      updateForensicCheckJobProgress: vi.fn(async () => {
+        throw new Error(sourceJob.subjectAddress);
+      }),
+      completeForensicCheckJob,
+      captureLifecycleDiagnostics: async () => snapshot,
+      recordRiskEvaluation: vi.fn(async () => true),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async () => usdtRestrictionProfile(),
+      logger
+    } as unknown as DeepForensicJobRunnerDeps, sourceJob)).resolves.toBeUndefined();
+
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith("forensic_job_lifecycle_progress_persist_failed", {
+      kind: "where_is_money_check",
+      phase: "start"
+    });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(sourceJob.subjectAddress);
+  });
+
+  it("treats a false lifecycle progress CAS as claim loss", async () => {
+    const sourceJob = {
+      ...job(),
+      kind: "where_is_money_check" as const,
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: { statusReason: "partial_provider_inconsistent" }
+      }
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await runClaimedForensicJob({
+      claimNextForensicCheckJob: vi.fn(async () => null),
+      updateForensicCheckJobProgress: vi.fn(async () => false),
+      completeForensicCheckJob,
+      captureLifecycleDiagnostics: async () => ({
+        runnableQueuedCount: 0,
+        oldestRunnableQueueAgeMs: null,
+        activeSlots: 1,
+        configuredSlots: 1,
+        occupiedSlotsAtPoll: 0,
+        dbRunningCount: 1,
+        schedulerDispatchedRequestCount: 0,
+        schedulerFailedRequestCount: 0,
+        schedulerRateLimitedRequestCount: 0,
+        schedulerCapacityFingerprint: "capacity"
+      }),
+      recordRiskEvaluation: vi.fn(async () => true),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async () => usdtRestrictionProfile(),
+      logger
+    } as unknown as DeepForensicJobRunnerDeps, sourceJob);
+
+    expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+      stage: "lifecycle_start_progress",
+      error: "lost_forensic_job_claim"
+    }));
   });
 
   it("executes an externally claimed job without issuing another claim", async () => {
@@ -647,6 +744,7 @@ describe("deep forensic job runner", () => {
         progressJson: expect.objectContaining({
           performanceTiming: expect.objectContaining({
             configuredSlots: 1,
+            queueWaitMs: 0,
             transactionInfoCandidateCount: 2,
             transactionInfoHardCandidateCount: 2,
             transactionInfoRawProviderRequests: 1,
