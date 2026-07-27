@@ -815,33 +815,35 @@ describe("deep forensic job runner", () => {
 
     try {
       const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob = job();
+      const ensureAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runCycleWithMock>[0]["ensureAddressUsdtHistory"]>>[0]) => {
+        calls.push(`index:${input.address}:${input.coverageMode}`);
+        return {
+          ...queuedIndexState(input.address),
+          status: "complete" as const,
+          statusReason: "complete_provider_windowed" as const,
+          provider: "tronscan" as const,
+          fetchedTransferCount: 4,
+          uniqueCounterpartyCount: 2,
+          newestTransferAt: new Date("2026-07-01T00:00:00.000Z"),
+          oldestTransferAt: new Date("2026-01-01T00:00:00.000Z"),
+          coveredUntilTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+          fetchedPageCount: 1,
+          priority: 100,
+          attemptCount: 1,
+          lastSuccessfulPageAt: new Date("2026-07-02T00:00:00.000Z"),
+          completedAt: new Date("2026-07-02T00:00:00.000Z")
+        };
+      });
 
       const handled = await runCycleWithMock({
-        claimNextForensicCheckJob: async () => job(),
+        claimNextForensicCheckJob: async () => sourceJob,
         completeForensicCheckJob: vi.fn(async () => true),
         recordRiskEvaluation: vi.fn(async () => undefined),
         tronClient: { listRelatedTrc20Transfers: async () => [] },
         getLabelsForAddress: async () => [],
         getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
-        ensureAddressUsdtHistory: async (input) => {
-          calls.push(`index:${input.address}:${input.coverageMode}`);
-          return {
-            ...queuedIndexState(input.address),
-            status: "complete",
-            statusReason: "complete_provider_windowed",
-            provider: "tronscan",
-            fetchedTransferCount: 4,
-            uniqueCounterpartyCount: 2,
-            newestTransferAt: new Date("2026-07-01T00:00:00.000Z"),
-            oldestTransferAt: new Date("2026-01-01T00:00:00.000Z"),
-            coveredUntilTimestamp: new Date("2026-01-01T00:00:00.000Z"),
-            fetchedPageCount: 1,
-            priority: 100,
-            attemptCount: 1,
-            lastSuccessfulPageAt: new Date("2026-07-02T00:00:00.000Z"),
-            completedAt: new Date("2026-07-02T00:00:00.000Z")
-          };
-        }
+        ensureAddressUsdtHistory
       }, {
         pageLimit: 50,
         allTimeDeepCheckMode: "strict",
@@ -852,6 +854,10 @@ describe("deep forensic job runner", () => {
 
       expect(handled).toBe(true);
       expect(calls).toEqual([`index:${subject}:all_time`, "deep"]);
+      expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        jobId: sourceJob.id,
+        claimStartedAt: sourceJob.startedAt
+      }));
       expect(runDeepAddressForensicCheck).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
         allTimeMode: "strict",
         allTimeSubjectIndexState: expect.objectContaining({ status: "complete" }),
@@ -1049,7 +1055,10 @@ describe("deep forensic job runner", () => {
     });
   });
 
-  it("continues strict DeepCheck when one second-layer queue request fails", async () => {
+  it.each([
+    ["an ordinary queue error", "queue failed", 2, true],
+    ["claim loss", "lost_forensic_job_claim", 1, false]
+  ])("handles %s while queueing strict DeepCheck second-layer wallets", async (_case, queueError, expectedCalls, completes) => {
     const walletA = "TSecondLayerQueueWalletA1111111111";
     const walletB = "TSecondLayerQueueWalletB1111111111";
     const sourceJob = job();
@@ -1084,7 +1093,9 @@ describe("deep forensic job runner", () => {
       })
     ];
     const queueAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["queueAddressUsdtHistory"]>>[0]) => {
-      if (input.address === walletB) throw new Error("queue failed");
+      if (input.address === (queueError === "lost_forensic_job_claim" ? walletA : walletB)) {
+        throw new Error(queueError);
+      }
       return {
         ...queuedIndexState(input.address),
         coverageMode: input.coverageMode,
@@ -1093,11 +1104,12 @@ describe("deep forensic job runner", () => {
       };
     });
     const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
 
     const handled = await runSingleDeepForensicJobCycle({
       claimNextForensicCheckJob: async () => sourceJob,
       completeForensicCheckJob,
-      recordRiskEvaluation: vi.fn(async () => undefined),
+      recordRiskEvaluation,
       ensureAddressUsdtHistory: async () => subjectIndexState,
       queueAddressUsdtHistory,
       listIndexedUsdtTransfersForAddress: async (address, options) => {
@@ -1119,7 +1131,12 @@ describe("deep forensic job runner", () => {
     });
 
     expect(handled).toBe(true);
-    expect(queueAddressUsdtHistory).toHaveBeenCalledTimes(2);
+    expect(queueAddressUsdtHistory).toHaveBeenCalledTimes(expectedCalls);
+    if (!completes) {
+      expect(recordRiskEvaluation).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+      return;
+    }
     const completed = completeForensicCheckJob.mock.calls[0][0];
     expect(completed.status).toBe("completed");
     expect(completed.resultJson.secondLayerRelationshipProfiles).toMatchObject({
@@ -4522,8 +4539,9 @@ describe("deep forensic job runner", () => {
     }
   );
 
-  it("fails strict benchmark jobs when waiting release does not update the job", async () => {
+  it("abandons strict benchmark work without failure delivery when waiting release loses the claim", async () => {
     vi.resetModules();
+    const abort = vi.spyOn(AbortController.prototype, "abort");
     const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
     const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
       await deps.fetchEdgesForAddress("THop111111111111111111111111111111111", {
@@ -4563,31 +4581,10 @@ describe("deep forensic job runner", () => {
       } as any);
 
       expect(handled).toBe(true);
-      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
-        id: sourceJob.id,
-        status: "failed",
-        lastError: "strict_provenance_wait_release_failed",
-        progressJson: expect.objectContaining({
-          jobPhase: "provider_limited",
-          strictProvenance: expect.objectContaining({
-            phase: "provider_limited",
-            scoreValid: false,
-            scoreBlockedReason: "provider_error",
-            technicalStatus: "provider_error",
-            waitingFor: null
-          }),
-          strictBenchmarkMetrics: expect.objectContaining({
-            stages: expect.objectContaining({ traceMs: expect.any(Number) })
-          })
-        }),
-        resultJson: expect.objectContaining({
-          subjectAddress: subject,
-          score_valid: false,
-          score_blocked_reason: "provider_error",
-          technical_status: "provider_error"
-        })
-      }));
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
     } finally {
+      abort.mockRestore();
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
     }

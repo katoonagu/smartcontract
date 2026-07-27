@@ -299,7 +299,7 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
     progressJson,
     lastError: null
   });
-  if (!released) throw new Error("targeted_history_wait_release_failed");
+  if (!released) throw new Error("lost_forensic_job_claim");
 
   const afterRelease = (await input.deps.getAddressUsdtIndexState({
     address: input.address,
@@ -458,7 +458,7 @@ export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchW
     progressJson: persisted ?? input.progressJson,
     lastError: null
   });
-  if (!released) throw new Error("targeted_history_batch_wait_release_failed");
+  if (!released) throw new Error("lost_forensic_job_claim");
 
   const afterReleaseStates = await Promise.all(pending.map(async (item) =>
     (await input.deps.getAddressUsdtIndexState({
@@ -584,7 +584,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
     progressJson: persisted ?? input.progressJson,
     lastError: null
   });
-  if (!released) throw new Error("candidate_window_wait_release_failed");
+  if (!released) throw new Error("lost_forensic_job_claim");
   const afterReleaseStates = await Promise.all(input.requests.map((request) => input.deps.getAddressUsdtIndexState({
     address: request.address,
     coverageMode: "targeted",

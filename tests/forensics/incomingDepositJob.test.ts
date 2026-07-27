@@ -1037,6 +1037,33 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("aborts once and skips failure handling when targeted waiting loses the claim", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const complete = vi.fn(async () => true);
+    const markFailed = vi.fn(async () => true);
+    try {
+      const handled = await runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: async () => job(validProgressJson),
+        completeForensicCheckJob: complete,
+        updateForensicCheckJobProgress: async () => true,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: markFailed,
+        recordObservedTransactionRisk: async () => true,
+        formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
+        buildReport: async () => {
+          throw new Error("lost_forensic_job_claim");
+        }
+      });
+
+      expect(handled).toBe(true);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(complete).not.toHaveBeenCalled();
+      expect(markFailed).not.toHaveBeenCalled();
+    } finally {
+      abort.mockRestore();
+    }
+  });
+
   it("passes parsed progress fields into the report builder", async () => {
     const buildReport = vi.fn(async () => report());
 
@@ -2678,6 +2705,8 @@ describe("buildIncomingDepositReport", () => {
     expect(result.originPaths.some((path) => path.txHashes.includes("cex-funded-hub"))).toBe(true);
     expect(ensureAddressUsdtHistory).toHaveBeenCalledTimes(1);
     expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: "job-incoming-1",
+      claimStartedAt: job(validProgressJson).startedAt,
       address: hub,
       coverageMode: "targeted",
       targetTimestamp: fundingTimestamp,

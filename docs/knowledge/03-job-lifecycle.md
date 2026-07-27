@@ -52,8 +52,9 @@ Each legacy claim now owns one millisecond-normalized `started_at` generation.
 Claims are ordered by priority, creation time, then job ID; a reclaim advances
 the generation even within one millisecond and refreshes `jobHeartbeatAt`
 atomically. Stale recovery preserves the previous generation while requeueing.
-Every worker-owned progress, wait/release, completion, index queue,
-risk-evidence, derived-assertion, and Incoming observed-risk mutation is
+Every worker-owned progress (including strict benchmark metrics), wait/release,
+completion, index queue or inline index write, risk-evidence, derived-assertion,
+and Incoming observed-risk mutation is
 compare-and-set or transactionally locked to that generation. A stale worker
 receives `lost_forensic_job_claim`, aborts its resolver, publishes no result or
 delivery intent, and dispatches no later provider work.

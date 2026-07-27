@@ -70,7 +70,7 @@ import {
   type StartupWorkScheduleController,
   type UnifiedResourceWorkLabel
 } from "./runtime/startupSchedule";
-import { closeDb, createDb } from "./storage/db";
+import { closeDb, createDb, type Db } from "./storage/db";
 import {
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
@@ -149,6 +149,7 @@ import {
   recordApprovalRisk,
   recordObservedTransactionRisk,
   recordClaimedObservedTransactionRisk,
+  runClaimedForensicJobTransaction,
   releaseForensicCheckJobToWaiting,
   upsertForensicJobWait,
   releaseApprovalContextAfterFailure,
@@ -2177,6 +2178,8 @@ async function getCachedOrLiveContractIntelligenceProfile(address: string, now =
 }
 
 async function ensureAddressUsdtHistory(input: {
+  jobId?: string;
+  claimStartedAt?: Date;
   address: string;
   coverageMode: "all_time" | "targeted";
   targetTimestamp?: Date | null;
@@ -2192,9 +2195,9 @@ async function ensureAddressUsdtHistory(input: {
   maxWindowSplitDepth?: number | null;
   lockOwner?: string | null;
   lockMs?: number | null;
-}) {
+}, storage: Db = db) {
   const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? input.windowEndTimestamp ?? null;
-  const existing = await getTronAddressUsdtIndexState(db, {
+  const existing = await getTronAddressUsdtIndexState(storage, {
     address: input.address,
     coverageMode: input.coverageMode,
     targetTimestamp,
@@ -2205,7 +2208,7 @@ async function ensureAddressUsdtHistory(input: {
   });
   if (existing?.status === "complete" && existing.statusReason === "complete_provider_windowed") return existing;
 
-  const completedPages = await listTronAddressUsdtIndexPages(db, {
+  const completedPages = await listTronAddressUsdtIndexPages(storage, {
     address: input.address,
     coverageMode: input.coverageMode,
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
@@ -2214,21 +2217,24 @@ async function ensureAddressUsdtHistory(input: {
   const patchStrictBenchmarkMetrics = async (
     buildProgress: (progressJson: Record<string, unknown>) => Record<string, any>
   ): Promise<void> => {
-    if (!input.requestedByJobId) return;
+    if (!input.requestedByJobId || !input.claimStartedAt) return;
     benchmarkPatchChain = benchmarkPatchChain
       .catch(() => undefined)
       .then(async () => {
-        const existingJob = await getForensicCheckJob(db, input.requestedByJobId!).catch(() => null);
+        const existingJob = await getForensicCheckJob(storage, input.requestedByJobId!).catch(() => null);
         if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
         const progress = buildProgress(existingJob.progressJson);
-        await patchStrictBenchmarkProgress(db, {
+        const patched = await patchStrictBenchmarkProgress(storage, {
           id: input.requestedByJobId!,
+          claimStartedAt: input.claimStartedAt!,
           patchJson: {
             strictBenchmarkMetrics: progress.strictBenchmarkMetrics
           }
         });
+        if (!patched) throw new Error("lost_forensic_job_claim");
       })
       .catch((error) => {
+        if (error instanceof Error && error.message === "lost_forensic_job_claim") throw error;
         logger.warn("strict_benchmark_metric_patch_failed", {
           jobId: input.requestedByJobId,
           address: input.address,
@@ -2250,7 +2256,7 @@ async function ensureAddressUsdtHistory(input: {
   const extendIndexLock = async (): Promise<void> => {
     if (!input.lockOwner || !input.lockMs) return;
     const now = new Date();
-    await upsertTronAddressUsdtIndexState(db, {
+    await upsertTronAddressUsdtIndexState(storage, {
       address: input.address,
       coverageMode: input.coverageMode,
       targetTimestamp,
@@ -2303,15 +2309,15 @@ async function ensureAddressUsdtHistory(input: {
     onBenchmarkCounters: patchBenchmarkCounters,
     onProgressHeartbeat: extendIndexLock,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
-    upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
-    countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),
-    upsertState: (state) => upsertTronAddressUsdtIndexState(db, state),
-    upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
-    upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
+    upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(storage, transfers),
+    countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(storage, address),
+    upsertState: (state) => upsertTronAddressUsdtIndexState(storage, state),
+    upsertPage: (page) => upsertTronAddressUsdtIndexPage(storage, page),
+    upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(storage, interval)
   });
   const wakeJobId = state.requestedByJobId ?? input.requestedByJobId ?? null;
   if (wakeJobId && input.coverageMode === "targeted" && shouldWakeTargetedWaiterAfterEnsure(state)) {
-    await markStrictProvenanceJobReadyAfterIndex(db, {
+    await markStrictProvenanceJobReadyAfterIndex(storage, {
       id: wakeJobId,
       address: state.address,
       targetTimestamp: state.targetTimestamp,
@@ -2321,6 +2327,16 @@ async function ensureAddressUsdtHistory(input: {
     });
   }
   return state;
+}
+
+async function ensureClaimedAddressUsdtHistory(
+  input: Parameters<typeof ensureAddressUsdtHistory>[0] & { jobId: string; claimStartedAt: Date }
+) {
+  const claimed = await runClaimedForensicJobTransaction(db, input, (client) =>
+    ensureAddressUsdtHistory(input, client as unknown as Db)
+  );
+  if (!claimed.claimed) throw new Error("lost_forensic_job_claim");
+  return claimed.value;
 }
 
 function shouldWakeTargetedWaiterAfterEnsure(state: TronAddressUsdtIndexState): boolean {
@@ -2551,7 +2567,7 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   listIndexedMovementsByHashes: indexedMovementsByHashes,
   getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
-  ensureAddressUsdtHistory,
+  ensureAddressUsdtHistory: ensureClaimedAddressUsdtHistory,
   getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, {
     address: input.address,
     coverageMode: input.coverageMode,
@@ -3158,7 +3174,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       }),
       getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
       getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
-      ensureAddressUsdtHistory,
+      ensureAddressUsdtHistory: ensureClaimedAddressUsdtHistory,
       upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
       markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
       queueAddressUsdtHistory: (input) => {

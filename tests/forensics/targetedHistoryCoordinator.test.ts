@@ -973,4 +973,73 @@ describe("ensureCandidateWindowsOrWait", () => {
     expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
     expect(markWaitingForensicJobsReadyAfterTargetedIndex).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["single", async () => ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp: new Date("2026-07-01T12:59:30.000Z"),
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: async () => targetedState(),
+        queueAddressUsdtHistory: async () => targetedState(),
+        releaseForensicCheckJobToWaiting: async () => false
+      }
+    })],
+    ["batch", async () => ensureTargetedHistoriesOrWait({
+      jobId: "job-1",
+      requests: [{
+        address: "THop11111111111111111111111111111111",
+        targetTimestamp: new Date("2026-07-01T12:59:30.000Z"),
+        queuedReason: "where_is_money_hop",
+        requiredFor: "where_hop"
+      }],
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: async () => targetedState(),
+        queueAddressUsdtHistory: async () => targetedState(),
+        releaseForensicCheckJobToWaiting: async () => false
+      }
+    })],
+    ["candidate-window", async () => {
+      const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+      const windowStartTimestamp = new Date("2026-07-01T12:00:00.000Z");
+      return ensureCandidateWindowsOrWait({
+        jobId: "job-1",
+        requests: [{
+          address: "THop11111111111111111111111111111111",
+          targetTimestamp,
+          windowStartTimestamp,
+          windowEndTimestamp: targetTimestamp,
+          relatedHopTxHash: "hop-tx",
+          candidateTxHash: "candidate-tx",
+          requestedAmountRaw: "1000000",
+          candidateAmountRaw: "1000000",
+          coverageShare: 1
+        }],
+        queuedReason: "where_candidate_window",
+        requiredFor: "where_hop",
+        progressJson: {},
+        persistProgress: async (patch) => patch,
+        deps: {
+          getAddressUsdtIndexState: async () => null,
+          queueAddressUsdtHistory: async (request) => coordinatorCandidateWindowState({
+            address: request.address,
+            targetTimestamp,
+            windowStartTimestamp,
+            windowEndTimestamp: targetTimestamp,
+            relatedHopTxHash: "hop-tx",
+            candidateTxHash: "candidate-tx"
+          }),
+          releaseForensicCheckJobToWaiting: async () => false
+        }
+      });
+    }]
+  ])("normalizes a lost claim from the %s waiting release", async (_branch, run) => {
+    await expect(run()).rejects.toThrow("lost_forensic_job_claim");
+  });
 });

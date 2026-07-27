@@ -146,6 +146,8 @@ export type DeepForensicJobRunnerDeps = Omit<
     targetTimestamp: Date;
   }): Promise<TronAddressUsdtIndexState | null>;
   ensureAddressUsdtHistory?(input: {
+    jobId: string;
+    claimStartedAt: Date;
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
@@ -1109,6 +1111,8 @@ export function createLegacyWhereIsMoneyExecution(
     const ensureAddressUsdtHistory = deps.ensureAddressUsdtHistory;
     const ensured = Promise.resolve()
       .then(() => ensureAddressUsdtHistory({
+        jobId: job.id,
+        claimStartedAt: job.startedAt!,
         address,
         coverageMode: "targeted",
         targetTimestamp: maxTimestamp,
@@ -1899,6 +1903,8 @@ export async function runSingleDeepForensicJobCycle(
     const allTimeMode = deepCheckAllTimeModeField(job.progressJson.allTimeDeepCheckMode) ?? options.allTimeDeepCheckMode ?? "partial";
     const allTimeSubjectIndexState = allTimeMode === "strict" && deps.ensureAddressUsdtHistory
       ? await deps.ensureAddressUsdtHistory({
+          jobId: job.id,
+          claimStartedAt: job.startedAt,
           address: job.subjectAddress,
           coverageMode: "all_time",
           requestedByJobId: job.id,
@@ -2003,6 +2009,10 @@ export async function runSingleDeepForensicJobCycle(
             queuedAddresses.add(request.address);
           }
         } catch (error) {
+          if (errorMessage(error) === "lost_forensic_job_claim") {
+            if (!abortController.signal.aborted) abortController.abort();
+            throw error;
+          }
           deps.logger?.warn("deep_second_layer_queue_failed", {
             jobId: job.id,
             address: request.address,
@@ -2107,7 +2117,11 @@ export async function runSingleDeepForensicJobCycle(
     return true;
   } catch (error) {
     const message = errorMessage(error);
-    if (message === "lost_forensic_job_claim" || message === "selective_transaction_enrichment_aborted") {
+    if (message === "lost_forensic_job_claim") {
+      if (!abortController.signal.aborted) abortController.abort();
+      return true;
+    }
+    if (message === "selective_transaction_enrichment_aborted") {
       return true;
     }
     if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {

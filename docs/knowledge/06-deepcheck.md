@@ -66,4 +66,7 @@ Deep also fences its pre-completion risk evidence, derived label assertions,
 history queue requests, waits, progress, and terminal result to the exact
 non-null `started_at` generation returned by claim. Losing that generation is
 a technical ownership stop, not a result: no label, score, wallet-intelligence
-index, or Telegram delivery may be published by the stale attempt.
+index, or Telegram delivery may be published by the stale attempt. This also
+applies to a failed waiting-state release and to any second-layer queue request:
+the runner aborts once, stops the remaining queue, and does not enter risk or
+completion stages.

@@ -159,6 +159,8 @@ export type IncomingDepositRuntimeDeps = {
   crossChainStage2Enabled?: boolean;
   crossChainMaxProviderCalls?: number;
   ensureAddressUsdtHistory?(input: {
+    jobId: string;
+    claimStartedAt: Date;
     address: string;
     coverageMode: "all_time" | "targeted";
     targetTimestamp?: Date | null;
@@ -1610,6 +1612,8 @@ export async function buildIncomingDepositReport(
     const ensureAddressUsdtHistory = input.deps.ensureAddressUsdtHistory;
     const ensured = Promise.resolve()
       .then(() => ensureAddressUsdtHistory({
+        jobId: input.job.id,
+        claimStartedAt: input.job.startedAt!,
         address,
         coverageMode: "targeted",
         targetTimestamp: fetchMaxTimestamp,
@@ -1626,6 +1630,7 @@ export async function buildIncomingDepositReport(
         return complete;
       })
       .catch((error) => {
+        if (formatErrorMessage(error) === "lost_forensic_job_claim") throw error;
         const message = formatErrorMessage(error);
         targetedEnsureErrors.set(targetedCoverageMapKey(address, fetchMaxTimestamp), message);
         fetchWarnings.push(`targeted history ensure failed for ${address}: ${message}`);
@@ -2589,8 +2594,11 @@ export async function runSingleIncomingDepositJobCycle(
     logTiming("completed");
     return true;
   } catch (error) {
-    if (formatErrorMessage(error) === "lost_forensic_job_claim"
-      || formatErrorMessage(error) === "selective_transaction_enrichment_aborted") {
+    if (formatErrorMessage(error) === "lost_forensic_job_claim") {
+      if (!abortController.signal.aborted) abortController.abort();
+      return true;
+    }
+    if (formatErrorMessage(error) === "selective_transaction_enrichment_aborted") {
       return true;
     }
     if (error instanceof TargetedHistoryWaitingForIndex) {

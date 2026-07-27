@@ -474,6 +474,31 @@ async function lockForensicJobClaim(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function runClaimedForensicJobTransaction<T>(
+  db: Db,
+  claim: ForensicJobClaim,
+  work: (client: PoolClient) => Promise<T>
+): Promise<{ claimed: false } | { claimed: true; value: T }> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, claim)) {
+      await client.query("rollback");
+      return { claimed: false };
+    }
+    // ponytail: strict inline indexing holds one transaction during provider IO;
+    // upgrade to per-write claim guards if this path becomes high-throughput.
+    const value = await work(client);
+    await client.query("commit");
+    return { claimed: true, value };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export type WalletIntelligenceSupportedJobKind =
   | "address_deep_check"
   | "where_is_money_check"
@@ -7752,7 +7777,7 @@ export async function markStrictProvenanceJobReadyAfterIndex(
 
 export async function patchStrictBenchmarkProgress(
   db: Db,
-  input: { id: string; patchJson: Record<string, unknown> }
+  input: { id: string; claimStartedAt: Date; patchJson: Record<string, unknown> }
 ): Promise<boolean> {
   const result = await db.query(
     `with metric_patch as (
@@ -7776,8 +7801,9 @@ export async function patchStrictBenchmarkProgress(
      from metric_patch
      where id = $1
        and status in ('queued', 'running')
+       and started_at = $3
        and progress_json->>'strictProvenanceBenchmark' = 'true'`,
-    [input.id, JSON.stringify(input.patchJson)]
+    [input.id, JSON.stringify(input.patchJson), input.claimStartedAt]
   );
   return (result.rowCount ?? 0) > 0;
 }
