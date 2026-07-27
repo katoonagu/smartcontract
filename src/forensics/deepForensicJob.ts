@@ -777,6 +777,7 @@ export type LegacyWhereIsMoneyExecution = {
   run(dependencies?: WhereIsMoneyDeps): Promise<WhereIsMoneyReport>;
   measureStage<T>(stage: StageKey, operation: () => Promise<T>): Promise<T>;
   getCurrentProgress(): Record<string, unknown>;
+  dispose(): Promise<void>;
 };
 
 /** Construct the one legacy Where execution graph used by production and capture. */
@@ -801,6 +802,12 @@ export function createLegacyWhereIsMoneyExecution(
     }
     return currentProgress;
   };
+  const enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
+    intervalMs: options.transactionEnrichmentHeartbeatIntervalMs,
+    now: runtime.now,
+    isAborted: () => runtime.abortSignal?.aborted === true,
+    heartbeat: async () => { await persistProgress({ jobHeartbeatAt: new Date(runtime.now?.() ?? Date.now()).toISOString() }); }
+  });
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
   const balanceSliceEdgeCacheKeys = new Set<string>();
@@ -1639,6 +1646,7 @@ export function createLegacyWhereIsMoneyExecution(
     ...resolveLegacyWhereIsMoneyRunInput(job, options),
     ...(runtime.now ? { now: runtime.now } : {}),
     ...(runtime.abortSignal ? { abortSignal: runtime.abortSignal } : {}),
+    runWithTransactionEnrichmentHeartbeat: (task) => enrichmentHeartbeat.run(task),
     onProgress: async (patch) => {
       await persistProgress(patch);
     }
@@ -1649,7 +1657,8 @@ export function createLegacyWhereIsMoneyExecution(
     run: (runtimeDependencies = dependencies) =>
       measureJobStage("traceMs", () => runWhereIsMoneyCheck(runtimeDependencies, runInput)),
     measureStage: measureJobStage,
-    getCurrentProgress: () => currentProgress
+    getCurrentProgress: () => currentProgress,
+    dispose: () => enrichmentHeartbeat.dispose()
   };
 }
 
@@ -1663,6 +1672,7 @@ async function runWhereIsMoneyJob(
     abortSignal: abortController?.signal,
     abortController
   });
+  try {
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
   let report: WhereIsMoneyReport;
   try {
@@ -1758,6 +1768,9 @@ async function runWhereIsMoneyJob(
     });
   }
   return true;
+  } finally {
+    await execution.dispose();
+  }
 }
 
 export async function runSingleDeepForensicJobCycle(

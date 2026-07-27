@@ -1880,6 +1880,154 @@ describe("deep forensic job runner", () => {
     );
   });
 
+  it("aborts a top-level Where job when heartbeat CAS is lost during early economic raw enrichment", async () => {
+    const txHash = "8".repeat(64);
+    const laterCandidateHash = "7".repeat(64);
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const routeEdge: ForensicRouteEdge = {
+      id: `edge:${txHash}`,
+      txHash,
+      transferId: `transfer:${txHash}`,
+      eventIndex: 0,
+      provider: "tronscan",
+      providerRowOrdinalInTx: 0,
+      fromAddress: seed,
+      toAddress: subject,
+      amountRaw: "95000000000",
+      timestamp: new Date("2026-05-20T10:00:00.000Z"),
+      method: "transfer",
+      edgeType: "normal_transfer",
+      callerAddress: seed,
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      confirmed: true,
+      reverted: false,
+      economicRole: "principal"
+    };
+    const saved = new Map<string, TronTransactionProviderEvidenceV1>();
+    let releaseRaw!: (payload: unknown) => void;
+    let signalRawStarted!: () => void;
+    let signalLostCas!: () => void;
+    const rawStarted = new Promise<void>((resolve) => { signalRawStarted = resolve; });
+    const lostCas = new Promise<void>((resolve) => { signalLostCas = resolve; });
+    const delayedRaw = new Promise<unknown>((resolve) => { releaseRaw = resolve; });
+    const rawProvider = vi.fn(async () => {
+      signalRawStarted();
+      return delayedRaw;
+    });
+    const fullProvider = vi.fn(async () => null);
+    const selectiveTransactionEnricher = createSelectiveTransactionEnricher({
+      getSavedEvidence: async (identity) => saved.get(transactionProviderEvidenceId(identity)) ?? null,
+      saveProviderEvidence: async (evidence) => {
+        const id = transactionProviderEvidenceId(evidence);
+        saved.set(id, evidence);
+        return { id };
+      },
+      saveDecisionEvidence: async (evidence) => ({ id: `where:decision:${evidence.txHash}` }),
+      getRawTransaction: rawProvider,
+      getFullTransactionInfo: fullProvider,
+      now: () => new Date("2026-07-27T00:00:00.000Z"),
+      maxConcurrentSubmissions: 1
+    });
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+    const buildWhereIsMoneyJobResultPayload = vi.fn(async () => null);
+    let rawPending = false;
+    let activeCas = 0;
+    let maxActiveCas = 0;
+
+    const handledPromise = runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      updateForensicCheckJobProgress: async () => {
+        activeCas += 1;
+        maxActiveCas = Math.max(maxActiveCas, activeCas);
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 2));
+          if (rawPending) {
+            signalLostCas();
+            return false;
+          }
+          return true;
+        } finally {
+          activeCas -= 1;
+        }
+      },
+      recordRiskEvaluation,
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === subject
+          ? [transfer({
+              id: txHash,
+              from: seed,
+              to: subject,
+              amountRaw: routeEdge.amountRaw,
+              at: routeEdge.timestamp.toISOString()
+            }), transfer({
+              id: laterCandidateHash,
+              from: seed,
+              to: subject,
+              amountRaw: "1",
+              at: "2026-05-20T09:59:00.000Z"
+            })]
+          : []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? routeEdge.amountRaw : null
+      }),
+      selectiveTransactionEnricher,
+      listIndexedMovementsByHashes: async (hashes) => hashes.includes(txHash) ? [routeEdge] : [],
+      buildWhereIsMoneyJobResultPayload
+    }, {
+      transactionEnrichmentHeartbeatIntervalMs: 1,
+      recentFallbackMinTransferCount: 1,
+      maxEdgesPerAddress: 10,
+      recentFallbackTransferLimit: 10
+    });
+
+    await rawStarted;
+    rawPending = true;
+    const independentWaiter = selectiveTransactionEnricher.enrich({
+      mode: "subject",
+      routeEdges: [routeEdge],
+      movements: [routeEdge]
+    });
+    await lostCas;
+    releaseRaw({
+      txID: txHash,
+      raw_data: {
+        contract: [{
+          type: "TriggerSmartContract",
+          parameter: {
+            type_url: "type.googleapis.com/protocol.TriggerSmartContract",
+            value: {
+              owner_address: TronWeb.address.toHex(seed),
+              contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
+              data: `a9059cbb${TronWeb.address.toHex(subject).slice(2).padStart(64, "0")}${BigInt(routeEdge.amountRaw).toString(16).padStart(64, "0")}`
+            }
+          }
+        }]
+      },
+      ret: [{ contractRet: "SUCCESS" }]
+    });
+
+    expect(await handledPromise).toBe(true);
+    await expect(independentWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
+    expect(rawProvider).toHaveBeenCalledTimes(1);
+    expect(fullProvider).not.toHaveBeenCalled();
+    expect(maxActiveCas).toBe(1);
+    expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    expect(recordRiskEvaluation).not.toHaveBeenCalled();
+    expect(buildWhereIsMoneyJobResultPayload).not.toHaveBeenCalled();
+  });
+
   it("uses runtime where-is-money fetch limits for indexed and live edge pages", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),
