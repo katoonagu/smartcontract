@@ -1719,7 +1719,7 @@ async function runWhereIsMoneyJob(
     // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
     const reason: StrictScoreBlockedReason = "provider_error";
     const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
-    await deps.completeForensicCheckJob({
+    const completed = await deps.completeForensicCheckJob({
       id: job.id,
       claimStartedAt: job.startedAt!,
       status: "failed",
@@ -1744,6 +1744,10 @@ async function runWhereIsMoneyJob(
       observationIds: [],
       lastError: reason
     });
+    if (!completed) {
+      if (abortController && !abortController.signal.aborted) abortController.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
     return true;
   }
   const currentProgress = execution.getCurrentProgress();
@@ -1787,7 +1791,7 @@ async function runWhereIsMoneyJob(
   } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
   const completed = await deps.completeForensicCheckJob(completion);
   if (!completed) {
-    abortController?.abort();
+    if (abortController && !abortController.signal.aborted) abortController.abort();
     throw new Error("lost_forensic_job_claim");
   }
   await indexWalletIntelligenceBestEffort(deps, job, {
@@ -1819,7 +1823,7 @@ export async function runSingleDeepForensicJobCycle(
           : {};
         const reason = strictScoreBlockedReasonField(strictProvenance.scoreBlockedReason);
         const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
-        await deps.completeForensicCheckJob({
+        const completed = await deps.completeForensicCheckJob({
           id: job.id,
           claimStartedAt: job.startedAt,
           status: "failed",
@@ -1833,6 +1837,10 @@ export async function runSingleDeepForensicJobCycle(
           observationIds: [],
           lastError: reason
         });
+        if (!completed) {
+          if (!abortController.signal.aborted) abortController.abort();
+          throw new Error("lost_forensic_job_claim");
+        }
         return true;
       }
       if (job.progressJson.jobPhase === "provider_limited") {
@@ -1848,7 +1856,7 @@ export async function runSingleDeepForensicJobCycle(
           nullableStringField(targetedIndex.lastError)
         );
         const delivery = await buildForensicJobFailureDelivery(deps, job, mapped.scoreBlockedReason);
-        await deps.completeForensicCheckJob({
+        const completed = await deps.completeForensicCheckJob({
           id: job.id,
           claimStartedAt: job.startedAt,
           status: "failed",
@@ -1864,6 +1872,10 @@ export async function runSingleDeepForensicJobCycle(
           observationIds: [],
           lastError: mapped.scoreBlockedReason
         });
+        if (!completed) {
+          if (!abortController.signal.aborted) abortController.abort();
+          throw new Error("lost_forensic_job_claim");
+        }
         return true;
       }
       return await runWhereIsMoneyJob(deps, job, options, abortController);
@@ -2106,7 +2118,7 @@ export async function runSingleDeepForensicJobCycle(
     } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
     const completed = await deps.completeForensicCheckJob(completion);
     if (!completed) {
-      abortController.abort();
+      if (!abortController.signal.aborted) abortController.abort();
       throw new Error("lost_forensic_job_claim");
     }
     await indexWalletIntelligenceBestEffort(deps, job, {
@@ -2128,7 +2140,7 @@ export async function runSingleDeepForensicJobCycle(
       const reason = strictScoreBlockedReasonFromError(error);
       const strictMessage = strictErrorMessageFromTargetedHistoryError(error);
       const delivery = await buildForensicJobFailureDelivery(deps, job, strictMessage);
-      await deps.completeForensicCheckJob({
+      const completed = await deps.completeForensicCheckJob({
         id: job.id,
         claimStartedAt: job.startedAt,
         status: "failed",
@@ -2145,6 +2157,10 @@ export async function runSingleDeepForensicJobCycle(
         observationIds: [],
         lastError: strictMessage
       });
+      if (!completed) {
+        if (!abortController.signal.aborted) abortController.abort();
+        throw new Error("lost_forensic_job_claim");
+      }
       return true;
     }
     if (job.kind === "where_is_money_check" && error instanceof TargetedHistoryTerminalError) {
@@ -2156,7 +2172,7 @@ export async function runSingleDeepForensicJobCycle(
         lastError: message
       }));
       const delivery = await buildForensicJobFailureDelivery(deps, job, message);
-      await deps.completeForensicCheckJob({
+      const completed = await deps.completeForensicCheckJob({
         id: job.id,
         claimStartedAt: job.startedAt,
         status: "failed",
@@ -2172,10 +2188,14 @@ export async function runSingleDeepForensicJobCycle(
         observationIds: [],
         lastError: message
       });
+      if (!completed) {
+        if (!abortController.signal.aborted) abortController.abort();
+        throw new Error("lost_forensic_job_claim");
+      }
       return true;
     }
     const delivery = await buildForensicJobFailureDelivery(deps, job, message);
-    await deps.completeForensicCheckJob({
+    const completed = await deps.completeForensicCheckJob({
       id: job.id,
       claimStartedAt: job.startedAt,
       status: "failed",
@@ -2185,6 +2205,10 @@ export async function runSingleDeepForensicJobCycle(
       observationIds: [],
       lastError: message
     });
+    if (!completed) {
+      if (!abortController.signal.aborted) abortController.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
     return true;
   } finally {
     await enrichmentHeartbeat?.dispose();

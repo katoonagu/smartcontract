@@ -2634,7 +2634,7 @@ describe("offline TRON USDT index repositories", () => {
     expect(result).toEqual({ claimed: true, value: undefined });
     expect(tx.queries.map((query) => query.sql.trim().toLowerCase())).toEqual([
       "begin",
-      expect.stringContaining("for share"),
+      expect.stringContaining("for update"),
       expect.stringContaining("insert into tron_usdt_transfers"),
       "commit"
     ]);

@@ -2447,7 +2447,11 @@ export async function runSingleIncomingDepositJobCycle(
       observationIds: [],
       lastError: error
     }));
-    if (completed && depositTxHash && watchedWalletId) {
+    if (!completed) {
+      if (!abortController.signal.aborted) abortController.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
+    if (depositTxHash && watchedWalletId) {
       try {
         await timing.measure("mark_alert_failed", () =>
           deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error })
@@ -2571,7 +2575,7 @@ export async function runSingleIncomingDepositJobCycle(
     } satisfies CompleteJobInput;
     const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
     if (!completed) {
-      abortController.abort();
+      if (!abortController.signal.aborted) abortController.abort();
       throw new Error("lost_forensic_job_claim");
     }
     if (!telegramDelivery) {
@@ -2619,17 +2623,19 @@ export async function runSingleIncomingDepositJobCycle(
       observationIds: [],
       lastError: message
     }));
-    if (completed) {
-      try {
-        await timing.measure("mark_alert_failed", () =>
-          deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
-        );
-      } catch (markError) {
-        safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
-          job_id: job.id,
-          error: formatErrorMessage(markError)
-        });
-      }
+    if (!completed) {
+      if (!abortController.signal.aborted) abortController.abort();
+      throw new Error("lost_forensic_job_claim");
+    }
+    try {
+      await timing.measure("mark_alert_failed", () =>
+        deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
+      );
+    } catch (markError) {
+      safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
+        job_id: job.id,
+        error: formatErrorMessage(markError)
+      });
     }
     logTiming("failed");
     return true;

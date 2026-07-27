@@ -1670,23 +1670,29 @@ describe("runSingleIncomingDepositJobCycle", () => {
   });
 
   it("leaves the observed alert untouched when failure completion CAS is lost", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
     const complete = vi.fn(async () => false);
     const markFailed = vi.fn(async () => true);
     const send = vi.fn(async () => undefined);
 
-    await runSingleIncomingDepositJobCycle({
-      claimNextForensicCheckJob: async () => job(validProgressJson),
-      completeForensicCheckJob: complete,
-      markUserAlertSent: vi.fn(async () => true),
-      markUserAlertFailed: markFailed,
-      recordObservedTransactionRisk: vi.fn(async () => true),
-      sendUserAlert: send,
-      buildJobFailurePayload: async () => failurePayload("cas-lost"),
-      formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" as const }),
-      buildReport: async () => {
-        throw new Error("risk builder unavailable");
-      }
-    });
+    try {
+      await expect(runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: async () => job(validProgressJson),
+        completeForensicCheckJob: complete,
+        markUserAlertSent: vi.fn(async () => true),
+        markUserAlertFailed: markFailed,
+        recordObservedTransactionRisk: vi.fn(async () => true),
+        sendUserAlert: send,
+        buildJobFailurePayload: async () => failurePayload("cas-lost"),
+        formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" as const }),
+        buildReport: async () => {
+          throw new Error("risk builder unavailable");
+        }
+      })).rejects.toThrow("lost_forensic_job_claim");
+      expect(abort).toHaveBeenCalledTimes(1);
+    } finally {
+      abort.mockRestore();
+    }
 
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "failed",

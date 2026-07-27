@@ -2824,8 +2824,8 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
     });
   });
 
-  it("holds recovery behind a live FOR SHARE claim guard and rejects worker A after worker B reclaims", async () => {
-    await withRepositoryWaitSchema("claim_for_share_race", async (db) => {
+  it("holds recovery behind a live FOR UPDATE claim guard and rejects worker A after worker B reclaims", async () => {
+    await withRepositoryWaitSchema("claim_for_update_race", async (db) => {
       const id = "claim-for-share-race";
       await db.query("create table claim_side_effects (worker text primary key)");
       await insertRepositoryDeliveryJob(db, { id, status: "queued" });
@@ -2846,29 +2846,46 @@ plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => 
         jobId: id,
         claimStartedAt: tokenA
       }, async (client) => {
+        await client.query("set local statement_timeout = '2s'");
+        await client.query("set local lock_timeout = '2s'");
         enterGuard();
         await guardRelease;
+        await client.query(
+          "update forensic_check_jobs set progress_json = progress_json || '{\"guardedParentUpdate\":true}'::jsonb where id = $1",
+          [id]
+        );
         await client.query("insert into claim_side_effects (worker) values ('A')");
         return "written";
       });
       await guardEntered;
 
+      const recoveryClient = await db.connect();
+      await recoveryClient.query("set statement_timeout = '2s'");
+      await recoveryClient.query("set lock_timeout = '2s'");
       let recoverySettled = false;
-      const recovery = recoverStaleForensicCheckJobs(db, {
+      const recovery = recoverStaleForensicCheckJobs(recoveryClient as unknown as Db, {
         staleRunningBefore: new Date(tokenA.getTime() - 30_000),
         recoveredAt: new Date(tokenA.getTime() + 1),
         maxRetries: 3,
         limit: 10
       }).finally(() => { recoverySettled = true; });
+      let waitError: unknown;
       try {
         await waitForBlockedClaimRecovery(db);
         expect(recoverySettled).toBe(false);
+      } catch (error) {
+        waitError = error;
       } finally {
         releaseGuard();
       }
 
-      await expect(guardedWrite).resolves.toEqual({ claimed: true, value: "written" });
-      await expect(recovery).resolves.toMatchObject({ requeued: [expect.objectContaining({ id })] });
+      try {
+        await expect(guardedWrite).resolves.toEqual({ claimed: true, value: "written" });
+        await expect(recovery).resolves.toMatchObject({ requeued: [expect.objectContaining({ id })] });
+      } finally {
+        recoveryClient.release();
+      }
+      if (waitError) throw waitError;
       await expect(db.query("select worker from claim_side_effects order by worker"))
         .resolves.toMatchObject({ rows: [{ worker: "A" }] });
 

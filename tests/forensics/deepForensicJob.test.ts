@@ -474,7 +474,7 @@ describe("deep forensic job runner", () => {
         getTransaction: legacyGetTransaction,
         selectiveTransactionEnricher,
         listIndexedMovementsByHashes: async () => [],
-        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
       }, { transactionEnrichmentHeartbeatIntervalMs: 1 });
 
       expect(rawProvider).toHaveBeenCalledTimes(1);
@@ -6433,6 +6433,116 @@ describe("deep forensic job runner", () => {
       job_id: "job-1",
       error: "wallet intelligence unavailable"
     }));
+  });
+
+  it.each([
+    ["strict early", {
+      strictProvenanceBenchmark: true,
+      jobPhase: "provider_limited",
+      strictProvenance: { scoreBlockedReason: "provider_error" }
+    }],
+    ["targeted terminal", {
+      jobPhase: "provider_limited",
+      targetedIndex: { statusReason: "partial_provider_inconsistent" }
+    }]
+  ])("aborts once when %s completion loses the claim", async (_branch, progressJson) => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const completeForensicCheckJob = vi.fn(async () => false);
+    const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+    try {
+      const handled = await runSingleDeepForensicJobCycle({
+        claimNextForensicCheckJob: async () => ({
+          ...job(),
+          kind: "where_is_money_check",
+          progressJson
+        }),
+        completeForensicCheckJob,
+        indexWalletIntelligenceJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+    } finally {
+      abort.mockRestore();
+    }
+  });
+
+  it("throws stable claim loss when failure completion CAS is false", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const completeForensicCheckJob = vi.fn(async () => false);
+    const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+    try {
+      await expect(runSingleDeepForensicJobCycle({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        updateForensicCheckJobProgress: async () => {
+          throw new Error("progress_failed");
+        },
+        indexWalletIntelligenceJob,
+        recordRiskEvaluation,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      })).rejects.toThrow("lost_forensic_job_claim");
+
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(recordRiskEvaluation).not.toHaveBeenCalled();
+      expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+    } finally {
+      abort.mockRestore();
+    }
+  });
+
+  it("aborts once when strict partial-result completion loses the claim", async () => {
+    vi.resetModules();
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const runWhereIsMoneyCheck = vi.fn(async () => ({
+      subjectAddress: subject,
+      decision: "REVIEW",
+      riskScore: 55,
+      coverage: { partial: true, notes: [] },
+      originPaths: [],
+      balanceFormingTransfers: []
+    }));
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async () => false);
+      const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => ({
+          ...job(),
+          kind: "where_is_money_check",
+          progressJson: { strictProvenanceBenchmark: true, mode: "wallet_profile" }
+        }),
+        completeForensicCheckJob,
+        indexWalletIntelligenceJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+    } finally {
+      abort.mockRestore();
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
   });
 });
 import { TronWeb } from "tronweb";

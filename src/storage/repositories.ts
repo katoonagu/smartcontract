@@ -468,7 +468,7 @@ async function lockForensicJobClaim(
          status = 'running'
          ${allowWaiting ? "or (status = 'queued' and progress_json->>'jobPhase' = 'waiting_for_targeted_index')" : ""}
        )
-     for share`,
+     for update`,
     [claim.jobId, claim.claimStartedAt]
   );
   return (result.rowCount ?? 0) > 0;

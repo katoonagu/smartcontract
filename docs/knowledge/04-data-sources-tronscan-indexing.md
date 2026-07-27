@@ -40,7 +40,8 @@ history completeness.
 When legacy Where, Incoming, or Deep requests address-history index work, the
 queue upsert is performed in the same transaction as a lock on that job's exact
 claim generation. A reclaimed worker therefore cannot create or reopen index
-work for the newer attempt. Strict inline indexing holds that claim lock through
+work for the newer attempt. Strict inline indexing holds a parent-row
+`FOR UPDATE` claim lock through
 its provider-state and index writes; its benchmark metric patches also compare
 `started_at`. Non-job indexing callers keep their existing
 entrypoint, while immutable provider artifacts may settle unreferenced after a
