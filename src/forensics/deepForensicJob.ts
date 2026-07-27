@@ -2131,6 +2131,12 @@ export async function runSingleDeepForensicJobCycle(
     const message = errorMessage(error);
     if (message === "lost_forensic_job_claim") {
       if (!abortController.signal.aborted) abortController.abort();
+      (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
+        jobId: job.id,
+        jobKind: job.kind,
+        stage: "claimed_job_cycle",
+        error: message
+      });
       return true;
     }
     if (message === "selective_transaction_enrichment_aborted") {

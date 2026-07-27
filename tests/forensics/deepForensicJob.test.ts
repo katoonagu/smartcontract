@@ -6519,6 +6519,47 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("logs ordinary completion claim loss and lets the batch run the next job", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const firstJob = job();
+    const secondJob = { ...job(), id: "job-2" };
+    const queuedJobs = [firstJob, secondJob];
+    const completeForensicCheckJob = vi.fn(async (input: DeepForensicCompletionInput) => input.id !== firstJob.id);
+    const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+    const warn = vi.spyOn(defaultLogger, "warn").mockImplementation(() => undefined);
+    try {
+      const deps: DeepForensicJobRunnerDeps = {
+        claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
+        completeForensicCheckJob,
+        indexWalletIntelligenceJob,
+        recordRiskEvaluation,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      };
+      const handled = await runForensicJobBatch({
+        maxJobs: 2,
+        runSingleCycle: () => runSingleDeepForensicJobCycle(deps)
+      });
+
+      expect(handled).toBe(2);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(2);
+      expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", {
+        jobId: firstJob.id,
+        jobKind: firstJob.kind,
+        stage: "claimed_job_cycle",
+        error: "lost_forensic_job_claim"
+      });
+    } finally {
+      abort.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("aborts once when strict partial-result completion loses the claim", async () => {
     vi.resetModules();
     const abort = vi.spyOn(AbortController.prototype, "abort");
