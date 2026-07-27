@@ -309,9 +309,11 @@ expanding frontier has no percent or ETA.
   canary harness after a pre-authorized immutable deployment receipt and clean
   single-file ESM adapter bundle are verified before runtime import. The
   receipt binds exactly one bundle, its bytes, immutable artifact/Git identity,
-  and the exact Node runtime version; execution uses a `data:` URL made from
-  those verified bytes and permits no runtime module imports except explicit
-  static `node:` built-ins. The canonical isolation
+  the exact Node version/flags, and the exact declared safe `node:` builtin set.
+  Execution uses `vm.SourceTextModule` over those verified bytes in a restricted
+  context with string/WASM code generation disabled. Its custom linker rejects
+  relative, absolute, bare, `data:`, undeclared/unsafe builtin, and all dynamic
+  imports; missing VM-module support fails closed. The canonical isolation
   file is byte-bound separately from its semantic receipt, all start/terminal/
   drain waits are harness-deadlined with abort signals and referenced timers,
   and authoritative

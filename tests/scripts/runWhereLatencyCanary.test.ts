@@ -1,7 +1,10 @@
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalizeArtifactJson,
@@ -26,6 +29,8 @@ const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
 const GIT_COMMIT = "1".repeat(40);
 const GIT_TREE = "2".repeat(40);
+const VM_EXEC_ARGV = ["--experimental-vm-modules", "--import", "tsx"];
+const execFileAsync = promisify(execFile);
 const deploymentIdentity = () => ({
   schema: "where-latency-canary-deployment-identity-v1" as const,
   deploymentReceiptFileSha256: "3".repeat(64),
@@ -35,7 +40,12 @@ const deploymentIdentity = () => ({
   moduleGraphSha256: "5".repeat(64),
   adapterEntrySha256: HEX_B,
   bundleFormat: "single_file_esm_bundle_v1" as const,
-  nodeRuntime: { implementation: "node" as const, version: process.version }
+  nodeRuntime: {
+    implementation: "node" as const,
+    version: process.version,
+    execArgv: [...process.execArgv]
+  },
+  allowedNodeBuiltins: []
 });
 const DATABASE_FINGERPRINT = fingerprintCanonicalArtifact({
   schema: "where-latency-canary-database-v1",
@@ -224,7 +234,8 @@ async function deploymentFixture(
     "deliveryDiagnostics:async()=>({}),jobRuntimeState:async()=>({}),",
     "maxActiveWhereHandlers:()=>0,stopClaimsAndDrain:async()=>{}}}",
     ""
-  ].join("\n")
+  ].join("\n"),
+  options: { execArgv?: string[]; allowedNodeBuiltins?: string[] } = {}
 ) {
   const root = join(directory, "deployment");
   await mkdir(root);
@@ -241,7 +252,12 @@ async function deploymentFixture(
     gitCommit: GIT_COMMIT,
     gitTree: GIT_TREE,
     bundleFormat: "single_file_esm_bundle_v1",
-    nodeRuntime: { implementation: "node", version: process.version },
+    nodeRuntime: {
+      implementation: "node",
+      version: process.version,
+      execArgv: [...(options.execArgv ?? process.execArgv)]
+    },
+    allowedNodeBuiltins: [...(options.allowedNodeBuiltins ?? [])],
     moduleGraph,
     moduleGraphSha256: fingerprintCanonicalArtifact(moduleGraph),
     adapterEntryPath: "adapter.mjs",
@@ -263,6 +279,32 @@ async function deploymentFixture(
     expectedDeploymentReceiptFileSha256: createHash("sha256").update(receiptBytes).digest("hex"),
     expectedImmutableArtifactDigest: payload.immutableArtifactDigest
   };
+}
+
+async function runVmChild(
+  directory: string,
+  runnerSource: string,
+  environment: Record<string, string>,
+  experimental = true
+) {
+  const runnerPath = join(directory, `vm-runner-${randomUUID()}.mjs`);
+  await writeFile(runnerPath, runnerSource, "utf8");
+  const args = experimental
+    ? [...VM_EXEC_ARGV, runnerPath]
+    : ["--import", "tsx", runnerPath];
+  const result = await execFileAsync(process.execPath, args, {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CANARY_SCRIPT_URL: pathToFileURL(
+        resolve("scripts/runWhereLatencyCanary.ts")
+      ).href,
+      ...environment
+    },
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  });
+  return JSON.parse(result.stdout.trim()) as unknown;
 }
 
 describe("Where latency canary", () => {
@@ -1009,44 +1051,143 @@ describe("Where latency canary", () => {
 
   it("executes verified bundle bytes even if the adapter path changes after read", async () => {
     const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
-    const fixture = await deploymentFixture(directory);
-    const loaded = await loadVerifiedWhereLatencyRuntimeBridge({
+    const fixture = await deploymentFixture(directory, undefined, {
+      execArgv: VM_EXEC_ARGV
+    });
+    const payload = {
       config: fixture.unboundConfig,
       modulePath: fixture.adapterPath,
       deploymentReceiptPath: fixture.receiptPath,
       expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
       expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
-      inspectCheckout: vi.fn(async () => {
-        await writeFile(fixture.adapterPath, "throw new Error('swapped path executed');\n", "utf8");
-        return {
-        commit: GIT_COMMIT,
-        tree: GIT_TREE,
-        status: ""
-        };
-      })
+      gitCommit: GIT_COMMIT,
+      gitTree: GIT_TREE
+    };
+    const result = await runVmChild(directory, `
+      import { writeFile } from "node:fs/promises";
+      const api = await import(process.env.CANARY_SCRIPT_URL);
+      const input = JSON.parse(Buffer.from(process.env.PROBE_INPUT, "base64").toString("utf8"));
+      const loaded = await api.loadVerifiedWhereLatencyRuntimeBridge({
+        ...input,
+        inspectCheckout: async () => {
+          await writeFile(input.modulePath, "throw new Error('swapped path executed');\\n", "utf8");
+          return { commit: input.gitCommit, tree: input.gitTree, status: "" };
+        }
+      });
+      process.stdout.write(JSON.stringify({
+        marker: loaded.runtime.marker,
+        active: loaded.runtime.maxActiveWhereHandlers(),
+        lanes: await loaded.runtime.laneDiagnostics(),
+        nodeRuntime: loaded.deploymentIdentity.nodeRuntime,
+        allowedNodeBuiltins: loaded.deploymentIdentity.allowedNodeBuiltins
+      }));
+    `, {
+      PROBE_INPUT: Buffer.from(JSON.stringify(payload)).toString("base64")
     });
-    expect((loaded.runtime as WhereLatencyCanaryRuntime & { marker: string }).marker)
-      .toBe("verified-bundle");
+    expect(result).toEqual({
+      marker: "verified-bundle",
+      active: 0,
+      lanes: {},
+      nodeRuntime: {
+        implementation: "node",
+        version: process.version,
+        execArgv: VM_EXEC_ARGV
+      },
+      allowedNodeBuiltins: []
+    });
   });
 
-  it.each([
-    ["relative", "import './dependency.mjs';\nexport const adapter = true;\n"],
-    ["bare", "import 'some-package';\nexport const adapter = true;\n"],
-    ["dynamic", "export const adapter = import('node:fs');\n"]
-  ])("rejects %s runtime imports before invoking the importer", async (_name, source) => {
-    const directory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
-    const fixture = await deploymentFixture(directory, source);
-    const importModule = vi.fn();
-    await expect(loadVerifiedWhereLatencyRuntimeBridge({
-      config: fixture.unboundConfig,
-      modulePath: fixture.adapterPath,
-      deploymentReceiptPath: fixture.receiptPath,
-      expectedDeploymentReceiptFileSha256: fixture.expectedDeploymentReceiptFileSha256,
-      expectedImmutableArtifactDigest: fixture.expectedImmutableArtifactDigest,
-      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
-      importModule
-    })).rejects.toThrow("where_latency_canary_bundle_import_forbidden");
-    expect(importModule).not.toHaveBeenCalled();
+  it("enforces VM linker, dynamic-import, code-generation, and global boundaries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-vm-"));
+    const cases = [
+      {
+        name: "safe-builtin",
+        allowed: ["node:buffer"],
+        source: "import { Buffer as B } from 'node:buffer'; export function createWhereLatencyCanaryRuntime(){ return { marker: B.from('safe').toString() }; }"
+      },
+      { name: "create-require", allowed: [], source: "import { createRequire } from 'node:module'; export function createWhereLatencyCanaryRuntime(){ return createRequire(import.meta.url); }" },
+      { name: "relative", allowed: [], source: "import './dependency.mjs'; export function createWhereLatencyCanaryRuntime(){}" },
+      { name: "bare", allowed: [], source: "import 'some-package'; export function createWhereLatencyCanaryRuntime(){}" },
+      { name: "data", allowed: [], source: "import 'data:text/javascript,export default 1'; export function createWhereLatencyCanaryRuntime(){}" },
+      { name: "dynamic", allowed: [], source: "export async function createWhereLatencyCanaryRuntime(){ return import('node:buffer'); }" },
+      { name: "process", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return process.getBuiltinModule('fs'); }" },
+      { name: "eval", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return eval('({})'); }" },
+      { name: "function", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return Function('return process')(); }" },
+      { name: "global-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return globalThis.constructor.constructor('return process')(); }" },
+      { name: "global-host", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return global.process; }" },
+      { name: "buffer-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return Buffer.constructor('return process')(); }" },
+      { name: "url-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return URL.constructor('return process')(); }" },
+      { name: "abort-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return AbortController.constructor('return process')(); }" },
+      { name: "timer-host-escape", allowed: [], source: "export function createWhereLatencyCanaryRuntime(){ return setTimeout.constructor('return process')(); }" },
+      { name: "unused-declaration", allowed: ["node:buffer"], source: "export function createWhereLatencyCanaryRuntime(){ return {}; }" }
+    ];
+    const result = await runVmChild(directory, `
+      const api = await import(process.env.CANARY_SCRIPT_URL);
+      const cases = JSON.parse(Buffer.from(process.env.PROBE_CASES, "base64").toString("utf8"));
+      const results = [];
+      for (const item of cases) {
+        try {
+          const runtime = await api.createWhereLatencyRuntimeFromVerifiedBundle({
+            bytes: Buffer.from(item.source),
+            identifier: "where-latency-canary:test:" + item.name,
+            allowedNodeBuiltins: item.allowed,
+            factoryConfig: {}
+          });
+          results.push({ name: item.name, ok: true, marker: runtime.marker ?? null });
+        } catch (error) {
+          results.push({ name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      process.stdout.write(JSON.stringify(results));
+    `, {
+      PROBE_CASES: Buffer.from(JSON.stringify(cases)).toString("base64")
+    }) as Array<{ name: string; ok: boolean; marker?: string; error?: string }>;
+    expect(result.find(({ name }) => name === "safe-builtin"))
+      .toMatchObject({ ok: true, marker: "safe" });
+    const expectedErrors: Record<string, RegExp> = {
+      "create-require": /where_latency_canary_bundle_builtin_forbidden/,
+      relative: /where_latency_canary_bundle_import_forbidden/,
+      bare: /where_latency_canary_bundle_import_forbidden/,
+      data: /where_latency_canary_bundle_import_forbidden/,
+      dynamic: /where_latency_canary_dynamic_import_forbidden/,
+      process: /process is not defined/,
+      eval: /Code generation from strings disallowed/,
+      function: /Code generation from strings disallowed/,
+      "global-escape": /Code generation from strings disallowed/,
+      "global-host": /global is not defined/,
+      "buffer-host-escape": /Buffer\.constructor is not a function/,
+      "url-host-escape": /URL\.constructor is not a function/,
+      "abort-host-escape": /AbortController\.constructor is not a function/,
+      "timer-host-escape": /(setTimeout\.constructor is not a function|Code generation from strings disallowed)/,
+      "unused-declaration": /where_latency_canary_bundle_builtin_binding_mismatch/
+    };
+    for (const [name, error] of Object.entries(expectedErrors)) {
+      const entry = result.find((candidate) => candidate.name === name);
+      expect(entry, name).toMatchObject({ ok: false });
+      expect(entry?.error, name).toMatch(error);
+    }
+  });
+
+  it("fails closed when vm.SourceTextModule is unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-vm-"));
+    const result = await runVmChild(directory, `
+      const api = await import(process.env.CANARY_SCRIPT_URL);
+      try {
+        await api.createWhereLatencyRuntimeFromVerifiedBundle({
+          bytes: Buffer.from("export function createWhereLatencyCanaryRuntime(){ return {}; }"),
+          identifier: "where-latency-canary:test:unavailable",
+          allowedNodeBuiltins: [],
+          factoryConfig: {}
+        });
+        process.stdout.write(JSON.stringify({ ok: true }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ ok: false, error: error.message }));
+      }
+    `, {}, false);
+    expect(result).toEqual({
+      ok: false,
+      error: "where_latency_canary_vm_modules_unavailable"
+    });
   });
 
   it("rejects wrong bundle format, multi-file graph, and dirty checkout before runtime import", async () => {
@@ -1064,17 +1205,14 @@ describe("Where latency canary", () => {
     };
     const graphBytes = `${canonicalizeArtifactJson(rewritten)}\n`;
     await writeFile(graphFixture.receiptPath, graphBytes, "utf8");
-    const graphImporter = vi.fn();
     await expect(loadVerifiedWhereLatencyRuntimeBridge({
       config: graphFixture.unboundConfig,
       modulePath: graphFixture.adapterPath,
       deploymentReceiptPath: graphFixture.receiptPath,
       expectedDeploymentReceiptFileSha256: createHash("sha256").update(graphBytes).digest("hex"),
       expectedImmutableArtifactDigest: graphFixture.expectedImmutableArtifactDigest,
-      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
-      importModule: graphImporter
+      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" }))
     })).rejects.toThrow("where_latency_canary_bundle_format_invalid");
-    expect(graphImporter).not.toHaveBeenCalled();
 
     const multiDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const multiFixture = await deploymentFixture(multiDirectory);
@@ -1095,21 +1233,17 @@ describe("Where latency canary", () => {
     };
     const multiBytes = `${canonicalizeArtifactJson(multiRewritten)}\n`;
     await writeFile(multiFixture.receiptPath, multiBytes, "utf8");
-    const multiImporter = vi.fn();
     await expect(loadVerifiedWhereLatencyRuntimeBridge({
       config: multiFixture.unboundConfig,
       modulePath: multiFixture.adapterPath,
       deploymentReceiptPath: multiFixture.receiptPath,
       expectedDeploymentReceiptFileSha256: createHash("sha256").update(multiBytes).digest("hex"),
       expectedImmutableArtifactDigest: multiFixture.expectedImmutableArtifactDigest,
-      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" })),
-      importModule: multiImporter
+      inspectCheckout: vi.fn(async () => ({ commit: GIT_COMMIT, tree: GIT_TREE, status: "" }))
     })).rejects.toThrow("where_latency_canary_bundle_graph_must_be_single_file");
-    expect(multiImporter).not.toHaveBeenCalled();
 
     const dirtyDirectory = await mkdtemp(join(tmpdir(), "where-canary-deployment-"));
     const dirtyFixture = await deploymentFixture(dirtyDirectory);
-    const dirtyImporter = vi.fn();
     await expect(loadVerifiedWhereLatencyRuntimeBridge({
       config: dirtyFixture.unboundConfig,
       modulePath: dirtyFixture.adapterPath,
@@ -1120,9 +1254,7 @@ describe("Where latency canary", () => {
         commit: GIT_COMMIT,
         tree: GIT_TREE,
         status: " M adapter.mjs"
-      })),
-      importModule: dirtyImporter
+      }))
     })).rejects.toThrow("where_latency_canary_deployment_checkout_not_immutable");
-    expect(dirtyImporter).not.toHaveBeenCalled();
   });
 });

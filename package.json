@@ -18,7 +18,7 @@
     "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
     "forensic:where-latency:capture": "node --import tsx scripts/captureWhereLatencyReplay.ts",
     "forensic:where-latency:replay": "node --import tsx scripts/captureWhereLatencyReplay.ts replay",
-    "forensic:where-latency:canary": "node --import tsx scripts/runWhereLatencyCanary.ts",
+    "forensic:where-latency:canary": "node --experimental-vm-modules --import tsx scripts/runWhereLatencyCanary.ts",
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
     "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts",
     "golden:v2": "node --import tsx scripts/tronUsdtGoldenPilotV2.ts",

@@ -350,15 +350,23 @@ canonical deployment receipt by its raw-file SHA-256. The receipt binds an
 immutable image/artifact digest, clean Git commit and tree, a single-entry
 module graph and graph SHA-256, and the adapter entry path/hash. Its format must be
 `single_file_esm_bundle_v1`: the graph contains exactly that one self-contained
-adapter bundle plus the explicit `node` implementation and exact Node version
-identity. Relative, absolute, bare-package, CommonJS `require`, and dynamic
-imports are forbidden; only explicit static `node:` built-in imports are
-allowed. The adapter path is resolved under the canonical deployment root and
+adapter bundle plus the explicit `node` implementation, exact Node version and
+`execArgv`, and a sorted exact list of permitted `node:` built-ins. The list
+must be a subset of the harness hardcoded safe set; `node:module`, `process`,
+`fs`, `vm`, `child_process`, `worker_threads`, and `inspector` are never in that
+set. Relative, absolute, bare-package, `data:`, and dynamic imports are rejected
+by the module linker; only declared safe static `node:` imports are linked.
+The adapter path is resolved under the canonical deployment root and
 its bytes are read and hashed exactly once before execution. A missing,
 symlink-escaping, non-canonical, wrong-format, multi-file, wrong-Node, or dirty
 checkout fails before adapter code can execute. The verified bytes, rather than
-the mutable file path, are then imported through a `data:` URL. The deployment,
-bundle, Node-runtime, and adapter identities are bound into every receipt. The
+the mutable file path, are evaluated as a `vm.SourceTextModule` in a dedicated
+context with string/WASM code generation disabled, no `process`, `require`, or
+host `global`, membrane-wrapped Buffer/URL/Abort/text/timer capabilities, and
+an always-rejecting dynamic-import hook. The npm command
+supplies `--experimental-vm-modules`; absence of `SourceTextModule` fails
+closed. The deployment, bundle, Node flags/version, allowed-builtins, and
+adapter identities are bound into every receipt and runtime attestation. The
 adapter must return an observed runtime attestation: cycle registry, instance
 label, runtime-config SHA-256, database fingerprint, Where/Deep concurrency,
 scheduler capacity, and SHA-256 binding identities for the Where pump, Deep

@@ -5,8 +5,8 @@ import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import * as vm from "node:vm";
 import { TronWeb } from "tronweb";
-import ts from "typescript";
 import { loadConfig } from "../src/config";
 import {
   canonicalizeArtifactJson,
@@ -30,6 +30,14 @@ const DEEP_RESIDUAL_ALLOWED_CYCLES = [
 ] as const;
 const ISOLATION_SCHEMA = "where-latency-canary-isolation-v1";
 const RUN_SCHEMA = "where-latency-canary-run-v1";
+const SAFE_CANARY_NODE_BUILTINS = [
+  "node:assert", "node:assert/strict", "node:buffer", "node:crypto",
+  "node:dns", "node:dns/promises", "node:events", "node:http", "node:https",
+  "node:net", "node:querystring", "node:stream", "node:stream/promises",
+  "node:string_decoder", "node:timers", "node:timers/promises", "node:tls",
+  "node:url", "node:util", "node:zlib"
+] as const;
+const SAFE_CANARY_NODE_BUILTIN_SET = new Set<string>(SAFE_CANARY_NODE_BUILTINS);
 
 type AllowedCycle = typeof ALLOWED_CYCLES[number];
 
@@ -48,7 +56,8 @@ export type WhereLatencyCanaryDeploymentIdentity = {
   moduleGraphSha256: string;
   adapterEntrySha256: string;
   bundleFormat: "single_file_esm_bundle_v1";
-  nodeRuntime: { implementation: "node"; version: string };
+  nodeRuntime: { implementation: "node"; version: string; execArgv: string[] };
+  allowedNodeBuiltins: string[];
 };
 
 export type WhereLatencyCanaryRuntimeAttestation = {
@@ -401,12 +410,26 @@ function assertAdapterIdentity(value: WhereLatencyCanaryAdapterIdentity): void {
   assertSha256(value.moduleContentSha256, "where_latency_canary_adapter_identity_invalid");
 }
 
+function canonicalAllowedNodeBuiltins(input: readonly string[], code: string): string[] {
+  if (!Array.isArray(input) || input.some((value) => !SAFE_CANARY_NODE_BUILTIN_SET.has(value))) {
+    throw new Error(code);
+  }
+  const canonical = [...new Set(input)].sort();
+  if (canonicalizeArtifactJson(canonical) !== canonicalizeArtifactJson(input)) {
+    throw new Error(code);
+  }
+  return canonical;
+}
+
 function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): void {
   if (
     value?.schema !== "where-latency-canary-deployment-identity-v1" ||
     value.bundleFormat !== "single_file_esm_bundle_v1" ||
     value.nodeRuntime?.implementation !== "node" ||
     value.nodeRuntime.version !== process.version ||
+    canonicalizeArtifactJson(value.nodeRuntime.execArgv) !==
+      canonicalizeArtifactJson(process.execArgv) ||
+    !Array.isArray(value.allowedNodeBuiltins) ||
     !/^sha256:[a-f0-9]{64}$/.test(value.immutableArtifactDigest) ||
     !/^[a-f0-9]{40}$/.test(value.gitCommit) ||
     !/^[a-f0-9]{40}$/.test(value.gitTree)
@@ -416,6 +439,10 @@ function assertDeploymentIdentity(value: WhereLatencyCanaryDeploymentIdentity): 
     value.moduleGraphSha256,
     value.adapterEntrySha256
   ]) assertSha256(identity, "where_latency_canary_deployment_identity_invalid");
+  canonicalAllowedNodeBuiltins(
+    value.allowedNodeBuiltins,
+    "where_latency_canary_deployment_identity_invalid"
+  );
 }
 
 function databaseFingerprint(databaseUrl: string): string {
@@ -1518,7 +1545,8 @@ type DeploymentReceiptPayload = {
   gitCommit: string;
   gitTree: string;
   bundleFormat: "single_file_esm_bundle_v1";
-  nodeRuntime: { implementation: "node"; version: string };
+  nodeRuntime: { implementation: "node"; version: string; execArgv: string[] };
+  allowedNodeBuiltins: string[];
   moduleGraph: DeploymentModuleGraphEntry[];
   moduleGraphSha256: string;
   adapterEntryPath: string;
@@ -1526,12 +1554,6 @@ type DeploymentReceiptPayload = {
   runtimeConfigIdentity: string;
 };
 type DeploymentReceipt = DeploymentReceiptPayload & { sha256: string };
-
-type RuntimeAdapterModule = {
-  createWhereLatencyCanaryRuntime?: (
-    input: WhereLatencyCanaryRuntimeFactoryConfig
-  ) => WhereLatencyCanaryRuntime | Promise<WhereLatencyCanaryRuntime>;
-};
 
 const execFileAsync = promisify(execFile);
 
@@ -1569,6 +1591,9 @@ function parseDeploymentReceipt(value: unknown): DeploymentReceipt {
     typeof receipt.bundleFormat !== "string" ||
     receipt.nodeRuntime?.implementation !== "node" ||
     typeof receipt.nodeRuntime.version !== "string" || !receipt.nodeRuntime.version ||
+    !Array.isArray(receipt.nodeRuntime.execArgv) ||
+    receipt.nodeRuntime.execArgv.some((value) => typeof value !== "string") ||
+    !Array.isArray(receipt.allowedNodeBuiltins) ||
     !Array.isArray(receipt.moduleGraph) || receipt.moduleGraph.length < 1 ||
     typeof receipt.adapterEntryPath !== "string"
   ) throw new Error("where_latency_canary_deployment_receipt_invalid");
@@ -1594,38 +1619,147 @@ function assertContained(root: string, child: string): void {
   }
 }
 
-function assertSingleFileBundleImports(bytes: Buffer): void {
-  const source = ts.createSourceFile(
-    "where-latency-canary-adapter.mjs",
-    bytes.toString("utf8"),
-    ts.ScriptTarget.ES2022,
-    true,
-    ts.ScriptKind.JS
+function createVmCapabilityMembrane(): {
+  wrap: (value: unknown) => unknown;
+} {
+  const wrapped = new WeakMap<object, unknown>();
+  const unwrapped = new WeakMap<object, object>();
+  const unwrap = (value: unknown) =>
+    typeof value === "object" && value !== null || typeof value === "function"
+      ? unwrapped.get(value as object) ?? value
+      : value;
+  const wrap = (value: unknown): unknown => {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+      return value;
+    }
+    const source = value as object;
+    const existing = wrapped.get(source);
+    if (existing) return existing;
+    let facade: object;
+    const handler: ProxyHandler<object> = {
+      get(_target, property) {
+        if (property === "constructor" || property === "prototype" || property === "__proto__") {
+          return undefined;
+        }
+        return wrap(Reflect.get(source, property, source));
+      },
+      set(_target, property, next) {
+        return Reflect.set(source, property, unwrap(next), source);
+      },
+      getPrototypeOf() {
+        return null;
+      },
+      preventExtensions() {
+        return false;
+      }
+    };
+    if (typeof value === "function") {
+      const callable = function vmCapability(this: unknown, ...args: unknown[]) {
+        try {
+          return wrap(Reflect.apply(value, unwrap(this), args.map(unwrap)));
+        } catch (error) {
+          throw wrap(error);
+        }
+      };
+      Object.setPrototypeOf(callable, null);
+      handler.construct = (_target, args, newTarget) => {
+        try {
+          return wrap(Reflect.construct(value, args.map(unwrap), unwrap(newTarget) as Function)) as object;
+        } catch (error) {
+          throw wrap(error);
+        }
+      };
+      facade = new Proxy(callable, handler as ProxyHandler<typeof callable>);
+    } else {
+      facade = new Proxy(Object.create(null) as object, handler);
+    }
+    wrapped.set(source, facade);
+    unwrapped.set(facade, source);
+    return facade;
+  };
+  return { wrap };
+}
+
+export async function createWhereLatencyRuntimeFromVerifiedBundle(input: {
+  bytes: Buffer;
+  identifier: string;
+  allowedNodeBuiltins: readonly string[];
+  factoryConfig: WhereLatencyCanaryRuntimeFactoryConfig;
+}): Promise<WhereLatencyCanaryRuntime> {
+  if (
+    typeof vm.SourceTextModule !== "function" ||
+    typeof vm.SyntheticModule !== "function"
+  ) throw new Error("where_latency_canary_vm_modules_unavailable");
+  const declaredBuiltins = canonicalAllowedNodeBuiltins(
+    input.allowedNodeBuiltins,
+    "where_latency_canary_allowed_builtins_invalid"
   );
-  const diagnostics = (source as ts.SourceFile & {
-    parseDiagnostics?: readonly ts.Diagnostic[];
-  }).parseDiagnostics ?? [];
-  if (diagnostics.length > 0) throw new Error("where_latency_canary_bundle_syntax_invalid");
-  const assertSpecifier = (specifier: ts.Expression | undefined) => {
-    if (!specifier || !ts.isStringLiteralLike(specifier) || !specifier.text.startsWith("node:")) {
+  const membrane = createVmCapabilityMembrane();
+  const sandbox = Object.assign(Object.create(null) as Record<string, unknown>, {
+    Buffer: membrane.wrap(Buffer),
+    URL: membrane.wrap(URL),
+    URLSearchParams: membrane.wrap(URLSearchParams),
+    AbortController: membrane.wrap(AbortController),
+    AbortSignal: membrane.wrap(AbortSignal),
+    TextEncoder: membrane.wrap(TextEncoder),
+    TextDecoder: membrane.wrap(TextDecoder),
+    setTimeout: membrane.wrap(setTimeout),
+    clearTimeout: membrane.wrap(clearTimeout),
+    setInterval: membrane.wrap(setInterval),
+    clearInterval: membrane.wrap(clearInterval),
+    queueMicrotask: membrane.wrap(queueMicrotask)
+  });
+  const context = vm.createContext(sandbox, {
+    name: "where-latency-canary-adapter",
+    codeGeneration: { strings: false, wasm: false }
+  });
+  sandbox.__whereCanaryConfigJson = canonicalizeArtifactJson(input.factoryConfig);
+  const factoryConfig = vm.runInContext(
+    "JSON.parse(__whereCanaryConfigJson)",
+    context,
+    { timeout: 1_000 }
+  ) as WhereLatencyCanaryRuntimeFactoryConfig;
+  delete sandbox.__whereCanaryConfigJson;
+  const linkedBuiltins = new Set<string>();
+  const module = new vm.SourceTextModule(input.bytes.toString("utf8"), {
+    context,
+    identifier: input.identifier,
+    initializeImportMeta(meta) {
+      meta.url = input.identifier;
+      Object.freeze(meta);
+    },
+    importModuleDynamically: async () => {
+      throw new Error("where_latency_canary_dynamic_import_forbidden");
+    }
+  });
+  await module.link(async (specifier) => {
+    if (!specifier.startsWith("node:")) {
       throw new Error("where_latency_canary_bundle_import_forbidden");
     }
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      if (node.moduleSpecifier) assertSpecifier(node.moduleSpecifier);
-    } else if (ts.isImportEqualsDeclaration(node)) {
-      throw new Error("where_latency_canary_bundle_import_forbidden");
-    } else if (
-      ts.isCallExpression(node) &&
-      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
-    ) {
-      throw new Error("where_latency_canary_bundle_import_forbidden");
+    if (!SAFE_CANARY_NODE_BUILTIN_SET.has(specifier)) {
+      throw new Error("where_latency_canary_bundle_builtin_forbidden");
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+    if (!declaredBuiltins.includes(specifier)) {
+      throw new Error("where_latency_canary_bundle_builtin_not_declared");
+    }
+    linkedBuiltins.add(specifier);
+    const namespace = await import(specifier);
+    const exportNames = Object.getOwnPropertyNames(namespace);
+    return new vm.SyntheticModule(exportNames, function setBuiltinExports() {
+      for (const name of exportNames) this.setExport(name, membrane.wrap(namespace[name]));
+    }, { context, identifier: `where-latency-canary-builtin:${specifier}` });
+  });
+  if (
+    canonicalizeArtifactJson([...linkedBuiltins].sort()) !==
+    canonicalizeArtifactJson(declaredBuiltins)
+  ) throw new Error("where_latency_canary_bundle_builtin_binding_mismatch");
+  await module.evaluate({ timeout: 5_000 });
+  const factory = (module.namespace as Record<string, unknown>)
+    .createWhereLatencyCanaryRuntime;
+  if (typeof factory !== "function") {
+    throw new Error("where_latency_canary_runtime_adapter_invalid");
+  }
+  return await factory(factoryConfig) as WhereLatencyCanaryRuntime;
 }
 
 export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
@@ -1634,7 +1768,6 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
   deploymentReceiptPath: string;
   expectedDeploymentReceiptFileSha256: string;
   expectedImmutableArtifactDigest: string;
-  importModule?: (specifier: string) => Promise<RuntimeAdapterModule>;
   inspectCheckout?: (deploymentRoot: string) => Promise<{
     commit: string;
     tree: string;
@@ -1680,12 +1813,10 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
   if (receipt.bundleFormat !== "single_file_esm_bundle_v1") {
     throw new Error("where_latency_canary_bundle_format_invalid");
   }
-  if (
-    receipt.nodeRuntime.implementation !== "node" ||
-    receipt.nodeRuntime.version !== process.version
-  ) {
-    throw new Error("where_latency_canary_node_runtime_identity_mismatch");
-  }
+  const allowedNodeBuiltins = canonicalAllowedNodeBuiltins(
+    receipt.allowedNodeBuiltins,
+    "where_latency_canary_allowed_builtins_invalid"
+  );
   if (receipt.moduleGraph.length !== 1) {
     throw new Error("where_latency_canary_bundle_graph_must_be_single_file");
   }
@@ -1720,12 +1851,20 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
   if (actualAdapterSha256 !== adapterEntry.sha256) {
     throw new Error("where_latency_canary_deployment_graph_file_changed");
   }
-  assertSingleFileBundleImports(adapterBytes);
   const checkout = await (input.inspectCheckout ?? inspectGitCheckout)(deploymentRoot);
   if (
     checkout.commit !== receipt.gitCommit || checkout.tree !== receipt.gitTree ||
     checkout.status !== ""
   ) throw new Error("where_latency_canary_deployment_checkout_not_immutable");
+  if (
+    receipt.nodeRuntime.implementation !== "node" ||
+    receipt.nodeRuntime.version !== process.version ||
+    canonicalizeArtifactJson(receipt.nodeRuntime.execArgv) !==
+      canonicalizeArtifactJson(process.execArgv) ||
+    !process.execArgv.includes("--experimental-vm-modules")
+  ) {
+    throw new Error("where_latency_canary_node_runtime_identity_mismatch");
+  }
 
   const deploymentIdentity: WhereLatencyCanaryDeploymentIdentity = {
     schema: "where-latency-canary-deployment-identity-v1",
@@ -1736,22 +1875,22 @@ export async function loadVerifiedWhereLatencyRuntimeBridge(input: {
     moduleGraphSha256: receipt.moduleGraphSha256,
     adapterEntrySha256: receipt.adapterEntrySha256,
     bundleFormat: receipt.bundleFormat,
-    nodeRuntime: { ...receipt.nodeRuntime }
+    nodeRuntime: {
+      ...receipt.nodeRuntime,
+      execArgv: [...receipt.nodeRuntime.execArgv]
+    },
+    allowedNodeBuiltins
   };
   const adapterIdentity: WhereLatencyCanaryAdapterIdentity = {
     schema: "where-latency-canary-adapter-v1",
     moduleRealPath: adapterRealPath,
     moduleContentSha256: receipt.adapterEntrySha256
   };
-  const imported = await (input.importModule ?? ((specifier) => import(specifier)))(
-    `data:text/javascript;base64,${adapterBytes.toString("base64")}#sha256=${receipt.adapterEntrySha256}`
-  );
-  if (typeof imported.createWhereLatencyCanaryRuntime !== "function") {
-    throw new Error("where_latency_canary_runtime_adapter_invalid");
-  }
-  const runtime = await imported.createWhereLatencyCanaryRuntime({
-    ...input.config,
-    deploymentIdentity
+  const runtime = await createWhereLatencyRuntimeFromVerifiedBundle({
+    bytes: adapterBytes,
+    identifier: `where-latency-canary:adapter:${receipt.adapterEntrySha256}`,
+    allowedNodeBuiltins,
+    factoryConfig: { ...input.config, deploymentIdentity }
   });
   for (const method of [
     "runtimeAttestation", "schedulerIsolationDiagnostics", "schedulerDiagnostics",
