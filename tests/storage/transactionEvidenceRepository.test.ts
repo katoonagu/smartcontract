@@ -360,6 +360,61 @@ describe("transaction evidence repository", () => {
       .rejects.toThrow("transaction_provider_evidence_not_permanent");
   });
 
+  it("preserves indexed SUCCESS fields separately from a finalized raw FAILED result", async () => {
+    const identity = rawIdentity();
+    const payload = rawPayload(HASH_A, "FAILED");
+    const indexedMovement = movementWitness(HASH_A, "confirmed_success");
+    const evidence: TronTransactionProviderEvidenceV1 = {
+      ...identity,
+      fetchedAt: "2026-07-26T12:00:00.000Z",
+      finality: {
+        status: "confirmed_failed",
+        witnessKind: "indexed_tron_usdt_transfer",
+        witnessSha256: transactionProviderFinalityWitnessSha256({
+          identity,
+          status: "confirmed_failed",
+          payload,
+          movement: indexedMovement
+        }),
+        movement: indexedMovement
+      },
+      payloadSha256: createHash("sha256").update(canonicalizeArtifactJson(payload)).digest("hex"),
+      payload
+    };
+    await expect(saveTransactionProviderEvidence(memoryDb().db, evidence)).resolves.toMatchObject({
+      evidence: {
+        finality: {
+          status: "confirmed_failed",
+          movement: {
+            confirmed: true,
+            reverted: false,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS"
+          }
+        },
+        payload: { ret: [{ contractRet: "FAILED" }] }
+      }
+    });
+  });
+
+  it.each([
+    ["unconfirmed", { confirmed: false }],
+    ["unknown reverted", { reverted: undefined }],
+    ["unknown contract result", { contractRet: "" }],
+    ["unknown final result", { finalResult: "" }],
+    ["internally conflicting results", { contractRet: "SUCCESS", finalResult: "FAILED" }]
+  ])("rejects an incomplete or incoherent indexed movement witness: %s", async (_label, overrides) => {
+    const identity = rawIdentity();
+    const payload = rawPayload(HASH_A, "FAILED");
+    const movement = { ...movementWitness(HASH_A, "confirmed_success"), ...overrides } as TransactionProviderMovementWitnessV1;
+    expect(() => transactionProviderFinalityWitnessSha256({
+      identity,
+      status: "confirmed_failed",
+      payload,
+      movement
+    })).toThrow("transaction_provider_evidence_not_permanent");
+  });
+
   it("fails closed when an immutable row has a different source, identity, or payload hash", async () => {
     const evidence = rawEvidence();
     const id = transactionProviderEvidenceId(rawIdentity());
@@ -540,6 +595,41 @@ describe("transaction evidence repository", () => {
       triggerCodes: [],
       providerEvidenceIds: [providerEvidenceId],
       movementWitnessSha256: WITNESS
+    })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
+  });
+
+  it("never records plain raw proof when endpoint SUCCESS contradicts indexed failed finality", async () => {
+    const store = memoryDb();
+    const identity = rawIdentity();
+    const payload = rawPayload(HASH_A, "SUCCESS");
+    const indexedMovement = movementWitness(HASH_A, "confirmed_failed");
+    const evidence: TronTransactionProviderEvidenceV1 = {
+      ...identity,
+      fetchedAt: "2026-07-26T12:00:00.000Z",
+      finality: {
+        status: "confirmed_success",
+        witnessKind: "indexed_tron_usdt_transfer",
+        witnessSha256: transactionProviderFinalityWitnessSha256({
+          identity,
+          status: "confirmed_success",
+          payload,
+          movement: indexedMovement
+        }),
+        movement: indexedMovement
+      },
+      payloadSha256: createHash("sha256").update(canonicalizeArtifactJson(payload)).digest("hex"),
+      payload
+    };
+    const providerEvidenceId = (await saveTransactionProviderEvidence(store.db, evidence)).id;
+    await expect(saveTransactionEnrichmentDecisionEvidence(store.db, {
+      version: "transaction-enrichment-decision-evidence-v1",
+      policyVersion: "selective-transaction-enrichment-v1",
+      chain: "tron",
+      txHash: HASH_A,
+      decision: "plain_usdt_raw_proven",
+      triggerCodes: [],
+      providerEvidenceIds: [providerEvidenceId],
+      movementWitnessSha256: evidence.finality.witnessSha256
     })).rejects.toThrow("transaction_enrichment_decision_evidence_invalid");
   });
 

@@ -313,37 +313,6 @@ function movementWitness(movement: ForensicRouteEdge): TransactionProviderMoveme
   };
 }
 
-function rawProviderMovementWitness(
-  movement: ForensicRouteEdge,
-  status: TronTransactionProviderEvidenceV1["finality"]["status"]
-): TransactionProviderMovementWitnessV1 | null {
-  if (
-    !forensicRouteEdgeHasExactMovementIdentity(movement) ||
-    !movement.contractAddress || !movement.callerAddress
-  ) return null;
-  const result = status === "confirmed_success"
-    ? "SUCCESS"
-    : status === "confirmed_reverted" ? "REVERT" : "FAILED";
-  return {
-    txHash: normalizeHash(movement.txHash),
-    ...(movement.transferId ? { transferId: movement.transferId } : {}),
-    ...(movement.eventIndex !== undefined ? { eventIndex: movement.eventIndex } : {}),
-    ...(movement.provider ? { provider: movement.provider } : {}),
-    ...(movement.providerRowOrdinalInTx !== undefined
-      ? { providerRowOrdinalInTx: movement.providerRowOrdinalInTx }
-      : {}),
-    contractAddress: movement.contractAddress,
-    callerAddress: movement.callerAddress,
-    fromAddress: movement.fromAddress,
-    toAddress: movement.toAddress,
-    amountRaw: movement.amountRaw,
-    confirmed: true,
-    reverted: status === "confirmed_reverted",
-    contractRet: result,
-    finalResult: result
-  };
-}
-
 function savedRawEvidenceMatchesCurrentMovement(
   evidence: TronTransactionProviderEvidenceV1,
   movement: ForensicRouteEdge | undefined
@@ -481,7 +450,7 @@ export function createSelectiveTransactionEnricher(deps: {
         const status = input.endpoint === "raw" ? rawFinality(payload) : fullFinality(payload);
         if (!status) return { kind: "unavailable", observedPayload: payload, savedHit: false, inFlightHit: false, providerRequest: true, awaitMs: Math.max(0, deps.now().getTime() - started) };
         const witness = input.endpoint === "raw" && input.movement
-          ? rawProviderMovementWitness(input.movement, status)
+          ? movementWitness(input.movement)
           : null;
         if (input.endpoint === "raw" && !witness) {
           return { kind: "unavailable", observedPayload: payload, savedHit: false, inFlightHit: false, providerRequest: true, awaitMs: Math.max(0, deps.now().getTime() - started) };

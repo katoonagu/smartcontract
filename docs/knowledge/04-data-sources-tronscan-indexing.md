@@ -78,7 +78,7 @@ empty, unbound, partial, pending, and unconfirmed responses are never saved
 under the permanent identity. Policy conclusions are separate
 `detector_output` rows; they never masquerade as provider responses.
 Raw evidence also binds one rich indexed movement identity and its exact
-finality fields to the production raw-preflight projection. Its witness hash is
+indexed finality fields alongside the production raw-preflight projection. Its witness hash is
 recomputed from those canonical fields on save and read; an arbitrary supplied
 hash or a payload shaped for the other endpoint fails closed. A persisted
 `plain_usdt_raw_proven` decision references exactly one successful compatible
@@ -102,13 +102,16 @@ finality never counts as success. Flat labels, review status, unknown identity,
 and service likelihood alone do not authorize the full request. Provider
 payloads remain only in immutable raw evidence; reports carry IDs and policy
 decisions.
-Raw endpoint finality is preserved even when it contradicts the linked indexed
-movement: the witness keeps the movement identity and economic fields but binds
-failed/reverted finality to the raw result. That contradiction is adverse
-proven evidence and can never become a complete clean decision because a later
-full response says success. Decision-evidence identity also includes the
-normalized trigger-code set, so distinct audited reasons over the same provider
-evidence remain distinct immutable decisions.
+Raw endpoint finality and the exact current indexed movement fields are
+preserved as separate canonical contexts in the same witness; neither source
+overwrites or synthesizes the other. Their disagreement is adverse proven
+evidence and can never become a complete clean decision because a later full
+response says success. Route-bound permanent raw evidence requires a confirmed
+rich indexed movement with known, internally coherent reverted and result
+fields; otherwise the raw result may force full fallback but cannot by itself
+prove an adverse decision for that route. Decision-evidence identity also
+includes the normalized trigger-code set, so distinct audited reasons over the
+same provider evidence remain distinct immutable decisions.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,

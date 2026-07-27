@@ -247,7 +247,16 @@ function endpointWitnessProjection(
       edgeType: "normal_transfer"
     } as ForensicRouteEdge;
     const rawPreflight = parseRawTransactionPreflightV1(payload);
-    const movementResult = resultStatus(normalizedMovement.finalResult.toUpperCase());
+    const indexedContractStatus = typeof normalizedMovement.contractRet === "string" &&
+      normalizedMovement.contractRet.trim().length > 0 &&
+      normalizedMovement.contractRet === normalizedMovement.contractRet.toUpperCase()
+      ? resultStatus(normalizedMovement.contractRet)
+      : null;
+    const indexedFinalStatus = typeof normalizedMovement.finalResult === "string" &&
+      normalizedMovement.finalResult.trim().length > 0 &&
+      normalizedMovement.finalResult === normalizedMovement.finalResult.toUpperCase()
+      ? resultStatus(normalizedMovement.finalResult)
+      : null;
     const parsedFieldsAgree = rawPreflight.status === "ambiguous" || (
       rawPreflight.contractAddress === normalizedMovement.contractAddress &&
       rawPreflight.callerAddress === normalizedMovement.callerAddress &&
@@ -264,13 +273,11 @@ function endpointWitnessProjection(
       !TRON_ADDRESS.test(normalizedMovement.toAddress) ||
       !/^(0|[1-9][0-9]*)$/u.test(normalizedMovement.amountRaw) ||
       normalizedMovement.confirmed !== true ||
-      normalizedMovement.reverted !== (status === "confirmed_reverted") ||
-      normalizedMovement.contractRet.trim().length === 0 ||
-      normalizedMovement.finalResult.trim().length === 0 ||
-      normalizedMovement.contractRet !== normalizedMovement.contractRet.toUpperCase() ||
-      normalizedMovement.finalResult !== normalizedMovement.finalResult.toUpperCase() ||
-      resultStatus(normalizedMovement.contractRet.toUpperCase()) !== status ||
-      movementResult !== status ||
+      typeof normalizedMovement.reverted !== "boolean" ||
+      indexedContractStatus === null ||
+      indexedFinalStatus === null ||
+      indexedContractStatus !== indexedFinalStatus ||
+      normalizedMovement.reverted !== (indexedFinalStatus === "confirmed_reverted") ||
       !parsedFieldsAgree
     ) {
       throw new TypeError("transaction_provider_evidence_not_permanent");
@@ -641,6 +648,9 @@ export async function saveTransactionEnrichmentDecisionEvidence(
   const rawPlain = providers.length === 1 && providers[0].endpoint === "gettransactionbyid"
     ? parseRawTransactionPreflightV1(providers[0].payload)
     : null;
+  const rawMovement = providers.length === 1 && providers[0].endpoint === "gettransactionbyid"
+    ? providers[0].finality.movement
+    : null;
   const decisionProven = normalized.decision === "plain_usdt_raw_proven"
     ? providers.length === 1 &&
       normalized.triggerCodes.length === 0 &&
@@ -648,7 +658,11 @@ export async function saveTransactionEnrichmentDecisionEvidence(
       providers[0].finality.status === "confirmed_success" &&
       providers[0].finality.witnessSha256 === normalized.movementWitnessSha256 &&
       rawPlain?.status === "parsed" &&
-      rawPlain.successful === true
+      rawPlain.successful === true &&
+      rawMovement?.confirmed === true &&
+      rawMovement.reverted === false &&
+      rawMovement.contractRet === "SUCCESS" &&
+      rawMovement.finalResult === "SUCCESS"
     : normalized.decision === "full_transaction_info_confirmed"
       ? normalized.triggerCodes.length > 0 &&
         providers.every((provider) => provider.finality.status === "confirmed_success") &&

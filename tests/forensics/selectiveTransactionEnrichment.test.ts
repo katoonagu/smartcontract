@@ -602,6 +602,44 @@ describe("selective transaction enrichment", () => {
     });
     expect(result.decisions[0].providerEvidenceIds).toHaveLength(2);
     expect(result.evidenceIds.some((id) => id.startsWith("transaction-enrichment-decision-evidence-v1:"))).toBe(true);
+    const rawRow = [...h.rows.values()].find((row) =>
+      row.source_type === "provider_response" &&
+      (row.evidence_json as TronTransactionProviderEvidenceV1).endpoint === "gettransactionbyid");
+    expect(rawRow?.evidence_json).toMatchObject({
+      finality: {
+        status: "confirmed_failed",
+        movement: {
+          confirmed: true,
+          reverted: false,
+          contractRet: "SUCCESS",
+          finalResult: "SUCCESS"
+        }
+      },
+      payload: { ret: [{ contractRet: "FAILED" }] }
+    });
+  });
+
+  it.each([
+    ["unconfirmed", { confirmed: false }],
+    ["unknown finality", { finalResult: null }]
+  ])("does not synthesize a route-bound adverse raw witness from %s indexed movement", async (_label, overrides) => {
+    const route = edge(HASH_A, overrides as Partial<ForensicRouteEdge>);
+    const h = repositoryHarness({
+      getRawTransaction: async () => rawPayload({ contractRet: "FAILED" }),
+      getFullTransactionInfo: async () => { throw new Error("transient full failure"); }
+    });
+    const result = await h.enricher.enrich(inputFor(route));
+    expect(result).toMatchObject({
+      coverageStatus: "coverage_incomplete",
+      technicalStatus: "technical_unknown",
+      adverseGate: "incomplete",
+      inferredStopAllowed: false,
+      decisions: [{ decision: "technical_unknown", priority: "hard" }]
+    });
+    expect([...h.rows.values()].some((row) =>
+      row.source_type === "provider_response" &&
+      (row.evidence_json as TronTransactionProviderEvidenceV1).endpoint === "gettransactionbyid")).toBe(false);
+    expect(result.decisions[0].decision).not.toBe("confirmed_failed_or_reverted");
   });
 
   it.each(["FAILED", "REVERT"])("reuses saved finalized raw %s as proven adverse evidence when full stays transient", async (contractRet) => {
