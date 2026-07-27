@@ -18,6 +18,8 @@ import {
   type SelectiveTransactionEnrichmentInput
 } from "../../src/forensics/selectiveTransactionEnrichment";
 import { createForensicEnrichmentHeartbeatCoordinator } from "../../src/forensics/forensicJobProgress";
+import { runForensicJobBatch } from "../../src/forensics/forensicJobBatch";
+import { logger as defaultLogger } from "../../src/logging/logger";
 import {
   transactionProviderEvidenceId,
   type TronTransactionProviderEvidenceV1
@@ -452,6 +454,26 @@ describe("runSingleIncomingDepositJobCycle", () => {
       { kind: "periodic", progress: null },
       { kind: "final", progress: { completed: 2, total: 2 } }
     ]);
+  });
+
+  it("preserves a recorded heartbeat claim loss over the task abort error", async () => {
+    let aborted = false;
+    const coordinator = createForensicEnrichmentHeartbeatCoordinator({
+      heartbeat: async () => {
+        aborted = true;
+        throw new Error("lost_forensic_job_claim");
+      },
+      isAborted: () => aborted
+    });
+
+    try {
+      await expect(coordinator.run(async (onCandidateResolved) => {
+        await onCandidateResolved({ completed: 1, total: 1 });
+        throw new Error("selective_transaction_enrichment_aborted");
+      })).rejects.toThrow("lost_forensic_job_claim");
+    } finally {
+      await coordinator.dispose();
+    }
   });
 
   it("completes an incoming deposit job with one pending final alert", async () => {
@@ -1370,7 +1392,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(handled).toBe(true);
     expect(complete).not.toHaveBeenCalled();
     expect(updateForensicCheckJobProgress).toHaveBeenCalled();
-    expect(warnCallCount).toBe(0);
+    expect(warnCallCount).toBe(1);
   });
 
   it("persists incoming deposit phases before trace, risk recording, and completion", async () => {
@@ -1501,6 +1523,97 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(buildReport).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(markSent).not.toHaveBeenCalled();
+  });
+
+  it("contains invalid-job timing claim loss and lets the batch run the next job", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const invalidJob = {
+      ...job({ ...validProgressJson, depositTxHash: undefined }),
+      id: "job-invalid"
+    };
+    const nextJob = { ...job(validProgressJson), id: "job-next" };
+    const queuedJobs = [invalidJob, nextJob];
+    const updateForensicCheckJobProgress = vi.fn(async (input: { id: string }) => input.id !== invalidJob.id);
+    const completeForensicCheckJob = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => true);
+    const buildReport = vi.fn(async () => report());
+    const warn = vi.spyOn(defaultLogger, "warn").mockImplementation(() => undefined);
+    try {
+      const deps: RunSingleIncomingDepositJobCycleDeps = {
+        claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
+        updateForensicCheckJobProgress,
+        completeForensicCheckJob,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: async () => true,
+        recordObservedTransactionRisk: async () => true,
+        hasUndismissedAddressPoisoningCandidateForIncoming: async () => false,
+        formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
+        buildReport
+      };
+      const handled = await runForensicJobBatch({
+        maxJobs: 2,
+        runSingleCycle: () => runSingleIncomingDepositJobCycleImpl(deps)
+      });
+
+      expect(handled).toBe(2);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(buildReport).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob.mock.calls[0][0].id).toBe(nextJob.id);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+        job_id: invalidJob.id,
+        error: "lost_forensic_job_claim"
+      }));
+    } finally {
+      abort.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("logs initial progress claim loss once and lets the incoming batch run the next job", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const firstJob = job(validProgressJson);
+    const nextJob = { ...job(validProgressJson), id: "job-next" };
+    const queuedJobs = [firstJob, nextJob];
+    const updateForensicCheckJobProgress = vi.fn(async (input: { id: string }) => input.id !== firstJob.id);
+    const completeForensicCheckJob = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => true);
+    const buildReport = vi.fn(async () => report());
+    const warn = vi.spyOn(defaultLogger, "warn").mockImplementation(() => undefined);
+    try {
+      const deps: RunSingleIncomingDepositJobCycleDeps = {
+        claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
+        updateForensicCheckJobProgress,
+        completeForensicCheckJob,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: async () => true,
+        recordObservedTransactionRisk: async () => true,
+        hasUndismissedAddressPoisoningCandidateForIncoming: async () => false,
+        formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
+        buildReport
+      };
+      const handled = await runForensicJobBatch({
+        maxJobs: 2,
+        runSingleCycle: () => runSingleIncomingDepositJobCycleImpl(deps)
+      });
+
+      expect(handled).toBe(2);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(buildReport).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob.mock.calls[0][0].id).toBe(nextJob.id);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+        job_id: firstJob.id,
+        error: "lost_forensic_job_claim"
+      }));
+    } finally {
+      abort.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it("rejects incoming jobs whose Telegram identity does not match the durable job chat", async () => {
@@ -1970,7 +2083,13 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
 
     expect(complete).not.toHaveBeenCalled();
-    expect(warnLogs).toEqual([]);
+    expect(warnLogs).toEqual([{
+      event: "forensic_job_claim_lost",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        error: "lost_forensic_job_claim"
+      })
+    }]);
   });
 });
 
@@ -2039,10 +2158,15 @@ describe("buildIncomingDepositReport", () => {
     }
   });
 
-  it("aborts a delayed shared raw enrichment on claim loss without full, next-candidate, completion, or delivery", async () => {
-    let updates = 0;
+  it("keeps heartbeat claim loss stable and lets the incoming batch run the next job", async () => {
+    let firstJobUpdates = 0;
     let observedAborted = false;
-    const complete = vi.fn(async () => true);
+    const firstJob = job(validProgressJson);
+    const nextJob = { ...job(validProgressJson), id: "job-next" };
+    const queuedJobs = [firstJob, nextJob];
+    const complete = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => true);
     const record = vi.fn(async () => true);
     const firstHash = depositTxHash;
     const nextHash = "e".repeat(64);
@@ -2118,19 +2242,24 @@ describe("buildIncomingDepositReport", () => {
       maxConcurrentSubmissions: 1
     });
 
-    const handledPromise = runSingleIncomingDepositJobCycle({
-      claimNextForensicCheckJob: async () => job(validProgressJson),
-      updateForensicCheckJobProgress: async () => {
-        updates += 1;
-        return updates === 1;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const deps: RunSingleIncomingDepositJobCycleDeps = {
+      claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
+      updateForensicCheckJobProgress: async (input) => {
+        if (input.id !== firstJob.id) return true;
+        firstJobUpdates += 1;
+        return firstJobUpdates === 1;
       },
       transactionEnrichmentHeartbeatIntervalMs: 1,
       completeForensicCheckJob: complete,
       markUserAlertSent: async () => true,
       markUserAlertFailed: async () => true,
       recordObservedTransactionRisk: record,
+      hasUndismissedAddressPoisoningCandidateForIncoming: async () => false,
       formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" }),
-      buildReport: async ({ abortSignal, runWithTransactionEnrichmentHeartbeat }) => {
+      logger,
+      buildReport: async ({ job: activeJob, abortSignal, runWithTransactionEnrichmentHeartbeat }) => {
+        if (activeJob.id === nextJob.id) return report();
         const claimedRun = runWithTransactionEnrichmentHeartbeat((onCandidateResolved) => enricher.enrich({
           mode: "subject",
           routeEdges: [firstMovement, nextMovement],
@@ -2152,22 +2281,32 @@ describe("buildIncomingDepositReport", () => {
         }
         observedAborted = abortSignal?.aborted === true;
         releaseRaw(rawPayload);
-        await expect(claimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
-        await expect(secondClaimedRun).rejects.toThrow("selective_transaction_enrichment_aborted");
+        await expect(claimedRun).rejects.toThrow("lost_forensic_job_claim");
+        await expect(secondClaimedRun).rejects.toThrow("lost_forensic_job_claim");
         await expect(otherWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
         throw new Error("lost_forensic_job_claim");
       }
+    };
+    const handledPromise = runForensicJobBatch({
+      maxJobs: 2,
+      runSingleCycle: () => runSingleIncomingDepositJobCycleImpl(deps)
     });
     const handled = await handledPromise;
 
-    expect(handled).toBe(true);
+    expect(handled).toBe(2);
     expect(observedAborted).toBe(true);
-    expect(updates).toBe(2);
+    expect(firstJobUpdates).toBe(2);
     expect(rawCalls).toEqual([firstHash]);
     expect(fullCalls).toEqual([]);
     expect(saved.size).toBeGreaterThan(0);
-    expect(complete).not.toHaveBeenCalled();
-    expect(record).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0][0].id).toBe(nextJob.id);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls.filter(([event]) => event === "forensic_job_claim_lost")).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+      job_id: firstJob.id,
+      error: "lost_forensic_job_claim"
+    }));
   });
 
   it("keeps delayed nested Where enrichment inside the Incoming job heartbeat coordinator", async () => {

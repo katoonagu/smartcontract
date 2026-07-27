@@ -2340,6 +2340,18 @@ export async function runSingleIncomingDepositJobCycle(
   if (!job) return false;
   if (!job.startedAt) throw new Error("claimed_forensic_job_missing_started_at");
   const abortController = new AbortController();
+  let claimLostLogged = false;
+  const logClaimLostOnce = (stage: string): void => {
+    if (!abortController.signal.aborted) abortController.abort();
+    if (claimLostLogged) return;
+    claimLostLogged = true;
+    safeLoggerWarn(logger, "forensic_job_claim_lost", {
+      job_id: job.id,
+      job_kind: job.kind,
+      stage,
+      error: "lost_forensic_job_claim"
+    });
+  };
 
   const processingStartedAt = validDate(now());
   const queueWaitMs = msBetween(validDate(job.startedAt), validDate(job.createdAt));
@@ -2371,7 +2383,7 @@ export async function runSingleIncomingDepositJobCycle(
         lastError: null
       });
       if (updated === false) {
-        abortController.abort();
+        if (!abortController.signal.aborted) abortController.abort();
         throw new Error("lost_forensic_job_claim");
       }
     };
@@ -2398,7 +2410,7 @@ export async function runSingleIncomingDepositJobCycle(
         lastError: null
       });
       if (updated === false) {
-        abortController.abort();
+        if (!abortController.signal.aborted) abortController.abort();
         throw new Error("lost_forensic_job_claim");
       }
     } catch (error) {
@@ -2432,44 +2444,47 @@ export async function runSingleIncomingDepositJobCycle(
   if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw
     || sender !== job.subjectAddress || !timestampText || !telegramUserId
     || !job.chatId || telegramUserId !== job.chatId) {
-    const error = "incoming_deposit_check job is missing required progress_json fields";
-    const failureDelivery = await buildIncomingFailureDelivery(deps, job, error);
-    await persistPerformanceTiming();
-    const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
-      id: job.id,
-      claimStartedAt: job.startedAt!,
-      status: "failed",
-      progressJson: failureDelivery
-        ? { ...currentProgress, telegramDelivery: failureDelivery }
-        : currentProgress,
-      resultJson: {},
-      rawEvidenceIds: [],
-      observationIds: [],
-      lastError: error
-    }));
-    if (!completed) {
-      if (!abortController.signal.aborted) abortController.abort();
-      safeLoggerWarn(logger, "forensic_job_claim_lost", {
-        job_id: job.id,
-        stage: "invalid_job_failure_completion",
-        error: "lost_forensic_job_claim"
-      });
-      return true;
-    }
-    if (depositTxHash && watchedWalletId) {
-      try {
-        await timing.measure("mark_alert_failed", () =>
-          deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error })
-        );
-      } catch (markError) {
-        safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
-          job_id: job.id,
-          error: formatErrorMessage(markError)
-        });
+    try {
+      const error = "incoming_deposit_check job is missing required progress_json fields";
+      const failureDelivery = await buildIncomingFailureDelivery(deps, job, error);
+      await persistPerformanceTiming();
+      const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
+        id: job.id,
+        claimStartedAt: job.startedAt!,
+        status: "failed",
+        progressJson: failureDelivery
+          ? { ...currentProgress, telegramDelivery: failureDelivery }
+          : currentProgress,
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: error
+      }));
+      if (!completed) {
+        logClaimLostOnce("invalid_job_failure_completion");
+        return true;
       }
+      if (depositTxHash && watchedWalletId) {
+        try {
+          await timing.measure("mark_alert_failed", () =>
+            deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error })
+          );
+        } catch (markError) {
+          safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
+            job_id: job.id,
+            error: formatErrorMessage(markError)
+          });
+        }
+      }
+      logTiming("failed");
+      return true;
+    } catch (error) {
+      if (formatErrorMessage(error) === "lost_forensic_job_claim") {
+        logClaimLostOnce("invalid_job");
+        return true;
+      }
+      throw error;
     }
-    logTiming("failed");
-    return true;
   }
 
   const enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
@@ -2509,7 +2524,7 @@ export async function runSingleIncomingDepositJobCycle(
         })
       );
       if (!recorded) {
-        abortController.abort();
+        if (!abortController.signal.aborted) abortController.abort();
         throw new Error("lost_forensic_job_claim");
       }
     }
@@ -2580,12 +2595,7 @@ export async function runSingleIncomingDepositJobCycle(
     } satisfies CompleteJobInput;
     const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
     if (!completed) {
-      if (!abortController.signal.aborted) abortController.abort();
-      safeLoggerWarn(logger, "forensic_job_claim_lost", {
-        job_id: job.id,
-        stage: "terminal_completion",
-        error: "lost_forensic_job_claim"
-      });
+      logClaimLostOnce("terminal_completion");
       return true;
     }
     if (!telegramDelivery) {
@@ -2609,7 +2619,7 @@ export async function runSingleIncomingDepositJobCycle(
     return true;
   } catch (error) {
     if (formatErrorMessage(error) === "lost_forensic_job_claim") {
-      if (!abortController.signal.aborted) abortController.abort();
+      logClaimLostOnce("claimed_job_cycle");
       return true;
     }
     if (formatErrorMessage(error) === "selective_transaction_enrichment_aborted") {
@@ -2620,7 +2630,15 @@ export async function runSingleIncomingDepositJobCycle(
     }
     const message = error instanceof Error ? error.message : String(error);
     const failureDelivery = await buildIncomingFailureDelivery(deps, job, message);
-    await persistPerformanceTiming();
+    try {
+      await persistPerformanceTiming();
+    } catch (persistError) {
+      if (formatErrorMessage(persistError) === "lost_forensic_job_claim") {
+        logClaimLostOnce("failure_timing");
+        return true;
+      }
+      throw persistError;
+    }
     const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       claimStartedAt: job.startedAt!,
@@ -2634,12 +2652,7 @@ export async function runSingleIncomingDepositJobCycle(
       lastError: message
     }));
     if (!completed) {
-      if (!abortController.signal.aborted) abortController.abort();
-      safeLoggerWarn(logger, "forensic_job_claim_lost", {
-        job_id: job.id,
-        stage: "failure_completion",
-        error: "lost_forensic_job_claim"
-      });
+      logClaimLostOnce("failure_completion");
       return true;
     }
     try {

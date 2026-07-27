@@ -168,6 +168,9 @@ export function createForensicEnrichmentHeartbeatCoordinator(input: {
         });
         if (heartbeatFailed) throw heartbeatFailure;
         return result;
+      } catch (error) {
+        if (heartbeatFailed) throw heartbeatFailure;
+        throw error;
       } finally {
         activeRuns -= 1;
       }

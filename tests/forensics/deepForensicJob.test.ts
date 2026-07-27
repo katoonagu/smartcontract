@@ -1907,7 +1907,7 @@ describe("deep forensic job runner", () => {
     );
   });
 
-  it("aborts a top-level Where job when heartbeat CAS is lost during early economic raw enrichment", async () => {
+  it("keeps heartbeat claim loss stable and lets the deep batch run the next job", async () => {
     const txHash = "8".repeat(64);
     const laterCandidateHash = "7".repeat(64);
     const sourceJob: ForensicCheckJob = {
@@ -1916,6 +1916,12 @@ describe("deep forensic job runner", () => {
       priority: 120,
       progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
     };
+    const nextJob: ForensicCheckJob = {
+      ...job(),
+      id: "job-2",
+      subjectAddress: seed
+    };
+    const queuedJobs = [sourceJob, nextJob];
     const routeEdge: ForensicRouteEdge = {
       id: `edge:${txHash}`,
       txHash,
@@ -1968,11 +1974,13 @@ describe("deep forensic job runner", () => {
     let rawPending = false;
     let activeCas = 0;
     let maxActiveCas = 0;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-    const handledPromise = runSingleDeepForensicJobCycle({
-      claimNextForensicCheckJob: async () => sourceJob,
+    const deps: DeepForensicJobRunnerDeps = {
+      claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
       completeForensicCheckJob,
-      updateForensicCheckJobProgress: async () => {
+      updateForensicCheckJobProgress: async (input) => {
+        if (input.id !== sourceJob.id) return true;
         activeCas += 1;
         maxActiveCas = Math.max(maxActiveCas, activeCas);
         try {
@@ -2011,12 +2019,17 @@ describe("deep forensic job runner", () => {
       }),
       selectiveTransactionEnricher,
       listIndexedMovementsByHashes: async (hashes) => hashes.includes(txHash) ? [routeEdge] : [],
-      buildWhereIsMoneyJobResultPayload
-    }, {
-      transactionEnrichmentHeartbeatIntervalMs: 1,
-      recentFallbackMinTransferCount: 1,
-      maxEdgesPerAddress: 10,
-      recentFallbackTransferLimit: 10
+      buildWhereIsMoneyJobResultPayload,
+      logger
+    };
+    const handledPromise = runForensicJobBatch({
+      maxJobs: 2,
+      runSingleCycle: () => runSingleDeepForensicJobCycle(deps, {
+        transactionEnrichmentHeartbeatIntervalMs: 1,
+        recentFallbackMinTransferCount: 1,
+        maxEdgesPerAddress: 10,
+        recentFallbackTransferLimit: 10
+      })
     });
 
     await rawStarted;
@@ -2045,14 +2058,20 @@ describe("deep forensic job runner", () => {
       ret: [{ contractRet: "SUCCESS" }]
     });
 
-    expect(await handledPromise).toBe(true);
+    expect(await handledPromise).toBe(2);
     await expect(independentWaiter).resolves.toMatchObject({ coverageStatus: "complete" });
     expect(rawProvider).toHaveBeenCalledTimes(1);
     expect(fullProvider).not.toHaveBeenCalled();
     expect(maxActiveCas).toBe(1);
-    expect(completeForensicCheckJob).not.toHaveBeenCalled();
-    expect(recordRiskEvaluation).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(completeForensicCheckJob.mock.calls[0][0].id).toBe(nextJob.id);
+    expect(recordRiskEvaluation).toHaveBeenCalledTimes(1);
     expect(buildWhereIsMoneyJobResultPayload).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+      jobId: sourceJob.id,
+      error: "lost_forensic_job_claim"
+    }));
   });
 
   it("uses runtime where-is-money fetch limits for indexed and live edge pages", async () => {
@@ -6509,6 +6528,48 @@ describe("deep forensic job runner", () => {
       expect(completeForensicCheckJob.mock.calls[1][0].id).toBe(secondJob.id);
       expect(recordRiskEvaluation).toHaveBeenCalledTimes(1);
       expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
+        jobId: firstJob.id,
+        error: "lost_forensic_job_claim"
+      }));
+    } finally {
+      abort.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("logs initial progress claim loss once and lets the deep batch run the next job", async () => {
+    const abort = vi.spyOn(AbortController.prototype, "abort");
+    const firstJob = job();
+    const secondJob = { ...job(), id: "job-2" };
+    const queuedJobs = [firstJob, secondJob];
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+    const warn = vi.spyOn(defaultLogger, "warn").mockImplementation(() => undefined);
+    try {
+      const deps: DeepForensicJobRunnerDeps = {
+        claimNextForensicCheckJob: async () => queuedJobs.shift() ?? null,
+        updateForensicCheckJobProgress: async (input) => input.id !== firstJob.id,
+        completeForensicCheckJob,
+        indexWalletIntelligenceJob,
+        recordRiskEvaluation,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      };
+      const handled = await runForensicJobBatch({
+        maxJobs: 2,
+        runSingleCycle: () => runSingleDeepForensicJobCycle(deps)
+      });
+
+      expect(handled).toBe(2);
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      expect(completeForensicCheckJob.mock.calls[0][0].id).toBe(secondJob.id);
+      expect(recordRiskEvaluation).toHaveBeenCalledTimes(1);
+      expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith("forensic_job_claim_lost", expect.objectContaining({
         jobId: firstJob.id,
         error: "lost_forensic_job_claim"

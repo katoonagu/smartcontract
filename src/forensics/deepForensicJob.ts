@@ -1813,6 +1813,22 @@ export async function runSingleDeepForensicJobCycle(
   if (!job) return false;
   if (!job.startedAt) throw new Error("claimed_forensic_job_missing_started_at");
   const abortController = new AbortController();
+  let claimLostLogged = false;
+  const logClaimLostOnce = (stage: string): void => {
+    if (!abortController.signal.aborted) abortController.abort();
+    if (claimLostLogged) return;
+    claimLostLogged = true;
+    try {
+      (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
+        jobId: job.id,
+        jobKind: job.kind,
+        stage,
+        error: "lost_forensic_job_claim"
+      });
+    } catch {
+      // Claim loss remains batch-local even if a custom logger is faulty.
+    }
+  };
   let enrichmentHeartbeat: ForensicEnrichmentHeartbeatCoordinator | null = null;
 
   try {
@@ -1889,7 +1905,7 @@ export async function runSingleDeepForensicJobCycle(
       lastError: null
     });
     if (claimedProgress === false) {
-      abortController.abort();
+      logClaimLostOnce("initial_progress");
       return true;
     }
     enrichmentHeartbeat = createForensicEnrichmentHeartbeatCoordinator({
@@ -1906,7 +1922,7 @@ export async function runSingleDeepForensicJobCycle(
           lastError: null
         });
         if (updated === false) {
-          abortController.abort();
+          if (!abortController.signal.aborted) abortController.abort();
           throw new Error("lost_forensic_job_claim");
         }
       }
@@ -2051,7 +2067,7 @@ export async function runSingleDeepForensicJobCycle(
       observations: report.observations
     });
     if (recordedRisk === false) {
-      abortController.abort();
+      if (!abortController.signal.aborted) abortController.abort();
       throw new Error("lost_forensic_job_claim");
     }
     const derivedLabels = [
@@ -2130,13 +2146,7 @@ export async function runSingleDeepForensicJobCycle(
   } catch (error) {
     const message = errorMessage(error);
     if (message === "lost_forensic_job_claim") {
-      if (!abortController.signal.aborted) abortController.abort();
-      (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
-        jobId: job.id,
-        jobKind: job.kind,
-        stage: "claimed_job_cycle",
-        error: message
-      });
+      logClaimLostOnce("claimed_job_cycle");
       return true;
     }
     if (message === "selective_transaction_enrichment_aborted") {
@@ -2164,12 +2174,7 @@ export async function runSingleDeepForensicJobCycle(
         lastError: strictMessage
       });
       if (!completed) {
-        if (!abortController.signal.aborted) abortController.abort();
-        (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
-          jobId: job.id,
-          stage: "strict_failure_completion",
-          error: "lost_forensic_job_claim"
-        });
+        logClaimLostOnce("strict_failure_completion");
         return true;
       }
       return true;
@@ -2200,12 +2205,7 @@ export async function runSingleDeepForensicJobCycle(
         lastError: message
       });
       if (!completed) {
-        if (!abortController.signal.aborted) abortController.abort();
-        (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
-          jobId: job.id,
-          stage: "targeted_terminal_completion",
-          error: "lost_forensic_job_claim"
-        });
+        logClaimLostOnce("targeted_terminal_completion");
         return true;
       }
       return true;
@@ -2222,12 +2222,7 @@ export async function runSingleDeepForensicJobCycle(
       lastError: message
     });
     if (!completed) {
-      if (!abortController.signal.aborted) abortController.abort();
-      (deps.logger ?? defaultLogger).warn("forensic_job_claim_lost", {
-        jobId: job.id,
-        stage: "failure_completion",
-        error: "lost_forensic_job_claim"
-      });
+      logClaimLostOnce("failure_completion");
       return true;
     }
     return true;
