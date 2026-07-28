@@ -36,6 +36,7 @@ function deps(state: UnifiedRuntimeInstanceV1["state"] = "ACTIVE") {
     now: () => new Date("2026-07-28T10:01:00.000Z"),
     heartbeat: vi.fn(async () => current),
     stopTelegramPolling: vi.fn(async () => { events.push("stop-telegram-polling"); }),
+    stopAdminServer: vi.fn(async () => { events.push("stop-admin-server"); }),
     stopLegacySchedules: vi.fn(() => { events.push("stop-legacy-schedules"); }),
     markPollingReleased: vi.fn(async () => {
       events.push("mark-polling-released");
@@ -68,6 +69,7 @@ describe("runtime handoff coordinator", () => {
     await coordinator.tick();
     expect(events).toEqual([
       "stop-telegram-polling",
+      "stop-admin-server",
       "stop-legacy-schedules",
       "mark-polling-released"
     ]);
@@ -85,6 +87,7 @@ describe("runtime handoff coordinator", () => {
     await expect(coordinator.tick()).rejects.toThrow("database unavailable");
     await expect(coordinator.tick()).resolves.toBeUndefined();
     expect(input.stopTelegramPolling).toHaveBeenCalledOnce();
+    expect(input.stopAdminServer).toHaveBeenCalledOnce();
     expect(input.stopLegacySchedules).toHaveBeenCalledOnce();
     expect(input.markPollingReleased).toHaveBeenCalledTimes(2);
   });

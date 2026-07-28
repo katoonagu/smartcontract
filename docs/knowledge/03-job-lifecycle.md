@@ -182,8 +182,9 @@ planner row remains idempotently reusable after it is admitted or leased.
 
 Schema 037 adds a single-owner runtime registry and a separate lifecycle
 notification outbox. A deployment first records `DRAIN_REQUESTED` with an
-exact two-hour deadline. The old process stops Telegram polling and legacy
-claims, records `DRAINING`, and continues only provider, coordinator,
+exact two-hour deadline. The old process stops Telegram polling, releases the
+single Admin listener, and stops legacy claims before recording `DRAINING`.
+It then continues only provider, coordinator,
 finalizer, and delivery work whose analysis manifest is pinned to its own Git
 commit. A replacement may acquire intake only after polling release or a
 proven stale owner. A same-commit replacement may resume compatible work; a

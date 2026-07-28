@@ -2047,7 +2047,7 @@ const crossChainContinuationProviders = config.crossChainStage2Enabled
 
 logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
-const adminDashboard = await maybeStartAdminDashboard({
+let adminDashboard = await maybeStartAdminDashboard({
   config,
   startAdminServer: (adminDeps) => startAdminServer({
     ...adminDeps,
@@ -2921,6 +2921,12 @@ const runtimeHandoffCoordinator = createRuntimeHandoffCoordinator({
   },
   stopTelegramPolling: async () => {
     if (bot.isRunning()) await bot.stop();
+  },
+  stopAdminServer: async () => {
+    if (adminDashboard === null) return;
+    await adminDashboard.close();
+    adminDashboard = null;
+    logger.info("admin_dashboard_stopped", { reason: "runtime_handoff" });
   },
   stopLegacySchedules: () => {
     startupWorkSchedule?.stop();

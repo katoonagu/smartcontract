@@ -6,6 +6,7 @@ export function createRuntimeHandoffCoordinator(input: {
   now(): Date;
   heartbeat(): Promise<UnifiedRuntimeInstanceV1>;
   stopTelegramPolling(): Promise<void>;
+  stopAdminServer(): Promise<void>;
   stopLegacySchedules(): void;
   markPollingReleased(now: Date): Promise<UnifiedRuntimeInstanceV1>;
   countCompatibleRuns(): Promise<number>;
@@ -19,6 +20,7 @@ export function createRuntimeHandoffCoordinator(input: {
   onEvent(event: string, fields?: Record<string, unknown>): void;
 }): { tick(): Promise<void>; isDraining(): boolean } {
   let pollingStopped = false;
+  let adminStopped = false;
   let legacyStopped = false;
   let drainObserved = false;
   let exitRequested = false;
@@ -55,6 +57,10 @@ export function createRuntimeHandoffCoordinator(input: {
         if (!pollingStopped) {
           await input.stopTelegramPolling();
           pollingStopped = true;
+        }
+        if (!adminStopped) {
+          await input.stopAdminServer();
+          adminStopped = true;
         }
         if (!legacyStopped) {
           input.stopLegacySchedules();
