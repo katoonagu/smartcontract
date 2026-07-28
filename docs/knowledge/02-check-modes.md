@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-28
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -17,11 +17,13 @@ code_refs:
 
 ## Production Truth
 
-The deployed bot still uses the legacy runtime. Fast Check, Deep Check, Where
-Is Money, and Incoming Deposit are separate jobs with separate lifecycle and
-delivery ownership. Fast answers the direct wallet/contract question; Deep
-collects broader relationship and behavioral context; Where follows outgoing
-movement; Incoming follows the provenance of a selected deposit.
+Production uses a split runtime. Address `/check` is accepted by the Unified
+parent while the active generation fence is `unified`; Fast, Where, and Deep
+run as non-delivering child analyses, and only the parent owns delivery for
+that chat/address pair. `/check <tx-hash>` and independent or pre-existing
+legacy Where, Deep, and Incoming jobs retain their legacy lifecycle and
+delivery path. Unified handoff quarantines unsent legacy Where/Deep delivery
+only for the claimed pair; legacy workers continue running for other work.
 
 This separation remains important: a missing Deep/Where result cannot be
 silently replaced by Fast, and contract analysis does not replace transfer

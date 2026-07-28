@@ -30,10 +30,12 @@ code_refs:
 
 ## Production Truth
 
-Production still runs the legacy forensic job tables and delivery workers.
-Those jobs can wait for targeted indexing, resume from persisted state, or end
-in a technical stop. Existing schema-031 results and legacy scores are not
-reinterpreted as Unified results.
+Production uses Unified intake for address `/check` under the active Unified
+generation and still runs the legacy forensic job tables and delivery workers
+for transaction checks, monitoring, explicit legacy flows, and existing work.
+Those legacy jobs can wait for targeted indexing, resume from persisted state,
+or end in a technical stop. Existing schema-031 results and legacy scores are
+not reinterpreted as Unified results.
 
 A technical/provider stop must remain distinguishable from a risk decision.
 Legacy retries keep their current ownership rules; operators must not grant

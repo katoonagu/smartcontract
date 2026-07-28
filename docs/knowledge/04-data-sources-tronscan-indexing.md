@@ -1,8 +1,9 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: tronscan
 code_refs:
+  - src/index.ts
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
   - src/tron/usdtBlacklistTimeline.ts
@@ -27,13 +28,15 @@ code_refs:
 
 ## Production Truth
 
-Production uses the legacy TronScan/local-index pipeline. Provider pages,
-targeted indexing, cached labels, blacklist timelines, approvals, and local
-materialization are evidence sources; none is complete merely because an API
-returned one page. Provider caps, missing pages, and local coverage remain
-explicit.
+Production uses split data paths. Address `/check` uses the Unified
+snapshot/page/artifact pipeline under the active Unified generation. Legacy
+Where, Deep, Incoming, monitoring, and transaction-check work continues to use
+the legacy TronScan/local-index pipeline. Provider pages, targeted indexing,
+cached labels, blacklist timelines, approvals, and local materialization are
+evidence sources; none is complete merely because an API returned one page.
+Provider caps, missing pages, and local coverage remain explicit.
 
-Current production workers retain their existing queue and pagination
+Current legacy production workers retain their existing queue and pagination
 semantics until cutover. More API keys improve throughput but do not prove
 history completeness.
 

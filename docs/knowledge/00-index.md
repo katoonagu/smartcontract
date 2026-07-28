@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-28
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -18,10 +18,11 @@ when describing current intent.
 ## Reading Order
 
 1. `AGENT_BRIEF.md`: start here for any non-trivial task.
-2. `09-current-decisions.md`: current product and architecture decisions.
-3. One focused page for the area you are touching.
-4. `10-open-problems.md`: check whether the issue is already known.
-5. `12-runbooks.md`: use for local commands and verification.
+2. `14-current-roadmap.md`: current execution order and gate status.
+3. `09-current-decisions.md`: current product and architecture decisions.
+4. One focused page for the area you are touching.
+5. `10-open-problems.md`: check whether the issue is already known.
+6. `12-runbooks.md`: use for local commands and verification.
 
 ## Files
 
@@ -40,6 +41,8 @@ when describing current intent.
 - `11-glossary.md`: current terms.
 - `12-runbooks.md`: commands and operating procedures.
 - `13-agent-observations.md`: repeated agent mistakes and corrections.
+- `14-current-roadmap.md`: current execution order, status, and acceptance
+  boundaries.
 
 ## Maintenance Rule
 

@@ -1,8 +1,9 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-28
 owner_area: scoring
 code_refs:
+  - src/index.ts
   - src/risk/scoringSignalMatrix.ts
   - src/risk/scoreAnchorV2.ts
   - src/risk/scoringSignalMatrixV4.ts
@@ -22,9 +23,10 @@ not risk signals.
 
 ## Production Truth
 
-The deployed legacy runtime keeps its existing matrix/anchor versions and saved
-results. Historical scores are not recalculated and no newer anchor is
-synthesized for them.
+Production uses split scoring paths. A new Unified address `/check` uses
+matrix v4 and `ScoreAnchorV3` at parent completion. Independent legacy jobs and
+their saved results retain their existing matrix/anchor versions. Historical
+scores are not recalculated and no newer anchor is synthesized for them.
 
 ## Unified Scoring
 

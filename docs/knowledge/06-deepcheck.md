@@ -1,8 +1,10 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: forensics
 code_refs:
+  - src/index.ts
+  - src/bot/createBot.ts
   - src/check/deepForensicCheck.ts
   - src/forensics/directHardEvidence.ts
   - src/forensics/counterpartyRisk.ts
@@ -15,9 +17,11 @@ code_refs:
 
 ## Production Truth
 
-The deployed DeepCheck remains a legacy forensic job with its current direct
-and selected second-layer relationship logic, coverage metadata, and delivery
-ownership. It must distinguish direct from indirect exposure, transaction-time
+Production uses both Unified and legacy Deep paths. Deep started by an address
+`/check` is a non-delivering Unified child. Independent and pre-existing legacy
+`address_deep_check` jobs retain their current direct and selected second-layer
+relationship logic, coverage metadata, lifecycle, and fenced delivery path.
+Both paths must distinguish direct from indirect exposure, transaction-time
 restriction state from later restriction, and victim from drainer/recipient
 role.
 

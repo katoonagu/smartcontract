@@ -19,9 +19,14 @@ code_refs:
 
 ## Production Truth
 
-The deployed bot still sends legacy mode-specific results and uses the current
-Admin views/workers. Technical stops must not be presented as risk decisions.
-Delivery ownership remains explicit and independent of analysis execution.
+The production bot uses Unified intake and parent-only delivery for address
+`/check` under the active Unified generation. It acknowledges the accepted
+check immediately and sends no Fast/Where/Deep child result. Legacy Where,
+Deep, Incoming, and legacy delivery workers remain active for work not owned by
+a Unified chat/address pair; `/check <tx-hash>` remains legacy. Admin therefore
+exposes both legacy job views and Unified parent/child, lifecycle, and delivery
+state. Technical stops must not be presented as risk decisions. Delivery
+ownership remains explicit and independent of analysis execution.
 
 Stage B progress exposes selective-enrichment heartbeat updates no more often
 than every 30 seconds plus the final candidate. Transaction evidence IDs are

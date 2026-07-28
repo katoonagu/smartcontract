@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-28
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -59,6 +59,8 @@ The current priority is data completeness for provenance:
 
 ## What To Read
 
+- For the current execution order and gate status:
+  `docs/knowledge/14-current-roadmap.md`.
 - For check roles: `docs/knowledge/02-check-modes.md`.
 - For job states and async indexing: `docs/knowledge/03-job-lifecycle.md`.
 - For TronScan and coverage: `docs/knowledge/04-data-sources-tronscan-indexing.md`.

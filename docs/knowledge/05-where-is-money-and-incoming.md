@@ -1,8 +1,10 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: forensics
 code_refs:
+  - src/index.ts
+  - src/bot/createBot.ts
   - src/forensics/moneyOriginTrace.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/forensicCoverageV2.ts
@@ -24,8 +26,12 @@ but have different subjects, denominators, and directions.
 
 ## Production Truth
 
-The deployed runtime still runs legacy Where/Incoming jobs and their existing
-score-validity/coverage behavior. A technical coverage stop is not a clean
+Production uses both Unified and legacy provenance paths. The Where analysis
+started by an address `/check` is a non-delivering Unified child. Legacy
+`where_is_money_check` and `incoming_deposit_check` workers still run for
+transaction checks, monitoring, explicit legacy flows, and existing jobs,
+retaining their current coverage and score-validity rules. Delivery follows
+the chat/address generation fence; a technical coverage stop is not a clean
 verdict. Unknown labels are not evidence of safety or risk by themselves.
 
 ## Unified Where And Incoming
