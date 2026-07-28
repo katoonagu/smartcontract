@@ -388,6 +388,9 @@ export function adminConsoleHtml(): string {
       padding: 12px;
     }
     .unified-checks-head h2 { margin: 0; font-size: 16px; }
+    .runtime-handoff-summary { display: grid; gap: 5px; margin-top: 8px; }
+    .runtime-handoff-instance { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .runtime-handoff-notifications { color: var(--text-secondary); font-size: 12px; }
     .unified-checks-body {
       min-height: 0;
       display: grid;
@@ -1802,6 +1805,9 @@ export function adminConsoleHtml(): string {
           <div>
             <h2>Unified Wallet Checks</h2>
             <div class="hint" id="unifiedChecksStatus">Parent, child attempts, immutable artifacts and delivery state.</div>
+            <div id="unifiedRuntimeHandoffSummary" class="runtime-handoff-summary" data-runtime-handoff-summary>
+              <span class="hint">Runtime handoff state is loading.</span>
+            </div>
           </div>
           <button id="unifiedChecksReload" type="button">Refresh</button>
         </div>
@@ -1873,7 +1879,10 @@ export function adminConsoleHtml(): string {
       crossRunAddressDetailLoading: new Set(),
       pendingHighlightAddress: null,
       theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 },
-      unifiedChecks: { runs: [], activeId: null, detail: null, loading: false, error: null }
+      unifiedChecks: {
+        runs: [], activeId: null, detail: null, loading: false, error: null,
+        runtimeHandoff: null, runtimeHandoffError: null
+      }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -2191,6 +2200,46 @@ export function adminConsoleHtml(): string {
         '</button>'
       ).join('');
     }
+    function renderUnifiedRuntimeHandoff() {
+      const root = el("unifiedRuntimeHandoffSummary");
+      if (!root) return;
+      if (state.unifiedChecks.runtimeHandoffError) {
+        root.innerHTML = '<span class="hint">Runtime handoff unavailable: ' +
+          escapeHtml(state.unifiedChecks.runtimeHandoffError) + '</span>';
+        return;
+      }
+      const snapshot = state.unifiedChecks.runtimeHandoff;
+      if (!snapshot) {
+        root.innerHTML = '<span class="hint">Runtime handoff state is loading.</span>';
+        return;
+      }
+      const instances = asArray(snapshot.instances);
+      const instanceHtml = instances.length === 0
+        ? '<span class="hint">No registered runtime instances.</span>'
+        : instances.map((instance) => {
+            const heartbeatSeconds = Math.max(
+              0,
+              Math.round(Number(instance.heartbeatAgeMs || 0) / 1000)
+            );
+            return '<div class="runtime-handoff-instance">' +
+              '<strong>' + escapeHtml(instance.instanceLabel || "unnamed") + '</strong>' +
+              '<span class="' + classifyStatus(instance.state) + '">' +
+                escapeHtml(instance.state) + '</span>' +
+              '<span class="muted">' + escapeHtml(short(instance.runtimeCommit, 8)) +
+                ' · heartbeat ' + heartbeatSeconds + 's ago' +
+                ' · compatible runs ' +
+                escapeHtml(instance.compatibleNonTerminalRuns ?? 0) +
+                (instance.drainDeadlineAt
+                  ? ' · deadline ' + escapeHtml(iso(instance.drainDeadlineAt))
+                  : '') + '</span></div>';
+          }).join('');
+      const notificationHtml = Object.entries(snapshot.notifications || {})
+        .map(([status, count]) => escapeHtml(status) + ': ' + escapeHtml(count))
+        .join(' · ');
+      root.innerHTML = instanceHtml +
+        '<div class="runtime-handoff-notifications">Lifecycle notifications · ' +
+        (notificationHtml || 'none') + '</div>';
+    }
     function unifiedDagNodeHtml(node) {
       const metadata = node?.metadata && typeof node.metadata === "object"
         ? node.metadata
@@ -2339,8 +2388,19 @@ export function adminConsoleHtml(): string {
       state.unifiedChecks.error = null;
       renderUnifiedChecksList();
       try {
-        const body = await api("/admin/api/unified-checks");
+        const [body, runtimeHandoff] = await Promise.all([
+          api("/admin/api/unified-checks"),
+          api("/admin/api/unified-checks/runtime-handoff")
+            .then((value) => ({ value, error: null }))
+            .catch((error) => ({
+              value: null,
+              error: error instanceof Error ? error.message : "request failed"
+            }))
+        ]);
         state.unifiedChecks.runs = asArray(body.runs);
+        state.unifiedChecks.runtimeHandoff = runtimeHandoff.value;
+        state.unifiedChecks.runtimeHandoffError = runtimeHandoff.error;
+        renderUnifiedRuntimeHandoff();
         const activeStillExists = state.unifiedChecks.runs.some((run) =>
           run.id === state.unifiedChecks.activeId
         );
@@ -10041,6 +10101,7 @@ export function adminConsoleHtml(): string {
     renderTheftReportsList();
     renderTheftReportDetail();
     renderUnifiedChecksList();
+    renderUnifiedRuntimeHandoff();
     renderUnifiedCheckDetail();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
     applyInitialUrlFilters();

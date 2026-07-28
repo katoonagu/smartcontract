@@ -17,6 +17,9 @@ import type {
 import type {
   UnifiedAdaptiveAggregateSnapshot
 } from "../unifiedCheck/adaptiveObservability";
+import type {
+  UnifiedRuntimeHandoffAdminSnapshotV1
+} from "../unifiedCheck/runtimeHandoffRepository";
 
 export type AdminRuntimeDeps = {
   config: Pick<AppConfig, "adminDashboardEnabled" | "adminDashboardHost" | "adminDashboardPort" | "adminDashboardToken">;
@@ -42,6 +45,7 @@ export type AdminRuntimeDeps = {
     runId: string
   ): Promise<UnifiedAdminRunSnapshot | null>;
   getUnifiedAdaptiveSnapshot?(): UnifiedAdaptiveAggregateSnapshot | null;
+  getUnifiedRuntimeHandoffSnapshot?(): Promise<UnifiedRuntimeHandoffAdminSnapshotV1>;
 };
 
 export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<RunningAdminServer | null> {
@@ -66,6 +70,7 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
     getRuntimeProof: deps.getRuntimeProof,
     runRuntimeNavigationProbe: deps.runRuntimeNavigationProbe,
     getUnifiedRunSnapshot: deps.getUnifiedRunSnapshot,
-    getUnifiedAdaptiveSnapshot: deps.getUnifiedAdaptiveSnapshot
+    getUnifiedAdaptiveSnapshot: deps.getUnifiedAdaptiveSnapshot,
+    getUnifiedRuntimeHandoffSnapshot: deps.getUnifiedRuntimeHandoffSnapshot
   });
 }

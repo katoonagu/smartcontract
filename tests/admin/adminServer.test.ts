@@ -474,6 +474,25 @@ describe("startAdminServer", () => {
     const server = await start({
       ...deps(),
       listUnifiedRuns: async () => [unifiedRun()],
+      getUnifiedRuntimeHandoffSnapshot: async () => ({
+        instances: [{
+          instanceId: "runtime-a",
+          runtimeCommit: "a".repeat(40),
+          instanceLabel: "local-aaaaaaaa",
+          state: "DRAINING",
+          heartbeatAgeMs: 2_000,
+          drainDeadlineAt: "2026-07-28T12:00:00.000Z",
+          compatibleNonTerminalRuns: 1
+        }],
+        notifications: {
+          PENDING: 1,
+          LEASED: 0,
+          RETRYABLE: 0,
+          SENT_CONFIRMED: 4,
+          DELIVERY_UNKNOWN: 0,
+          CANCELLED: 2
+        }
+      }),
       getUnifiedProgress: async () => ({
         version: "unified-progress-projection-v1",
         lifecycle: "BLOCKED_ADMIN",
@@ -523,6 +542,10 @@ describe("startAdminServer", () => {
       `${server.url}/admin/api/unified-checks`
     );
     expect(unauthorized.status).toBe(401);
+    const unauthorizedHandoff = await fetch(
+      `${server.url}/admin/api/unified-checks/runtime-handoff`
+    );
+    expect(unauthorizedHandoff.status).toBe(401);
 
     const headers = {
       authorization: "Bearer secret-token",
@@ -534,6 +557,25 @@ describe("startAdminServer", () => {
     expect(list.status).toBe(200);
     expect(await list.json()).toMatchObject({
       runs: [{ id: "unified-run-1", finding: "blocked_admin_review", score: null }]
+    });
+
+    const handoff = await fetch(
+      `${server.url}/admin/api/unified-checks/runtime-handoff`,
+      { headers }
+    );
+    expect(handoff.status).toBe(200);
+    expect(await handoff.json()).toEqual({
+      instances: [expect.objectContaining({
+        instanceLabel: "local-aaaaaaaa",
+        state: "DRAINING",
+        heartbeatAgeMs: 2_000,
+        compatibleNonTerminalRuns: 1
+      })],
+      notifications: expect.objectContaining({
+        PENDING: 1,
+        SENT_CONFIRMED: 4,
+        CANCELLED: 2
+      })
     });
 
     const detail = await fetch(
@@ -566,7 +608,9 @@ describe("startAdminServer", () => {
 
     const page = await fetch(`${server.url}/admin/unified-checks`, { headers });
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain("data-unified-checks-workspace");
+    const pageHtml = await page.text();
+    expect(pageHtml).toContain("data-unified-checks-workspace");
+    expect(pageHtml).toContain("data-runtime-handoff-summary");
 
     const recovery = await fetch(
       `${server.url}/admin/api/unified-checks/unified-run-1/actions/resume`,

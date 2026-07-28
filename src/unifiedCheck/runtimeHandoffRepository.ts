@@ -31,6 +31,30 @@ export type UnifiedRuntimeInstanceV1 = Readonly<{
   failureReason: string | null;
 }>;
 
+const LIFECYCLE_NOTIFICATION_STATES = [
+  "PENDING",
+  "LEASED",
+  "RETRYABLE",
+  "SENT_CONFIRMED",
+  "DELIVERY_UNKNOWN",
+  "CANCELLED"
+] as const;
+
+type LifecycleNotificationState = typeof LIFECYCLE_NOTIFICATION_STATES[number];
+
+export type UnifiedRuntimeHandoffAdminSnapshotV1 = Readonly<{
+  instances: readonly Readonly<{
+    instanceId: string;
+    runtimeCommit: string;
+    instanceLabel: string;
+    state: UnifiedRuntimeState;
+    heartbeatAgeMs: number;
+    drainDeadlineAt: string | null;
+    compatibleNonTerminalRuns: number;
+  }>[];
+  notifications: Readonly<Record<LifecycleNotificationState, number>>;
+}>;
+
 const RUNTIME_REGISTRY_LOCK_ID = "20260728037";
 const SHA = /^[0-9a-f]{40}$/u;
 const STATES = new Set<UnifiedRuntimeState>([
@@ -120,6 +144,76 @@ export async function loadActiveRuntimeOwner(
       limit 1`
   )).rows[0];
   return row ? runtimeRow(row) : null;
+}
+
+export async function loadUnifiedRuntimeHandoffAdminSnapshot(
+  db: UnifiedQueryable,
+  now: Date
+): Promise<UnifiedRuntimeHandoffAdminSnapshotV1> {
+  validDate(now);
+  const [instancesResult, notificationsResult] = await Promise.all([
+    db.query(
+      `with compatible_runs as (
+        select manifest.artifact_json->>'runtimeCommit' as runtime_commit,
+               count(*)::int as run_count
+          from unified_check_runs run
+          join unified_check_artifacts manifest
+            on manifest.sha256=run.analysis_manifest_sha256
+           and manifest.kind='analysis_manifest'
+         where run.status not in ('COMPLETED','FAILED_TECHNICAL')
+         group by manifest.artifact_json->>'runtimeCommit'
+      )
+      select runtime.*,
+             coalesce(compatible_runs.run_count,0)::int as compatible_run_count
+        from unified_runtime_instances runtime
+        left join compatible_runs
+          on compatible_runs.runtime_commit=runtime.runtime_commit
+       order by runtime.started_at desc
+       limit 20`
+    ),
+    db.query(
+      `select status, count(*)::int as count
+         from unified_check_notifications
+        group by status`
+    )
+  ]);
+  const notifications = Object.fromEntries(
+    LIFECYCLE_NOTIFICATION_STATES.map((state) => [state, 0])
+  ) as Record<LifecycleNotificationState, number>;
+  for (const row of notificationsResult.rows) {
+    const state = String(row.status) as LifecycleNotificationState;
+    if (!LIFECYCLE_NOTIFICATION_STATES.includes(state)) continue;
+    const count = Number(row.count);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error("unified_runtime_admin_notification_count_invalid");
+    }
+    notifications[state] = count;
+  }
+  return {
+    instances: instancesResult.rows.map((row) => {
+      const runtime = runtimeRow(row);
+      const compatibleNonTerminalRuns = Number(row.compatible_run_count);
+      if (
+        !Number.isSafeInteger(compatibleNonTerminalRuns) ||
+        compatibleNonTerminalRuns < 0
+      ) {
+        throw new Error("unified_runtime_admin_run_count_invalid");
+      }
+      return {
+        instanceId: runtime.instanceId,
+        runtimeCommit: runtime.runtimeCommit,
+        instanceLabel: runtime.instanceLabel,
+        state: runtime.state,
+        heartbeatAgeMs: Math.max(
+          0,
+          now.getTime() - Date.parse(runtime.heartbeatAt)
+        ),
+        drainDeadlineAt: runtime.drainDeadlineAt,
+        compatibleNonTerminalRuns
+      };
+    }),
+    notifications
+  };
 }
 
 export async function registerActiveRuntime(

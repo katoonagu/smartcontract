@@ -63,6 +63,9 @@ import type {
 import type {
   UnifiedAdaptiveAggregateSnapshot
 } from "../unifiedCheck/adaptiveObservability";
+import type {
+  UnifiedRuntimeHandoffAdminSnapshotV1
+} from "../unifiedCheck/runtimeHandoffRepository";
 
 export type AdminServerConfig = {
   host: string;
@@ -94,6 +97,7 @@ export type AdminServerDeps = {
     runId: string
   ): Promise<UnifiedAdminRunSnapshot | null>;
   getUnifiedAdaptiveSnapshot?(): UnifiedAdaptiveAggregateSnapshot | null;
+  getUnifiedRuntimeHandoffSnapshot?(): Promise<UnifiedRuntimeHandoffAdminSnapshotV1>;
   applyUnifiedRecoveryAction?(input: {
     runId: string;
     action:
@@ -1475,6 +1479,21 @@ async function handleApiRequest(
       staleHeartbeatMs: 120_000
     });
     writeJson(response, 200, { runs });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/unified-checks/runtime-handoff") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.getUnifiedRuntimeHandoffSnapshot) {
+      writeJson(response, 501, {
+        error: "Unified runtime handoff is not configured."
+      });
+      return;
+    }
+    writeJson(response, 200, await deps.getUnifiedRuntimeHandoffSnapshot());
     return;
   }
 

@@ -214,6 +214,7 @@ import {
   enqueueDueLongRunningNotifications,
   hasLiveEquivalentReplacement,
   heartbeatRuntime,
+  loadUnifiedRuntimeHandoffAdminSnapshot,
   markRuntimePollingReleased,
   markRuntimeStopped,
   reconcileOrphanedUnifiedRuns,
@@ -2162,7 +2163,9 @@ const adminDashboard = await maybeStartAdminDashboard({
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
   findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses),
   getRuntimeProof: () => runtimeCycleRecorder.proof(),
-  runRuntimeNavigationProbe
+  runRuntimeNavigationProbe,
+  getUnifiedRuntimeHandoffSnapshot: () =>
+    loadUnifiedRuntimeHandoffAdminSnapshot(db, new Date())
 });
 if (adminDashboard) logger.info("admin_dashboard_started", { url: adminDashboard.url });
 
