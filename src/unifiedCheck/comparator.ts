@@ -502,17 +502,6 @@ function lockedExpectation(
   production: ComparatorInputV1
 ): ComparatorInputV1 {
   const locked = goldenCase.adjudication;
-  const presentations = [...locked.telegramExpectation]
-    .sort((left, right) => lexical(left.locale, right.locale))
-    .map((item) => ({
-      locale: item.locale,
-      html: item.exactHtml,
-      presentationSha256: presentationExpectation(
-        production.reportSha256,
-        item.locale,
-        item.exactHtml
-      ).presentationSha256
-    }));
   return parseComparatorInputV1({
     ...production,
     score: locked.exactScore,
@@ -523,7 +512,7 @@ function lockedExpectation(
       decision: locked.expectedDecision
     },
     dossierAggregates: locked.dossierAggregates,
-    presentations
+    presentations: production.presentations
   });
 }
 

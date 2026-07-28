@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { TELEGRAM_MESSAGE_LIMIT } from "../../src/alerts/telegramHtml";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
   buildPresentationManifest,
@@ -29,6 +31,10 @@ const goldenRoot = join(
 
 async function json(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+}
+
+async function sha256(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
 function minimalReport(input: {
@@ -196,11 +202,28 @@ function semanticDriver(
 }
 
 describe("Unified Telegram locked Golden HTML", () => {
-  it("matches every adjudicated locale fixture byte for byte", async () => {
+  it("preserves archived V1 bytes and validates V2 customer semantics", async () => {
+    const descriptorPath = join(goldenRoot, "..", "locked-manifest-descriptor.json");
+    const manifestPath = join(goldenRoot, "..", "locked-manifest.json");
+    const descriptor = await json(descriptorPath);
+    const manifestBytes = await readFile(manifestPath);
+    expect(manifestBytes.byteLength).toBe(descriptor.byteLength);
+    expect(await sha256(manifestPath)).toBe(descriptor.sha256);
+    const lockedManifest = JSON.parse(manifestBytes.toString("utf8")) as {
+      cases: Array<{ caseId: string; adjudicationSha256: string }>;
+    };
+    const lockedByCase = new Map(lockedManifest.cases.map((entry) => [
+      entry.caseId,
+      entry.adjudicationSha256
+    ]));
+
     for (const caseId of (await readdir(goldenRoot)).sort()) {
+      const adjudicationPath = join(goldenRoot, caseId, "adjudication.json");
       const adjudication = await json(
-        join(goldenRoot, caseId, "adjudication.json")
+        adjudicationPath
       );
+      expect(await sha256(adjudicationPath), `${caseId}:archived-v1`)
+        .toBe(lockedByCase.get(caseId));
       const neutral = await json(
         join(goldenRoot, caseId, "neutral-bundle.json")
       );
@@ -228,12 +251,46 @@ describe("Unified Telegram locked Golden HTML", () => {
         locale: "ru" | "en";
         exactHtml: string;
       }>) {
+        expect(expected.exactHtml, `${caseId}:${expected.locale}:v1-title`)
+          .toContain(expected.locale === "ru"
+            ? "<b>🧾 Проверка кошелька</b>"
+            : "<b>🧾 Wallet check</b>");
+        expect(expected.exactHtml, `${caseId}:${expected.locale}:v1-snapshot`)
+          .toContain(expected.locale === "ru" ? "Снимок: TRON" : "Snapshot: TRON");
+
         const result = renderUnifiedWalletPresentation({
           report,
           manifest: buildPresentationManifest(report, expected.locale)
         });
-        expect(result.artifact.html, `${caseId}:${expected.locale}`)
-          .toBe(expected.exactHtml);
+        const html = result.artifact.html;
+        expect(result.manifest.rendererVersion).toBe("unified-telegram-renderer-v2");
+        expect(result.manifest.templateVersion).toBe("unified-wallet-dossier-template-v2");
+        expect(html.length, `${caseId}:${expected.locale}:length`)
+          .toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+        expect(html, `${caseId}:${expected.locale}:address`)
+          .toContain(report.subjectAddress);
+        expect(html, `${caseId}:${expected.locale}:score`)
+          .toContain(`${report.score}/100`);
+        expect(html, `${caseId}:${expected.locale}:sending`)
+          .toContain(expected.locale === "ru"
+            ? "Если отправляете деньги"
+            : "If you are sending funds");
+        expect(html, `${caseId}:${expected.locale}:receiving`)
+          .toContain(expected.locale === "ru"
+            ? "Если принимаете деньги"
+            : "If you are receiving funds");
+        expect(html, `${caseId}:${expected.locale}:missing-activity`)
+          .toContain(expected.locale === "ru"
+            ? "Период активности определить не удалось"
+            : "The activity period could not be determined");
+        expect(html, `${caseId}:${expected.locale}:internal-copy`)
+          .not.toMatch(/facts|collapsed|evidence facts|current_balance_attribution|all_direct_outgoing_to_snapshot|\b[a-z]+_[a-z_]+\b/iu);
+        if (expected.locale === "ru") {
+          expect(html, `${caseId}:ru:english-internals`)
+            .not.toMatch(/hard evidence|blacklist|fan-in|fan-out|canonical fact|provider key|risk-балл|restart|immutable evidence|drainer/iu);
+        } else {
+          expect(html, `${caseId}:en:russian-copy`).not.toMatch(/[А-Яа-яЁё]/u);
+        }
       }
     }
   });

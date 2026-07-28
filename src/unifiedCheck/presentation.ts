@@ -147,27 +147,27 @@ const SEMANTIC_REASON: Readonly<Record<
   },
   high_volume_transit: {
     en: "High inbound and outbound throughput forms a dense transit pattern. Contract-creation metadata alone does not add risk.",
-    ru: "Высокий входящий и исходящий оборот образует плотный транзитный паттерн. Метаданные создания контрактом сами по себе риск не повышают."
+    ru: "Высокий входящий и исходящий оборот образует плотную транзитную картину. Сам факт создания кошелька контрактом риск не повышает."
   },
   route_transit: {
-    en: "A material share of inbound volume was forwarded. This is significant transit context without hard evidence.",
-    ru: "Большая доля входящего объёма вскоре ушла дальше. Это значимый транзитный контекст без hard evidence."
+    en: "A material share of incoming volume was forwarded. This is significant transit behavior, but not direct proof of abuse.",
+    ru: "Большая доля входящего объёма вскоре ушла дальше. Это важный транзитный признак, но не прямое доказательство нарушения."
   },
   selected_amount_transit: {
     en: "The selected inbound amount was almost entirely forwarded. Unknown counterparties alone add no points.",
-    ru: "Выбранная входящая сумма почти полностью перемещена дальше. Неизвестные контрагенты сами по себе баллы не добавляют."
+    ru: "Выбранная входящая сумма почти полностью перемещена дальше. Неизвестные контрагенты сами по себе оценку не повышают."
   },
   fan_out: {
     en: "Concentrated inbound flow is distributed across many recipients. This is a reviewable fan-out pattern without direct proof.",
-    ru: "Концентрированный входящий поток распределяется по многим получателям. Это проверяемый fan-out паттерн без прямого доказательства."
+    ru: "Концентрированный входящий поток распределяется между многими получателями. Это повод для проверки, но не прямое доказательство нарушения."
   },
   collector_transit: {
     en: "The wallet behaves as a collector and transit hub. Exchange labels are context and do not retroactively reclassify earlier transfers.",
-    ru: "Кошелёк работает как коллектор и транзитный узел. Биржевые разметки показаны как контекст и не переопределяют прошлые переводы задним числом."
+    ru: "Кошелёк собирает средства и работает как транзитный узел. Более поздние биржевые разметки не меняют оценку прошлых переводов задним числом."
   },
   high_volume_transit_later_labels: {
-    en: "A sustained high-throughput transit pattern was found. Later service labels are not hard evidence for earlier events.",
-    ru: "Найден устойчивый высокооборотный транзитный паттерн. Более поздние сервисные разметки не являются hard evidence для прошлых событий."
+    en: "Sustained high-volume transit behavior was found. Later service labels are not direct proof about earlier transfers.",
+    ru: "Найдена устойчивая транзитная активность с большим оборотом. Более поздние сервисные разметки не являются прямым доказательством для прошлых событий."
   },
   history_depth_neutral: {
     en: "History depth and page count do not create risk by themselves.",
@@ -178,36 +178,36 @@ const SEMANTIC_REASON: Readonly<Record<
     ru: "Неопределённость доставки — техническое состояние, а не характеристика кошелька."
   },
   direct_blacklist_with_safe_volume: {
-    en: "There is a direct inbound transfer from an address blacklisted at transfer time. Larger safe Bybit flow does not lower the hard-evidence floor.",
-    ru: "Есть прямое поступление от адреса, находившегося в blacklist во время перевода. Больший безопасный поток Bybit не снижает hard-evidence floor."
+    en: "There is a direct incoming transfer from an address that was restricted at transfer time. Larger safe Bybit flow does not cancel this direct finding.",
+    ru: "Есть прямое поступление от адреса, находившегося в чёрном списке во время перевода. Больший безопасный поток Bybit не отменяет это прямое доказательство."
   },
   dangerous_approval_no_debit: {
     en: "A dangerous approval was found, but no debit is confirmed. Protective review is required without claiming a theft.",
     ru: "Найдено опасное разрешение, но подтверждённого списания нет. Нужна защитная проверка без утверждения о краже."
   },
   correlated_dense_transit: {
-    en: "Dense fan-in/fan-out with rapid forwarding forms a composite behavioral signal. Graph density alone is not hard evidence.",
-    ru: "Плотный fan-in/fan-out и быстрый вывод образуют составной поведенческий сигнал. Плотность графа сама по себе hard evidence не является."
+    en: "Dense many-to-many flow with rapid forwarding forms a combined behavioral signal. Connection density alone is not direct proof of abuse.",
+    ru: "Плотный поток от многих отправителей ко многим получателям вместе с быстрым выводом образует составной поведенческий сигнал. Плотность связей сама по себе не является прямым доказательством."
   },
   direct_blacklist_at_event: {
-    en: "A direct inbound transfer from an address blacklisted at transfer time is confirmed. Its small share does not cancel the hard fact.",
-    ru: "Подтверждено прямое поступление от адреса в blacklist на момент перевода. Малый процент не отменяет сам hard fact."
+    en: "A direct incoming transfer from an address restricted at transfer time is confirmed. Its small share does not cancel this direct finding.",
+    ru: "Подтверждено прямое поступление от адреса из чёрного списка на момент перевода. Небольшая доля не отменяет этот прямой факт."
   },
   duplicate_evidence_neutral: {
-    en: "A duplicate canonical fact is counted once and does not change the score.",
-    ru: "Повтор одного canonical fact не учитывается второй раз и не меняет оценку."
+    en: "The same confirmed event is counted once and does not change the score when repeated.",
+    ru: "Один и тот же подтверждённый факт учитывается только один раз и не меняет оценку повторно."
   },
   dust_spam_neutral: {
     en: "Unsolicited dust received by the wallet does not raise its risk.",
-    ru: "Незапрошенный dust, полученный кошельком, не повышает его риск."
+    ru: "Небольшой незапрошенный перевод, полученный кошельком, не повышает его риск."
   },
   empty_wallet: {
     en: "There is no USDT activity and no confirmed risk signal.",
     ru: "Активности USDT и подтверждённых риск-сигналов нет."
   },
   provider_key_exhaustion: {
-    en: "Provider-key exhaustion is a technical fact and adds no risk points.",
-    ru: "Исчерпание provider key — технический факт и не добавляет risk-баллы."
+    en: "Exhausted data-provider access is a technical limitation and adds no risk points.",
+    ru: "Исчерпание ключа поставщика данных — технический факт, который не повышает оценку риска."
   },
   no_usdt_activity: {
     en: "A new wallet with no USDT activity receives no risk merely because of its age.",
@@ -215,27 +215,27 @@ const SEMANTIC_REASON: Readonly<Record<
   },
   clean_confirmed_context: {
     en: "One direct legitimate exchange transfer was found without a risk pattern.",
-    ru: "Найдена одна прямая легитимная биржевая операция без риск-паттерна."
+    ru: "Найдена одна прямая легитимная биржевая операция без признаков риска."
   },
   operational_wallet: {
     en: "The old active operational wallet shows no composite suspicious pattern. An unknown counterparty alone contributes zero.",
-    ru: "Старый активный операционный кошелёк не показывает составного подозрительного паттерна. Неизвестный контрагент сам по себе даёт ноль."
+    ru: "Старый активный операционный кошелёк не показывает совокупности подозрительных признаков. Неизвестный контрагент сам по себе оценку не повышает."
   },
   reorder_invariant: {
-    en: "Reordering equivalent input facts does not change the result.",
+    en: "Reordering equivalent input records does not change the result.",
     ru: "Перестановка одинаковых входных фактов не меняет результат."
   },
   restart_invariant: {
-    en: "Restarting with the same immutable evidence does not duplicate risk.",
-    ru: "Restart с тем же immutable evidence не дублирует риск."
+    en: "Repeating the analysis with the same source data does not count risk twice.",
+    ru: "Повторный запуск с теми же неизменными доказательствами не учитывает риск дважды."
   },
   unknown_without_risk_pattern: {
     en: "An unknown source without correlated suspicious behavior adds zero points.",
     ru: "Неизвестный источник без связанного подозрительного поведения добавляет ноль баллов."
   },
   victim_confirmed_debit: {
-    en: "A victim debit is confirmed. Protective review is required, but the victim role does not transfer recipient or drainer risk to the wallet.",
-    ru: "Подтверждено списание у жертвы. Нужна защитная проверка, но роль жертвы не переносит на кошелёк риск получателя или drainer."
+    en: "A debit from a victim is confirmed. Protective review is required, but being the victim does not transfer the recipient's or debiting address's risk to this wallet.",
+    ru: "Подтверждено списание у пострадавшего. Нужна защитная проверка, но роль пострадавшего не переносит на кошелёк риск получателя или адреса, списавшего средства."
   }
 };
 
@@ -687,6 +687,22 @@ const BEHAVIOR_COPY: Readonly<Record<
   string,
   Readonly<Record<Locale, string>>
 >> = {
+  blacklisted_at_transfer: {
+    ru: "Найдена прямая операция с адресом, который находился в чёрном списке на момент перевода.",
+    en: "A direct transfer involving an address restricted at transfer time was found."
+  },
+  direct_blacklist_relation: {
+    ru: "Найдена прямая связь с адресом из чёрного списка.",
+    en: "A direct link to a restricted address was found."
+  },
+  confirmed_victim_debit: {
+    ru: "Подтверждено списание у пострадавшего; это требует защитной проверки.",
+    en: "A debit from a victim was confirmed and requires a protective review."
+  },
+  unknown_with_correlated_pattern: {
+    ru: "Неизвестный источник сочетается с несколькими связанными поведенческими признаками.",
+    en: "An unknown source is combined with several related behavioral signals."
+  },
   dense_fan_in_fan_out: {
     ru: "Найден плотный поток от многих отправителей ко многим получателям.",
     en: "A dense flow from many senders to many recipients was found."
@@ -698,6 +714,66 @@ const BEHAVIOR_COPY: Readonly<Record<
   rapid_forwarding: {
     ru: "Полученные средства вскоре переводились дальше.",
     en: "Received funds were forwarded soon afterward."
+  },
+  high_volume_transit: {
+    ru: "Через кошелёк проходит устойчивый транзитный поток с большим оборотом.",
+    en: "A sustained high-volume transit flow passes through the wallet."
+  },
+  collector_transit_pattern: {
+    ru: "Кошелёк собирает поступления и затем переводит их дальше.",
+    en: "The wallet collects incoming funds and then forwards them onward."
+  },
+  collector_pattern: {
+    ru: "Поступления из нескольких источников концентрируются на этом кошельке.",
+    en: "Incoming funds from several sources concentrate in this wallet."
+  },
+  route_transit_pattern: {
+    ru: "Значимая часть входящих средств проходит через кошелёк транзитом.",
+    en: "A material share of incoming funds passes through the wallet in transit."
+  },
+  selected_amount_forwarded: {
+    ru: "Выбранная входящая сумма была почти полностью переведена дальше.",
+    en: "The selected incoming amount was forwarded almost entirely."
+  },
+  fan_out_pattern: {
+    ru: "Собранные средства распределяются между многими получателями.",
+    en: "Collected funds are distributed among many recipients."
+  },
+  old_active_operational_wallet: {
+    ru: "Кошелёк давно активен и похож на операционный; само по себе это не является риском.",
+    en: "The wallet is long-running and resembles an operational wallet; this alone is not a risk."
+  },
+  identified_service_boundary: {
+    ru: "Движение средств дошло до известного размеченного сервиса.",
+    en: "The money flow reached a known labeled service."
+  },
+  shared_liquidity_boundary: {
+    ru: "Дальнейшее движение упирается в общую ликвидность, где средства смешиваются.",
+    en: "Further tracing reaches shared liquidity where funds are mixed."
+  },
+  policy_or_restriction_boundary: {
+    ru: "Дальнейшая трассировка остановлена на границе с ограничением или особым правилом.",
+    en: "Further tracing stopped at a restriction or policy boundary."
+  },
+  contract_economic_boundary: {
+    ru: "Дальнейшее движение дошло до контракта, меняющего экономический смысл операции.",
+    en: "The flow reached a contract that changes the economic meaning of the transaction."
+  },
+  amount_continuity_exhausted: {
+    ru: "Трассировка завершилась после полного распределения выбранной суммы.",
+    en: "Tracing ended after the selected amount was fully distributed."
+  },
+  temporal_continuity_exhausted: {
+    ru: "Дальнейшие операции вышли за допустимую временную связь с выбранным переводом.",
+    en: "Later activity fell outside the allowed time relationship to the selected transfer."
+  },
+  unidentified_structural_boundary: {
+    ru: "Дальнейшую границу движения средств определить не удалось.",
+    en: "The next structural boundary in the money flow could not be identified."
+  },
+  indirect_restriction_boundary: {
+    ru: "Обнаружена косвенная связь с ограниченной инфраструктурой.",
+    en: "An indirect link to restricted infrastructure was found."
   }
 };
 
@@ -758,7 +834,11 @@ function profileLines(
   const first = profile.firstUsdtActivityAt;
   const last = profile.lastUsdtActivityAt;
   let activity: string;
-  if (
+  if (first === null && last === null) {
+    activity = locale === "ru"
+      ? "Период активности определить не удалось."
+      : "The activity period could not be determined.";
+  } else if (
     first !== null &&
     last !== null &&
     new Date(last).getTime() - new Date(first).getTime() <= 60_000
@@ -766,6 +846,14 @@ function profileLines(
     activity = locale === "ru"
       ? "Активность наблюдалась в течение нескольких секунд."
       : "Activity was observed over a few seconds.";
+  } else if (first === null) {
+    activity = locale === "ru"
+      ? `Начало активности определить не удалось; последняя активность: ${formatCustomerUtcDate(last, locale)}.`
+      : `The start of activity could not be determined; latest activity: ${formatCustomerUtcDate(last, locale)}.`;
+  } else if (last === null) {
+    activity = locale === "ru"
+      ? `Первая активность: ${formatCustomerUtcDate(first, locale)}; окончание определить не удалось.`
+      : `First activity: ${formatCustomerUtcDate(first, locale)}; the end could not be determined.`;
   } else {
     activity = locale === "ru"
       ? `Активность: ${formatCustomerUtcDate(first, locale)} — ${formatCustomerUtcDate(last, locale)}.`

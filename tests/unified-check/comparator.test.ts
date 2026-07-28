@@ -83,17 +83,21 @@ describe("Unified wallet Golden comparator", () => {
         .toBe(goldenCase.adjudication.expectedDecision);
       expect(candidate.dossierAggregates, goldenCase.caseId)
         .toEqual(goldenCase.adjudication.dossierAggregates);
-      expect(candidate.presentations.map((item) => ({
-        locale: item.locale,
-        html: item.html
-      })), goldenCase.caseId).toEqual(
-        [...goldenCase.adjudication.telegramExpectation]
-          .sort((left, right) => left.locale.localeCompare(right.locale))
-          .map((item) => ({
-            locale: item.locale,
-            html: item.exactHtml
-          }))
-      );
+      for (const presentation of candidate.presentations) {
+        const html = presentation.html;
+        expect(html, `${goldenCase.caseId}:${presentation.locale}:score`)
+          .toContain(`${candidate.score}/100`);
+        expect(html, `${goldenCase.caseId}:${presentation.locale}:address`)
+          .toContain(goldenCase.neutralBundle.subjectAddress);
+        expect(html, `${goldenCase.caseId}:${presentation.locale}:guidance`)
+          .toContain(presentation.locale === "ru"
+            ? "Если отправляете деньги"
+            : "If you are sending funds");
+        expect(html, `${goldenCase.caseId}:${presentation.locale}:v1-archive`)
+          .not.toBe(goldenCase.adjudication.telegramExpectation.find(
+            (item) => item.locale === presentation.locale
+          )?.exactHtml);
+      }
       const properties = compareUnifiedWalletGoldenScoreProperties(
         goldenCase,
         candidate

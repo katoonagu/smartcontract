@@ -381,6 +381,42 @@ function customerReport(): UnifiedWalletDossierV1 {
   };
 }
 
+function withAdditionalBehaviorCodes(
+  dossier: UnifiedWalletDossierV1,
+  codes: readonly string[]
+): UnifiedWalletDossierV1 {
+  const sections = dossier.sections.map((entry) =>
+    entry.kind === "behavior_connections"
+      ? {
+          ...entry,
+          rows: [
+            ...entry.rows,
+            ...codes.map((code) => ({
+              code,
+              role: "context",
+              factIds: ["fact-rapid"],
+              collapsedFactCount: 1
+            }))
+          ]
+        }
+      : entry
+  );
+  const inventory = {
+    ...dossier.factInventory,
+    sections: dossier.factInventory.sections.map((entry) =>
+      entry.sectionId === "behavior_connections"
+        ? { ...entry, collapsedFactCount: entry.collapsedFactCount + codes.length }
+        : entry
+    )
+  };
+  return {
+    ...dossier,
+    sections,
+    factInventory: inventory,
+    factInventoryHash: fingerprintCanonicalArtifact(inventory)
+  };
+}
+
 describe("Unified Telegram presentation", () => {
   it("renders the approved customer report without internal terminology", () => {
     const dossier = customerReport();
@@ -454,6 +490,134 @@ describe("Unified Telegram presentation", () => {
     expect(en).toContain("20 Jul 2026, 13:53 UTC");
     expect(en).toContain("less than 0.01 USDT");
     expect(en).not.toMatch(/[А-Яа-яЁё]/u);
+  });
+
+  it("has explicit customer copy for every reachable behavior code", () => {
+    const codes = [
+      "blacklisted_at_transfer",
+      "direct_blacklist_relation",
+      "confirmed_victim_debit",
+      "unknown_with_correlated_pattern",
+      "dense_fan_in_fan_out",
+      "high_volume_transit",
+      "high_volume_inbound_outbound",
+      "collector_transit_pattern",
+      "collector_pattern",
+      "route_transit_pattern",
+      "selected_amount_forwarded",
+      "fan_out_pattern",
+      "rapid_forwarding",
+      "old_active_operational_wallet",
+      "identified_service_boundary",
+      "shared_liquidity_boundary",
+      "policy_or_restriction_boundary",
+      "contract_economic_boundary",
+      "history_exhausted_to_account_creation",
+      "amount_continuity_exhausted",
+      "temporal_continuity_exhausted",
+      "unidentified_structural_boundary",
+      "indirect_restriction_boundary",
+      "unknown_source",
+      "direct_activity_observed"
+    ];
+    const dossier = withAdditionalBehaviorCodes(customerReport(), codes);
+    const ru = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "ru")
+    }).artifact.html;
+    const en = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "en")
+    }).artifact.html;
+
+    expect(ru).not.toContain("Найден дополнительный поведенческий контекст");
+    expect(en).not.toContain("Additional behavioral context was found");
+    for (const code of codes) {
+      expect(ru).not.toContain(code);
+      expect(en).not.toContain(code);
+    }
+  });
+
+  it("uses neutral localized copy for an unknown non-decisive behavior", () => {
+    const dossier = withAdditionalBehaviorCodes(
+      customerReport(),
+      ["future_non_decisive_context"]
+    );
+    const ru = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "ru")
+    }).artifact.html;
+    const en = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "en")
+    }).artifact.html;
+    expect(ru).toContain("Найден дополнительный поведенческий контекст");
+    expect(en).toContain("Additional behavioral context was found");
+    expect(ru).not.toContain("future_non_decisive_context");
+    expect(en).not.toContain("future_non_decisive_context");
+  });
+
+  it("describes incomplete coverage without exposing coverage keys", () => {
+    const dossier = customerReport();
+    const sections = dossier.sections.map((entry) =>
+      entry.kind === "coverage"
+        ? {
+            ...entry,
+            dimensions: entry.dimensions.map((row) =>
+              row.direction === "backward"
+                ? {
+                    ...row,
+                    tracePpm: 750_000,
+                    untracedPpm: 250_000
+                  }
+                : row
+            )
+          }
+        : entry
+    );
+    const incomplete = { ...dossier, sections };
+    const html = renderUnifiedWalletPresentation({
+      report: incomplete,
+      manifest: buildPresentationManifest(incomplete, "ru")
+    }).artifact.html;
+    expect(html).toContain("Часть входящих переводов не прослежена (25%)");
+    expect(html).toContain("вывод ограничен этой неполнотой");
+    expect(html).not.toMatch(/selection|trace|identified|untraced/iu);
+  });
+
+  it("compacts repeated examples but keeps every essential customer decision", () => {
+    const dossier = customerReport();
+    const expanded = {
+      ...dossier,
+      latestPrincipalInboundEvents: Array.from({ length: 250 }, (_, index) => ({
+        ...dossier.latestPrincipalInboundEvents[0]!,
+        eventId: `event-${String(index).padStart(3, "0")}`,
+        txHash: index.toString(16).padStart(64, "0")
+      }))
+    };
+    const result = renderUnifiedWalletPresentation({
+      report: expanded,
+      manifest: buildPresentationManifest(expanded, "ru")
+    });
+    const html = result.artifact.html;
+    expect(html.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+    for (const essential of [
+      "35/100 — нужна проверка",
+      "Если отправляете деньги",
+      "Если принимаете деньги",
+      "Полученные средства вскоре переводились дальше",
+      "Первоначальный источник средств определить не удалось",
+      "🧭 Вывод",
+      "TRON #84727122"
+    ]) {
+      expect(html).toContain(essential);
+    }
+    expect(html).not.toContain("event-249");
+    expect(result.receipt.omittedCanonicalFactIds).toEqual([]);
+    for (const tag of ["b", "i", "code", "a"]) {
+      expect(html.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "gu"))?.length ?? 0)
+        .toBe(html.match(new RegExp(`</${tag}>`, "gu"))?.length ?? 0);
+    }
   });
 
   it("renders one deterministic locale payload and proves all normative sections", () => {
