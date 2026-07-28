@@ -134,6 +134,28 @@ code_refs:
 - `ScoreAnchorV3` binds facts, policy/config versions, analysis, locked Golden
   identity, and report.
 
+## Authority And Event-Time Correctness Gate
+
+- Exact approval-drain authority requires a checked-subject, hop-zero approval
+  plus transferFrom profile. Route-linked profiles and flat proximity markers
+  remain context. Durable assertions bind the complete retained
+  raw/profile/observation identity, and reconstructed Fast exact evidence also
+  requires the matching non-empty raw evidence ID.
+- Official decoded USDT blacklist declarations are semantic corroboration:
+  canonical and equivalent indexed forms are accepted, while contract, raw
+  topic when present, user/result, finality, transaction, block, log-index, and
+  timestamp verification remain mandatory.
+- Blacklist hard policy is event-time based. `became_active_after` and unknown
+  timing are non-hard; a complete mixed fact uses only its exact active subset,
+  which must independently pass materiality and carries only active movement
+  evidence plus the matching final verified event and current-state identity.
+- Local sanctions evaluation is `active | inactive | unknown`. Only an active,
+  consistently registry-bound local path with evidence overlap authorizes a
+  local hard fact; typed cross-chain sanctions retain separate authority.
+
+These decisions apply to newly composed results. Historical persisted reports,
+scores, assertions, and delivery artifacts are not recalculated or rewritten.
+
 ## Stage B Release State
 
 - Selective enrichment, immutable raw/full evidence, claim fencing, the Where

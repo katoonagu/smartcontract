@@ -137,6 +137,21 @@ prove an adverse decision for that route. Decision-evidence identity also
 includes the normalized trigger-code set, so distinct audited reasons over the
 same provider evidence remain distinct immutable decisions.
 
+Official USDT blacklist logs use the decoded event declaration only as
+semantic corroboration. Canonical declarations and equivalent indexed forms
+such as `AddedBlackList(address indexed _user)` and
+`RemovedBlackList(address indexed _user)` are accepted equally. Official
+contract identity, confirmation, successful finality, transaction/block/log
+identity, timestamp, decoded user/result agreement, and canonical raw topics
+when supplied remain mandatory and fail closed on conflict.
+
+Blacklist policy is reconstructed against the verified timeline at each rich
+movement's event time. The final verified timeline event must exactly bind the
+saved effective event identity, and the active policy subset retains only its
+own rich movement identities. Pre-activation and unknown-time movements remain
+preserved as context; they are never folded into the active subset or erased
+from the underlying movement evidence.
+
 The code paths and deterministic tests for this contract are complete. The
 real TXc provider/DB replay tape is not: the required release fixture at
 `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` is absent, and the

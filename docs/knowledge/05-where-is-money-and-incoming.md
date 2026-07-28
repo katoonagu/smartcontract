@@ -72,6 +72,20 @@ safely, and rows are returned in deterministic assertion-ID order. Flat address
 labels and suggestive category/name text are not assertion authority; the
 selective enrichment policy must repeat its own strict rich-evidence match.
 
+Exact approval-drain authority requires an approval plus transferFrom profile
+bound to the checked subject at hop zero. Route-linked profiles and flat
+approval-proximity markers remain review context. A saved proof level, source
+type, label, aggregate share, feature code, or receiver count cannot recreate
+exact authority without that direct profile and its overlapping evidence.
+
+Legacy Where and Incoming risky-label or local-sanctions artifacts are hard
+only when an authoritative origin path overlaps their evidence IDs. Incoming
+recomputes risky-label share from those bound paths before applying its
+materiality threshold; a larger stale aggregate cannot add authority. Local
+sanctions additionally require one consistently resolved registry service that
+was active at the path's event time. Missing, invalid, inactive, conflicting,
+or non-overlapping sanctions evidence remains context.
+
 The selective enrichment policy deduplicates route candidates by normalized
 transaction hash and processes known hard candidates before optional context.
 Subject analysis has no numeric ceiling that can drop a hard full-information

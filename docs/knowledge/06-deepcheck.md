@@ -38,6 +38,22 @@ frozen-at-transfer; indirect evidence does not receive direct weight; a service
 boundary is context rather than provider failure. Cross-branch canonical keys
 prevent the same event from contributing again through Fast or Where.
 
+Persisted exact approval-drain authority is limited to a checked-subject,
+hop-zero approval plus transferFrom profile. Its durable assertion binds the
+complete retained raw/profile/observation identity, including subject,
+receiver, spender, hop, ordered path, transaction identities, and the exact raw
+evidence ID. A route-linked profile remains a review observation; matching
+approval/drain hashes alone cannot promote it or reconstruct an exact Fast
+reason.
+
+New complete first-hop blacklist facts persist the exact directional principal
+denominator. Legacy `active_at_transfer` facts without that additive field stay
+readable and may use a denominator recomputed from fully valid direct profiles;
+legacy `mixed` facts cannot gain hard authority without the persisted exact
+denominator. Policy replays the verified timeline over preserved rich movement
+identity, requires the saved final effective event to match the final verified
+event, and keeps active, pre-activation, and unknown-time subsets separate.
+
 The parent may complete only after Deep is terminal and shared traversal/hash
 contracts hold. A technical Deep failure produces no partial user report.
 

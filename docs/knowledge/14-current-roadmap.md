@@ -26,12 +26,11 @@ implementation plans do not override the status recorded here.
 
 ## Current Order
 
-1. Close the authority and event-time correctness gate.
-2. Close Stage B operational evidence without changing legacy defaults.
-3. Implement Stage C as shadow-only behavior profiling.
-4. Freeze a separate blind set, complete two reviews, and adjudicate it.
-5. Plan and implement disabled-by-default Stage D / snapshot-closure-v3.
-6. Build recipient wallet precheck before signing or broadcasting.
+1. Close Stage B operational evidence without changing legacy defaults.
+2. Implement Stage C as shadow-only behavior profiling.
+3. Freeze a separate blind set, complete two reviews, and adjudicate it.
+4. Plan and implement disabled-by-default Stage D / snapshot-closure-v3.
+5. Build recipient wallet precheck before signing or broadcasting.
 
 Unified TQr latency is a separate diagnostic track. It is not Stage B release
 evidence and does not change the order above.
@@ -48,7 +47,7 @@ paths from owning automatic output for the same chat/address pair.
 
 | Area | Current state | Next acceptance boundary |
 |---|---|---|
-| Correctness gate | Four confirmed authority/temporal defects remain open | Negative regressions, minimal fixes, Golden/regression and PostgreSQL proof |
+| Correctness gate | Complete; four authority/temporal defects closed without historical recalculation | Preserve the gate while later stages add evidence or policy |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime core complete; unit/client contracts present; real capture needs confirmed read-only/date/assertion/dispose plus endpoint/secret-output repairs; canary run output is not caller-bound; deployment integration and attributable rollout proof are missing; repository default 1 | Repair evidence tooling, obtain real replay/PostgreSQL proof, then take explicit deployment/observability branches; retain 1 unless all later gates pass and a reversible trial observation supports 2 |
 | Stage C | Design-only | Shadow implementation, frozen blind set, two reviews and adjudication |
@@ -58,20 +57,23 @@ paths from owning automatic output for the same chat/address pair.
 
 ## Correctness Gate
 
-The first implementation plan must close all four defects before Stage C
-adjudication or Stage D work:
+The authority and event-time correctness gate is complete. Historical results
+were not recalculated. Implementation landed as four independent fixes followed
+by one compatibility gate:
 
-- route-linked approval-drain evidence must not become an exact durable label
-  or Fast hard-evidence floor 95;
-- flat/stale approval markers must remain contextual across money-origin,
-  Incoming, matrix, raw-evidence reconstruction, and Admin graph consumers;
-- blacklist state acquired after a transfer must not authorize an independent
-  decline for that earlier transfer;
-- official blacklist logs must accept semantically equivalent indexed decoded
-  signatures while retaining topic/address/transaction verification;
-- missing or invalid sanctions time is unknown, not active.
+- approval authority: [`5f7021768eb5cc941d6758379f6e8e7052bbaa35`](https://github.com/katoonagu/smartcontract/commit/5f7021768eb5cc941d6758379f6e8e7052bbaa35);
+- semantic blacklist declarations: [`b926cea227bc38c7378e32e4d79079e071218550`](https://github.com/katoonagu/smartcontract/commit/b926cea227bc38c7378e32e4d79079e071218550);
+- blacklist event-time active subset: [`99ed99e38f6a55a38906781de913fa45152485d7`](https://github.com/katoonagu/smartcontract/commit/99ed99e38f6a55a38906781de913fa45152485d7);
+- sanctions tri-state and local evidence binding: [`a8370d1d8ea79c1f31537c1cb14fa6db9c448e9c`](https://github.com/katoonagu/smartcontract/commit/a8370d1d8ea79c1f31537c1cb14fa6db9c448e9c);
+- legacy compatibility gate: [`d3a4f1b0b7e9d964df6b7bca71b937bb66290f28`](https://github.com/katoonagu/smartcontract/commit/d3a4f1b0b7e9d964df6b7bca71b937bb66290f28).
 
-Historical results are not recalculated.
+Verification passed: the combined targeted suite (`1,689` tests), Golden V2
+verification (`24` tests; locked manifest
+`4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`),
+the production comparator contract (`8` tests), typecheck, the full suite
+(`4,941` passed, `157` skipped), and the forbidden-shortcut audit. Skipped
+PostgreSQL-gated tests are not PostgreSQL proof; the existing database and
+Stage B operational blockers below remain open.
 
 ## Stage B Release Closure
 
