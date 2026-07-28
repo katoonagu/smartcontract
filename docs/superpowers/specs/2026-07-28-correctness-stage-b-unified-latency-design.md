@@ -2,7 +2,7 @@
 
 **Дата:** 2026-07-28
 
-**Статус:** структура утверждена; письменная спецификация ожидает review
+**Статус:** утверждено пользователем; разбито на два implementation plan
 
 **Назначение:** зафиксировать порядок ближайших работ после аудита и не смешивать
 legacy Stage B с latency нового Unified `/check`.
@@ -30,8 +30,12 @@ Correctness и Stage B получают отдельные исполнимые 
 
 - Stage A реализован, но новые пользовательские runs по умолчанию всё ещё
   используют `snapshot-closure-v1`; operational rollout V2 не закрыт.
-- Stage B code-complete. Release evidence для production Where concurrency `2`
-  не закрыто.
+- Stage B runtime core (selective enrichment, claim fencing и slot pump)
+  code-complete; unit/client contracts присутствуют. Реальный capture path не
+  доказан: recorder требует отдельного read-only/date/assertion/dispose fix.
+  Release closure для production Where concurrency `2` также блокируют
+  отсутствующие deployment-owned bridge/adapter/cycle composition и строгая
+  attributable rollout observability.
 - Stage C существует только в design. `service-behavior-profile-v1` в runtime
   отсутствует.
 - Stage D существует только в design. Production config и contracts принимают
@@ -96,6 +100,17 @@ mandatory addresses. Это expanding traversal, а не зависший provid
 - Плоский label code сам по себе больше не является достаточной authority для
   Fast 95. Exact Fast evidence обязано сохранять проверяемую direct provenance,
   а не восстанавливать authority из строки label.
+- Та же граница действует вне Fast: плоский marker не становится
+  `risky_label` stop/hard Incoming evidence, сохранённый Where proof-level не
+  является authority без связанного exact path/reason, а Admin не доверяет
+  strength, feature code или `exactApprovalDrainCount` без subject-bound
+  direct hop-zero profile.
+- Stale `rootSourceType`/aggregate share также не восстанавливает authority:
+  risky-label source bundle, saved policy/layer rows и broad-history fallback
+  требуют того же bound exact-label path и совпадения evidence IDs.
+- Durable assertion и reconstructed Fast reason связываются с полным retained
+  raw-profile-observation chain. Совпадение approval/drain tx IDs при другом
+  `hopDepth`, receiver или subject недостаточно.
 - Existing assertions не переписываются автоматически. Regression проверяет,
   что route-linked-only recomposition не даёт `exact_hard_proof`.
 
@@ -114,9 +129,11 @@ mandatory addresses. Это expanding traversal, а не зависший provid
 
 ### 3. Blacklist event decoding
 
-- Authority определяется official USDT contract, canonical event topic,
-  confirmed successful transaction, matching user topic/result, block, log
-  index и timestamp.
+- Authority определяется official USDT contract, confirmed successful
+  transaction, matching user/result, block, log index и timestamp. Если provider
+  отдаёт raw topics, canonical event/user topics обязаны совпасть; уже
+  декодированное verified provider event без `topics` сохраняет текущую
+  совместимость и проверяется по тем же остальным authority-полям.
 - Декодированная signature является семантическим corroboration, а не
   побайтовым presentation contract.
 - Каноническая форма и эквивалентная форма `address indexed _user` принимаются
@@ -158,9 +175,13 @@ Stage B остаётся legacy change:
 Он не меняет Unified traversal, C/D, provider capacity, Deep/Incoming
 concurrency, scoring или delivery contract.
 
-Release-closure plan сначала переиспользует существующие harness и contracts.
-Новый production code добавляется только если конкретный обязательный gate
-обнаружит defect, который нельзя закрыть окружением или evidence artifact.
+Release-closure plan сначала минимально чинит подтверждённые defects capture
+adapter, затем переиспользует существующие replay/canary contracts. Он не
+маскирует отсутствующую deployment integration как operational input:
+если approved deployment layer не предоставляет bridge/adapter/cycle
+composition, Stage B остаётся на default `1`, а интеграция получает отдельный
+security-reviewed design. То же правило действует для отсутствующей
+request-lane attribution в production observation.
 
 ### Уже готово
 
@@ -168,28 +189,52 @@ Release-closure plan сначала переиспользует существ�
 - immutable raw/full evidence и in-flight dedupe;
 - claim-generation fencing и heartbeat coordination;
 - Where slot pump с default `1`, candidate `2`;
-- strict replay reader, diagnostics и isolated canary harness;
-- локальный deterministic Stage B gate: 20 files / 996 tests passed.
+- strict replay reader, diagnostics и isolated canary client contracts;
+- предыдущий локальный target: 21 file, из них 20 passed + 1 skipped; 996 tests
+  passed + 80 skipped. Это не PostgreSQL proof.
 
-### Отсутствующее evidence
+### Незакрытые release capabilities и evidence
 
-1. Реальный pre-Stage-B TXc tape
+1. Test-first repair capture adapter: PostgreSQL `Date|string` timestamps,
+   read-only dependency surface, safe assertion projection и guaranteed
+   `execution.dispose()`; safe endpoint identity и pre-write rejection любых
+   настроенных secret values, попавших в canonical bytes.
+2. Реальный pre-Stage-B TXc tape
    `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` и passing strict
    replay. Synthetic fixture запрещено выдавать за release evidence.
-2. Real PostgreSQL claim-generation/fairness tests и `schema:verify`.
-3. Dedicated canary clone/config, immutable deployment receipt и attested
+3. Real PostgreSQL claim-generation/fairness tests и `schema:verify`.
+4. Deployment-owned loopback bridge server, tracked single-file adapter,
+   реальная
+   cycle-isolated runtime composition и canonical deployment-receipt builder.
+   Текущий repository содержит trusted CLI/client contract, но не эту
+   production integration.
+5. Dedicated canary clone/config, immutable deployment receipt и attested
    runtime adapter. Shared environment не используется.
-4. Accepted concurrency-two Where receipt без foreign scheduler activity,
-   provider errors, 429 или delivery.
-5. Separate `where-latency-deep-residual-v1` receipt при Deep concurrency `1`.
-6. Clean 30-minute before/after provider-error and delivery observation вокруг
-   reversible production trial.
+6. Accepted concurrency-two Where receipt без foreign scheduler activity,
+   provider errors, 429 или delivery, записанный в caller-bound create-only path
+   и повторно проверенный по canonical bytes, self-hash и raw-file SHA-256.
+   Отдельный create-only binding manifest связывает receipt с clean trusted-CLI,
+   exact combined candidate и deployment commit/tree/artifact.
+7. Separate `where-latency-deep-residual-v1` receipt при Deep concurrency `1`,
+   где receipt связывает реальный Deep poll/start contract, а не Where poll, и
+   имеет собственный canonical binding manifest с новой deployment identity.
+8. Attributable или cycle-isolated 30-minute before/after provider-error and
+   delivery observation вокруг reversible production trial. Текущих
+   process-global request logs без legacy-Where ownership недостаточно.
+   Сам observer и canonical manifest writer должны быть отдельно reviewed,
+   установлены и проверены до trial; итоговый observation receipt появляется
+   уже во время trial и потому не является условием для собственного создания.
 
 ### Stop rules
 
+- Missing или неотремонтированный read-only capture adapter блокирует tape.
 - Missing real tape блокирует replay; оно не заменяется синтетикой.
+- Missing real bridge/adapter/cycle composition блокирует canary; normal
+  runtime не становится isolated от одного CLI env value.
 - Missing dedicated clone/attestation блокирует canary; текущие user jobs не
   отменяются и не переносятся ради теста.
+- Missing attributable or cycle-isolated production logs блокирует rollout;
+  process-global endpoint counts нельзя выдавать за Where-only causality.
 - Любая contamination, duplicate delivery, рост 429/error rate или
   unreconciled counter оставляет production Where на `1`.
 - Deep остаётся `1`; высокий residual открывает отдельный design, а не скрытое
@@ -197,11 +242,15 @@ Release-closure plan сначала переиспользует существ�
 
 ### Acceptance
 
-После items 1-5 Stage B получает статус `canary-accepted`, что разрешает только
-reversible production trial с Where concurrency `2`. После passing item 6 он
-получает статус `rollout-complete`; при failed или contaminated observation
-значение возвращается на `1`. Code-complete без этих artifacts не равно ни
-canary-accepted, ни rollout-complete.
+После replay, PostgreSQL proof, real deployment integration, accepted Where
+canary, separate Deep receipt и readiness receipt заранее установленного
+attributable observer Stage B получает статус `canary-accepted`, что разрешает
+только отдельно подтверждённый reversible production trial с Where concurrency
+`2`. После passing attributable observation он получает статус
+`rollout-complete`; при failed, missing или contaminated observation значение
+возвращается на `1` по заранее утверждённому rollback contract.
+Runtime-core complete и наличие unit/client contracts без этих
+capabilities/artifacts не равно ни canary-accepted, ни rollout-complete.
 
 ## Трек 3. Unified TQr Latency
 
@@ -245,6 +294,26 @@ intermediate nodes, прошедших будущую adjudicated V3 policy.
 4. Frozen blind set, два независимых review и adjudication.
 5. Отдельный Stage D/V3 implementation plan, disabled-by-default code и canary.
 6. Recipient wallet precheck before signing/broadcasting.
+
+## Repository Size Audit Snapshot
+
+Read-only snapshot на 2026-07-28, привязанный к base
+`5bb7297bc5b274209475148f5c2c6556ef305b34`:
+
+- tracked Git content: около 25.84 MiB, 1,130 files и 599,080 text lines;
+- TypeScript: около 370,540 lines;
+- физический workspace: около 3.99 GiB, причём основной лишний объём находится
+  в старых worktrees и повторных `node_modules`, а не в tracked source;
+- обычные scoped `rg`, diff и patch operations остаются быстрыми; само число
+  строк не является причиной долгого TQr run и не делает маленький patch
+  пропорционально тяжёлым;
+- заметная стоимость возникает у full-repository typecheck/test, широкого
+  чтения контекста и дублированных dependency trees.
+
+Вывод аудита: не дробить большие файлы и не удалять код ради метрики строк.
+Полезные отдельные changes — retire только подтверждённо завершённые worktrees,
+добавить app-only inner-loop typecheck, определить retention для `outputs/`/CSV
+и выполнить deletion-first pass только по доказанно мёртвым test/helper seams.
 
 Maintenance-аудит не блокирует эту цепочку. Очистка старых worktrees, быстрый
 app-only typecheck, политика `outputs/`/CSV и deletion pass выполняются

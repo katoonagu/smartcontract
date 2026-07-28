@@ -15,6 +15,8 @@ code_refs:
   - src/unifiedCheck
   - docs/superpowers/specs/2026-07-26-unified-service-boundary-and-latency-design.md
   - docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md
+  - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
+  - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
 ---
 
 # Current Roadmap
@@ -48,7 +50,7 @@ paths from owning automatic output for the same chat/address pair.
 |---|---|---|
 | Correctness gate | Four confirmed authority/temporal defects remain open | Negative regressions, minimal fixes, Golden/regression and PostgreSQL proof |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
-| Stage B | Code-complete; release evidence incomplete; Where default 1 | Canary acceptance, reversible Where-2 trial, then clean before/after observation |
+| Stage B | Runtime core complete; unit/client contracts present; real capture needs confirmed read-only/date/assertion/dispose plus endpoint/secret-output repairs; canary run output is not caller-bound; deployment integration and attributable rollout proof are missing; repository default 1 | Repair evidence tooling, obtain real replay/PostgreSQL proof, then take explicit deployment/observability branches; retain 1 unless all later gates pass and a reversible trial observation supports 2 |
 | Stage C | Design-only | Shadow implementation, frozen blind set, two reviews and adjudication |
 | Stage D | Design-only and blocked by C | Separate V3 plan, disabled default, replay and live canary |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -61,6 +63,8 @@ adjudication or Stage D work:
 
 - route-linked approval-drain evidence must not become an exact durable label
   or Fast hard-evidence floor 95;
+- flat/stale approval markers must remain contextual across money-origin,
+  Incoming, matrix, raw-evidence reconstruction, and Admin graph consumers;
 - blacklist state acquired after a transfer must not authorize an independent
   decline for that earlier transfer;
 - official blacklist logs must accept semantically equivalent indexed decoded
@@ -71,22 +75,45 @@ Historical results are not recalculated.
 
 ## Stage B Release Closure
 
-Stage B is the legacy Where/selective-enrichment track. Its implementation is
-present, but production Where concurrency two is not accepted.
+Stage B is the legacy Where/selective-enrichment track. Its runtime core and
+replay/canary client contracts are present, but the real capture path is not yet
+proved and production Where concurrency two is not accepted. Code review of
+`scripts/captureWhereLatencyReplay.ts` confirmed that capture must first accept
+PostgreSQL `Date` values, stop exposing a completed job to mutation/claim-fence
+callbacks, project assertion rows without Telegram-owned fields, and dispose the
+shared execution on every exit. It must also reject credential/query-bearing
+endpoint identities, reject any configured secret echoed into canonical output,
+and bind the actual canary run receipt to an explicit create-only path. The
+repository also does not currently provide
+the deployment-owned bridge/server, tracked adapter, cycle-isolated composition,
+or request attribution needed to finish the operational gates by itself.
 
-Required evidence:
+Required capabilities and evidence:
 
-- real checked-in pre-Stage-B TXc replay tape and passing strict replay;
+- a clean tooling-only capture-harness fix followed by a real checked-in
+  pre-Stage-B TXc replay tape and passing strict replay;
 - real PostgreSQL claim/fairness tests and current schema verification;
+- an approved deployment path supplying the immutable bridge, tracked adapter, cycle
+  composition and deployment receipt required by the trusted canary CLI;
 - dedicated isolated canary deployment and clone;
-- accepted concurrency-two Where receipt;
-- separate Deep singleton residual receipt;
-- uncontaminated before/after provider-error, 429, and delivery observation.
+- accepted concurrency-two Where receipt plus a create-only binding manifest
+  tying it to the trusted CLI, combined candidate and deployment artifact;
+- separate Deep singleton residual receipt with its own canonical binding
+  manifest and Deep deployment/config identity;
+- a separately reviewed attributable/cycle-isolated observer and canonical
+  manifest writer installed and validated before any production trial;
+- attributable before/after provider-error, 429, and delivery observation
+  produced during that trial. Current process-global endpoint logs alone are
+  insufficient.
 
-The first five items are required before a reversible production trial at
-Where 2. The before/after observation then decides whether it remains 2 or is
-restored to 1. Deep remains 1 throughout. Shared production state must not be
-altered to manufacture a canary.
+Replay, PostgreSQL proof, deployment integration, the Where canary and the Deep
+receipt, plus observer readiness proof, are required before a separately
+approved reversible production trial at Where 2. The attributable before/after
+observation produced by that trial then decides whether it remains 2 or is
+restored to 1. If deployment or attribution capabilities remain absent, the
+official decision is to keep 1 and open a separate reviewed integration design.
+Deep remains 1 throughout. Shared production state must not be altered to
+manufacture a canary.
 
 ## Unified TQr Latency
 
@@ -121,3 +148,6 @@ Do not split large files merely to reduce line counts.
 
 The approved rationale, scope, stop rules, and acceptance criteria are in
 `docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md`.
+Execution is split into
+`docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md` and
+`docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md`.
