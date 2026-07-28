@@ -19,10 +19,17 @@ export type UnifiedPresentationManifestV1 = {
   readonly version: "presentation-manifest-v1";
   readonly schemaVersion: 1;
   readonly reportHash: string;
-  readonly rendererVersion: "unified-telegram-renderer-v1";
-  readonly templateVersion: "unified-wallet-dossier-template-v1";
+  readonly rendererVersion:
+    | "unified-telegram-renderer-v1"
+    | "unified-telegram-renderer-v2";
+  readonly templateVersion:
+    | "unified-wallet-dossier-template-v1"
+    | "unified-wallet-dossier-template-v2";
   readonly locale: "ru" | "en";
 };
+
+const CURRENT_RENDERER_VERSION = "unified-telegram-renderer-v2" as const;
+const CURRENT_TEMPLATE_VERSION = "unified-wallet-dossier-template-v2" as const;
 
 type ScopeReceiptV1 = {
   readonly scope: string;
@@ -941,8 +948,8 @@ export function buildPresentationManifest(
     version: "presentation-manifest-v1",
     schemaVersion: 1,
     reportHash: fingerprintCanonicalArtifact(report),
-    rendererVersion: "unified-telegram-renderer-v1",
-    templateVersion: "unified-wallet-dossier-template-v1",
+    rendererVersion: CURRENT_RENDERER_VERSION,
+    templateVersion: CURRENT_TEMPLATE_VERSION,
     locale
   };
 }
@@ -955,8 +962,8 @@ export function renderUnifiedWalletPresentation(input: {
   if (
     input.manifest.version !== "presentation-manifest-v1" ||
     input.manifest.schemaVersion !== 1 ||
-    input.manifest.rendererVersion !== "unified-telegram-renderer-v1" ||
-    input.manifest.templateVersion !== "unified-wallet-dossier-template-v1" ||
+    input.manifest.rendererVersion !== CURRENT_RENDERER_VERSION ||
+    input.manifest.templateVersion !== CURRENT_TEMPLATE_VERSION ||
     input.manifest.reportHash !== fingerprintCanonicalArtifact(input.report)
   ) {
     fail();
@@ -1045,7 +1052,9 @@ export function ensurePresentationForRequest(input: {
   });
   const matches = input.existing.filter((item) =>
     item.manifest.reportHash === expected.manifest.reportHash &&
-    item.manifest.locale === input.locale
+    item.manifest.locale === input.locale &&
+    item.manifest.rendererVersion === CURRENT_RENDERER_VERSION &&
+    item.manifest.templateVersion === CURRENT_TEMPLATE_VERSION
   );
   if (matches.some((item) =>
     fingerprintCanonicalArtifact(item) !== fingerprintCanonicalArtifact(expected)

@@ -9,6 +9,10 @@ import {
   renderUnifiedWalletPresentation
 } from "../../src/unifiedCheck/presentation";
 import type {
+  UnifiedPresentationManifestV1,
+  UnifiedPresentationResultV1
+} from "../../src/unifiedCheck/presentation";
+import type {
   UnifiedWalletDossierV1,
   UnifiedWalletReportSection
 } from "../../src/unifiedCheck/report";
@@ -212,6 +216,10 @@ describe("Unified Telegram presentation", () => {
       manifest: buildPresentationManifest(dossier, "en")
     });
 
+    expect(first.manifest.rendererVersion)
+      .toBe("unified-telegram-renderer-v2");
+    expect(first.manifest.templateVersion)
+      .toBe("unified-wallet-dossier-template-v2");
     expect(second).toEqual(first);
     expect(first.artifact.html.length).toBeLessThanOrEqual(
       TELEGRAM_MESSAGE_LIMIT
@@ -428,6 +436,40 @@ describe("Unified Telegram presentation", () => {
     expect(created.reused).toBe(false);
     expect(created.presentation.manifest.reportHash)
       .toBe(required[0]!.manifest.reportHash);
+
+    const currentRu = required.find((item) =>
+      item.manifest.locale === "ru"
+    );
+    if (currentRu === undefined) throw new Error("fixture");
+    const historicalV1 = {
+      ...currentRu,
+      manifest: {
+        ...currentRu.manifest,
+        rendererVersion: "unified-telegram-renderer-v1",
+        templateVersion: "unified-wallet-dossier-template-v1"
+      }
+    } as UnifiedPresentationResultV1;
+    const createdFromHistorical = ensurePresentationForRequest({
+      report: dossier,
+      locale: "ru",
+      existing: [historicalV1]
+    });
+    expect(createdFromHistorical.reused).toBe(false);
+    expect(createdFromHistorical.presentation.manifest.rendererVersion)
+      .toBe("unified-telegram-renderer-v2");
+  });
+
+  it("rejects a mixed renderer and template version pair", () => {
+    const dossier = report();
+    const mixed = {
+      ...buildPresentationManifest(dossier, "ru"),
+      rendererVersion: "unified-telegram-renderer-v1",
+      templateVersion: "unified-wallet-dossier-template-v2"
+    } as unknown as UnifiedPresentationManifestV1;
+    expect(() => renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: mixed
+    })).toThrow("presentation_contract_failed");
   });
 
   it("builds all initial request presentations before invoking the completion commit", async () => {
@@ -458,6 +500,9 @@ describe("Unified Telegram presentation", () => {
     const warning = buildManualResendWarningPresentation(original);
     expect(warning.artifact.html).toContain("⚠️ Ручная повторная отправка");
     expect(warning.presentationHash).not.toBe(original.presentationHash);
+    expect(warning.manifest).toEqual(original.manifest);
+    expect(warning.artifact.html.endsWith(`\n\n${original.artifact.html}`))
+      .toBe(true);
     expect(warning.manifest.reportHash).toBe(original.manifest.reportHash);
     expect(warning.receiptBodyHash).toBe(original.receiptBodyHash);
   });
