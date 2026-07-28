@@ -249,6 +249,41 @@ describe("money origin policy", () => {
     expect(result?.reasons.join(" ")).toContain("sanctions/source-policy risk");
   });
 
+  it("does not create a sanctioned decline when event time is missing or invalid", () => {
+    for (const eventTimestamp of [undefined, null, "invalid", new Date(Number.NaN)]) {
+      const result = classifyMoneyOriginStop({
+        address,
+        labels: [],
+        classification: service("cex", "HTX"),
+        balanceShare: 0.15,
+        eventTimestamp
+      });
+
+      expect(result).toMatchObject({
+        verdict: "REVIEW",
+        exposureSourceKey: "htx_huobi",
+        sourceExposureKind: "htx_huobi"
+      });
+      expect(result?.sourceExposureKind).not.toBe("sanctioned_service");
+    }
+  });
+
+  it("fails closed when classification authority fields identify conflicting sanctioned services", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: {
+        ...service("cex", "HTX"),
+        evidence: ["Garantex"]
+      },
+      balanceShare: 0.15,
+      eventTimestamp: "2026-06-01T00:00:00.000Z"
+    });
+
+    expect(result?.sourceExposureKind).not.toBe("sanctioned_service");
+    expect(result?.verdict).not.toBe("DECLINE");
+  });
+
   it("declines majority HTX Huobi exposure with weighted source-policy score", () => {
     expect(classifyMoneyOriginStop({
       address,

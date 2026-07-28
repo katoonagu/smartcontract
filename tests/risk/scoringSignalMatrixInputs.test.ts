@@ -1966,11 +1966,130 @@ describe("scoring signal matrix input mappers", () => {
       kind: "exact_hard",
       proofSource: "where_exact_hard"
     });
-    expect(candidates.find((item) => item.evidenceIds.includes("where-sanction"))?.authority).toMatchObject({
-      kind: "policy",
+    expect(candidates.find((item) => item.evidenceIds.includes("where-sanction"))?.authority).toEqual({ kind: "context" });
+    expect(candidates.find((item) => item.evidenceIds.includes("where-scam"))?.authority).toEqual({ kind: "context" });
+  });
+
+  it("authorizes saved local sanctions evidence only when ids overlap an active consistent registry path", () => {
+    const path = {
+      ...originPath(["active-sanction-path"]),
+      balanceTransferEvidenceId: "active-sanction-event",
+      rootSourceType: "decline_boundary" as const,
+      stoppedReason: "decline_boundary_reached" as const,
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX/Huobi",
+      sourceExposureKind: "sanctioned_service" as const,
+      steps: [{
+        txHash: "active-sanction-path",
+        fromAddress: "TOriginSource11111111111111111111111",
+        toAddress: address,
+        amountRaw: "1000000",
+        timestamp: "2026-05-26T00:00:00.000Z"
+      }]
+    };
+    const base = whereReport();
+    const hard = { kind: "sanctioned_service" as const, score: 95, message: "Saved sanctions.", evidenceIds: ["active-sanction-event"] };
+    const policy = {
+      kind: "sanctioned_service" as const,
+      aggregateShare: 1,
+      effectiveShare: 1,
+      pathCount: 1,
+      score: 95,
+      riskBand: "CRITICAL" as const,
+      proofLevel: "exchange_policy_decline" as const,
+      canBeDampened: false,
+      reasons: ["Saved sanctions."],
+      warnings: [],
+      evidenceIds: ["active-sanction-event"]
+    };
+    const layer = {
+      evidenceClass: "source_policy" as const,
+      kind: "sanctioned_service",
+      sourceExposureKind: "sanctioned_service" as const,
+      score: 95,
+      rawScore: 95,
+      adjustedScore: 95,
+      proofLevel: "exchange_policy_decline" as const,
+      canBeDampened: false,
+      reasons: ["Saved sanctions."],
+      warnings: [],
+      evidenceIds: ["active-sanction-event"]
+    };
+    const report = whereReport({
+      originPaths: [path],
+      assessment: { ...base.assessment, hardBadEvidence: [hard], sourcePolicyEvidence: [policy], riskLayers: [layer] }
+    });
+    const active = buildWalletMatrixCandidates({ address, whereReport: report });
+    const sanctionsCandidates = (items: ReturnType<typeof buildWalletMatrixCandidates>) =>
+      items.filter((item) => item.evidenceIds.includes("active-sanction-event"));
+    expect(sanctionsCandidates(active)).toHaveLength(3);
+    expect(sanctionsCandidates(active)
+      .every((item) => item.authority.kind === "policy" && item.authority.decisionEligibility === "can_decline")).toBe(true);
+
+    for (const closedPath of [
+      { ...path, steps: [{ ...path.steps[0], timestamp: "2026-05-25T23:59:59.999Z" }] },
+      { ...path, steps: [] },
+      { ...path, exposureSourceLabel: "Garantex" },
+      { ...path, balanceTransferEvidenceId: "non-overlap", balanceTransferTxHash: "other-tx", txHashes: ["other-tx"] }
+    ]) {
+      const closed = buildWalletMatrixCandidates({
+        address,
+        whereReport: { ...report, originPaths: [closedPath] }
+      });
+      expect(sanctionsCandidates(closed)).toHaveLength(3);
+      expect(sanctionsCandidates(closed).every((item) => item.authority.kind === "context")).toBe(true);
+    }
+
+    const collisionReport = whereReport({
+      ...report,
+      originPaths: [],
+      crossChainCorridor: {
+        enabled: true,
+        triggered: true,
+        skippedReason: null,
+        paths: [{
+          id: "typed-cross-chain-sanctions",
+          triggerReason: "large_single_boundary",
+          balanceTransferTxHashes: ["cross-chain-balance"],
+          targetAmountRaw: "1000000",
+          selectedAmountRaw: "1000000",
+          edges: [],
+          terminalBoundary: "sanctioned_service",
+          riskLayer: {
+            evidenceClass: "hard_proof",
+            kind: "cross_chain_sanctioned_service",
+            sourceExposureKind: "sanctioned_service",
+            score: 95,
+            rawScore: 95,
+            adjustedScore: 95,
+            proofLevel: "exact_scam_or_taint_proof",
+            canBeDampened: false,
+            reasons: ["Typed cross-chain sanctions."],
+            warnings: [],
+            evidenceIds: ["active-sanction-event"]
+          },
+          partial: false,
+          reasons: ["Typed cross-chain sanctions."],
+          warnings: []
+        }],
+        providerCalls: 1,
+        partial: false,
+        coverageNotes: [],
+        payloadRefs: []
+      }
+    });
+    const collision = buildWalletMatrixCandidates({
+      address,
+      whereReport: collisionReport,
+      deepReport: deepReport({ assetContinuationProfiles: [assetContinuationProfile("active-sanction-event")] })
+    });
+    expect(collision.find((item) => item.row === "asset_continuation")?.authority).toMatchObject({
+      kind: "pattern",
       decisionEligibility: "can_decline"
     });
-    expect(candidates.find((item) => item.evidenceIds.includes("where-scam"))?.authority).toEqual({ kind: "context" });
+    expect(sanctionsCandidates(collision).filter((item) => item.row !== "asset_continuation")).toHaveLength(3);
+    expect(sanctionsCandidates(collision).filter((item) => item.row !== "asset_continuation")
+      .every((item) => item.authority.kind === "context")).toBe(true);
   });
 
   it("admits only deposit-path-linked evidence from a mismatched transaction-seeded Where report", () => {

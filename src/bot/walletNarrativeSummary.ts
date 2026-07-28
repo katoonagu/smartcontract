@@ -32,7 +32,8 @@ import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttributio
 import { exactAffectedAmountRaw } from "../forensics/provenanceScoring";
 import {
   SANCTIONED_CRYPTO_SERVICES,
-  sanctionedCryptoServiceActiveAt,
+  resolveSanctionedCryptoService,
+  sanctionedCryptoServiceStateAt,
   sanctionsDate,
   type SanctionedCryptoService
 } from "../forensics/sanctionedServiceRegistry";
@@ -780,7 +781,20 @@ const htxSanctionedService = SANCTIONED_CRYPTO_SERVICES.find((service) =>
 );
 
 function htxServiceForPath(path: MoneyOriginPath): SanctionedCryptoService | null {
-  return path.exposureSourceKey === "htx_huobi" ? htxSanctionedService ?? null : null;
+  const service = resolveSanctionedCryptoService([
+    path.exposureSourceKey,
+    path.exposureSourceLabel,
+    ...path.reasons
+  ]);
+  return service?.key === "htx_huobi" ? service : null;
+}
+
+function sanctionedServiceForPath(path: MoneyOriginPath): SanctionedCryptoService | null {
+  return resolveSanctionedCryptoService([
+    path.exposureSourceKey,
+    path.exposureSourceLabel,
+    ...path.reasons
+  ]);
 }
 
 function sourceTimestamp(path: MoneyOriginPath): string | null {
@@ -848,8 +862,8 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
   const allSanctionedPaths = paths.filter((path) => path.sourceExposureKind === "sanctioned_service");
   if (allSanctionedPaths.length === 0) return [];
   const sanctionedPaths = allSanctionedPaths.filter((path) => {
-    const service = htxServiceForPath(path);
-    return !service || sanctionedCryptoServiceActiveAt(service, sourceTimestamp(path));
+    const service = sanctionedServiceForPath(path);
+    return service !== null && sanctionedCryptoServiceStateAt(service, sourceTimestamp(path)) === "active";
   });
   const matchedPaths = new Set<MoneyOriginPath>();
   const selected = evidence.filter((item) =>
@@ -860,7 +874,7 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     const matching = sanctionedPaths.filter((path) => policyMatchesPath(item, path));
     if (matching.length === 0) return [];
     matching.forEach((path) => matchedPaths.add(path));
-    const matchedHtx = matching.length > 0 && matching.every((path) => htxServiceForPath(path)?.key === "htx_huobi")
+    const matchedHtx = matching.length > 0 && matching.every((path) => sanctionedServiceForPath(path)?.key === "htx_huobi")
       ? htxSanctionedService ?? null
       : null;
     const identity = matchedHtx
@@ -899,15 +913,30 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     )];
   });
   const unmatched = allSanctionedPaths.filter((path) => !matchedPaths.has(path)).map((path) => {
+    const service = sanctionedServiceForPath(path);
+    const temporalState = service
+      ? sanctionedCryptoServiceStateAt(service, sourceTimestamp(path))
+      : "unknown";
     const name = safeExternalDisplayLabel(path.exposureSourceLabel);
-    const nameRu = name || "санкционным сервисом без установленного названия";
-    const nameEn = name || "an unnamed sanctioned service";
+    const displayName = service?.displayName ?? name;
+    const nameRu = displayName || "санкционным сервисом без установленного названия";
+    const nameEn = displayName || "an unresolved sanctioned-service identity";
     const ids = [...pathEvidenceIds(path)].sort(compareLexical);
+    const factRu = temporalState === "inactive"
+      ? `Входящая связь с ${nameRu} была до его включения в санкционный список.`
+      : temporalState === "unknown"
+        ? `Входящая связь с ${nameRu} есть в истории, но время перевода неизвестно.`
+        : `Входящая связь с ${nameRu} есть в истории, но не подтверждена как источник выбранной суммы.`;
+    const factEn = temporalState === "inactive"
+      ? `The inbound link to ${nameEn} occurred before its sanctions designation.`
+      : temporalState === "unknown"
+        ? `The inbound link to ${nameEn} is present, but transfer time is unknown; sanctions status at transfer cannot be established.`
+        : `The inbound link to ${nameEn} is present in history but is not confirmed as a source of the selected amount.`;
     return narrativeFact(
       `sanctioned-source-context:${ids.join(",")}`,
       "direct_counterparty_sanction",
-      `Входящая связь с ${nameRu} есть в истории, но не подтверждена как источник выбранной суммы.`,
-      `The inbound link to ${nameEn} is present in history but is not confirmed as a source of the selected amount.`,
+      factRu,
+      factEn,
       null,
       "context",
       ids,
@@ -930,7 +959,7 @@ function htxContextFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
       const service = htxServiceForPath(path);
       return policyMatchesPath(policy, path) &&
         service !== null &&
-        !sanctionedCryptoServiceActiveAt(service, sourceTimestamp(path));
+        sanctionedCryptoServiceStateAt(service, sourceTimestamp(path)) === "inactive";
     })
     : [];
   const facts: NarrativeFact[] = [];
@@ -956,13 +985,19 @@ function htxContextFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   }
   const matched = new Set(matchedHistorical);
   facts.push(...routePaths.filter((path) => !matched.has(path)).map((path) => {
+    const service = htxServiceForPath(path);
+    const temporalState = service ? sanctionedCryptoServiceStateAt(service, sourceTimestamp(path)) : "unknown";
     const name = safeExternalDisplayLabel(path.exposureSourceLabel) || "HTX/Huobi";
     const ids = [...pathEvidenceIds(path)].sort(compareLexical);
     return narrativeFact(
       `htx-context:${ids.join(",")}`,
       "direct_counterparty_sanction",
-      `Входящий перевод с ${name} — контекст истории; он не подтверждён как источник выбранной суммы.`,
-      `An inbound transfer from ${name} is historical context; it is not confirmed as a source of the selected amount.`,
+      temporalState === "unknown"
+        ? `Входящий перевод с ${name} есть в истории, но время перевода неизвестно.`
+        : `Входящий перевод с ${name} — контекст истории; он не подтверждён как источник выбранной суммы.`,
+      temporalState === "unknown"
+        ? `An inbound transfer from ${name} is present, but transfer time is unknown; sanctions status at transfer cannot be established.`
+        : `An inbound transfer from ${name} is historical context; it is not confirmed as a source of the selected amount.`,
       null,
       "context",
       ids,

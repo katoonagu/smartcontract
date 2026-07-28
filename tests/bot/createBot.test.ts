@@ -6670,6 +6670,98 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
 
+  it("renders stale local sanctions as context unless an active registry path overlaps the saved ids", () => {
+    const hardBadEvidence = [{
+      kind: "sanctioned_service" as const,
+      score: 95,
+      message: "Saved sanctioned-service evidence.",
+      evidenceIds: ["sanction-event"]
+    }];
+    const report = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence
+      }
+    });
+    const stale = formatUnifiedAddressDetailedReportForTest({
+      address: report.subjectAddress,
+      whereReport: report,
+      locale: "en"
+    });
+    expect(stale).toContain("Saved sanctioned-service evidence is context");
+    expect(stale).not.toContain("Saved sanctioned-service evidence. (score 95)");
+
+    const corridor = crossChainCorridorForTest("sanctioned_service");
+    const collisionReport: WhereIsMoneyReport = {
+      ...report,
+      crossChainCorridor: {
+        ...corridor,
+        paths: [{
+          ...corridor.paths[0]!,
+          riskLayer: {
+            ...corridor.paths[0]!.riskLayer,
+            evidenceIds: ["sanction-event"]
+          }
+        }]
+      }
+    };
+    const collision = formatUnifiedAddressDetailedReportForTest({
+      address: report.subjectAddress,
+      whereReport: collisionReport,
+      locale: "en"
+    });
+    expect(collision).toContain("Saved sanctioned-service evidence is context");
+    expect(collision).not.toContain("Saved sanctioned-service evidence. (score 95)");
+
+    const collisionDiagnostics = formatUnifiedAddressFinalReportForTest({
+      address: report.subjectAddress,
+      whereReport: collisionReport,
+      locale: "en",
+      showBetaDiagnostics: true
+    });
+    expect(collisionDiagnostics).toContain("Terminal boundary: sanctioned service");
+    expect(collisionDiagnostics).toContain("Proof level: exact_scam_or_taint_proof; hard proof");
+
+    const activeReport: WhereIsMoneyReport = {
+      ...report,
+      originPaths: [{
+        balanceTransferTxHash: "sanction-tx",
+        balanceTransferEvidenceId: "sanction-event",
+        rootSourceAddress: "THTX111111111111111111111111111111",
+        rootSourceType: "decline_boundary",
+        exposureSourceKey: "htx_huobi",
+        exposureSourceLabel: "HTX/Huobi",
+        sourceExposureKind: "sanctioned_service",
+        pathAddresses: ["THTX111111111111111111111111111111", report.subjectAddress],
+        txHashes: ["sanction-tx"],
+        steps: [{
+          txHash: "sanction-tx",
+          fromAddress: "THTX111111111111111111111111111111",
+          toAddress: report.subjectAddress,
+          amountRaw: "1000000",
+          timestamp: "2026-05-26T00:00:00.000Z"
+        }],
+        amountPreservationRatio: 1,
+        timeSpanMs: 0,
+        stoppedReason: "decline_boundary_reached",
+        verdict: "DECLINE",
+        riskScoreContribution: 95,
+        reasons: ["HTX sanctioned source."]
+      }]
+    };
+    const active = formatUnifiedAddressDetailedReportForTest({
+      address: report.subjectAddress,
+      whereReport: activeReport,
+      locale: "en"
+    });
+    expect(active).toContain("Saved sanctioned-service evidence.");
+    expect(active).not.toContain("Saved sanctioned-service evidence is context");
+  });
+
   it("reconstructs the exact second approval profile with its matching raw envelope and observation", () => {
     const route = persistedApprovalDrainProfileForTest({
       firstReceiverAddress: secondWalletAddress,

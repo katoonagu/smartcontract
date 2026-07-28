@@ -935,6 +935,44 @@ describe("direct hard evidence helper", () => {
     expect(() => JSON.stringify(postDesignation)).not.toThrow();
   });
 
+  it("does not emit a sanctioned hard reason for unknown transfer time or conflicting service identity", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "sanctions-unknown-time",
+        fromAddress: "TSanctionsUnknown",
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        txHash: "tx-sanctions-unknown",
+        timestamp: new Date("2026-05-27T00:00:00.000Z")
+      })]
+    });
+    groups[0]!.principalTransfers[0]!.occurredAt = "invalid";
+    const classification = {
+      category: "cex" as const,
+      identity: "HTX",
+      confidence: "high" as const,
+      evidence: ["HTX"],
+      isBoundary: true
+    };
+    const build = (evidence: string[]) => buildDirectHardEvidenceSnapshots({
+      addresses: ["TSanctionsUnknown"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      selectedProvenanceTxHashes: ["tx-sanctions-unknown"],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => ({ ...classification, evidence })
+    });
+
+    const unknownTime = await build(["HTX"]);
+    expect(unknownTime.snapshots[0]?.reasons.some((reason) => reason.startsWith("sanctioned_service:"))).toBe(false);
+
+    groups[0]!.principalTransfers[0]!.occurredAt = "2026-05-27T00:00:00.000Z";
+    const conflicting = await build(["Garantex"]);
+    expect(conflicting.snapshots[0]?.reasons.some((reason) => reason.startsWith("sanctioned_service:"))).toBe(false);
+  });
+
   it("distinguishes budget-limited unchecked unique addresses from checked clean addresses", async () => {
     const groups = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,

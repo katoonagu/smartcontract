@@ -16,6 +16,7 @@ import {
   authoritativeApprovalDrainEvidenceBinding,
   isAuthoritativeDirectApprovalDrainProfile
 } from "../forensics/approvalDrainProvenance";
+import { activeSanctionedServicePathEvidence } from "../forensics/provenanceScoring";
 import {
   extractUsdtTransferDisplayContext,
   extractUsdtTransferSeedFromTransaction,
@@ -2531,6 +2532,13 @@ function isDeterministicWhereHardEvidence(
   return deterministicWhereHardEvidenceKinds.has(evidence.kind);
 }
 
+function sanctionedWhereEvidenceAuthorized(report: WhereIsMoneyReport, evidenceIds: string[]): boolean {
+  const activeLocalIds = new Set(report.originPaths.flatMap((path) =>
+    activeSanctionedServicePathEvidence(path)?.evidenceIds ?? []
+  ));
+  return evidenceIds.some((id) => activeLocalIds.has(id));
+}
+
 function unifiedRiskReasonMessage(
   reason: UnifiedWalletRiskResult["reasons"][number],
   locale: BotLocale
@@ -2549,7 +2557,10 @@ function unifiedRiskReasonMessage(
 }
 
 function whereHardEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
-  return report.assessment.hardBadEvidence.filter(isDeterministicWhereHardEvidence).slice(0, 2).map((evidence) => {
+  return report.assessment.hardBadEvidence.filter((evidence) =>
+    isDeterministicWhereHardEvidence(evidence) &&
+    (evidence.kind !== "sanctioned_service" || sanctionedWhereEvidenceAuthorized(report, evidence.evidenceIds))
+  ).slice(0, 2).map((evidence) => {
     return locale === "en"
       ? `Hard evidence: ${evidence.message} (score ${evidence.score}).`
       : `Жёсткое доказательство: ${evidence.message} (оценка ${evidence.score}).`;
@@ -2559,7 +2570,8 @@ function whereHardEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLoc
 function whereContextEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   void locale;
   return report.assessment.hardBadEvidence
-    .filter((evidence) => !isDeterministicWhereHardEvidence(evidence))
+    .filter((evidence) => !isDeterministicWhereHardEvidence(evidence) ||
+      evidence.kind === "sanctioned_service" && !sanctionedWhereEvidenceAuthorized(report, evidence.evidenceIds))
     .slice(0, 1)
     .map((evidence) => `Context evidence: ${evidence.message} (score ${evidence.score}).`);
 }
@@ -3029,6 +3041,18 @@ function buildFinalReasonCards(input: UnifiedAddressFinalReportInput, result: Un
   for (const evidence of whereReport.assessment.hardBadEvidence) {
     if (evidence.kind === "approval_drain") continue;
     if (evidence.kind === "sanctioned_service") {
+      if (!sanctionedWhereEvidenceAuthorized(whereReport, evidence.evidenceIds)) {
+        addFinalReasonCard(cards, {
+          kind: "technical_signal",
+          priority: 58,
+          decision: "context",
+          dedupeKey: `sanctioned-context:${evidence.message}`,
+          source: "where",
+          ru: `Сохранённое свидетельство о санкционном сервисе остаётся контекстом без совпадающего активного пути: ${normalizeNotificationReason(evidence.message, "ru")}`,
+          en: `Saved sanctioned-service evidence is context without an overlapping active registry-bound path: ${normalizeNotificationReason(evidence.message, "en")}`
+        });
+        continue;
+      }
       addFinalReasonCard(cards, {
         kind: "sanctioned_service",
         priority: 20,
@@ -3336,7 +3360,10 @@ function finalReportEvidenceHints(input: UnifiedAddressFinalReportInput, reasons
 
 function finalReportHasHardEvidence(input: UnifiedAddressFinalReportInput, unifiedRisk: UnifiedWalletRiskResult): boolean {
   if (unifiedRisk.hardEvidenceFloor >= 85) return true;
-  if (input.whereReport.assessment.hardBadEvidence.length > 0) return true;
+  if (input.whereReport.assessment.hardBadEvidence.some((evidence) =>
+    evidence.kind !== "sanctioned_service" ||
+    sanctionedWhereEvidenceAuthorized(input.whereReport, evidence.evidenceIds)
+  )) return true;
   return input.deepReport?.stablecoinRestrictionProfiles?.some((profile) => profile.isBlacklisted === true) === true;
 }
 

@@ -11,7 +11,11 @@ import type {
   WhereIsMoneyWalletRole
 } from "../types";
 import { isAuthoritativeMoneyOriginRiskLabelPath, selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
-import { matchSanctionedCryptoService } from "./sanctionedServiceRegistry";
+import {
+  resolveSanctionedCryptoService,
+  sanctionedCryptoServiceStateAt,
+  type SanctionedCryptoService
+} from "./sanctionedServiceRegistry";
 
 const MIN_LINK_STRENGTH = 0.25;
 const MAX_LINK_STRENGTH = 1.25;
@@ -89,7 +93,17 @@ export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposur
   if (path.sourceExposureKind === "risky_label") {
     return isAuthoritativeMoneyOriginRiskLabelPath(path) ? "risky_label" : null;
   }
+  if (path.sourceExposureKind === "sanctioned_service") {
+    if (activeSanctionedServicePathEvidence(path)) return "sanctioned_service";
+    const text = [path.exposureSourceKey, path.exposureSourceLabel, ...path.reasons].filter(Boolean).join(" ").toLowerCase();
+    return text.includes("htx") || text.includes("huobi") ? "htx_huobi" : null;
+  }
   if (path.sourceExposureKind) return path.sourceExposureKind;
+  if (path.exposureSourceKey === "sanctioned_service") {
+    if (activeSanctionedServicePathEvidence(path)) return "sanctioned_service";
+    const text = [path.exposureSourceLabel, ...path.reasons].filter(Boolean).join(" ").toLowerCase();
+    return text.includes("htx") || text.includes("huobi") ? "htx_huobi" : null;
+  }
   if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
 
   if (path.rootSourceType === "allowlist_cex") return "allowlisted_cex";
@@ -104,7 +118,14 @@ export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposur
     .toLowerCase();
   const text = rawText.replace(/[_:-]+/g, " ");
 
-  if (text.includes("sanctioned") || text.includes("ofac") || matchSanctionedCryptoService(text)) return "sanctioned_service";
+  if (
+    (text.includes("sanctioned") || text.includes("ofac") || resolveSanctionedCryptoService([
+      path.exposureSourceKey,
+      path.exposureSourceLabel,
+      ...path.reasons
+    ])) &&
+    activeSanctionedServicePathEvidence(path)
+  ) return "sanctioned_service";
   if (text.includes("mixer") || text.includes("tornado")) return "mixer";
   if (/\bno name\b/.test(text) && text.includes("liquidity")) return "no_name_token_liquidity";
   if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";
@@ -117,6 +138,26 @@ export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposur
   if (text.includes("unknown cex") || text.includes("unknown exchange")) return "unknown_cex";
 
   return null;
+}
+
+export function activeSanctionedServicePathEvidence(path: MoneyOriginPath): {
+  service: SanctionedCryptoService;
+  evidenceIds: string[];
+} | null {
+  const service = resolveSanctionedCryptoService([
+    path.exposureSourceKey,
+    path.exposureSourceLabel,
+    ...path.reasons
+  ]);
+  if (!service || sanctionedCryptoServiceStateAt(service, path.steps[0]?.timestamp) !== "active") return null;
+  return {
+    service,
+    evidenceIds: [...new Set([
+      ...(path.balanceTransferEvidenceId ? [path.balanceTransferEvidenceId] : []),
+      path.balanceTransferTxHash,
+      ...path.txHashes
+    ].filter((id) => id.trim().length > 0))]
+  };
 }
 
 export function riskBandFromScore(score: number): WhereIsMoneyRiskBand {

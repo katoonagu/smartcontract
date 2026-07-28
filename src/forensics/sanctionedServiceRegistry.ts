@@ -10,6 +10,8 @@ export type SanctionedCryptoService = {
   sourceUrl: string;
 };
 
+export type SanctionedServiceTemporalState = "active" | "inactive" | "unknown";
+
 // Official designation dates are date-only in the cited notices; store them as
 // UTC day starts so historical transfers before the designation stay contextual.
 export const SANCTIONED_CRYPTO_SERVICES: readonly SanctionedCryptoService[] = [
@@ -182,25 +184,45 @@ function containsAlias(normalizedText: string, alias: string): boolean {
   return (` ${normalizedText} `).includes(` ${normalizedAlias} `);
 }
 
-export function matchSanctionedCryptoService(text: string | null | undefined): SanctionedCryptoService | null {
+function matchingSanctionedCryptoServices(
+  text: string | null | undefined,
+  services: readonly SanctionedCryptoService[]
+): SanctionedCryptoService[] {
   const normalized = normalizeServiceText(text ?? "");
-  if (!normalized) return null;
-  return SANCTIONED_CRYPTO_SERVICES.find((service) =>
+  if (!normalized) return [];
+  return services.filter((service) =>
+    normalizeServiceText(service.key) === normalized ||
     service.aliases.some((alias) => containsAlias(normalized, alias))
-  ) ?? null;
+  );
 }
 
-export function sanctionedCryptoServiceActiveAt(
+export function resolveSanctionedCryptoService(
+  authorityFields: readonly (string | null | undefined)[],
+  services: readonly SanctionedCryptoService[] = SANCTIONED_CRYPTO_SERVICES
+): SanctionedCryptoService | null {
+  const keys = new Set(authorityFields.flatMap((field) =>
+    matchingSanctionedCryptoServices(field, services).map((service) => service.key)
+  ));
+  if (keys.size !== 1) return null;
+  const [key] = keys;
+  return services.find((service) => service.key === key) ?? null;
+}
+
+export function matchSanctionedCryptoService(text: string | null | undefined): SanctionedCryptoService | null {
+  return resolveSanctionedCryptoService([text]);
+}
+
+export function sanctionedCryptoServiceStateAt(
   service: SanctionedCryptoService,
   eventTimestamp: Date | string | null | undefined
-): boolean {
-  if (!eventTimestamp) return true;
+): SanctionedServiceTemporalState {
+  if (eventTimestamp === null || eventTimestamp === undefined) return "unknown";
   const eventTime = typeof eventTimestamp === "string"
     ? Date.parse(eventTimestamp)
     : eventTimestamp.getTime();
   const designatedTime = Date.parse(service.designatedAt);
-  if (!Number.isFinite(eventTime) || !Number.isFinite(designatedTime)) return true;
-  return eventTime >= designatedTime;
+  if (!Number.isFinite(eventTime) || !Number.isFinite(designatedTime)) return "unknown";
+  return eventTime >= designatedTime ? "active" : "inactive";
 }
 
 export function sanctionsDate(service: SanctionedCryptoService): string {

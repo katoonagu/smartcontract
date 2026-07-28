@@ -12,8 +12,8 @@ import type {
 import { isExactMoneyOriginRiskLabel, selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { baseShareScore } from "./provenanceScoring";
 import {
-  matchSanctionedCryptoService,
-  sanctionedCryptoServiceActiveAt,
+  resolveSanctionedCryptoService,
+  sanctionedCryptoServiceStateAt,
   sanctionsDate,
   type SanctionedCryptoService
 } from "./sanctionedServiceRegistry";
@@ -108,8 +108,11 @@ function activeSanctionedService(
   classification: ServiceClassification | null,
   eventTimestamp: Date | string | null | undefined
 ): SanctionedCryptoService | null {
-  const match = matchSanctionedCryptoService(identityText(classification));
-  if (!match || !sanctionedCryptoServiceActiveAt(match, eventTimestamp)) return null;
+  const match = resolveSanctionedCryptoService([
+    classification?.identity,
+    ...(classification?.evidence ?? [])
+  ]);
+  if (!match || sanctionedCryptoServiceStateAt(match, eventTimestamp) !== "active") return null;
   return match;
 }
 

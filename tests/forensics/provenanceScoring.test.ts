@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeSanctionedServicePathEvidence,
   aggregateLayerScores,
   amountContinuityAdjustment,
   baseShareScore,
@@ -7,6 +8,7 @@ import {
   riskBandFromScore,
   scorePathLinkStrength,
   scoreSourceExposures,
+  sourceExposureKindFromPath,
   timeAdjustment
 } from "../../src/forensics/provenanceScoring";
 import type { MoneyOriginPath, SourceExposureKind, WhereIsMoneyAgeSignals } from "../../src/types";
@@ -67,6 +69,53 @@ const noAgeSignals: WhereIsMoneyAgeSignals = {
 };
 
 describe("provenanceScoring", () => {
+  it("requires active registry time for explicit sanctioned metadata and textual aliases", () => {
+    const explicit = path({
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX/Huobi",
+      sourceExposureKind: "sanctioned_service"
+    });
+    const textual = path({
+      exposureSourceKey: null,
+      exposureSourceLabel: "Garantex",
+      sourceExposureKind: null,
+      reasons: ["Garantex source"]
+    });
+    const keyed = path({
+      exposureSourceKey: "sanctioned_service",
+      exposureSourceLabel: "HTX/Huobi",
+      sourceExposureKind: null
+    });
+
+    for (const timestamp of [undefined, "invalid"] as const) {
+      const steps = timestamp === undefined ? [] : [{ ...explicit.steps[0]!, timestamp }];
+      expect(sourceExposureKindFromPath({ ...explicit, steps })).toBe("htx_huobi");
+      expect(sourceExposureKindFromPath({ ...keyed, steps })).toBe("htx_huobi");
+      expect(sourceExposureKindFromPath({ ...textual, steps })).not.toBe("sanctioned_service");
+    }
+    expect(sourceExposureKindFromPath(explicit)).toBe("sanctioned_service");
+    expect(sourceExposureKindFromPath(keyed)).toBe("sanctioned_service");
+    expect(sourceExposureKindFromPath(textual)).toBe("sanctioned_service");
+  });
+
+  it("exports active local sanctioned evidence ids and rejects inactive or conflicting paths", () => {
+    const active = path({
+      balanceTransferEvidenceId: "balance-event",
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX/Huobi",
+      sourceExposureKind: "sanctioned_service"
+    });
+    expect(activeSanctionedServicePathEvidence(active)).toEqual({
+      service: expect.objectContaining({ key: "htx_huobi" }),
+      evidenceIds: ["balance-event", "tx-balance", "tx-source-hop", "tx-hop-subject"]
+    });
+    expect(activeSanctionedServicePathEvidence({
+      ...active,
+      steps: [{ ...active.steps[0]!, timestamp: "2026-05-25T23:59:59.999Z" }]
+    })).toBeNull();
+    expect(activeSanctionedServicePathEvidence({ ...active, exposureSourceLabel: "Garantex" })).toBeNull();
+  });
+
   it("uses source-specific share curves and risk bands", () => {
     expect(baseShareScore("htx_huobi", 0.15)).toBeLessThan(55);
     expect(baseShareScore("htx_huobi", 0.62)).toBeGreaterThanOrEqual(50);
@@ -913,14 +962,13 @@ describe("provenanceScoring", () => {
     });
   });
 
-  it("keeps cross-chain terminal source-policy kinds high and non-dampened", () => {
+  it("keeps typed mixer and no-name terminal source-policy kinds high and non-dampened", () => {
     const highRiskKinds: Array<{
       kind: SourceExposureKind;
       minimumScore: number;
     }> = [
       { kind: "no_name_token_liquidity", minimumScore: 70 },
-      { kind: "mixer", minimumScore: 78 },
-      { kind: "sanctioned_service", minimumScore: 95 }
+      { kind: "mixer", minimumScore: 78 }
     ];
 
     for (const { kind, minimumScore } of highRiskKinds) {

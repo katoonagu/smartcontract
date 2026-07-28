@@ -41,6 +41,8 @@ function approvalProfile(
 function whereReport(input: {
   profiles?: ApprovalDrainProvenanceProfile[];
   hardBadEvidence?: WhereIsMoneyHardBadEvidence[];
+  originPaths?: WhereIsMoneyReport["originPaths"];
+  crossChainCorridor?: WhereIsMoneyReport["crossChainCorridor"];
   fastWalletRisk?: RiskReport | null;
   decision?: "ACCEPTABLE" | "REVIEW" | "DECLINE";
 } = {}): WhereIsMoneyReport {
@@ -55,7 +57,8 @@ function whereReport(input: {
     currentUsdtBalanceRaw: "1000000",
     fastWalletRisk: input.fastWalletRisk ?? null,
     balanceFormingTransfers: [],
-    originPaths: [],
+    originPaths: input.originPaths ?? [],
+    crossChainCorridor: input.crossChainCorridor,
     senderInteractionProfiles: [],
     approvalDrainProvenanceProfiles: input.profiles ?? [],
     approvalDrainReviewFindings: [],
@@ -116,6 +119,43 @@ function explanation(report: WhereIsMoneyReport) {
     fastReport: report.fastWalletRisk,
     deepReport: null
   });
+}
+
+function typedCrossChainSanctions(evidenceId: string): NonNullable<WhereIsMoneyReport["crossChainCorridor"]> {
+  return {
+    enabled: true,
+    triggered: true,
+    skippedReason: null,
+    paths: [{
+      id: "typed-cross-chain-sanctions",
+      triggerReason: "large_single_boundary",
+      balanceTransferTxHashes: ["cross-chain-balance"],
+      targetAmountRaw: "1000000",
+      selectedAmountRaw: "1000000",
+      edges: [],
+      terminalBoundary: "sanctioned_service",
+      riskLayer: {
+        evidenceClass: "hard_proof",
+        kind: "cross_chain_sanctioned_service",
+        sourceExposureKind: "sanctioned_service",
+        score: 95,
+        rawScore: 95,
+        adjustedScore: 95,
+        proofLevel: "exact_scam_or_taint_proof",
+        canBeDampened: false,
+        reasons: ["Typed cross-chain sanctions."],
+        warnings: [],
+        evidenceIds: [evidenceId]
+      },
+      partial: false,
+      reasons: ["Typed cross-chain sanctions."],
+      warnings: []
+    }],
+    providerCalls: 1,
+    partial: false,
+    coverageNotes: [],
+    payloadRefs: []
+  };
 }
 
 describe("buildRiskExplanationSummary approval-drain authority", () => {
@@ -180,5 +220,69 @@ describe("buildRiskExplanationSummary approval-drain authority", () => {
 
     expect(exact).toMatchObject({ kind: "hard_evidence", source: "where" });
     expect(exact?.textEn).toContain("Exact approval-drain evidence was found");
+  });
+
+  it("requires overlapping active local path authority before rendering sanctions as hard evidence", () => {
+    const hardBadEvidence: WhereIsMoneyHardBadEvidence[] = [{
+      kind: "sanctioned_service",
+      score: 95,
+      message: "Saved sanctioned service.",
+      evidenceIds: ["sanction-event"]
+    }];
+    const stale = explanation(whereReport({ decision: "DECLINE", hardBadEvidence }));
+    const staleFact = stale.primaryReasons.find((fact) => fact.dedupeKey.includes("sanctioned"));
+    expect(staleFact).toMatchObject({ kind: "behavior_context", source: "where" });
+    expect(staleFact?.textEn).not.toContain("cannot be accepted automatically");
+
+    const collision = explanation(whereReport({
+      decision: "DECLINE",
+      hardBadEvidence,
+      crossChainCorridor: typedCrossChainSanctions("sanction-event")
+    }));
+    expect(collision.primaryReasons.find((fact) => fact.dedupeKey.includes("sanctioned")))
+      .toMatchObject({ kind: "behavior_context", source: "where" });
+
+    const activePath: WhereIsMoneyReport["originPaths"][number] = {
+        balanceTransferTxHash: "sanction-tx",
+        balanceTransferEvidenceId: "sanction-event",
+        rootSourceAddress: "THTX111111111111111111111111111111",
+        rootSourceType: "decline_boundary",
+        exposureSourceKey: "htx_huobi",
+        exposureSourceLabel: "HTX/Huobi",
+        sourceExposureKind: "sanctioned_service",
+        pathAddresses: ["THTX111111111111111111111111111111", address],
+        txHashes: ["sanction-tx"],
+        steps: [{
+          txHash: "sanction-tx",
+          fromAddress: "THTX111111111111111111111111111111",
+          toAddress: address,
+          amountRaw: "1000000",
+          timestamp: "2026-05-26T00:00:00.000Z"
+        }],
+        amountPreservationRatio: 1,
+        timeSpanMs: 0,
+        stoppedReason: "decline_boundary_reached",
+        verdict: "DECLINE",
+        riskScoreContribution: 95,
+        reasons: ["HTX sanctioned source."]
+    };
+    const active = explanation(whereReport({
+      decision: "DECLINE",
+      hardBadEvidence,
+      originPaths: [activePath]
+    }));
+    expect(active.primaryReasons.find((fact) => fact.dedupeKey.includes("sanctioned")))
+      .toMatchObject({ kind: "hard_evidence", source: "where" });
+
+    for (const closedPath of [
+      { ...activePath, steps: [{ ...activePath.steps[0]!, timestamp: "2026-05-25T23:59:59.999Z" }] },
+      { ...activePath, steps: [] },
+      { ...activePath, exposureSourceLabel: "Garantex" },
+      { ...activePath, balanceTransferEvidenceId: "non-overlap" }
+    ]) {
+      const summary = explanation(whereReport({ decision: "DECLINE", hardBadEvidence, originPaths: [closedPath] }));
+      expect(summary.primaryReasons.find((fact) => fact.dedupeKey.includes("sanctioned")))
+        .toMatchObject({ kind: "behavior_context", source: "where" });
+    }
   });
 });

@@ -1749,6 +1749,20 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).not.toMatch(/на дату перевода.*санкц|sanctioned at transfer|обычн.*бирж|clean CEX|операци.*не провод|do not proceed/i);
   });
 
+  it("renders unknown sanctions timing as explicit context without active or pre-designation claims", () => {
+    const path = postDesignationHtxPath();
+    path.steps = [];
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [path],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
+
+    expect(fact).toMatchObject({ kind: "direct_counterparty_sanction", proofStrength: "context" });
+    expect(copy).toMatch(/time.*unknown|timestamp.*unavailable/i);
+    expect(copy).not.toMatch(/direct sanctioned source|before its sanctions designation|UK sanctions effective/i);
+  });
+
   it("uses the exact HTX boundary and never promotes the name alone", () => {
     const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
     const txHash = "8".repeat(64);
@@ -1825,13 +1839,13 @@ describe("wallet narrative signal catalogue", () => {
     }
   );
 
-  it("does not infer HTX sanctions identity or UK date from a label without the typed key", () => {
+  it("does not infer HTX sanctions identity or UK date from conflicting registry fields", () => {
     const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
     const txHash = "6".repeat(64);
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [originPath({
         balanceTransferTxHash: txHash,
-        exposureSourceKey: "other_sanctioned_service",
+        exposureSourceKey: "garantex",
         exposureSourceLabel: "HTX lookalike desk",
         sourceExposureKind: "sanctioned_service",
         txHashes: [txHash],
@@ -1850,7 +1864,7 @@ describe("wallet narrative signal catalogue", () => {
     });
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
-    expect(fact?.kind).toBe("sanctioned_source");
+    expect(fact?.kind).toBe("direct_counterparty_sanction");
     expect(copy).not.toMatch(/Великобритани|UK sanctions|26 мая|26 May/i);
     expect(copy).not.toContain("HTX/Huobi Global");
   });
@@ -1908,7 +1922,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(build(label, ["0".repeat(64)])).toEqual([]);
   });
 
-  it("renders another canonical sanctioned service without inventing authority or date", () => {
+  it("keeps an unresolvable sanctioned service as unknown-time context", () => {
     const txHash = "5".repeat(64);
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [originPath({
@@ -1929,8 +1943,9 @@ describe("wallet narrative signal catalogue", () => {
     });
     const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
-    expect(copy).toMatch(/25 000 USDT.*25%.*Example Sanctioned Service.*санкцион|25,000 USDT.*25%.*Example Sanctioned Service.*sanctioned/is);
-    expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
+    expect(fact).toMatchObject({ kind: "direct_counterparty_sanction", proofStrength: "context" });
+    expect(copy).toMatch(/Example Sanctioned Service.*время перевода неизвестно|Example Sanctioned Service.*transfer time is unknown/is);
+    expect(copy).not.toMatch(/прямой санкционный источник|direct sanctioned source/i);
     expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/Великобритани|\bUK\b|26 мая|26 May/i);
   });
@@ -1938,9 +1953,10 @@ describe("wallet narrative signal catalogue", () => {
   it("describes aggregate exposure to multiple sanctioned services without assigning it to one", () => {
     const alphaHash = "1".repeat(64);
     const zuluHash = "2".repeat(64);
-    const makePath = (label: string, txHash: string, share: number, amountRaw: string) => originPath({
+    const makePath = (key: string, label: string, txHash: string, share: number, amountRaw: string) => originPath({
       balanceTransferTxHash: txHash,
       rootSourceType: "decline_boundary",
+      exposureSourceKey: key,
       exposureSourceLabel: label,
       sourceExposureKind: "sanctioned_service",
       balanceShare: share,
@@ -1961,8 +1977,8 @@ describe("wallet narrative signal catalogue", () => {
       }]
     });
     const paths = [
-      makePath("Zulu Sanctioned", zuluHash, 0.2, "20000000000"),
-      makePath("Alpha Sanctioned", alphaHash, 0.3, "30000000000")
+      makePath("garantex", "Garantex", zuluHash, 0.2, "20000000000"),
+      makePath("htx_huobi", "HTX/Huobi", alphaHash, 0.3, "30000000000")
     ];
     const evidence = policyEvidence({
       kind: "sanctioned_service",
@@ -1989,7 +2005,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*sanctioned/i);
     expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
     expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
-    expect(copy).not.toMatch(/50[ ,]000 USDT.*(?:пришло с|came from) (?:Alpha|Zulu)/i);
+    expect(copy).not.toMatch(/50[ ,]000 USDT.*(?:пришло с|came from) (?:HTX|Garantex)/i);
     expect(reversed).toEqual(forward);
   });
 
@@ -2203,7 +2219,7 @@ describe("wallet narrative signal catalogue", () => {
         kind: "sanctioned_service",
         evidenceIds: [sanctionedHash]
       })]
-    }).find((fact) => fact.kind === "sanctioned_source");
+    }).find((fact) => fact.kind === "direct_counterparty_sanction");
     const crossChain = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
       rootSourceType: "decline_boundary",
       exposureSourceLabel: null,
@@ -2220,7 +2236,7 @@ describe("wallet narrative signal catalogue", () => {
     })] }).find((fact) => fact.kind === "cex_source");
     const english = [sanctioned, crossChain, dexRouter, cex].map((fact) => fact?.factTextEn ?? "");
 
-    expect(english[0]).toMatch(/unnamed sanctioned service/i);
+    expect(english[0]).toMatch(/unresolved sanctioned-service identity/i);
     expect(english[1]).toMatch(/unnamed cross-chain service/i);
     expect(english[2]).toMatch(/unnamed DEX\/router service/i);
     expect(english[3]).toMatch(/unnamed exchange service/i);

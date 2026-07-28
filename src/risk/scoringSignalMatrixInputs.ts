@@ -33,6 +33,7 @@ import {
   isPersistableUsdtBlacklistTimelineEvent,
   partitionPrincipalTransfersByBlacklistTimeline
 } from "../forensics/directHardEvidence";
+import { activeSanctionedServicePathEvidence } from "../forensics/provenanceScoring";
 
 export type WalletMatrixCandidateInput = {
   address: string;
@@ -507,8 +508,26 @@ function coverageCandidate(context: MatrixCandidateContext, reason: string): Mat
   });
 }
 
-function sourcePolicyCandidate(context: MatrixCandidateContext, item: SourcePolicyEvidence): MatrixCandidate {
+function sourcePolicyCandidate(
+  context: MatrixCandidateContext,
+  item: SourcePolicyEvidence,
+  sanctionsAuthorized = true
+): MatrixCandidate {
   const ids = evidenceIds(item.evidenceIds, `source_policy:${item.kind}`);
+  if (item.kind === "sanctioned_service" && !sanctionsAuthorized) {
+    return candidate(context, { kind: "context" }, {
+      row: "counterparty_context",
+      actionUnit: "source_path",
+      score: contextScore(item.score),
+      evidenceIds: ids,
+      evidenceEpisodeIds: ids,
+      atomicSignals: ["source_policy_sanctioned_service_context"],
+      modifiers: [],
+      caps: [],
+      dampeners: [],
+      caveats: item.warnings
+    });
+  }
   const decisionEligibility = item.proofLevel === "exchange_policy_decline" && item.score >= 60
     ? "can_decline" as const
     : "review_only" as const;
@@ -997,6 +1016,12 @@ function hasExactWhereHardProof(
   });
 }
 
+function activeLocalSanctionsEvidenceIds(report: WhereIsMoneyReport): Set<string> {
+  return new Set(report.originPaths.flatMap((path) =>
+    activeSanctionedServicePathEvidence(path)?.evidenceIds ?? []
+  ));
+}
+
 function whereCandidates(
   context: MatrixCandidateContext,
   report: WhereIsMoneyReport,
@@ -1006,6 +1031,9 @@ function whereCandidates(
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
   const notApplicable = report.coverage.questionStatus === "not_applicable";
+  const activeLocalSanctionsIds = activeLocalSanctionsEvidenceIds(report);
+  const sanctionsAuthorized = (ids: string[]): boolean =>
+    ids.some((id) => activeLocalSanctionsIds.has(id));
   const admits = (ids: string[]): boolean =>
     !requireIncomingEvidenceLink || evidenceLinkedToIncoming(report, ids, incomingTxHash);
   for (const observation of arrayOrEmpty(report.usddPsmRouteObservations)) {
@@ -1046,11 +1074,15 @@ function whereCandidates(
     if (notApplicable && !exact) continue;
     const authority: MatrixEvidenceAuthority = exact
       ? { kind: "exact_hard", proofSource: incomingTxHash === null ? "where_exact_hard" : "incoming_exact_hard" }
-      : item.kind === "sanctioned_service"
+      : item.kind === "sanctioned_service" && sanctionsAuthorized(item.evidenceIds)
         ? { kind: "policy", decisionEligibility: "can_decline", coverageDependency: context.requiredCoverage }
         : { kind: "context" };
     candidates.push(candidate(context, authority, {
-      row: exact ? "hard_proof" : item.kind === "sanctioned_service" ? "source_policy" : "counterparty_context",
+      row: exact
+        ? "hard_proof"
+        : item.kind === "sanctioned_service" && sanctionsAuthorized(item.evidenceIds)
+          ? "source_policy"
+          : "counterparty_context",
       actionUnit: "source_path",
       score: exact ? item.kind === "approval_drain" ? 95 : Math.max(90, item.score) : contextScore(item.score),
       evidenceIds: ids,
@@ -1087,7 +1119,11 @@ function whereCandidates(
   candidates.push(...report.assessment.sourcePolicyEvidence
     .filter((item) => admits(item.evidenceIds) &&
       (item.kind !== "risky_label" || whereRiskyLabelEvidenceAuthorized(report, item.evidenceIds, fastReport)))
-    .map((item) => sourcePolicyCandidate(context, item)));
+    .map((item) => sourcePolicyCandidate(
+      context,
+      item,
+      item.kind !== "sanctioned_service" || sanctionsAuthorized(item.evidenceIds)
+    )));
 
   for (const layer of report.assessment.riskLayers) {
     if (!admits(layer.evidenceIds)) continue;
@@ -1097,6 +1133,23 @@ function whereCandidates(
     if (score <= 0) continue;
     if (layer.evidenceClass === "source_policy") {
       const ids = evidenceIds(layer.evidenceIds, `where_layer:${layer.kind}`);
+      const localSanctionsAuthorized = layer.sourceExposureKind !== "sanctioned_service" && layer.kind !== "sanctioned_service" ||
+        sanctionsAuthorized(layer.evidenceIds);
+      if (!localSanctionsAuthorized) {
+        candidates.push(candidate(context, { kind: "context" }, {
+          row: "counterparty_context",
+          actionUnit: "source_path",
+          score,
+          evidenceIds: ids,
+          evidenceEpisodeIds: ids,
+          atomicSignals: [`source_policy_${layer.kind}_context`],
+          modifiers: [],
+          caps: [],
+          dampeners: [],
+          caveats: layer.warnings
+        }));
+        continue;
+      }
       const decisionEligibility = layer.proofLevel === "exchange_policy_decline" && score >= 60
         ? "can_decline" as const
         : "review_only" as const;

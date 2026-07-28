@@ -2,6 +2,7 @@ import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { normalizeNotificationReason } from "../alerts/notificationText";
 import type { UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import { isAuthoritativeDirectApprovalDrainProfile } from "../forensics/approvalDrainProvenance";
+import { activeSanctionedServicePathEvidence } from "../forensics/provenanceScoring";
 import type {
   ApprovalDrainProvenanceProfile,
   BotLocale,
@@ -365,6 +366,13 @@ function sourceUnresolvedBoundaryLabel(
   }
 }
 
+function sanctionedWhereEvidenceAuthorized(report: WhereIsMoneyReport, evidenceIds: string[]): boolean {
+  const activeLocalIds = new Set(report.originPaths.flatMap((path) =>
+    activeSanctionedServicePathEvidence(path)?.evidenceIds ?? []
+  ));
+  return evidenceIds.some((id) => activeLocalIds.has(id));
+}
+
 function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const report = input.whereReport;
   const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles, input.address);
@@ -390,6 +398,19 @@ function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFac
   for (const evidence of report.assessment.hardBadEvidence) {
     if (evidence.kind === "approval_drain") continue;
     if (evidence.kind === "sanctioned_service") {
+      if (!sanctionedWhereEvidenceAuthorized(report, evidence.evidenceIds)) {
+        pushFact(allFacts, sections, "where", {
+          kind: "behavior_context",
+          source: "where",
+          priority: 58,
+          dedupeKey: `sanctioned-context:${evidence.message}`,
+          textRu: "Сохранённое свидетельство о санкционном сервисе остаётся контекстом без совпадающего активного пути.",
+          textEn: "Saved sanctioned-service evidence is context without an overlapping active registry-bound path.",
+          detailRu: normalizeNotificationReason(evidence.message, "ru"),
+          detailEn: normalizeNotificationReason(evidence.message, "en")
+        });
+        continue;
+      }
       pushFact(allFacts, sections, "where", {
         kind: "hard_evidence",
         source: "where",

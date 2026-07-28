@@ -14,8 +14,8 @@ import type {
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import {
-  matchSanctionedCryptoService,
-  sanctionedCryptoServiceActiveAt
+  resolveSanctionedCryptoService,
+  sanctionedCryptoServiceStateAt
 } from "./sanctionedServiceRegistry";
 
 export const DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS = 50_000;
@@ -449,14 +449,14 @@ function sanctionReason(
   selectedProvenanceTxHashes: Set<string>
 ): string | null {
   if (!classification) return null;
-  const service = matchSanctionedCryptoService([
+  const service = resolveSanctionedCryptoService([
     classification.identity,
     ...classification.evidence
-  ].filter(Boolean).join(" "));
+  ]);
   if (!service) return null;
   return groups.some((group) => group.direction === "inbound" && group.principalTransfers.some((transfer) =>
     selectedProvenanceTxHashes.has(transfer.txHash) &&
-    sanctionedCryptoServiceActiveAt(service, transfer.occurredAt)
+    sanctionedCryptoServiceStateAt(service, transfer.occurredAt) === "active"
   )) ? `sanctioned_service:${service.key}` : null;
 }
 
