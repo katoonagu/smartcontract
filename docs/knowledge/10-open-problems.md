@@ -111,6 +111,15 @@ unfinished work now receives a no-score technical terminal state and a durable
 user notification. Dense traversal duration remains a separate performance
 problem and is not reclassified as a handoff failure before the deadline.
 
+`npm.cmd run db:migrate` still replays every legacy migration below schema 032
+before entering the tracked receipt chain. On a populated database this can
+repeat a long `ALTER TABLE tron_usdt_transfers`, hold a relation lock, and
+outlive the invoking shell timeout. Until the legacy runner skips migrations
+already implied by the schema-032 receipt, production rollout must apply the
+current tracked migration through `applyVerifiedTrackedMigration` and then run
+`schema:verify`; do not start a second migration process or terminate an
+unverified PostgreSQL backend.
+
 ## Anti-Loop Rule
 
 Every rerun answers a changed input or diagnostic hypothesis. A repeated
