@@ -46,7 +46,8 @@ import type {
   IndexedTronUsdtTransfer,
   ServiceClassification,
   StablecoinRestrictionProfile,
-  TronAddressUsdtIndexState
+  TronAddressUsdtIndexState,
+  WhereIsMoneyReport
 } from "../../src/types";
 
 const depositTxHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
@@ -150,6 +151,79 @@ function report(overrides: Partial<IncomingDepositRiskReport> = {}): IncomingDep
     reasons: ["Sender looks operational."],
     warnings: [],
     ...overrides
+  };
+}
+
+function savedWhereEvidenceLeakReport(): WhereIsMoneyReport {
+  const staleApprovalId = "stale-approval-drain";
+  const staleFastId = "stale-fast-critical";
+  const stalePolicyId = "stale-risky-policy";
+  return {
+    subjectAddress: validProgressJson.sender,
+    currentUsdtBalanceRaw: "0",
+    fastWalletRisk: null,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    assessment: {
+      decision: "DECLINE",
+      riskScore: 95,
+      riskBand: "CRITICAL",
+      provenanceConfidence: 100,
+      coverageCompleteness: 100,
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      ageSignals: null,
+      hardBadEvidence: [{
+        kind: "approval_drain",
+        score: 95,
+        message: "Stale approval row.",
+        evidenceIds: [staleApprovalId]
+      }, {
+        kind: "fast_critical",
+        score: 95,
+        message: "Stale Fast row.",
+        evidenceIds: [staleFastId]
+      }],
+      sourcePolicyEvidence: [{
+        kind: "risky_label",
+        aggregateShare: 0.5,
+        effectiveShare: 0.5,
+        pathCount: 1,
+        score: 85,
+        riskBand: "CRITICAL",
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false,
+        reasons: ["Stale risky policy."],
+        warnings: [],
+        evidenceIds: [stalePolicyId]
+      }],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: [],
+      dominantRiskLayer: null,
+      reasons: ["Saved decline."],
+      warnings: []
+    },
+    decision: "DECLINE",
+    userDecision: "DECLINE",
+    internalDecision: "DECLINE",
+    proofLevel: "exchange_policy_decline",
+    riskScore: 95,
+    decisionReasons: ["Saved decline."],
+    coverage: {
+      selectedInboundTxCount: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 1,
+      coverageRatio: 1,
+      checkedScope: "current_balance",
+      maxDepth: 20,
+      fetchedAddressCount: 10,
+      partial: false,
+      notes: []
+    }
   };
 }
 
@@ -2602,6 +2676,45 @@ describe("buildIncomingDepositReport", () => {
       "report_infer_sender_role",
       "report_assemble"
     ]));
+  });
+
+  it("filters stale saved approval, Fast, and risky-policy rows in the actual Incoming report path", async () => {
+    const runWhereIsMoneyCheck = vi.fn(async () => savedWhereEvidenceLeakReport());
+    const deps = {
+      listIndexedUsdtTransfersForAddress: async (address: string) => address === validProgressJson.sender
+        ? [indexedTransfer({
+            txHash: "fresh-funding-for-saved-leak-test",
+            fromAddress: "TFunder111111111111111111111111111111",
+            toAddress: address,
+            amountRaw: validProgressJson.amountRaw,
+            blockTimestamp: new Date("2026-05-29T13:30:00.000Z")
+          })]
+        : [],
+      listRelatedTrc20Transfers: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async () => ({}),
+      getUsdtRestrictionStatus: async (address: string) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" }),
+      runWhereIsMoneyCheck
+    } as IncomingDepositRuntimeDeps & {
+      runWhereIsMoneyCheck: typeof import("../../src/check/whereIsMoneyCheck").runWhereIsMoneyCheck;
+    };
+
+    const result = await buildIncomingDepositReport({
+      deps,
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(runWhereIsMoneyCheck).toHaveBeenCalledOnce();
+    expect(result.hardBadEvidence.some((item) => item.kind === "approval_drain")).toBe(false);
+    expect(result.hardBadEvidence.some((item) => item.evidenceIds.includes("stale-fast-critical"))).toBe(false);
+    expect(result.sourcePolicyEvidence?.some((item) => item.evidenceIds.includes("stale-risky-policy"))).toBe(false);
   });
 
   it("merges outer selective evidence, exact assertions, heartbeat, and incomplete coverage into the report", async () => {

@@ -9,10 +9,11 @@ import type { DeepAddressForensicReport } from "../../src/check/deepForensicChec
 import type { ManualCheckResult } from "../../src/check/manualCheck";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
+import { observationForApprovalDrainProvenance, rawEvidenceForApprovalDrainProvenance } from "../../src/forensics/approvalDrainProvenance";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { Db } from "../../src/storage/db";
-import type { AddressPoisoningCandidate, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, ContractDecisionEvidenceV1, ContractDecisionV2, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AddressPoisoningCandidate, ApprovalDrainProvenanceProfile, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, ContractDecisionEvidenceV1, ContractDecisionV2, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
@@ -1467,6 +1468,8 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     windowEnd: report.windowEnd.toISOString(),
     runProfile: report.runProfile,
     providerBudget: report.providerBudget,
+    rawEvidence: report.rawEvidence,
+    observations: report.observations,
     serviceExposureProfiles: report.serviceExposureProfiles,
     addressBehaviorProfiles: report.addressBehaviorProfiles,
     inboundProvenanceProfiles: report.inboundProvenanceProfiles,
@@ -1495,6 +1498,32 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     missingChecks: report.missingChecks,
     coverage: report.coverage,
     coverageDebug: report.coverageDebug
+  };
+}
+
+function persistedApprovalDrainProfileForTest(
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: "TVictim111111111111111111111111111111",
+    approvalTxHash: "tx-persisted-approval",
+    drainTxHash: "tx-persisted-drain",
+    spenderAddress: "TSpender11111111111111111111111111111",
+    firstReceiverAddress: walletAddress,
+    subjectAddress: walletAddress,
+    hopDepth: 0,
+    amountRaw: "309000000000",
+    amountPreservationRatio: 0.991,
+    approvalAt: "2026-05-20T09:50:00.000Z",
+    drainAt: "2026-05-20T10:00:00.000Z",
+    pathTxHashes: ["tx-persisted-drain"],
+    pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
+    score: 95,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
   };
 }
 
@@ -5061,6 +5090,16 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = formatUnifiedAddressFinalReportForTest({
       address: whereReport.subjectAddress,
       whereReport,
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        reasons: [{
+          code: "internal_label_scam",
+          message: "Exact subject blacklist evidence.",
+          scoreImpact: 90,
+          evidenceRef: "hard:subject:blacklist"
+        }]
+      }),
       locale: "en"
     });
 
@@ -5280,6 +5319,19 @@ describe("bot command and inline UX smoke coverage", () => {
         notes: ["provider coverage partial"]
       }
     });
+    const direct = whereReport.approvalDrainProvenanceProfiles[0]!;
+    const deepReport = deepReportForTest({ approvalDrainProvenanceProfiles: [direct] });
+    const raw = rawEvidenceForApprovalDrainProvenance({
+      subjectAddress: walletAddress,
+      windowStart: deepReport.windowStart,
+      windowEnd: deepReport.windowEnd,
+      profile: direct
+    });
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: walletAddress,
+      profile: direct,
+      rawEvidenceId: raw.id
+    });
 
     const text = formatUnifiedAddressFinalReportForTest({
       address: whereReport.subjectAddress,
@@ -5292,15 +5344,14 @@ describe("bot command and inline UX smoke coverage", () => {
         dominantRiskType: "taint",
         reasons: [
           {
-            code: "internal_label_approval_drain_proximity",
-            message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.",
-            scoreImpact: 95
+            code: "forensic_approval_drain_provenance",
+            message: "Exact approval-drain provenance is bound to retained raw evidence.",
+            scoreImpact: 95,
+            evidenceRef: raw.id
           }
         ]
       }),
-      deepReport: deepReportForTest({
-        approvalDrainProvenanceProfiles: whereReport.approvalDrainProvenanceProfiles
-      }),
+      deepReport: { ...deepReport, rawEvidence: [raw], observations: [observation] },
       locale: "ru"
     });
 
@@ -5310,7 +5361,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("подтверждённой дрейнер-цепочке");
     expect((text.match(/309 000 USDT/g) ?? []).length).toBe(1);
     expect(text).not.toContain("Exact approval-drain provenance reaches checked wallet");
-    expect(text).not.toContain("Derived high-risk marker");
+    expect(text).not.toContain("Exact approval-drain provenance is bound to retained raw evidence");
     expect(text).not.toContain("Scoring Signal Matrix");
     expect(text).not.toContain("matrix:hard_proof");
     expect(text).not.toContain("Beta/internal");
@@ -5366,7 +5417,7 @@ describe("bot command and inline UX smoke coverage", () => {
           {
             kind: "approval_drain",
             score: 95,
-            evidenceIds: ["tx-final-approval-drain"],
+            evidenceIds: ["tx-transferfrom-drain"],
             message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
           }
         ]
@@ -6619,6 +6670,121 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
 
+  it("reconstructs the exact second approval profile with its matching raw envelope and observation", () => {
+    const route = persistedApprovalDrainProfileForTest({
+      firstReceiverAddress: secondWalletAddress,
+      hopDepth: 1,
+      evidenceStrength: "route_linked",
+      pathTxHashes: ["tx-route-drain", "tx-route-hop"],
+      pathAddresses: ["TVictim111111111111111111111111111111", secondWalletAddress, walletAddress],
+      drainTxHash: "tx-route-drain",
+      score: 80
+    });
+    const exact = persistedApprovalDrainProfileForTest();
+    const windowStart = new Date("2026-04-24T00:00:00.000Z");
+    const windowEnd = new Date("2026-05-24T00:00:00.000Z");
+    const routeRaw = rawEvidenceForApprovalDrainProvenance({ subjectAddress: walletAddress, windowStart, windowEnd, profile: route });
+    const exactRaw = rawEvidenceForApprovalDrainProvenance({ subjectAddress: walletAddress, windowStart, windowEnd, profile: exact });
+    const report = deepReportForTest({
+      approvalDrainProvenanceProfiles: [route, exact],
+      rawEvidence: [routeRaw, exactRaw],
+      observations: [
+        observationForApprovalDrainProvenance({ subjectAddress: walletAddress, profile: route, rawEvidenceId: routeRaw.id }),
+        observationForApprovalDrainProvenance({ subjectAddress: walletAddress, profile: exact, rawEvidenceId: exactRaw.id })
+      ]
+    });
+    const extracted = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(report)
+    }), walletAddress);
+
+    expect(extracted?.rawEvidence.map((item) => item.id)).toEqual([routeRaw.id, exactRaw.id]);
+    expect(extracted?.observations.map((item) => item.rawEvidenceId)).toEqual([routeRaw.id, exactRaw.id]);
+    expect(plainTelegramText(formatDeepForensicReport(
+      whereIsMoneyJobForTest({ kind: "address_deep_check" }),
+      extracted!,
+      "completed",
+      { locale: "en" }
+    ).text)).toContain("Exact on-chain risk evidence was found.");
+  });
+
+  it("keeps profile-only direct Deep detail without reconstructing an independent Fast 95 floor", () => {
+    const report = deepReportForTest({
+      approvalDrainProvenanceProfiles: [persistedApprovalDrainProfileForTest()],
+      rawEvidence: [],
+      observations: []
+    });
+    const job = whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(report)
+    });
+    const extracted = extractDeepForensicReportFromJob(job, walletAddress)!;
+    const compactText = plainTelegramText(formatDeepForensicReport(job, extracted, "completed", { locale: "en" }).text);
+    const supportText = plainTelegramText(formatDeepForensicSupportReport(job, extracted, "completed", { locale: "en" }).text);
+
+    expect(extracted.approvalDrainProvenanceProfiles).toHaveLength(1);
+    expect(extracted.rawEvidence).toEqual([]);
+    expect(extracted.observations).toEqual([]);
+    expect(supportText).toContain("exact approval-drain provenance found");
+    expect(supportText).toContain("Approval tx:");
+    expect(compactText).toContain("Exact on-chain risk evidence was found.");
+    expect(compactText).toContain("Behavior risk: 🟠 80/100");
+    expect(compactText).not.toContain("95/100");
+  });
+
+  it("does not bind a forged exact-marked hop-one profile even when it reuses valid-looking IDs", () => {
+    const direct = persistedApprovalDrainProfileForTest();
+    const forged = persistedApprovalDrainProfileForTest({
+      firstReceiverAddress: secondWalletAddress,
+      hopDepth: 1,
+      pathAddresses: ["TVictim111111111111111111111111111111", secondWalletAddress, walletAddress]
+    });
+    const windowStart = new Date("2026-04-24T00:00:00.000Z");
+    const windowEnd = new Date("2026-05-24T00:00:00.000Z");
+    const raw = rawEvidenceForApprovalDrainProvenance({ subjectAddress: walletAddress, windowStart, windowEnd, profile: direct });
+    const observation = observationForApprovalDrainProvenance({ subjectAddress: walletAddress, profile: direct, rawEvidenceId: raw.id });
+    const report = deepReportForTest({
+      approvalDrainProvenanceProfiles: [forged],
+      rawEvidence: [raw],
+      observations: [observation]
+    });
+    const extracted = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(report)
+    }), walletAddress)!;
+    const text = plainTelegramText(formatDeepForensicReport(
+      whereIsMoneyJobForTest({ kind: "address_deep_check" }),
+      extracted,
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).not.toContain("Exact on-chain risk evidence was found.");
+    expect(text).not.toContain("exact approval-drain provenance found");
+  });
+
+  it("drops a persisted approval observation outside the TRON subject chain", () => {
+    const exact = persistedApprovalDrainProfileForTest();
+    const windowStart = new Date("2026-04-24T00:00:00.000Z");
+    const windowEnd = new Date("2026-05-24T00:00:00.000Z");
+    const raw = rawEvidenceForApprovalDrainProvenance({ subjectAddress: walletAddress, windowStart, windowEnd, profile: exact });
+    const observation = {
+      ...observationForApprovalDrainProvenance({ subjectAddress: walletAddress, profile: exact, rawEvidenceId: raw.id }),
+      subjectChain: "ethereum"
+    };
+    const report = deepReportForTest({
+      approvalDrainProvenanceProfiles: [exact],
+      rawEvidence: [raw],
+      observations: [observation]
+    });
+    const extracted = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(report)
+    }), walletAddress);
+
+    expect(extracted?.observations).toEqual([]);
+  });
+
   it("fails closed for a legacy Verify20 report without a deterministic contract decision", () => {
     const report = exactVerify20ContractReportForTest();
     const ru = plainTelegramText(formatSmartContractCheckReport(report, { locale: "ru" }).text);
@@ -7520,7 +7686,7 @@ describe("bot command and inline UX smoke coverage", () => {
           approvalTxHash: "tx-approval-root-cause",
           drainTxHash: "tx-transferfrom-drain",
           spenderAddress: "TSpender11111111111111111111111111111",
-          firstReceiverAddress: secondWalletAddress,
+          firstReceiverAddress: walletAddress,
           subjectAddress: walletAddress,
           hopDepth: 1,
           amountRaw: "309000000000",
@@ -7573,7 +7739,7 @@ describe("bot command and inline UX smoke coverage", () => {
           approvalTxHash: "tx-approval-root-cause",
           drainTxHash: "tx-transferfrom-drain",
           spenderAddress: "TSpender11111111111111111111111111111",
-          firstReceiverAddress: secondWalletAddress,
+          firstReceiverAddress: walletAddress,
           subjectAddress: walletAddress,
           hopDepth: 0,
           amountRaw: "309000000000",
@@ -7874,7 +8040,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Final risk appears after provenance analysis.");
   });
 
-  it("uses approval-drain proximity as the main fast reason and moves behavior to context", () => {
+  it("keeps approval-drain proximity out of exact preliminary proof", () => {
     const result = manualCheckResultForTest({
       report: riskReportForTest({
         level: "CRITICAL",
@@ -7885,7 +8051,7 @@ describe("bot command and inline UX smoke coverage", () => {
         reasons: [
           {
             code: "internal_label_approval_drain_proximity",
-            message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.",
+            message: "Derived approval-drain route marker; exact provenance requires retained approval and transferFrom evidence.",
             scoreImpact: 95
           }
         ]
@@ -7925,12 +8091,9 @@ describe("bot command and inline UX smoke coverage", () => {
 
     const text = formatAddressCheckStartedForTest(result, { locale: "ru" });
 
-    expect(text).toContain("Риск адреса: 🔴 95/100");
-    expect(text).toContain("По адресу есть сохранённое exact approval-drain доказательство");
-    expect(text).toContain("Дополнительный контекст");
-    expect(text).toContain("95% полученных USDT перераспределено примерно за 30m.");
-    expect(text).toContain("Адрес похож на high-volume transit.");
-    expect(text.indexOf("По адресу есть сохранённое exact approval-drain доказательство")).toBeLessThan(text.indexOf("Дополнительный контекст"));
+    expect(text).not.toContain("Риск адреса: 🔴 95/100");
+    expect(text).not.toContain("exact approval-drain доказательство");
+    expect(text).toContain("Проверка адреса — запущена");
   });
 
   it("formats compact Russian where-is-money result summary", () => {
@@ -8386,7 +8549,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("not direct scam proof");
   });
 
-  it("formats policy decline without claiming scam proof", async () => {
+  it("does not synthesize a final policy decline from saved score fields without retained policy evidence", async () => {
     const text = formatWhereIsMoneyResultForTest({
       decision: "DECLINE",
       userDecision: "DECLINE",
@@ -8399,14 +8562,14 @@ describe("bot command and inline UX smoke coverage", () => {
       contractLlmVerdicts: []
     });
 
-    expectCompactScoredNarrative(text, 70);
-    expect(text).toContain("Do not proceed");
+    expectCompactNoFinalNarrative(text);
+    expect(text).not.toContain("Do not proceed");
     expect(text).not.toContain("Source-policy evidence reached the decline or manual-review threshold.");
     expect(text).not.toContain("Evidence type");
     expect(text).not.toContain("not direct scam proof");
     expect(text).not.toContain("Risk band: HIGH");
     expect(text).not.toContain("Wallet role: risky_source_wallet");
-    expect(text).not.toContain("REVIEW");
+    expect(text).not.toContain("70/100");
   });
 
   it("formats operational assessment fields in where-is-money results", () => {
@@ -8996,18 +9159,14 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Deep research — support/debug");
     expect(text).toContain("Job: deep-job-support");
-    expect(text).toContain("Risk delta: risk increased");
+    expect(text).toContain("Risk delta: risk confirmed");
     expect(text).toContain("Previous fast risk:");
     expect(text).toContain("12/100 (LOW)");
     expect(text).toContain("Taint evidence");
     expect(text).toContain("Behavior risk:");
-    expect(text).toContain("80/100");
-    expect(text).toContain("New deep finding: exact approval-drain provenance found.");
-    expect(text).toContain("approval tx-app...ause was followed by transferFrom drain tx-tra...rain");
-    expect(text).toContain("Approval tx: tx-app...ause; drain tx: tx-tra...rain");
-    expect(text).toContain("Tx evidence: tx-tra...rain -> tx-hop-subject");
-    expect(text).toContain("Subject USDT: 2200");
-    expect(text).toContain("Victim USDT: 1500");
+    expect(text).not.toContain("80/100");
+    expect(text).not.toContain("exact approval-drain provenance found");
+    expect(text).not.toContain("Approval tx:");
     expect(text).toContain("Coverage and limits");
     expect(text).toContain("2 transfer edges scanned; 1 inbound senders checked.");
   });
@@ -9563,10 +9722,9 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("risk increased");
-    expect(text).toContain("Behavior risk: 🟠 80/100 (HIGH, beta)");
-    expect(text).toContain("New deep finding: exact approval-drain provenance found.");
-    expect(text).toContain("approval tx-app...ause was followed by transferFrom drain tx-tra...rain");
+    expect(text).toContain("risk confirmed");
+    expect(text).toContain("Behavior risk: 🟢 0/100 (LOW, beta)");
+    expect(text).not.toContain("exact approval-drain provenance found");
     expect(text).not.toContain("Subject USDT");
     expect(text).not.toContain("Victim USDT");
     expect(text).not.toContain("Score:");

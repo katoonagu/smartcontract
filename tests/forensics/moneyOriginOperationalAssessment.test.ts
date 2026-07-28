@@ -310,6 +310,7 @@ function subjectExposureProfile(overrides: Partial<SubjectExposureProfile> = {})
 
 function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] {
   return {
+    checkedSubjectAddress: subject,
     fastWalletRisk: lowFastRisk,
     originPaths: [reviewPath()],
     senderInteractionProfiles: [profile()],
@@ -318,6 +319,12 @@ function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOp
     coverage: coverage(),
     ...overrides
   };
+}
+
+function checkedAssessmentInput(
+  overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}
+): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] & { checkedSubjectAddress: string } {
+  return { ...assessmentInput(overrides), checkedSubjectAddress: subject };
 }
 
 function extraSourcePolicyEvidence(kind: SourceExposureKind, score: number): SourcePolicyEvidence {
@@ -380,7 +387,7 @@ describe("riskBandFromWhereScore", () => {
 describe("buildMoneyOriginOperationalAssessment", () => {
   const smallBridgeBoundary = "TBridge111111111111111111111111111111";
 
-  it("floors selected risky-label source bundle share at 85 and declines", () => {
+  it("does not trust a saved risky-label source bundle share without an authoritative path", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       sourceBundleExposure: sourceBundleExposureProfile({
         riskyLabelShare: 0.1,
@@ -389,16 +396,9 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       })
     }));
 
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
-    expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        kind: "risky_label",
-        score: 85,
-        proofLevel: "exchange_policy_decline",
-        canBeDampened: false
-      })
-    ]));
+    expect(assessment.riskScore).toBeLessThan(85);
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence.some((item) => item.kind === "risky_label")).toBe(false);
   });
 
   it("applies the 10 percent HTX/Huobi context floor before clean CEX acceptance", () => {
@@ -684,6 +684,67 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(text.toLowerCase()).not.toContain("exact source proof");
   });
 
+  it("ignores an unresolved risky-label boundary without authoritative path evidence overlap", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "risky_label",
+          affectedShare: 0.5,
+          reason: "Saved unresolved risky-label boundary.",
+          evidenceTxHashes: ["tx-stale-risky-boundary"],
+          scoreFloor: 85
+        }
+      })
+    }));
+
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).not.toContain("risky_label");
+    expect(assessment.riskLayers.some((layer) =>
+      layer.kind === "unresolved_source_boundary" && layer.sourceExposureKind === "risky_label"
+    )).toBe(false);
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
+  it("accepts an unresolved risky-label boundary bound to an authoritative risky-label path", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [reviewPath({
+        verdict: "DECLINE",
+        rootSourceType: "risky_label",
+        exposureSourceKey: "scam",
+        exposureSourceLabel: "scam",
+        sourceExposureKind: "risky_label",
+        stoppedReason: "risky_label_reached",
+        balanceShare: 1,
+        riskScoreContribution: 90,
+        reasons: ["Authoritative risky-label source path."]
+      })],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "risky_label",
+          affectedShare: 0.5,
+          reason: "Bound unresolved risky-label boundary.",
+          evidenceTxHashes: ["tx-review"],
+          scoreFloor: 85
+        }
+      })
+    }));
+
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("risky_label");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unresolved_source_boundary",
+        sourceExposureKind: "risky_label",
+        evidenceIds: ["tx-review"]
+      })
+    ]));
+  });
+
   it("applies unresolved unknown source bundle floor as coverage-limited context", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [cleanCexPath()],
@@ -831,12 +892,44 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
   });
 
+  it("uses the checked Where subject for direct approval authority when Fast is missing", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(checkedAssessmentInput({
+      fastWalletRisk: null,
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("does not let a mismatched Fast subject suppress a correct-subject direct approval profile", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(checkedAssessmentInput({
+      fastWalletRisk: { ...lowFastRisk, subjectAddress: sender },
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("does not authorize a direct approval profile for a different checked subject", () => {
+    const assessment = buildMoneyOriginOperationalAssessment({
+      ...assessmentInput({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] }),
+      checkedSubjectAddress: sender
+    });
+
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("approval_drain");
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
   it("declines exact risky labels as scam or blacklist hard evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           verdict: "DECLINE",
           rootSourceType: "risky_label",
+          exposureSourceKey: "scam",
+          sourceExposureKind: "risky_label",
           stoppedReason: "risky_label_reached",
           balanceShare: 1,
           riskScoreContribution: 90,
@@ -1090,6 +1183,17 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "fast_critical", evidenceIds: ["fast-blacklist-1"] })
     ]));
+  });
+
+  it("rejects exact Fast hard evidence reported for a different checked subject", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: { ...exactBlacklistFastRisk, subjectAddress: sender },
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("fast_critical");
   });
 
   it("keeps exact approval-drain proof as dominant even when source-policy score is higher", () => {
@@ -1750,6 +1854,8 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       originPaths: [
         reviewPath({
           rootSourceType: "risky_label",
+          exposureSourceKey: "scam",
+          sourceExposureKind: "risky_label",
           stoppedReason: "incoming_history_not_fetched",
           riskScoreContribution: 92,
           txHashes: ["tx-risky-unresolved"],
@@ -2965,6 +3071,44 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.riskLayers).toEqual(expect.arrayContaining([
       expect.objectContaining({ evidenceClass: "contract_suspicion", kind: "deterministic_contract_review" }),
       expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_contract_branch_partial" })
+    ]));
+  });
+
+  it("does not let route-linked approval context suppress a stronger contract-suspicion decline", () => {
+    const contractLayer = extraRiskLayer({
+      evidenceClass: "contract_suspicion",
+      kind: "deterministic_contract_decline",
+      score: 90,
+      rawScore: 90,
+      adjustedScore: 90,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      reasons: ["Independent deterministic contract suspicion requires decline."],
+      evidenceIds: ["contract-decline-evidence"]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [approvalDrainProfile({
+        evidenceStrength: "route_linked",
+        score: 80
+      })],
+      extraRiskLayers: [contractLayer]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 90
+    });
+    expect(assessment.reasons).toContain("Independent deterministic contract suspicion requires decline.");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "contract_suspicion",
+        kind: "deterministic_contract_decline"
+      }),
+      expect.objectContaining({
+        evidenceClass: "behavior_context",
+        kind: "route_linked_approval_pattern",
+        score: 80
+      })
     ]));
   });
 

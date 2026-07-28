@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildApprovalDrainProvenanceAnalysis, buildApprovalDrainProvenanceProfile, buildApprovalDrainProvenanceProfiles } from "../../src/forensics/approvalDrainProvenance";
-import type { ForensicRouteEdge, ServiceClassification } from "../../src/types";
+import {
+  authoritativeApprovalDrainEvidenceBinding,
+  buildApprovalDrainProvenanceAnalysis,
+  buildApprovalDrainProvenanceProfile,
+  buildApprovalDrainProvenanceProfiles,
+  isApprovalDrainEvidenceRefBoundToDirectProfile,
+  isAuthoritativeDirectApprovalDrainProfile,
+  observationForApprovalDrainProvenance,
+  rawEvidenceForApprovalDrainProvenance
+} from "../../src/forensics/approvalDrainProvenance";
+import type { ApprovalDrainProvenanceProfile, ForensicRouteEdge, ServiceClassification } from "../../src/types";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
@@ -93,7 +102,174 @@ function boundary(category: ServiceClassification["category"]): ServiceClassific
   };
 }
 
+function retainedApprovalProfile(
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: victim,
+    approvalTxHash: "tx-approval",
+    drainTxHash: "tx-drain",
+    spenderAddress: spender,
+    firstReceiverAddress: subject,
+    subjectAddress: subject,
+    hopDepth: 0,
+    amountRaw: "1000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-05-09T20:50:00.000Z",
+    drainAt: "2026-05-09T21:00:00.000Z",
+    pathTxHashes: ["tx-drain"],
+    pathAddresses: [victim, subject],
+    score: 90,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
+  };
+}
+
 describe("approval-drain provenance", () => {
+  it("authorizes only a direct exact profile for the checked subject", () => {
+    const profile = {
+      victimAddress: victim,
+      approvalTxHash: "tx-approval",
+      drainTxHash: "tx-drain",
+      spenderAddress: spender,
+      firstReceiverAddress: subject,
+      subjectAddress: subject,
+      hopDepth: 0 as const,
+      amountRaw: "1000000",
+      amountPreservationRatio: 1,
+      approvalAt: "2026-05-09T20:50:00.000Z",
+      drainAt: "2026-05-09T21:00:00.000Z",
+      pathTxHashes: ["tx-drain"],
+      pathAddresses: [victim, subject],
+      score: 90,
+      evidenceStrength: "exact_approval_and_transfer_from" as const,
+      subjectTokenState: null,
+      victimTokenState: null,
+      features: []
+    };
+
+    expect(isAuthoritativeDirectApprovalDrainProfile(profile, subject)).toBe(true);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, hopDepth: 1 }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, evidenceStrength: "route_linked" }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, firstReceiverAddress: firstReceiver }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile(profile, firstReceiver)).toBe(false);
+  });
+
+  it("emits exact critical observation copy for a valid direct profile", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile(),
+      rawEvidenceId: "raw-direct"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_approval_drain_provenance",
+      message: "Funds are connected to an exact approval-drain flow within 2 hops.",
+      scoreImpact: 90,
+      confidence: "high",
+      severity: "critical"
+    });
+  });
+
+  it("emits review-only observation copy for a route-linked profile", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile({
+        firstReceiverAddress: firstReceiver,
+        hopDepth: 1,
+        evidenceStrength: "route_linked",
+        pathTxHashes: ["tx-drain", "tx-hop"],
+        pathAddresses: [victim, firstReceiver, subject],
+        score: 90
+      }),
+      rawEvidenceId: "raw-route"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_route_linked_approval_pattern",
+      message: "Route-linked approval-drain context found without exact approval-drain proof.",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high"
+    });
+  });
+
+  it("downgrades a forged exact-strength hop-one profile to review-only observation copy", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile({
+        firstReceiverAddress: firstReceiver,
+        hopDepth: 1,
+        pathTxHashes: ["tx-drain", "tx-hop"],
+        pathAddresses: [victim, firstReceiver, subject]
+      }),
+      rawEvidenceId: "raw-forged-hop"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_route_linked_approval_pattern",
+      message: "Route-linked approval-drain context found without exact approval-drain proof.",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high"
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["malformed arrays", {
+      ...retainedApprovalProfile(),
+      pathTxHashes: null,
+      pathAddresses: "not-an-array"
+    }]
+  ])("fails closed for %s embedded historical approval profile data", (_label, embeddedProfile) => {
+    const profile = retainedApprovalProfile();
+    const raw = rawEvidenceForApprovalDrainProvenance({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      profile
+    });
+    const malformedRaw = {
+      ...raw,
+      evidenceJson: {
+        ...raw.evidenceJson,
+        approvalDrainProvenanceProfile: embeddedProfile
+      }
+    };
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile,
+      rawEvidenceId: raw.id
+    });
+    const bindingInput = {
+      checkedSubjectAddress: subject,
+      profile,
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    };
+
+    expect(() => authoritativeApprovalDrainEvidenceBinding(bindingInput)).not.toThrow();
+    expect(authoritativeApprovalDrainEvidenceBinding(bindingInput)).toBeNull();
+    expect(() => isApprovalDrainEvidenceRefBoundToDirectProfile({
+      checkedSubjectAddress: subject,
+      evidenceRef: raw.id,
+      profiles: [profile],
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    })).not.toThrow();
+    expect(isApprovalDrainEvidenceRefBoundToDirectProfile({
+      checkedSubjectAddress: subject,
+      evidenceRef: raw.id,
+      profiles: [profile],
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    })).toBe(false);
+  });
+
   it("scores direct first receiver as 90/100", async () => {
     const profile = await buildApprovalDrainProvenanceProfile({
       subjectAddress: firstReceiver,

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { boundedReasonImpact, calculateBoundedPolicyScore, calculatePolicyScoreBreakdown, policyForReason } from "../../src/risk/riskPolicy";
 import type { RiskReason } from "../../src/types";
 
-function reason(code: string, scoreImpact: number): RiskReason {
-  return { code, message: code, scoreImpact };
+function reason(code: string, scoreImpact: number, evidenceRef?: string): RiskReason {
+  return { code, message: code, scoreImpact, evidenceRef };
 }
 
 describe("riskPolicy", () => {
@@ -38,24 +38,41 @@ describe("riskPolicy", () => {
     expect(score).toBe(80);
   });
 
-  it("floors exact approval-drain provenance at 95", () => {
+  it("restores the exact hard floor for a referenced approval-drain reason", () => {
     const score = calculateBoundedPolicyScore([
-      reason("forensic_approval_drain_provenance", 90),
+      reason("forensic_approval_drain_provenance", 90, "raw-direct-profile"),
       reason("forensic_address_behavior", 30),
       reason("forensic_boundary_exposure_context", 15)
     ]);
     expect(score).toBe(95);
-    expect(boundedReasonImpact(reason("forensic_approval_drain_provenance", 90)).scoreImpact).toBe(95);
+    expect(policyForReason(reason("forensic_approval_drain_provenance", 90, "raw-direct-profile"))).toMatchObject({
+      dimension: "approval_drain",
+      evidenceClass: "exact_approval_drain",
+      hardEvidence: true,
+      cap: 95
+    });
+    expect(boundedReasonImpact(reason("forensic_approval_drain_provenance", 90, "raw-direct-profile")).scoreImpact).toBe(95);
   });
 
   it("uses exact Fast proof codes for hard-evidence membership", () => {
     expect(policyForReason(reason("critical_context_only", 100)).hardEvidence).toBe(false);
     expect(policyForReason(reason("stablecoin_usdt_blacklisted", 90)).hardEvidence).toBe(true);
     expect(policyForReason(reason("internal_label_approval_drain_proximity", 80))).toMatchObject({
-      evidenceClass: "exact_approval_drain",
-      hardEvidence: true
+      hardEvidence: false,
+      cap: 80
     });
     expect(policyForReason(reason("internal_label_darknet_exchange_proximity", 95)).hardEvidence).toBe(false);
+  });
+
+  it("does not authorize an unreferenced forensic approval-drain reason", () => {
+    expect(policyForReason(reason("forensic_approval_drain_provenance", 90))).toMatchObject({ hardEvidence: false });
+    expect(boundedReasonImpact(reason("forensic_approval_drain_provenance", 90)).scoreImpact).toBeLessThanOrEqual(80);
+    expect(policyForReason(reason("forensic_approval_drain_provenance", 90, "   "))).toMatchObject({
+      dimension: "provenance",
+      evidenceClass: "weak_inferred",
+      hardEvidence: false,
+      cap: 80
+    });
   });
 
   it("keeps darknet exchange proximity at HIGH as non-hard context", () => {

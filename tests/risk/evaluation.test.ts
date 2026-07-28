@@ -99,7 +99,7 @@ describe("evaluateAddressRisk", () => {
     });
   });
 
-  it("stores system-derived approval-drain proximity as critical exact label evidence", () => {
+  it("stores system-derived approval-drain proximity as high review context", () => {
     const evaluation = evaluateAddressRisk({
       context: { subjectAddress },
       labels: [
@@ -112,20 +112,20 @@ describe("evaluateAddressRisk", () => {
     });
 
     expect(evaluation.report).toMatchObject({
-      level: "CRITICAL",
-      score: 95
+      level: "HIGH",
+      score: 80
     });
     expect(evaluation.report.reasons[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
       confidence: "high",
-      severity: "critical",
-      scoreImpact: 95
+      severity: "high",
+      scoreImpact: 80
     });
     expect(evaluation.observations[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
-      scoreImpact: 95,
+      scoreImpact: 80,
       confidence: "high",
-      severity: "critical",
+      severity: "high",
       source: "system"
     });
   });

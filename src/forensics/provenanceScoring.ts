@@ -10,7 +10,7 @@ import type {
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
 } from "../types";
-import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+import { isAuthoritativeMoneyOriginRiskLabelPath, selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { matchSanctionedCryptoService } from "./sanctionedServiceRegistry";
 
 const MIN_LINK_STRENGTH = 0.25;
@@ -86,11 +86,13 @@ function attributedPathShare(path: MoneyOriginPath, rawShare: number, amountCont
 }
 
 export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
+  if (path.sourceExposureKind === "risky_label") {
+    return isAuthoritativeMoneyOriginRiskLabelPath(path) ? "risky_label" : null;
+  }
   if (path.sourceExposureKind) return path.sourceExposureKind;
   if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
 
   if (path.rootSourceType === "allowlist_cex") return "allowlisted_cex";
-  if (path.rootSourceType === "risky_label") return "risky_label";
 
   const rawText = [
     path.exposureSourceKey,

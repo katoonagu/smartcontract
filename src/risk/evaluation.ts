@@ -53,7 +53,7 @@ function stableId(parts: unknown[]): string {
 }
 
 function labelSeverity(label: AddressLabel): RiskSeverity {
-  if (label.label === "approval_drain_proximity") return "critical";
+  if (label.label === "approval_drain_proximity") return "high";
   if (contextOnlyLabels.has(label.label)) return "info";
   if (mitigatingLabels.has(label.label)) return "info";
   if (highRiskLabels.has(label.label)) return "high";

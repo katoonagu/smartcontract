@@ -34,7 +34,7 @@ const highContextSignalCodes = new Set([
 const HIGH_RISK_THRESHOLD = 60;
 
 function labelScoreImpact(label: AddressLabel): number {
-  if (label.label === "approval_drain_proximity") return 95;
+  if (label.label === "approval_drain_proximity") return 80;
   if (contextOnlyLabels.has(label.label)) return 0;
   if (criticalLabels.has(label.label)) return 90;
   if (highRiskLabels.has(label.label)) return 80;
@@ -52,7 +52,7 @@ function labelMessage(label: AddressLabel["label"]): string {
     return "Derived high-risk marker: confirmed on-chain exposure to known darknet exchange seed within 2 hops.";
   }
   if (label === "approval_drain_proximity") {
-    return "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.";
+    return "Derived approval-drain route marker; exact provenance requires retained approval and transferFrom evidence.";
   }
   return `Internal label: ${label}`;
 }

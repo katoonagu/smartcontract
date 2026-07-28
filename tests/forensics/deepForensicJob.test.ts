@@ -6359,7 +6359,7 @@ describe("deep forensic job runner", () => {
     });
   });
 
-  it("persists a system-derived approval-drain proximity marker from exact transferFrom provenance", async () => {
+  it("does not persist a route-linked approval-drain marker as exact authority", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [
         subject,
@@ -6421,34 +6421,7 @@ describe("deep forensic job runner", () => {
     });
 
     expect(handled).toBe(true);
-    expect(upsertAddressLabelAssertion).toHaveBeenCalledWith(expect.objectContaining({
-      id: `derived_tron_approval_drain_proximity_${subject}`,
-      chain: "tron",
-      address: subject,
-      label: "approval_drain_proximity",
-      category: "approval_drain_proximity",
-      confidence: "high",
-      severity: "high",
-      status: "active",
-      sourceName: "forensic_route_search",
-      createdByTelegramId: null,
-      derivedLabelSource: "system"
-    }));
-    expect(upsertAddressLabelAssertion.mock.calls[0][0].evidenceJson).toMatchObject({
-      subjectAddress: subject,
-      victimAddress: victim,
-      spenderAddress: spender,
-      firstReceiverAddress: transit,
-      hopDepth: 1,
-      approvalTxHash: "tx-approval",
-      drainTxHash: "tx-drain",
-      pathTxHashes: ["tx-drain", "tx-receiver-subject"],
-      pathAddresses: [victim, transit, subject],
-      amountRaw: "309000000000",
-      score: 80,
-      evidenceStrength: "route_linked",
-      jobId: "job-1"
-    });
+    expect(upsertAddressLabelAssertion).not.toHaveBeenCalled();
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
       approvalDrainProvenanceProfiles: [
         expect.objectContaining({
@@ -6457,10 +6430,74 @@ describe("deep forensic job runner", () => {
           drainTxHash: "tx-drain"
         })
       ],
-      derivedLabel: {
-        label: "approval_drain_proximity",
-        assertionId: `derived_tron_approval_drain_proximity_${subject}`
-      }
+      derivedLabel: null
+    });
+  });
+
+  it("persists a direct approval-drain marker with its durable raw and observation binding", async () => {
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([[
+      subject,
+      [transfer({
+        id: "tx-drain",
+        from: victim,
+        to: subject,
+        amountRaw: "311851000000",
+        at: "2026-05-20T10:00:00.000Z",
+        triggerInfo: { methodName: "transferFrom", methodId: "23b872dd" }
+      })]
+    ]]);
+    const upsertAddressLabelAssertion = vi.fn(async (_input: AddressLabelAssertionInput) => undefined);
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion,
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getTransaction: async (txHash) => txHash === "tx-drain" ? { ownerAddress: spender } : {},
+      listTrc20ApprovalChanges: async () => [approval()],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 1,
+      maxApprovalDrainCandidates: 5,
+      approvalChangeLookupLimit: 5
+    });
+
+    expect(handled).toBe(true);
+    expect(upsertAddressLabelAssertion).toHaveBeenCalledWith(expect.objectContaining({
+      address: subject,
+      label: "approval_drain_proximity",
+      evidenceJson: expect.objectContaining({
+        subjectAddress: subject,
+        firstReceiverAddress: subject,
+        hopDepth: 0,
+        rawEvidenceId: expect.any(String),
+        observationId: expect.any(String)
+      })
+    }));
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      rawEvidence: expect.arrayContaining([expect.objectContaining({
+        address: subject,
+        txHash: "tx-drain",
+        evidenceJson: expect.objectContaining({
+          approvalDrainProvenanceProfile: expect.objectContaining({ hopDepth: 0 })
+        })
+      })]),
+      observations: expect.arrayContaining([expect.objectContaining({
+        subjectChain: "tron",
+        subjectAddress: subject,
+        code: "forensic_approval_drain_provenance",
+        rawEvidenceId: expect.any(String)
+      })])
     });
   });
 

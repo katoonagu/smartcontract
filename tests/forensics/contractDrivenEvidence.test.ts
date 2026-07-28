@@ -6,7 +6,7 @@ import {
   classifySourcePostDebitActivity
 } from "../../src/forensics/contractDrivenEvidence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { ForensicRouteEdge } from "../../src/types";
+import type { ApprovalDrainProvenanceProfile, ForensicRouteEdge } from "../../src/types";
 
 const gasFreeController = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
 const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
@@ -77,7 +77,86 @@ function gasFreeEdge(input: {
   };
 }
 
+function approvalProfileForReceiver(
+  subjectAddress: string,
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: "TVictim111111111111111111111111111111",
+    approvalTxHash: "tx-approval",
+    drainTxHash: "tx-drain",
+    spenderAddress: "TSpender11111111111111111111111111111",
+    firstReceiverAddress: subjectAddress,
+    subjectAddress,
+    hopDepth: 0,
+    amountRaw: "1000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-07-09T23:59:00.000Z",
+    drainAt: "2026-07-10T00:00:00.000Z",
+    pathTxHashes: ["tx-drain"],
+    pathAddresses: ["TVictim111111111111111111111111111111", subjectAddress],
+    score: 90,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
+  };
+}
+
 describe("contract-driven evidence", () => {
+  it.each([
+    ["route-linked", { evidenceStrength: "route_linked" as const }],
+    ["forged exact-strength hop-one", {
+      firstReceiverAddress: "TIntermediate111111111111111111111111",
+      hopDepth: 1 as const,
+      pathTxHashes: ["tx-drain", "tx-hop"],
+      pathAddresses: [
+        "TVictim111111111111111111111111111111",
+        "TIntermediate111111111111111111111111",
+        "TContractReceiver111111111111111111111"
+      ]
+    }]
+  ])("does not count a %s profile as an exact contract-driven receiver", async (_label, overrides) => {
+    const subjectAddress = "TContractReceiver111111111111111111111";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "contract-edge",
+        txHash: "contract-edge",
+        fromAddress: "TSource111111111111111111111111111111",
+        toAddress: subjectAddress,
+        amountRaw: "1000000",
+        timestamp: new Date("2026-07-10T00:00:00.000Z"),
+        method: "Verify20",
+        edgeType: "transfer_from"
+      }],
+      approvalDrainProvenanceProfiles: [approvalProfileForReceiver(subjectAddress, overrides)]
+    });
+
+    expect(result.receiverProfile?.exactApprovalDrainCount).toBe(0);
+  });
+
+  it("counts a valid subject-bound hop-zero profile as an exact contract-driven receiver", async () => {
+    const subjectAddress = "TContractReceiver111111111111111111111";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "contract-edge",
+        txHash: "contract-edge",
+        fromAddress: "TSource111111111111111111111111111111",
+        toAddress: subjectAddress,
+        amountRaw: "1000000",
+        timestamp: new Date("2026-07-10T00:00:00.000Z"),
+        method: "Verify20",
+        edgeType: "transfer_from"
+      }],
+      approvalDrainProvenanceProfiles: [approvalProfileForReceiver(subjectAddress)]
+    });
+
+    expect(result.receiverProfile?.exactApprovalDrainCount).toBe(1);
+  });
+
   it("classifies the TS3ga Verify20 receiver campaign as drainer-like", () => {
     const classification = classifyContractDrivenReceiver({
       totalIncomingTxCount: 175,

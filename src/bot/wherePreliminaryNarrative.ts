@@ -254,7 +254,7 @@ function fastFacts(report: WhereIsMoneyReport): NarrativeFact[] {
   const fast = report.fastWalletRisk;
   if (!fast || fast.subjectAddress !== report.subjectAddress) return [];
   return fast.reasons.flatMap((reason) => {
-    const copy = fastNarrativeCopy(reason.code, fast, { presentation: "preliminary" });
+    const copy = fastNarrativeCopy(reason, fast, { presentation: "preliminary" });
     if (!copy) return [];
     return [plainFact({
       id: `fast-subject:${reason.code}`,
@@ -507,6 +507,11 @@ export function buildWherePreliminaryNarrative(
   }
   const preferred = preferredFactId(facts, resolution, report);
   const publishScore = scoreValid && score !== null && preferred !== null;
+  const preferredFact = preferred ? facts.find((fact) => fact.id === preferred) ?? null : null;
+  const publishedNarrativeScore = publishScore && preferredFact?.kind === "approval_drain" &&
+    preferredFact.proofStrength === "context"
+    ? Math.min(80, score)
+    : score;
   const coverage = reportCoverage(report, !publishScore);
   const sections = buildPreliminaryNarrativeSections({
     locale: options.locale,
@@ -515,7 +520,7 @@ export function buildWherePreliminaryNarrative(
     coverageExplanation: coverage
   });
   return {
-    score: publishScore ? score : null,
+    score: publishScore ? publishedNarrativeScore : null,
     sections,
     preferredFactId: publishScore ? preferred : null,
     diagnosticCode: scoreValid && preferred === null

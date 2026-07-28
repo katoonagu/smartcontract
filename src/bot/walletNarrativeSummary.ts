@@ -17,6 +17,7 @@ import type {
   WhereIsMoneyCoverage,
   WalletRole
 } from "../types";
+import { isAuthoritativeDirectApprovalDrainProfile } from "../forensics/approvalDrainProvenance";
 import {
   isAddressBehaviorReasonCode,
   type AddressBehaviorReasonCode
@@ -423,7 +424,7 @@ function exactApprovalRole(
     checkedAddress === profile.subjectAddress &&
     profile.hopDepth > 0
   ) return "route_linked";
-  if (profile.evidenceStrength !== "exact_approval_and_transfer_from") return null;
+  if (!isAuthoritativeDirectApprovalDrainProfile(profile, checkedAddress)) return null;
   if (checkedAddress === profile.victimAddress) return "victim";
   if (checkedAddress === profile.spenderAddress) return "drainer_spender";
   if (checkedAddress === profile.firstReceiverAddress) return "first_receiver";
@@ -1455,11 +1456,6 @@ const exactFastNarrativeCopies: Record<ExactFastHardEvidenceCode, FastNarrativeC
     ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
     en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
   },
-  internal_label_approval_drain_proximity: {
-    kind: "approval_drain", proofStrength: "exact",
-    ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
-    en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
-  },
   internal_label_scam: {
     kind: "direct_counterparty_exact_label", proofStrength: "exact",
     ru: "Проверяемый адрес отмечен во внутренней базе как мошеннический.",
@@ -1604,11 +1600,31 @@ export function fastNarrativeReasonScore(
 }
 
 export function fastNarrativeCopy(
-  code: string,
+  reason: RiskReport["reasons"][number],
   fast: RiskReport,
-  options: { presentation?: "final" | "preliminary" } = {}
+  options: {
+    presentation?: "final" | "preliminary";
+    verifiedApprovalDrainBinding?: boolean;
+  } = {}
 ): FastNarrativeCopy | null {
-  if (isExactFastHardEvidenceCode(code)) return exactFastNarrativeCopies[code];
+  const code = reason.code;
+  const exactApprovalCopyAllowed = code !== "forensic_approval_drain_provenance" ||
+    options.verifiedApprovalDrainBinding === true;
+  if (
+    isExactFastHardEvidenceCode(code) &&
+    exactApprovalCopyAllowed &&
+    exactFastHardEvidence({ ...fast, reasons: [reason] }).length > 0
+  ) {
+    return exactFastNarrativeCopies[code];
+  }
+  if (code === "forensic_approval_drain_provenance" || code === "internal_label_approval_drain_proximity") {
+    return {
+      kind: "approval_drain",
+      proofStrength: "context",
+      ru: "Сохранён контекст связи с approval-drain маршрутом; точное списание для проверяемого адреса не подтверждено.",
+      en: "Approval-drain route context was recorded; an exact debit involving the checked address is not proven."
+    };
+  }
   if (isAddressBehaviorReasonCode(code)) {
     return options.presentation === "preliminary"
       ? preliminaryBehaviorFastNarrativeCopies[code]

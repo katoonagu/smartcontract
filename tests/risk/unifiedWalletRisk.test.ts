@@ -15,6 +15,10 @@ import {
 } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
+import {
+  observationForApprovalDrainProvenance,
+  rawEvidenceForApprovalDrainProvenance
+} from "../../src/forensics/approvalDrainProvenance";
 import type {
   ApprovalDrainProvenanceProfile,
   BoundaryExposureProfile,
@@ -1274,7 +1278,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
   });
 
-  it("uses the strongest fresh bundle signal when risky label and HTX/Huobi both appear", () => {
+  it("does not trust a fresh risky-label aggregate without a bound path", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
@@ -1298,13 +1302,13 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       walletExposureProfile: null
     });
 
-    expect(result.finalScore).toBe(85);
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.finalScore).toBe(55);
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-      code: "incoming_fresh_risky_label_source",
+      code: "incoming_fresh_htx_huobi_context",
       source: "policy_floor"
     });
-    expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_fresh_htx_huobi_context");
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_fresh_risky_label_source");
   });
 
   it("does not add corridor context when unknown contract already has a fresh source floor", () => {
@@ -2269,12 +2273,16 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
-  it("keeps exact approval drain at the 95 hard floor even with trusted dampener", () => {
+  it("keeps a profile-only exact approval drain at the matrix 95 floor even without raw Fast binding", () => {
+    const profileOnlyDeep = deepReport({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] });
+    expect(profileOnlyDeep.rawEvidence).toEqual([]);
+    expect(profileOnlyDeep.observations).toEqual([]);
+
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0, [{ code: "internal_label_false_positive", message: "trusted context", scoreImpact: -40 }]),
       whereReport: whereReport(0),
-      deepReport: deepReport({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] })
+      deepReport: profileOnlyDeep
     });
 
     expect(result.finalScore).toBe(95);
@@ -2349,21 +2357,107 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.hardEvidenceFloor).toBe(95);
   });
 
-  it("keeps fast-only approval-drain provenance at the 95 hard floor", () => {
+  it("keeps an arbitrary referenced Fast approval-drain reason out of the hard floor", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(80, [{
         code: "forensic_approval_drain_provenance",
         message: "Fast Check found exact approval-drain provenance.",
-        scoreImpact: 80
+        scoreImpact: 80,
+        evidenceRef: "raw-direct-profile"
       }]),
       whereReport: whereReport(0)
     });
 
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBeLessThanOrEqual(59);
+    expect(result.finalDecision).toBe("REVIEW");
+  });
+
+  it("does not authorize an independent Fast approval floor from a direct profile tx hash", () => {
+    const direct = approvalDrainProfile();
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(80, [{
+        code: "forensic_approval_drain_provenance",
+        message: "Fast Check found exact approval-drain provenance.",
+        scoreImpact: 80,
+        evidenceRef: direct.drainTxHash
+      }]),
+      whereReport: whereReport(0),
+      deepReport: deepReport({ approvalDrainProvenanceProfiles: [direct] })
+    });
+
+    const fastApprovalCandidates = Object.values(result.matrixScore.riskVector).flat().filter((candidate) =>
+      candidate.authority.kind === "exact_hard" &&
+      candidate.authority.proofSource === "fast_exact_code" &&
+      candidate.atomicSignals.includes("forensic_approval_drain_provenance")
+    );
+    expect(fastApprovalCandidates).toEqual([]);
+    // The retained direct profile remains independently authoritative in the matrix.
     expect(result.hardEvidenceFloor).toBe(95);
     expect(result.finalScore).toBe(95);
-    expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("keeps a raw-bound Fast approval reason at the independent 95 floor", () => {
+    const direct = approvalDrainProfile();
+    const report = deepReport({ approvalDrainProvenanceProfiles: [direct] });
+    const raw = rawEvidenceForApprovalDrainProvenance({
+      subjectAddress: address,
+      windowStart: report.windowStart,
+      windowEnd: report.windowEnd,
+      profile: direct
+    });
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: address,
+      profile: direct,
+      rawEvidenceId: raw.id
+    });
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(80, [{
+        code: "forensic_approval_drain_provenance",
+        message: "Fast Check found exact approval-drain provenance.",
+        scoreImpact: 80,
+        evidenceRef: raw.id
+      }]),
+      whereReport: whereReport(0),
+      deepReport: { ...report, rawEvidence: [raw], observations: [observation] }
+    });
+
+    expect(Object.values(result.matrixScore.riskVector).flat()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authority: { kind: "exact_hard", proofSource: "fast_exact_code" },
+        atomicSignals: ["forensic_approval_drain_provenance"],
+        evidenceIds: [raw.id]
+      })
+    ]));
+    expect(result.hardEvidenceFloor).toBe(95);
+  });
+
+  it("rejects an exact-marked hop-one approval profile across the matrix", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(95, [{
+        code: "forensic_approval_drain_provenance",
+        message: "Forged exact hop-one provenance.",
+        scoreImpact: 95,
+        evidenceRef: "drain-tx"
+      }]),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        approvalDrainProvenanceProfiles: [approvalDrainProfile({
+          hopDepth: 1,
+          firstReceiverAddress: directPolicyCounterparty,
+          pathTxHashes: ["drain-tx", "hop-one-tx"],
+          pathAddresses: ["TVictim1111111111111111111111111111", directPolicyCounterparty, address]
+        })]
+      })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalDecision).not.toBe("DECLINE");
   });
 
   it("keeps fast-only scam labels at the 90 hard floor", () => {
@@ -2399,10 +2493,10 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
-  it("treats fast approval-drain proximity labels as exact approval evidence at 95", () => {
+  it("caps fast approval-drain proximity labels as review context", () => {
     const result = calculateUnifiedWalletRisk({
       address,
-      fastReport: fastReport(0, [{
+      fastReport: fastReport(80, [{
         code: "internal_label_approval_drain_proximity",
         message: "Fast Check found exact approval-drain proximity label.",
         scoreImpact: 80
@@ -2411,10 +2505,9 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport()
     });
 
-    expect(result.hardEvidenceFloor).toBe(95);
-    expect(result.finalScore).toBe(95);
-    expect(result.finalLevel).toBe("CRITICAL");
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBeLessThanOrEqual(59);
+    expect(result.finalDecision).toBe("REVIEW");
   });
 
   it("exposes unified fast hard-evidence detection for preliminary reports", () => {
@@ -2424,7 +2517,7 @@ describe("calculateUnifiedWalletRisk", () => {
       scoreImpact: 80
     }]);
 
-    expect(hasUnifiedFastHardEvidence(report)).toBe(true);
+    expect(hasUnifiedFastHardEvidence(report)).toBe(false);
     expect(hasUnifiedFastHardEvidence(null)).toBe(false);
   });
 

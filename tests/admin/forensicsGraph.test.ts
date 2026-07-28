@@ -787,6 +787,7 @@ describe("projectForensicJobGraph", () => {
           firstReceiverAddress: subject,
           victimAddress: "TVictim111111111111111111111111111111",
           spenderAddress: "TSpender11111111111111111111111111111",
+          hopDepth: 0,
           evidenceStrength: "exact_approval_and_transfer_from",
           approvalTxHash: "approval-tx-1",
           drainTxHash: "drain-tx-1"
@@ -8325,7 +8326,7 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
       role: "drainer",
       label: "Drainer",
-      evidenceStrength: "hard"
+      evidenceStrength: "behavior"
     });
     expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
       role: "victim",
@@ -9088,7 +9089,7 @@ describe("projectForensicJobGraph", () => {
     )).toHaveLength(2);
   });
 
-  it("does not downgrade hard contract-driven receiver intelligence with wallet role context", () => {
+  it("does not let a stale saved exact count create hard contract-driven intelligence", () => {
     const subject = "THardContractReceiver111111111111111";
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
@@ -9135,7 +9136,7 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
       role: "drainer",
       label: "Drainer",
-      evidenceStrength: "hard",
+      evidenceStrength: "behavior",
       source: "contract_driven_evidence"
     });
   });
@@ -9914,21 +9915,12 @@ describe("projectForensicJobGraph", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
-    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
-      role: "victim",
-      source: "approval_drain_provenance"
-    });
-    expect(result.graph.nodes.find((node) => node.address === receiver)?.metadata.nodeIntelligence).toMatchObject({
-      role: "drainer",
-      source: "approval_drain_provenance"
-    });
+    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toBeUndefined();
+    expect(result.graph.nodes.find((node) => node.address === receiver)?.metadata.nodeIntelligence).toBeUndefined();
     expect(result.graph.nodes.find((node) => node.address === spenderContract)).toMatchObject({
       kind: "contract"
     });
-    expect(result.graph.nodes.find((node) => node.address === spenderContract)?.metadata.nodeIntelligence).toMatchObject({
-      role: "drainer",
-      source: "approval_drain_provenance"
-    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)?.metadata.nodeIntelligence).toBeUndefined();
     expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toBeUndefined();
 
     expect(result.graph.edges.find((edge) =>
@@ -9938,7 +9930,7 @@ describe("projectForensicJobGraph", () => {
       fromNodeId: `addr:${spenderContract}`,
       toNodeId: `addr:${receiver}`,
       metadata: {
-        evidenceKind: "route_linked_exact_root",
+        evidenceKind: "route_linked_review",
         spenderAddress: spenderContract,
         operatorAddress: operator,
         underlyingTransfers: [expect.objectContaining({
@@ -9955,7 +9947,7 @@ describe("projectForensicJobGraph", () => {
       toNodeId: `addr:${spenderContract}`,
       displayRole: "profile_context",
       metadata: {
-        evidenceKind: "route_linked_exact_root"
+        evidenceKind: "route_linked_review"
       }
     });
     expect(result.graph.edges.find((edge) =>
@@ -9966,7 +9958,7 @@ describe("projectForensicJobGraph", () => {
       displayRole: "profile_context",
       metadata: {
         boundaryContextOnly: true,
-        evidenceKind: "route_linked_exact_root"
+        evidenceKind: "route_linked_review"
       }
     });
   });

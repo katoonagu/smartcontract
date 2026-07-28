@@ -3804,8 +3804,9 @@ describe("runWhereIsMoneyCheck", () => {
       })
     ]);
     expect(report.approvalDrainProvenanceProfiles[0]?.score).toBeGreaterThanOrEqual(70);
-    expect(report.decision).toBe("DECLINE");
-    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBeLessThanOrEqual(80);
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("approval_drain");
   });
 
   it("prioritizes explicit transferFrom triggers before supporting path legs when the budget is tight", async () => {
@@ -4414,18 +4415,16 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
-  it("keeps zero-balance approval-drain proof internal without an unbound published score", async () => {
+  it("keeps zero-balance approval-drain marker as review context", async () => {
     const report = await zeroBalanceWalletProfileWithLabel("approval_drain_proximity");
 
     expect(report).toMatchObject({
-      decision: "DECLINE",
+      decision: "REVIEW",
       userDecision: "NO_FINAL_DECISION",
-      proofLevel: "exact_approval_drain_provenance",
-      riskScore: 95
+      proofLevel: "insufficient_coverage",
+      riskScore: 0
     });
-    expect(report.assessment.hardBadEvidence).toEqual([
-      expect.objectContaining({ kind: "approval_drain", score: 95 })
-    ]);
+    expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
   it("preserves zero-balance exact scam proof internally without an unbound published score", async () => {

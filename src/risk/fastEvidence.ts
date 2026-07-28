@@ -10,7 +10,6 @@ export type ExactFastHardEvidence = {
 export const EXACT_FAST_HARD_EVIDENCE_CODES = [
   "stablecoin_usdt_blacklisted",
   "forensic_approval_drain_provenance",
-  "internal_label_approval_drain_proximity",
   "internal_label_scam",
   "internal_label_reported_scam",
   "internal_label_stolen_funds",
@@ -25,7 +24,6 @@ export type ExactFastHardEvidenceCode = typeof EXACT_FAST_HARD_EVIDENCE_CODES[nu
 const EXACT_FAST_HARD_CODE_FLOORS: Record<ExactFastHardEvidenceCode, number> = {
   stablecoin_usdt_blacklisted: 95,
   forensic_approval_drain_provenance: 95,
-  internal_label_approval_drain_proximity: 95,
   internal_label_scam: 90,
   internal_label_reported_scam: 90,
   internal_label_stolen_funds: 90,
@@ -44,7 +42,8 @@ export function isExactFastHardEvidenceCode(code: string): code is ExactFastHard
 export function isExactFastHardEvidenceReason(
   reason: RiskReason
 ): reason is RiskReason & { code: ExactFastHardEvidenceCode } {
-  return isExactFastHardEvidenceCode(reason.code);
+  return isExactFastHardEvidenceCode(reason.code) &&
+    (reason.code !== "forensic_approval_drain_provenance" || Boolean(reason.evidenceRef?.trim()));
 }
 
 function hardScore(reason: RiskReason): number {
@@ -60,7 +59,7 @@ export function exactFastHardEvidence(report: RiskReport | null | undefined): Ex
     .map((reason) => ({
       code: reason.code,
       score: hardScore(reason),
-      evidenceId: reason.evidenceRef ?? `fast:${reason.code}`,
+      evidenceId: reason.evidenceRef?.trim() || `fast:${reason.code}`,
       message: reason.message
     }));
 }

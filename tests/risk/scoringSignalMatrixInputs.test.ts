@@ -4,6 +4,7 @@ import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck
 import { scoreMatrixCandidates, type MatrixCandidateContext } from "../../src/risk/scoringSignalMatrix";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type {
+  ApprovalDrainProvenanceProfile,
   AssetContinuationProfile,
   DirectCounterpartyInteractionProfile,
   FirstHopBlacklistFact,
@@ -109,6 +110,33 @@ function fastReport(score: number, code = "address_behavior_fast_post_deposit_ex
     level: score >= 60 ? "HIGH" : score >= 30 ? "MEDIUM" : "LOW",
     score,
     reasons: [{ code, message: code, scoreImpact: score }]
+  };
+}
+
+function routeLinkedApprovalProfile(
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    subjectAddress: address,
+    victimAddress: `T${"3".repeat(33)}`,
+    spenderAddress: `T${"4".repeat(33)}`,
+    operatorAddress: `T${"5".repeat(33)}`,
+    firstReceiverAddress: address,
+    approvalTxHash: "route-approval",
+    drainTxHash: "route-drain",
+    amountRaw: "100000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-05-24T00:00:00.000Z",
+    drainAt: "2026-05-24T00:01:00.000Z",
+    pathTxHashes: ["route-drain"],
+    pathAddresses: [`T${"3".repeat(33)}`, address],
+    hopDepth: 0,
+    score: 80,
+    evidenceStrength: "route_linked",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
   };
 }
 
@@ -778,10 +806,10 @@ describe("scoring signal matrix input mappers", () => {
         directCounterpartyInteractionProfiles: [directCounterpartyProfile({ scoreContribution: 90 })],
         approvalDrainProvenanceProfiles: [{
           subjectAddress: address,
-          victimAddress: address,
+          victimAddress: `T${"3".repeat(33)}`,
           spenderAddress: `T${"4".repeat(33)}`,
           operatorAddress: `T${"5".repeat(33)}`,
-          firstReceiverAddress: `T${"6".repeat(33)}`,
+          firstReceiverAddress: address,
           approvalTxHash,
           drainTxHash,
           amountRaw: "100000000",
@@ -789,8 +817,8 @@ describe("scoring signal matrix input mappers", () => {
           approvalAt: "2026-05-24T00:00:00.000Z",
           drainAt: "2026-05-24T00:01:00.000Z",
           pathTxHashes: [drainTxHash],
-          pathAddresses: [address, `T${"6".repeat(33)}`],
-          hopDepth: 1,
+          pathAddresses: [`T${"3".repeat(33)}`, address],
+          hopDepth: 0,
           score: 95,
           evidenceStrength: "exact_approval_and_transfer_from",
           subjectTokenState: null,
@@ -805,6 +833,49 @@ describe("scoring signal matrix input mappers", () => {
     expect(scored.winningRow).toBe("hard_proof");
     expect(scored.policyScore).toBe(95);
     expect(scored.riskVector.direct_counterparty_policy?.[0].score).toBe(90);
+  });
+
+  it("maps a retained Where-only route-linked approval profile to review-only pattern authority", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({
+        approvalDrainProvenanceProfiles: [routeLinkedApprovalProfile()]
+      })
+    });
+    const scored = scoreMatrixCandidates(candidates, walletContext());
+
+    expect(scored.riskVector.route_linked_approval_pattern).toHaveLength(1);
+    expect(scored.riskVector.route_linked_approval_pattern?.[0]).toMatchObject({
+      row: "route_linked_approval_pattern",
+      score: 80,
+      evidenceClass: "pattern",
+      decisionEligibility: "review_only",
+      authority: {
+        kind: "pattern",
+        decisionEligibility: "review_only",
+        coverageDependency: "wallet_provenance"
+      }
+    });
+    expect(scored.matrixDecision).toBe("REVIEW");
+    expect(scored.policyScore).toBeLessThanOrEqual(80);
+    expect(scored.riskVector.hard_proof).toBeUndefined();
+  });
+
+  it("deduplicates the same route-linked approval episode retained by Deep and Where", () => {
+    const profile = routeLinkedApprovalProfile();
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deepReport({ approvalDrainProvenanceProfiles: [profile] }),
+      whereReport: whereReport({ approvalDrainProvenanceProfiles: [profile] })
+    });
+    const scored = scoreMatrixCandidates(candidates, walletContext());
+
+    expect(scored.riskVector.route_linked_approval_pattern).toHaveLength(1);
+    expect(scored.matrixDecision).toBe("REVIEW");
+    expect(scored.riskVector.hard_proof).toBeUndefined();
   });
 
   it("promotes only the exact receiver-relative inbound deposit fact to incoming direct policy", () => {
@@ -936,6 +1007,129 @@ describe("scoring signal matrix input mappers", () => {
     }));
   });
 
+  it("does not resurrect rejected risky-label evidence through the legacy policy fallback", () => {
+    const report = whereReport({
+      proofLevel: "exchange_policy_decline",
+      riskScore: 85,
+      decisionReasons: ["Saved risky-label aggregate."],
+      assessment: {
+        ...whereReport().assessment,
+        sourcePolicyEvidence: [{
+          kind: "risky_label",
+          aggregateShare: 0.2,
+          effectiveShare: 0.2,
+          pathCount: 1,
+          score: 85,
+          riskBand: "CRITICAL",
+          proofLevel: "exchange_policy_decline",
+          canBeDampened: false,
+          reasons: ["Saved risky-label aggregate."],
+          warnings: [],
+          evidenceIds: ["stale-risky-label-evidence"]
+        }]
+      }
+    });
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: report
+    });
+
+    expect(candidates.some((item) => item.row === "source_policy")).toBe(false);
+  });
+
+  it("does not authorize risky-label hard evidence from a synthetic Fast fallback id", () => {
+    const syntheticId = "fast:internal_label_scam";
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: {
+        subjectAddress: address,
+        level: "CRITICAL",
+        score: 90,
+        reasons: [{ code: "internal_label_scam", message: "Internal scam label.", scoreImpact: 90 }]
+      },
+      deepReport: null,
+      whereReport: whereReport({
+        assessment: {
+          ...whereReport().assessment,
+          hardBadEvidence: [{
+            kind: "scam_or_blacklist",
+            score: 90,
+            message: "Saved risky label.",
+            evidenceIds: [syntheticId]
+          }]
+        }
+      })
+    });
+
+    const whereCandidate = candidates.find((item) =>
+      item.atomicSignals.includes("where_scam_or_blacklist")
+    );
+    expect(whereCandidate?.authority).toEqual({ kind: "context" });
+  });
+
+  it("authorizes risky-label hard evidence from an explicitly referenced Fast reason", () => {
+    const evidenceRef = "fast-scam-evidence";
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: {
+        subjectAddress: address,
+        level: "CRITICAL",
+        score: 90,
+        reasons: [{
+          code: "internal_label_scam",
+          message: "Internal scam label.",
+          scoreImpact: 90,
+          evidenceRef
+        }]
+      },
+      deepReport: null,
+      whereReport: whereReport({
+        assessment: {
+          ...whereReport().assessment,
+          hardBadEvidence: [{
+            kind: "scam_or_blacklist",
+            score: 90,
+            message: "Bound risky label.",
+            evidenceIds: [evidenceRef]
+          }]
+        }
+      })
+    });
+
+    const whereCandidate = candidates.find((item) =>
+      item.atomicSignals.includes("where_scam_or_blacklist")
+    );
+    expect(whereCandidate?.authority).toEqual({
+      kind: "exact_hard",
+      proofSource: "where_exact_hard"
+    });
+  });
+
+  it("does not synthesize decline authority from saved proof level and score alone", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({
+        proofLevel: "exchange_policy_decline",
+        riskScore: 84,
+        decisionReasons: ["Legacy saved decline without retained evidence."],
+        assessment: {
+          ...whereReport().assessment,
+          decision: "DECLINE",
+          riskScore: 84,
+          riskBand: "HIGH",
+          reasons: ["Legacy saved decline without retained evidence."]
+        }
+      })
+    });
+
+    expect(candidates.some((item) => item.row === "source_policy")).toBe(false);
+    expect(candidates.some((item) => item.authority.kind === "exact_hard")).toBe(false);
+  });
+
   it("maps limited coverage to explicit coverage authority", () => {
     const candidates = buildWalletMatrixCandidates({
       address,
@@ -991,6 +1185,75 @@ describe("scoring signal matrix input mappers", () => {
       },
       subject: { decisionScope: "incoming_unified", address: senderAddress, txHash },
       atomicSignals: ["incoming_fresh_htx_huobi_source"]
+    }));
+  });
+
+  it("ignores a stale incoming risky-label aggregate when the authoritative selected path is below materiality", () => {
+    const txHash = "tx-incoming-risky-below-materiality";
+    const riskyPath = {
+      ...originPath([txHash]),
+      rootSourceType: "risky_label" as const,
+      stoppedReason: "risky_label_reached" as const,
+      verdict: "DECLINE" as const,
+      riskScoreContribution: 90,
+      exposureSourceKey: "scam",
+      exposureSourceLabel: "scam",
+      sourceExposureKind: "risky_label" as const,
+      balanceShare: 0.01
+    };
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ originPaths: [riskyPath] }),
+      freshBundleExposure: {
+        ...freshHtxExposure(),
+        htxHuobiShare: 0,
+        riskyLabelShare: 0.19,
+        unknownShare: 0.81,
+        dominantFreshSource: "risky_label"
+      }
+    });
+
+    expect(candidates.some((item) => item.atomicSignals.includes("incoming_fresh_risky_label_source"))).toBe(false);
+  });
+
+  it("promotes an authoritative selected risky-label path at the incoming materiality threshold", () => {
+    const txHash = "tx-incoming-risky-material";
+    const riskyPath = {
+      ...originPath([txHash]),
+      rootSourceType: "risky_label" as const,
+      stoppedReason: "risky_label_reached" as const,
+      verdict: "DECLINE" as const,
+      riskScoreContribution: 90,
+      exposureSourceKey: "scam",
+      exposureSourceLabel: "scam",
+      sourceExposureKind: "risky_label" as const,
+      balanceShare: 0.1
+    };
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ originPaths: [riskyPath] }),
+      freshBundleExposure: {
+        ...freshHtxExposure(),
+        htxHuobiShare: 0,
+        riskyLabelShare: 0.1,
+        unknownShare: 0.9,
+        dominantFreshSource: "risky_label"
+      }
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "incoming_deposit_source_policy",
+      score: 85,
+      evidenceIds: expect.arrayContaining([txHash]),
+      atomicSignals: ["incoming_fresh_risky_label_source"]
     }));
   });
 
@@ -1244,6 +1507,26 @@ describe("scoring signal matrix input mappers", () => {
       deepReport: null,
       whereReport: whereReport({
         proofLevel: "exact_approval_drain_provenance",
+        approvalDrainProvenanceProfiles: [{
+          subjectAddress: address,
+          victimAddress: `T${"3".repeat(33)}`,
+          spenderAddress: `T${"4".repeat(33)}`,
+          firstReceiverAddress: address,
+          approvalTxHash: "where-approve",
+          drainTxHash: "where-approval",
+          amountRaw: "1000000",
+          amountPreservationRatio: 1,
+          approvalAt: "2026-05-24T00:00:00.000Z",
+          drainAt: "2026-05-24T00:01:00.000Z",
+          pathTxHashes: ["where-approval"],
+          pathAddresses: [`T${"3".repeat(33)}`, address],
+          hopDepth: 0,
+          score: 90,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }],
         assessment: {
           ...whereReport().assessment,
           hardBadEvidence: [

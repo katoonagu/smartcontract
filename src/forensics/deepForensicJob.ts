@@ -15,6 +15,10 @@ import {
 } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
+import {
+  authoritativeApprovalDrainEvidenceBinding,
+  isAuthoritativeDirectApprovalDrainProfile
+} from "./approvalDrainProvenance";
 import { markSecondLayerQueued } from "./deepSecondLayerRelationship";
 import { buildBalanceFormingSlice, type BalanceFormingSliceResult } from "./balanceFormingSlice";
 import { DEFAULT_MAX_BUNDLE_FUNDERS } from "./provenanceTracingConfig";
@@ -521,8 +525,24 @@ async function persistDerivedDarknetExchangeProximityLabel(
   };
 }
 
+function approvalDrainEvidenceBinding(
+  report: DeepAddressForensicReport,
+  profile: ApprovalDrainProvenanceProfile
+): { rawEvidenceId: string; observationId: string } | null {
+  return authoritativeApprovalDrainEvidenceBinding({
+    checkedSubjectAddress: report.subjectAddress,
+    profile,
+    rawEvidence: report.rawEvidence,
+    observations: report.observations
+  });
+}
+
 function topApprovalDrainProfile(report: DeepAddressForensicReport): ApprovalDrainProvenanceProfile | null {
-  return report.approvalDrainProvenanceProfiles.find((profile) => profile.score > 0) ?? null;
+  return report.approvalDrainProvenanceProfiles.find((profile) =>
+    profile.score > 0 &&
+    isAuthoritativeDirectApprovalDrainProfile(profile, report.subjectAddress) &&
+    approvalDrainEvidenceBinding(report, profile) !== null
+  ) ?? null;
 }
 
 async function persistDerivedApprovalDrainProximityLabel(
@@ -533,8 +553,9 @@ async function persistDerivedApprovalDrainProximityLabel(
   if (!deps.upsertAddressLabelAssertion) return null;
   const profile = topApprovalDrainProfile(report);
   if (!profile) return null;
-  const rawEvidenceId = report.rawEvidence.find((evidence) => "approvalDrainProvenanceProfile" in evidence.evidenceJson)?.id ?? null;
-  const observationId = report.observations.find((observation) => observation.code === "forensic_approval_drain_provenance")?.id ?? null;
+  const binding = approvalDrainEvidenceBinding(report, profile);
+  if (!binding) return null;
+  const { rawEvidenceId, observationId } = binding;
   const assertionId = `derived_tron_approval_drain_proximity_${report.subjectAddress}`;
 
   const saved = await deps.upsertAddressLabelAssertion({
@@ -2312,6 +2333,8 @@ export async function runClaimedForensicJob(
         windowEnd: report.windowEnd.toISOString(),
         runProfile: report.runProfile,
         providerBudget: report.providerBudget,
+        rawEvidence: report.rawEvidence,
+        observations: report.observations,
         serviceExposureProfiles: report.serviceExposureProfiles,
         addressBehaviorProfiles: report.addressBehaviorProfiles,
         inboundProvenanceProfiles: report.inboundProvenanceProfiles,

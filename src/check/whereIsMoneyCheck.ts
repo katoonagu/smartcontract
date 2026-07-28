@@ -16,7 +16,7 @@ import {
 import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
 import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
-import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
+import { isAuthoritativeMoneyOriginRiskLabelPath, selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
 import {
   buildSourceBundleExposure,
   buildSubjectExposureProfile,
@@ -25,7 +25,6 @@ import {
 import { sourceExposureKindFromPath } from "../forensics/provenanceScoring";
 import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
-import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
 import { isExactGasFreeServiceFeePath, traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
 import { extractGasFreeEdgeContext, isGasFreeServiceFeeEdge } from "../forensics/gasFreeSettlement";
 import { matchSanctionedCryptoService } from "../forensics/sanctionedServiceRegistry";
@@ -273,17 +272,12 @@ function proofLevelFromHardEvidenceKind(kind: WhereIsMoneyAssessment["hardBadEvi
 
 function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
-  approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): ProofLevel {
   const topHardEvidence = input.assessment?.hardBadEvidence
     .slice()
     .sort((left, right) => right.score - left.score)[0] ?? null;
   if (topHardEvidence) return proofLevelFromHardEvidenceKind(topHardEvidence.kind);
-
-  if (input.approvalDrainProvenanceProfileCount > 0) {
-    return "exact_approval_drain_provenance";
-  }
 
   if (input.assessment?.dominantRiskLayer?.proofLevel) {
     return input.assessment.dominantRiskLayer.proofLevel;
@@ -298,7 +292,6 @@ function proofLevelFromWhereDecision(input: {
 function whereDecisionFields(input: {
   decision: ExchangeDecision;
   decisionReasons: string[];
-  approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
   const scoreInvalid = input.assessment?.scoreValid === false;
@@ -526,9 +519,7 @@ function walletProfileZeroBalanceReport(input: {
     }))
   }).sort((left, right) => right.score - left.score);
   const hardBadEvidence = exactLabelEvidence.map((item) => ({
-    kind: item.code === "internal_label_approval_drain_proximity"
-      ? "approval_drain" as const
-      : "scam_or_blacklist" as const,
+    kind: "scam_or_blacklist" as const,
     score: item.score,
     message: item.message,
     evidenceIds: [item.evidenceId]
@@ -542,9 +533,7 @@ function walletProfileZeroBalanceReport(input: {
         decision,
         internalDecision: decision,
         userDecision: "DECLINE" as const,
-        proofLevel: topExact.code === "internal_label_approval_drain_proximity"
-          ? "exact_approval_drain_provenance" as const
-          : "exact_scam_or_taint_proof" as const
+        proofLevel: "exact_scam_or_taint_proof" as const
       }
     : {
         decision,
@@ -695,7 +684,6 @@ function fallbackReviewReport(input: {
     ...whereDecisionFields({
       decision,
       decisionReasons,
-      approvalDrainProvenanceProfileCount: 0,
       assessment
     }),
     riskScore: assessment.riskScore,
@@ -968,7 +956,7 @@ function sourceClassFromPath(
       return "unknown";
     default:
       if (path.rootSourceType === "allowlist_cex") return "clean_cex";
-      if (path.rootSourceType === "risky_label") return "risky_label";
+      if (isAuthoritativeMoneyOriginRiskLabelPath(path)) return "risky_label";
       return "unknown";
   }
 }
@@ -1351,7 +1339,7 @@ function pathIntersectsHardEvidence(
   path: MoneyOriginPath,
   hardBadEvidence: WhereIsMoneyAssessment["hardBadEvidence"]
 ): boolean {
-  if (path.rootSourceType === "risky_label") return true;
+  if (isAuthoritativeMoneyOriginRiskLabelPath(path)) return true;
   const pathEvidenceIds = new Set([
     path.balanceTransferTxHash,
     ...path.txHashes,
@@ -2026,12 +2014,6 @@ export async function runWhereIsMoneyCheck(
     maxSourceActivityChecks: Math.min(20, input.maxContractTransactionInfoFetches ?? 20),
     incomingClassificationMode: "method_prefiltered"
   });
-  const combined = combineMoneyOriginDecision(provenanceOriginPaths.length > 0 ? provenanceOriginPaths : originPaths);
-  const exactFast = exactFastHardEvidence(fastWalletRisk);
-  const approvalDrainScore = approvalDrainProvenanceProfiles[0]?.score ?? 0;
-  const fastDecline = exactFast.length > 0;
-  const approvalDrainDecline = approvalDrainScore >= 70;
-  const deterministicDecision = fastDecline || approvalDrainDecline ? "DECLINE" : combined.decision;
   const contractLlmVerdicts: WhereIsMoneyReport["contractLlmVerdicts"] = [];
   const coverage: WhereIsMoneyCoverage = {
     selectedInboundTxCount: balanceFormingTransfers.length,
@@ -2137,6 +2119,7 @@ export async function runWhereIsMoneyCheck(
     events: subjectExposureEvents
   });
   const initialAssessment = buildMoneyOriginOperationalAssessment({
+    checkedSubjectAddress: sourceAddress,
     fastWalletRisk,
     originPaths: provenanceOriginPaths,
     senderInteractionProfiles,
@@ -2216,6 +2199,7 @@ export async function runWhereIsMoneyCheck(
       : coverage;
     sourceBundleExposure = buildWhereSourceBundleExposure(finalCoverage);
     assessment = buildMoneyOriginOperationalAssessment({
+      checkedSubjectAddress: sourceAddress,
       fastWalletRisk,
       originPaths: provenanceOriginPaths,
       senderInteractionProfiles,
@@ -2353,7 +2337,6 @@ export async function runWhereIsMoneyCheck(
     ...whereDecisionFields({
       decision,
       decisionReasons,
-      approvalDrainProvenanceProfileCount: approvalDrainProvenanceProfiles.length,
       assessment
     }),
     riskScore,

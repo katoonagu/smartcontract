@@ -1404,17 +1404,23 @@ describe("wallet narrative signal catalogue", () => {
       expectedRu: /следующее звено|дальше по цепочке/i,
       expectedEn: /later link|farther along/i
     }
-  ])("renders exact approval-drain role $role without role confusion", (row) => {
+  ])("rejects non-authoritative approval-drain role $role", (row) => {
     const fact = catalogueApi.approvalDrainRoleFact({
       checkedAddress: row.checkedAddress,
       walletRole: row.walletRole,
       profile: approvalProfile(row.profile)
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    expect(fact).toBeNull();
+  });
 
-    expect(fact?.factTextRu).toMatch(row.expectedRu);
-    expect(fact?.factTextEn).toMatch(row.expectedEn);
-    if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+  it("renders exact wording for a checked direct first receiver", () => {
+    const checkedAddress = `T${"4".repeat(33)}`;
+    const fact = catalogueApi.approvalDrainRoleFact({
+      checkedAddress,
+      profile: approvalProfile({ subjectAddress: checkedAddress, firstReceiverAddress: checkedAddress, hopDepth: 0 })
+    });
+    expect(fact?.factTextRu).toMatch(/первым получил.*850 USDT/i);
+    expect(fact?.factTextEn).toMatch(/first.*receive.*850 USDT/i);
   });
 
   it("does not let a stale walletRole assign an approval-drain role", () => {

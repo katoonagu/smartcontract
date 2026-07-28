@@ -1,6 +1,7 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import type { BotLocale, WhereIsMoneyReport } from "../types";
 import { checkedOriginLabel, normalizeNotificationReason, senderRoleText } from "./notificationText";
+import { isAuthoritativeDirectApprovalDrainProfile } from "../forensics/approvalDrainProvenance";
 
 export function whereCompactReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   const normalized = report.decisionReasons
@@ -34,7 +35,7 @@ export function whereWalletRoleLine(report: WhereIsMoneyReport, locale: BotLocal
 function hasExactDeepEvidence(report: DeepAddressForensicReport): boolean {
   return (report.stablecoinRestrictionProfiles ?? []).some((profile) => profile.isBlacklisted)
     || report.approvalDrainProvenanceProfiles.some((profile) =>
-      profile.score > 0 && profile.evidenceStrength === "exact_approval_and_transfer_from"
+      profile.score > 0 && isAuthoritativeDirectApprovalDrainProfile(profile, report.subjectAddress)
     );
 }
 

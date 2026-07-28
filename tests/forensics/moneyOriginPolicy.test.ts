@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyMoneyOriginStop, combineMoneyOriginDecision, riskLevelFromMoneyOriginScore } from "../../src/forensics/moneyOriginPolicy";
+import { isAuthoritativeMoneyOriginRiskLabelPath } from "../../src/forensics/moneyOriginAttribution";
 import { baseShareScore } from "../../src/forensics/provenanceScoring";
 import type { AddressLabel, MoneyOriginPath, ServiceClassification } from "../../src/types";
 
@@ -55,6 +56,41 @@ function path(
 }
 
 describe("money origin policy", () => {
+  it("keeps approval-drain proximity contextual and preserves exact risky-label identity", () => {
+    expect(classifyMoneyOriginStop({
+      address,
+      labels: [label("approval_drain_proximity")],
+      classification: service("none", null),
+      balanceShare: 1
+    })).toBeNull();
+
+    expect(classifyMoneyOriginStop({
+      address,
+      labels: [label("scam")],
+      classification: service("none", null),
+      balanceShare: 1
+    })).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "risky_label",
+      exposureSourceKey: "scam",
+      exposureSourceLabel: "scam",
+      sourceExposureKind: "risky_label"
+    });
+  });
+
+  it("authorizes risky-label paths only when root, kind, and exact label key agree", () => {
+    const exact = path("DECLINE", 90, "tx-risk", {
+      rootSourceType: "risky_label",
+      stoppedReason: "risky_label_reached",
+      exposureSourceKey: "scam",
+      sourceExposureKind: "risky_label"
+    });
+    expect(isAuthoritativeMoneyOriginRiskLabelPath(exact)).toBe(true);
+    expect(isAuthoritativeMoneyOriginRiskLabelPath({ ...exact, exposureSourceKey: "approval_drain_proximity" })).toBe(false);
+    expect(isAuthoritativeMoneyOriginRiskLabelPath({ ...exact, sourceExposureKind: null })).toBe(false);
+    expect(isAuthoritativeMoneyOriginRiskLabelPath({ ...exact, rootSourceType: "unknown" })).toBe(false);
+  });
+
   it("accepts allowlisted CEX roots", () => {
     const result = classifyMoneyOriginStop({
       address,

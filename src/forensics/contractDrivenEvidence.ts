@@ -17,6 +17,7 @@ import {
   gasFreeMovementForEdge,
   type GasFreeSettlement
 } from "./gasFreeSettlement";
+import { isAuthoritativeDirectApprovalDrainProfile } from "./approvalDrainProvenance";
 
 export type ContractDrivenReceiverLevel =
   | "none"
@@ -831,10 +832,8 @@ function buildSourcePostDebitActivity(input: {
 }
 
 function exactApprovalCountForSubject(profiles: ApprovalDrainProvenanceProfile[], subjectAddress: string): number {
-  const subject = normalizeAddress(subjectAddress);
   return profiles.filter((profile) =>
-    normalizeAddress(profile.subjectAddress) === subject ||
-    normalizeAddress(profile.firstReceiverAddress) === subject
+    isAuthoritativeDirectApprovalDrainProfile(profile, subjectAddress)
   ).length;
 }
 

@@ -342,6 +342,35 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
   };
 }
 
+function authoritativeRiskyLabelPathForAdminTest(evidenceId: string): Record<string, unknown> {
+  const subjectAddress = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+  const sourceAddress = "TRiskySource1111111111111111111111111";
+  return {
+    balanceTransferTxHash: evidenceId,
+    rootSourceAddress: sourceAddress,
+    rootSourceType: "risky_label",
+    balanceShare: 1,
+    exposureSourceKey: "scam",
+    exposureSourceLabel: "scam",
+    sourceExposureKind: "risky_label",
+    pathAddresses: [sourceAddress, subjectAddress],
+    txHashes: [evidenceId],
+    steps: [{
+      txHash: evidenceId,
+      fromAddress: sourceAddress,
+      toAddress: subjectAddress,
+      amountRaw: "1000000000",
+      timestamp: "2026-06-01T00:00:00.000Z"
+    }],
+    amountPreservationRatio: 1,
+    timeSpanMs: 0,
+    stoppedReason: "risky_label_reached",
+    verdict: "DECLINE",
+    riskScoreContribution: 95,
+    reasons: ["Exact subject blacklist evidence."]
+  };
+}
+
 function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
   return job({
     id: "job-deep-related",
@@ -1906,6 +1935,7 @@ describe("startAdminServer", () => {
       internalDecision: "DECLINE",
       riskScore: 95,
       proofLevel: "exact_scam_or_taint_proof",
+      originPaths: [authoritativeRiskyLabelPathForAdminTest("hard:subject:blacklist")],
       coverage: { partial: true, notes: ["provider cap"] },
       assessment: {
         scoreValid: true,
@@ -2163,6 +2193,7 @@ describe("startAdminServer", () => {
       internalDecision: "DECLINE",
       proofLevel: "exact_scam_or_taint_proof",
       riskScore: 95,
+      originPaths: [authoritativeRiskyLabelPathForAdminTest("hard:subject:blacklist")],
       assessment: {
         decision: "DECLINE",
         riskScore: 95,

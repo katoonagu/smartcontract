@@ -22,12 +22,20 @@ import type {
 } from "../types";
 import { exactFastHardEvidence } from "../risk/fastEvidence";
 import {
+  approvalDrainProfileEvidenceIds,
+  isApprovalDrainEvidenceRefBoundToDirectProfile,
+  isAuthoritativeDirectApprovalDrainProfile
+} from "./approvalDrainProvenance";
+import {
   aggregateLayerScores,
   scoreSourceExposures,
   sourcePolicyAmountCap,
   sourceExposureKindFromPath
 } from "./provenanceScoring";
-import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+import {
+  isAuthoritativeMoneyOriginRiskLabelPath,
+  selectedMoneyOriginPathShare
+} from "./moneyOriginAttribution";
 
 // ponytail: local policy constants until forensic config is centralized; upgrade path: move to config after live calibration.
 export const MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE = 0.01;
@@ -38,6 +46,7 @@ const MAX_DENSE_HOP_AGGREGATE_UNRESOLVED_SOURCE_SHARE = 0.02;
 export const MAX_DENSE_HOP_UNRESOLVED_SOURCE_RAW = 10_000n * USDT_RAW_SCALE;
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
+  checkedSubjectAddress: string;
   fastWalletRisk: RiskReport | null;
   originPaths: MoneyOriginPath[];
   senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
@@ -178,8 +187,20 @@ function cleanCexCoverage(paths: MoneyOriginPath[]): number {
   , 0));
 }
 
-function hardEvidenceFromFastRisk(report: RiskReport | null): WhereIsMoneyHardBadEvidence[] {
-  return exactFastHardEvidence(report).map((item) => ({
+function hardEvidenceFromFastRisk(
+  report: RiskReport | null,
+  profiles: ApprovalDrainProvenanceProfile[],
+  checkedSubjectAddress: string
+): WhereIsMoneyHardBadEvidence[] {
+  if (!report || report.subjectAddress.trim() !== checkedSubjectAddress.trim()) return [];
+  return exactFastHardEvidence(report).filter((item) =>
+    item.code !== "forensic_approval_drain_provenance" ||
+    isApprovalDrainEvidenceRefBoundToDirectProfile({
+      checkedSubjectAddress,
+      evidenceRef: item.evidenceId,
+      profiles
+    })
+  ).map((item) => ({
     kind: "fast_critical",
     score: item.score,
     message: item.message,
@@ -189,10 +210,11 @@ function hardEvidenceFromFastRisk(report: RiskReport | null): WhereIsMoneyHardBa
 
 function hardEvidenceFromApprovalDrain(
   profiles: ApprovalDrainProvenanceProfile[],
-  options: { exactOnly?: boolean } = {}
+  checkedSubjectAddress: string | null
 ): WhereIsMoneyHardBadEvidence[] {
+  if (!checkedSubjectAddress) return [];
   return profiles
-    .filter((profile) => !options.exactOnly || profile.evidenceStrength === "exact_approval_and_transfer_from")
+    .filter((profile) => isAuthoritativeDirectApprovalDrainProfile(profile, checkedSubjectAddress))
     .map((profile) => ({
       kind: "approval_drain",
       score: Math.max(profile.score, 95),
@@ -254,7 +276,7 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
   const evidence: WhereIsMoneyHardBadEvidence[] = [];
 
   for (const path of paths) {
-    if (path.rootSourceType === "risky_label") {
+    if (isAuthoritativeMoneyOriginRiskLabelPath(path)) {
       evidence.push({
         kind: "scam_or_blacklist",
         score: Math.max(path.riskScoreContribution, 90),
@@ -269,7 +291,7 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
 }
 
 function pathHasHardEvidence(path: MoneyOriginPath, hardBadEvidence: WhereIsMoneyHardBadEvidence[]): boolean {
-  if (path.rootSourceType === "risky_label") return true;
+  if (isAuthoritativeMoneyOriginRiskLabelPath(path)) return true;
   const pathEvidenceIds = new Set(path.txHashes);
   return hardBadEvidence.some((evidence) =>
     evidence.evidenceIds.some((id) => pathEvidenceIds.has(id))
@@ -753,13 +775,28 @@ function sourceBundlePolicyExtras(
   if (!profile) return { evidence: [], layers: [] };
 
   const extras: SourceBundlePolicyExtra[] = [];
-  const unresolvedBoundaryExtra = sourceBundleUnresolvedBoundaryExtra(profile);
-  if (profile.riskyLabelShare >= 0.1) {
+  const authoritativeRiskyLabelPaths = originPaths.filter(isAuthoritativeMoneyOriginRiskLabelPath);
+  const unresolvedBoundaryEvidenceIds = new Set(
+    profile.unresolvedBoundary?.evidenceTxHashes.filter((id) => id.trim().length > 0) ?? []
+  );
+  const unresolvedRiskyLabelAuthorized = profile.unresolvedBoundary?.kind !== "risky_label" ||
+    (unresolvedBoundaryEvidenceIds.size > 0 && authoritativeRiskyLabelPaths.some((path) =>
+      [path.balanceTransferTxHash, ...path.txHashes, ...path.steps.map((step) => step.txHash)]
+        .some((id) => unresolvedBoundaryEvidenceIds.has(id))
+    ));
+  const unresolvedBoundaryExtra = unresolvedRiskyLabelAuthorized
+    ? sourceBundleUnresolvedBoundaryExtra(profile)
+    : null;
+  const authoritativeRiskyLabelShare = Math.min(1, authoritativeRiskyLabelPaths.reduce(
+    (sum, path) => sum + selectedMoneyOriginPathShare(path),
+    0
+  ));
+  if (authoritativeRiskyLabelShare >= 0.1) {
     extras.push(sourceBundlePolicyExtra({
       profile,
-      originPaths,
+      originPaths: authoritativeRiskyLabelPaths,
       kind: "risky_label",
-      share: profile.riskyLabelShare,
+      share: authoritativeRiskyLabelShare,
       score: 85,
       proofLevel: "exchange_policy_decline",
       canBeDampened: false
@@ -1255,11 +1292,32 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
   const serviceRouteGuard = serviceRouteGuardContext.active;
   const deterministicExtraRiskLayers = (input.extraRiskLayers ?? [])
     .filter((layer) => layer.proofLevel !== "llm_assisted_suspicion");
+  const authoritativeRiskyLabelEvidenceIds = new Set(input.originPaths
+    .filter(isAuthoritativeMoneyOriginRiskLabelPath)
+    .flatMap((path) => [path.balanceTransferTxHash, ...path.txHashes, ...path.steps.map((step) => step.txHash)]));
+  const overlapsAuthoritativeRiskyLabelPath = (evidenceIds: string[]) =>
+    evidenceIds.some((id) => authoritativeRiskyLabelEvidenceIds.has(id));
+  const authoritativeApprovalEvidenceIds = new Set(input.approvalDrainProvenanceProfiles
+    .filter((profile) => isAuthoritativeDirectApprovalDrainProfile(profile, input.checkedSubjectAddress))
+    .flatMap(approvalDrainProfileEvidenceIds));
+  const authorizedFastEvidenceIds = new Set(hardEvidenceFromFastRisk(
+    input.fastWalletRisk,
+    input.approvalDrainProvenanceProfiles,
+    input.checkedSubjectAddress
+  ).flatMap((evidence) => evidence.evidenceIds));
+  const authorizedExtraRiskLayers = deterministicExtraRiskLayers.filter((layer) =>
+    layer.sourceExposureKind !== "risky_label" && layer.kind !== "risky_label" ||
+    overlapsAuthoritativeRiskyLabelPath(layer.evidenceIds)
+  );
   const deterministicExtraHardBadEvidence = (input.extraHardBadEvidence ?? [])
-    .filter((evidence) => evidence.kind !== "llm_contract_suspicion");
+    .filter((evidence) => evidence.kind !== "llm_contract_suspicion")
+    .filter((evidence) => evidence.kind !== "approval_drain" ||
+      evidence.evidenceIds.some((id) => authoritativeApprovalEvidenceIds.has(id)))
+    .filter((evidence) => evidence.kind !== "fast_critical" ||
+      evidence.evidenceIds.some((id) => authorizedFastEvidenceIds.has(id)));
   const hardBadEvidence = [
-    ...hardEvidenceFromFastRisk(input.fastWalletRisk),
-    ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, { exactOnly: serviceRouteGuard }),
+    ...hardEvidenceFromFastRisk(input.fastWalletRisk, input.approvalDrainProvenanceProfiles, input.checkedSubjectAddress),
+    ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, input.checkedSubjectAddress),
     ...hardEvidenceFromPaths(input.originPaths),
     ...deterministicExtraHardBadEvidence
   ].sort((left, right) => right.score - left.score);
@@ -1270,10 +1328,11 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
   const role = walletRole({ hardBadEvidence, originPaths: input.originPaths, operationalScore });
   const topHardEvidence = hardBadEvidence[0] ?? null;
   const approvalWarnings = approvalDrainReviewWarnings(input.approvalDrainReviewFindings);
+  const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure, input.originPaths);
   const buildLockedHardEvidenceAssessment = (): WhereIsMoneyAssessment => {
     if (!topHardEvidence) throw new Error("hard evidence is required");
     const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
-    const precomputedRiskLayers = deterministicExtraRiskLayers;
+    const precomputedRiskLayers = authorizedExtraRiskLayers;
     const extraSourcePolicyLayers = precomputedRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
     const extraContractSuspicionLayers = precomputedRiskLayers.filter((layer) => layer.evidenceClass === "contract_suspicion");
     const extraUnknownOriginLayers = precomputedRiskLayers.filter((layer) =>
@@ -1305,8 +1364,8 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
       ...buildRiskLayerCollections({
-        sourcePolicyEvidence: [],
-        sourcePolicyLayers: extraSourcePolicyLayers,
+        sourcePolicyEvidence: sourceBundleExtras.evidence,
+        sourcePolicyLayers: [...sourceBundleExtras.layers, ...extraSourcePolicyLayers],
         contractSuspicionEvidence: extraContractSuspicionLayers,
         unknownOriginEvidence: extraUnknownOriginLayers,
         behaviorContextLayers: extraContextLayers,
@@ -1325,9 +1384,10 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
   };
   const buildInterpretiveAssessment = (): WhereIsMoneyAssessment => {
   const sourceProvenanceMateriality = buildSourceProvenanceMaterialitySummary(input, hardBadEvidence);
-  const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
-  const extraRiskLayers = deterministicExtraRiskLayers;
-  const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure, input.originPaths);
+  const extraSourcePolicyEvidence = (input.extraSourcePolicyEvidence ?? []).filter((item) =>
+    item.kind !== "risky_label" || overlapsAuthoritativeRiskyLabelPath(item.evidenceIds)
+  );
+  const extraRiskLayers = authorizedExtraRiskLayers;
   const subjectExposureLayer = subjectExposureContextLayer(input.subjectExposureProfile);
   const extraSourcePolicyLayers = extraRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
   const extraUnknownOriginEvidence = extraRiskLayers.filter((layer) =>
@@ -1383,6 +1443,7 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
     unknownOriginEvidence: RiskLayerScore[];
     aggregateSourcePolicyLayer?: RiskLayerScore | null;
     hardProofLayers?: RiskLayerScore[];
+    behaviorContextLayers?: RiskLayerScore[];
   }) => buildRiskLayerCollections({
     sourcePolicyEvidence: input.sourcePolicyEvidence,
     sourcePolicyLayers: input.sourcePolicyLayers,
@@ -1392,20 +1453,27 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       ...input.unknownOriginEvidence,
       ...extraUnknownOriginEvidence
     ],
-    behaviorContextLayers: subjectExposureLayer ? [subjectExposureLayer] : [],
+    behaviorContextLayers: [
+      ...(subjectExposureLayer ? [subjectExposureLayer] : []),
+      ...(input.behaviorContextLayers ?? [])
+    ],
     hardProofLayers: dedupeHardProofLayers([
       ...(input.hardProofLayers ?? []),
       ...extraHardProofLayers
     ])
   });
-  const defaultLayerCollections = (hardProofLayers = hardBadEvidence.map(hardEvidenceToLayer)) =>
+  const defaultLayerCollections = (
+    hardProofLayers = hardBadEvidence.map(hardEvidenceToLayer),
+    behaviorContextLayers: RiskLayerScore[] = []
+  ) =>
     layerCollectionsWithExtras({
       sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
       sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
       aggregateSourcePolicyLayer: aggregateDeclineLayer,
       contractSuspicionEvidence,
       unknownOriginEvidence: defaultUnknownOriginEvidence,
-      hardProofLayers
+      hardProofLayers,
+      behaviorContextLayers
     });
   const sourcePolicyAcceptableFloor = !sourcePolicyDecline
     ? sourcePolicyAssessment.sourcePolicyScore
@@ -1507,6 +1575,27 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       ]
     };
   }
+  const routeLinkedApproval = input.approvalDrainProvenanceProfiles
+    .filter((profile) => !isAuthoritativeDirectApprovalDrainProfile(
+      profile,
+      input.checkedSubjectAddress
+    ))
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+  const routeLayer: RiskLayerScore | null = routeLinkedApproval
+    ? {
+      evidenceClass: "behavior_context",
+      kind: "route_linked_approval_pattern",
+      score: clampScore(Math.min(80, routeLinkedApproval.score)),
+      rawScore: routeLinkedApproval.score,
+      adjustedScore: clampScore(Math.min(80, routeLinkedApproval.score)),
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      capApplied: routeLinkedApproval.score > 80 ? 80 : undefined,
+      reasons: ["Route-linked approval pattern requires review; exact direct approval-drain proof is not established."],
+      warnings: [],
+      evidenceIds: [routeLinkedApproval.approvalTxHash, routeLinkedApproval.drainTxHash, ...routeLinkedApproval.pathTxHashes]
+    }
+    : null;
   const topContractSuspicion = [...contractSuspicionEvidence]
     .sort((left, right) => right.score - left.score || right.rawScore - left.rawScore)[0] ?? null;
   const nonDampenableSourcePolicyDecline = hasNonDampenableSourcePolicyDecline(sourcePolicyAssessment);
@@ -1527,12 +1616,34 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...defaultLayerCollections([]),
+      ...defaultLayerCollections([], routeLayer ? [routeLayer] : []),
       reasons: topContractSuspicion.reasons,
       warnings: [
         ...topContractSuspicion.warnings,
         ...approvalWarnings
       ]
+    };
+  }
+  if (routeLayer && !sourcePolicyDecline) {
+    return {
+      decision: "REVIEW",
+      riskScore: routeLayer.score,
+      riskBand: riskBandFromWhereScore(routeLayer.score),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      ...buildRiskLayerCollections({
+        sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+        sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+        contractSuspicionEvidence,
+        unknownOriginEvidence: defaultUnknownOriginEvidence,
+        behaviorContextLayers: [routeLayer]
+      }),
+      reasons: routeLayer.reasons,
+      warnings: approvalWarnings
     };
   }
 

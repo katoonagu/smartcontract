@@ -98,6 +98,7 @@ function interactionProfile(
 
 function operationalInput(): ActiveAssessmentInput {
   return {
+    checkedSubjectAddress: SUBJECT,
     fastWalletRisk: LOW_FAST_RISK,
     originPaths: [
       reviewPath({ balanceShare: 0.45 }),

@@ -84,6 +84,137 @@ function tronAddressField(value: unknown): string | null {
   return normalized;
 }
 
+function normalizedTronAddress(value: string): string | null {
+  const address = value.trim();
+  if (!address) return null;
+  try {
+    const hex = /^41[0-9a-fA-F]{40}$/.test(address)
+      ? address
+      : /^0x[0-9a-fA-F]{40}$/.test(address)
+        ? `41${address.slice(2)}`
+        : TronWeb.address.toHex(address);
+    if (!/^41[0-9a-fA-F]{40}$/.test(hex)) return null;
+    return TronWeb.address.fromHex(hex);
+  } catch {
+    return null;
+  }
+}
+
+function sameTronAddress(left: string, right: string): boolean {
+  const normalizedLeft = normalizedTronAddress(left);
+  const normalizedRight = normalizedTronAddress(right);
+  return normalizedLeft !== null && normalizedRight !== null
+    ? normalizedLeft === normalizedRight
+    : left.trim() === right.trim();
+}
+
+export function isAuthoritativeDirectApprovalDrainProfile(
+  profile: ApprovalDrainProvenanceProfile,
+  checkedSubjectAddress: string
+): boolean {
+  return profile.evidenceStrength === "exact_approval_and_transfer_from" &&
+    profile.hopDepth === 0 &&
+    sameTronAddress(profile.firstReceiverAddress, profile.subjectAddress) &&
+    sameTronAddress(profile.subjectAddress, checkedSubjectAddress);
+}
+
+export function approvalDrainProfileEvidenceIds(profile: ApprovalDrainProvenanceProfile): string[] {
+  return [...new Set([profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes])];
+}
+
+export function sameApprovalDrainProfileIdentity(
+  left: ApprovalDrainProvenanceProfile,
+  right: ApprovalDrainProvenanceProfile
+): boolean {
+  return sameTronAddress(left.subjectAddress, right.subjectAddress) &&
+    sameTronAddress(left.victimAddress, right.victimAddress) &&
+    sameTronAddress(left.spenderAddress, right.spenderAddress) &&
+    sameTronAddress(left.firstReceiverAddress, right.firstReceiverAddress) &&
+    left.hopDepth === right.hopDepth &&
+    left.approvalTxHash === right.approvalTxHash &&
+    left.drainTxHash === right.drainTxHash &&
+    left.evidenceStrength === right.evidenceStrength &&
+    left.pathTxHashes.length === right.pathTxHashes.length &&
+    left.pathTxHashes.every((value, index) => value === right.pathTxHashes[index]) &&
+    left.pathAddresses.length === right.pathAddresses.length &&
+    left.pathAddresses.every((value, index) => sameTronAddress(value, right.pathAddresses[index] ?? ""));
+}
+
+function isPersistedApprovalDrainProvenanceProfile(value: unknown): value is ApprovalDrainProvenanceProfile {
+  if (typeof value !== "object" || value === null) return false;
+  const profile = value as Record<string, unknown>;
+  return typeof profile.victimAddress === "string" &&
+    typeof profile.approvalTxHash === "string" &&
+    typeof profile.drainTxHash === "string" &&
+    typeof profile.spenderAddress === "string" &&
+    typeof profile.firstReceiverAddress === "string" &&
+    typeof profile.subjectAddress === "string" &&
+    (profile.hopDepth === 0 || profile.hopDepth === 1 || profile.hopDepth === 2) &&
+    typeof profile.amountRaw === "string" &&
+    typeof profile.amountPreservationRatio === "number" && Number.isFinite(profile.amountPreservationRatio) &&
+    typeof profile.approvalAt === "string" &&
+    typeof profile.drainAt === "string" &&
+    Array.isArray(profile.pathTxHashes) && profile.pathTxHashes.every((item) => typeof item === "string") &&
+    Array.isArray(profile.pathAddresses) && profile.pathAddresses.every((item) => typeof item === "string") &&
+    typeof profile.score === "number" && Number.isFinite(profile.score) &&
+    (profile.evidenceStrength === "exact_approval_and_transfer_from" || profile.evidenceStrength === "route_linked") &&
+    (profile.subjectTokenState === null || typeof profile.subjectTokenState === "object") &&
+    (profile.victimTokenState === null || typeof profile.victimTokenState === "object") &&
+    Array.isArray(profile.features);
+}
+
+export function authoritativeApprovalDrainEvidenceBinding(input: {
+  checkedSubjectAddress: string;
+  profile: ApprovalDrainProvenanceProfile;
+  rawEvidence: RawEvidenceInput[];
+  observations: RiskSignalObservationInput[];
+}): { rawEvidenceId: string; observationId: string } | null {
+  if (!isAuthoritativeDirectApprovalDrainProfile(input.profile, input.checkedSubjectAddress)) return null;
+  const observedHash = input.profile.pathTxHashes.at(-1) ?? input.profile.drainTxHash;
+  const raw = input.rawEvidence.find((evidence) => {
+    const embedded = evidence.evidenceJson.approvalDrainProvenanceProfile;
+    return evidence.source === "forensic_route_search" &&
+      evidence.sourceType === "detector_output" &&
+      evidence.chain === "tron" &&
+      evidence.address !== null && sameTronAddress(evidence.address, input.checkedSubjectAddress) &&
+      evidence.txHash === input.profile.drainTxHash &&
+      evidence.observedTransactionHash === observedHash &&
+      isPersistedApprovalDrainProvenanceProfile(embedded) &&
+      isAuthoritativeDirectApprovalDrainProfile(embedded, input.checkedSubjectAddress) &&
+      sameApprovalDrainProfileIdentity(input.profile, embedded);
+  });
+  if (!raw) return null;
+  const observation = input.observations.find((item) =>
+    item.code === "forensic_approval_drain_provenance" &&
+    item.subjectChain === "tron" &&
+    sameTronAddress(item.subjectAddress, input.checkedSubjectAddress) &&
+    item.rawEvidenceId === raw.id &&
+    item.observedTransactionHash === observedHash
+  );
+  return observation ? { rawEvidenceId: raw.id, observationId: observation.id } : null;
+}
+
+export function isApprovalDrainEvidenceRefBoundToDirectProfile(input: {
+  checkedSubjectAddress: string;
+  evidenceRef: string;
+  profiles: ApprovalDrainProvenanceProfile[];
+  rawEvidence?: RawEvidenceInput[];
+  observations?: RiskSignalObservationInput[];
+}): boolean {
+  const evidenceRef = input.evidenceRef.trim();
+  if (!evidenceRef) return false;
+  return input.profiles.some((profile) => {
+    if (!isAuthoritativeDirectApprovalDrainProfile(profile, input.checkedSubjectAddress)) return false;
+    const binding = authoritativeApprovalDrainEvidenceBinding({
+      checkedSubjectAddress: input.checkedSubjectAddress,
+      profile,
+      rawEvidence: input.rawEvidence ?? [],
+      observations: input.observations ?? []
+    });
+    return binding?.rawEvidenceId === evidenceRef;
+  });
+}
+
 function edgeAmount(edge: ForensicRouteEdge): bigint {
   return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
 }
@@ -1021,9 +1152,13 @@ export function observationForApprovalDrainProvenance(input: {
   profile: ApprovalDrainProvenanceProfile;
   rawEvidenceId: string;
 }): RiskSignalObservationInput {
+  const exact = isAuthoritativeDirectApprovalDrainProfile(input.profile, input.subjectAddress);
+  const code = exact
+    ? "forensic_approval_drain_provenance"
+    : "forensic_route_linked_approval_pattern";
   return {
     id: stableId([
-      "forensic_approval_drain_provenance_observation",
+      `${code}_observation`,
       input.subjectAddress,
       input.profile.approvalTxHash,
       input.profile.drainTxHash,
@@ -1034,11 +1169,13 @@ export function observationForApprovalDrainProvenance(input: {
     subjectTxHash: null,
     observedTransactionHash: input.profile.pathTxHashes.at(-1) ?? input.profile.drainTxHash,
     signalGroup: "approval",
-    code: "forensic_approval_drain_provenance",
-    message: "Funds are connected to an exact approval-drain flow within 2 hops.",
-    scoreImpact: input.profile.score,
+    code,
+    message: exact
+      ? "Funds are connected to an exact approval-drain flow within 2 hops."
+      : "Route-linked approval-drain context found without exact approval-drain proof.",
+    scoreImpact: exact ? 90 : Math.min(80, input.profile.score),
     confidence: "high",
-    severity: input.profile.score >= 90 ? "critical" : "high",
+    severity: exact ? "critical" : "high",
     source: "approval_drain_provenance",
     policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
     rawEvidenceId: input.rawEvidenceId

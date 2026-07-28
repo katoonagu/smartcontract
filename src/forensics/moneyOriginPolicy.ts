@@ -9,7 +9,7 @@ import type {
   ServiceClassification,
   SourceExposureKind
 } from "../types";
-import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+import { isExactMoneyOriginRiskLabel, selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { baseShareScore } from "./provenanceScoring";
 import {
   matchSanctionedCryptoService,
@@ -69,18 +69,6 @@ const DECLINE_BOUNDARY_CATEGORIES = new Set<ServiceCategory>([
   "swap_adapter"
 ]);
 
-const EXACT_RISK_LABELS = new Set<AddressLabel["label"]>([
-  "scam",
-  "reported_scam",
-  "stolen_funds",
-  "phishing",
-  "mixer_like",
-  "risky_contract",
-  "darknet_exchange",
-  "darknet_exchange_proximity",
-  "approval_drain_proximity"
-]);
-
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").toLowerCase().replace(/[\s:_-]+/g, " ").trim();
 }
@@ -126,7 +114,7 @@ function activeSanctionedService(
 }
 
 function exactRiskLabel(labels: AddressLabel[]): AddressLabel | null {
-  return labels.find((label) => EXACT_RISK_LABELS.has(label.label)) ?? null;
+  return labels.find((label) => isExactMoneyOriginRiskLabel(label.label)) ?? null;
 }
 
 function hasWhitebitLabel(labels: AddressLabel[]): boolean {
@@ -152,6 +140,9 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
       rootSourceType: "risky_label",
       stoppedReason: "risky_label_reached",
       riskScoreContribution: riskLabel.label === "whitebit" ? 85 : 90,
+      exposureSourceKey: riskLabel.label,
+      exposureSourceLabel: riskLabel.label,
+      sourceExposureKind: "risky_label",
       reasons: [`Balance-forming path reaches high-risk label ${riskLabel.label}; exchange policy declines this source.`]
     };
   }

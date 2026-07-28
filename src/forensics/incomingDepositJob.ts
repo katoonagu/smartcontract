@@ -4,6 +4,7 @@ import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import { exactFastHardEvidence } from "../risk/fastEvidence";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import {
   calculateUnifiedIncomingDepositRisk,
@@ -82,12 +83,17 @@ import {
 } from "./incomingDepositExposureProfile";
 import { buildBalanceFormingSlice } from "./balanceFormingSlice";
 import {
+  approvalDrainProfileEvidenceIds,
+  isApprovalDrainEvidenceRefBoundToDirectProfile,
+  isAuthoritativeDirectApprovalDrainProfile
+} from "./approvalDrainProvenance";
+import {
   DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
   indexedTransferToRouteEdge,
   mergeForensicRouteEdges,
   materializeIndexedTransferWindow
 } from "./localTronUsdtIndex";
-import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+import { isAuthoritativeMoneyOriginRiskLabelPath, selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { isExactGasFreeServiceFeePath, traceMoneyOriginPath } from "./moneyOriginTrace";
 import {
   DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
@@ -128,6 +134,7 @@ type IncomingTraceFetchOptions = {
 };
 
 export type IncomingDepositRuntimeDeps = {
+  runWhereIsMoneyCheck?: typeof runWhereIsMoneyCheck;
   listIndexedUsdtTransfersForAddress(
     address: string,
     options: {
@@ -615,7 +622,7 @@ function isHtxHuobiPath(path: MoneyOriginPath): boolean {
 function incomingStoppedReason(path: MoneyOriginPath): IncomingDepositOriginPath["stoppedReason"] {
   if (path.stoppedReason === "allowlist_cex_reached") return "clean_cex_reached";
   if (path.exposureSourceKey === "whitebit") return "whitebit_reached";
-  if (path.rootSourceType === "risky_label" || path.stoppedReason === "risky_label_reached") return "risky_label_reached";
+  if (isAuthoritativeMoneyOriginRiskLabelPath(path)) return "risky_label_reached";
   if (path.rootSourceType === "decline_boundary") {
     if (isHtxHuobiPath(path)) return "htx_huobi_reached";
     return "bridge_router_dex_reached";
@@ -630,7 +637,7 @@ function incomingStoppedReason(path: MoneyOriginPath): IncomingDepositOriginPath
 function incomingSourcePolicy(path: MoneyOriginPath): IncomingDepositOriginPath["sourcePolicy"] {
   if (path.stoppedReason === "allowlist_cex_reached") return "clean";
   if (path.exposureSourceKey === "whitebit") return path.riskScoreContribution >= 60 ? "hard_decline" : "medium_policy";
-  if (path.rootSourceType === "risky_label") return "hard_decline";
+  if (isAuthoritativeMoneyOriginRiskLabelPath(path)) return "hard_decline";
   if (path.rootSourceType === "decline_boundary") return path.riskScoreContribution >= 60 ? "hard_decline" : "unknown";
   return "unknown";
 }
@@ -734,7 +741,7 @@ function fundingEdgeToBalanceTransfer(edge: ForensicRouteEdge): BalanceFormingTr
 }
 
 function fundingBundleExpansionStatus(paths: MoneyOriginPath[]): IncomingDepositFundingBundleDeepExpansion["status"] {
-  if (paths.some((path) => path.rootSourceType === "risky_label")) return "hard_risk_reached";
+  if (paths.some(isAuthoritativeMoneyOriginRiskLabelPath)) return "hard_risk_reached";
   if (paths.some((path) => path.rootSourceType === "allowlist_cex")) return "clean_source_reached";
   if (paths.some((path) =>
     path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary"
@@ -959,6 +966,28 @@ function incomingPathFromWhere(
     ...(path.rejectedCandidates && path.rejectedCandidates.length > 0 ? { rejectedCandidates: path.rejectedCandidates } : {}),
     ...(fundingBundles.length > 0 ? { fundingBundles } : {}),
     ...(sourcePolicyShareDetail ? { sourcePolicyShareDetail } : {})
+  };
+}
+
+function incomingBoundRiskyLabelPath(
+  path: MoneyOriginPath,
+  whereSubjectAddress: string,
+  deposit: ForensicRouteEdge
+): MoneyOriginPath {
+  if (!isAuthoritativeMoneyOriginRiskLabelPath(path)) return path;
+  const explicitlyContainsDeposit = path.balanceTransferTxHash === deposit.txHash ||
+    path.txHashes.includes(deposit.txHash) ||
+    path.steps.some((step) => step.txHash === deposit.txHash);
+  if (whereSubjectAddress === deposit.fromAddress || explicitlyContainsDeposit) return path;
+  return {
+    ...path,
+    rootSourceType: "unknown",
+    sourceExposureKind: null,
+    exposureSourceKey: null,
+    exposureSourceLabel: null,
+    stoppedReason: "no_previous_transfer",
+    verdict: "REVIEW",
+    riskScoreContribution: Math.min(59, path.riskScoreContribution)
   };
 }
 
@@ -1282,20 +1311,60 @@ function incomingReportFromWhere(input: {
         evidenceIds: []
       }]
     : [];
-  const whereEvidence = input.whereReport.assessment.hardBadEvidence
+  const boundWherePaths = input.whereReport.originPaths.map((path) =>
+    incomingBoundRiskyLabelPath(path, input.whereReport.subjectAddress, input.deposit)
+  );
+  const authoritativeRiskyLabelEvidenceIds = new Set(boundWherePaths
+    .filter(isAuthoritativeMoneyOriginRiskLabelPath)
+    .flatMap((path) => [path.balanceTransferTxHash, ...path.txHashes, ...path.steps.map((step) => step.txHash)]));
+  const checkedSenderAddress = input.deposit.fromAddress;
+  const authoritativeApprovalEvidenceIds = new Set(input.whereReport.approvalDrainProvenanceProfiles
+    .filter((profile) => isAuthoritativeDirectApprovalDrainProfile(profile, checkedSenderAddress))
+    .flatMap(approvalDrainProfileEvidenceIds));
+  const authorizedFastEvidence =
+    input.fastSenderRisk?.subjectAddress === checkedSenderAddress
+      ? exactFastHardEvidence(input.fastSenderRisk)
+          .filter((item) => item.code !== "forensic_approval_drain_provenance" ||
+            isApprovalDrainEvidenceRefBoundToDirectProfile({
+              checkedSubjectAddress: checkedSenderAddress,
+              evidenceRef: item.evidenceId,
+              profiles: input.whereReport.approvalDrainProvenanceProfiles
+            }))
+      : [];
+  const authorizedFastEvidenceIds = new Set(authorizedFastEvidence.map((item) => item.evidenceId));
+  const existingHardEvidenceIds = new Set(input.whereReport.assessment.hardBadEvidence.flatMap((item) => item.evidenceIds));
+  const currentFastEvidence: WhereIsMoneyHardBadEvidence[] = authorizedFastEvidence
+    .filter((item) => !existingHardEvidenceIds.has(item.evidenceId))
+    .map((item) => ({
+      kind: item.code === "forensic_approval_drain_provenance" ? "approval_drain" : "fast_critical",
+      score: item.score,
+      message: item.message,
+      evidenceIds: [item.evidenceId]
+    }));
+  const whereEvidence = [...input.whereReport.assessment.hardBadEvidence, ...currentFastEvidence]
+    .filter((evidence) => evidence.kind !== "scam_or_blacklist" ||
+      evidence.evidenceIds.some((id) => authoritativeRiskyLabelEvidenceIds.has(id)))
+    .filter((evidence) => evidence.kind !== "approval_drain" ||
+      evidence.evidenceIds.some((id) => authoritativeApprovalEvidenceIds.has(id)))
+    .filter((evidence) => evidence.kind !== "fast_critical" ||
+      evidence.evidenceIds.some((id) => authorizedFastEvidenceIds.has(id)))
     .map(incomingHardEvidenceFromWhere)
     .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
   const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
     .sort((left, right) => right.score - left.score);
-  const originPaths = input.whereReport.originPaths.map((path) =>
+  const sourcePolicyEvidence = input.whereReport.assessment.sourcePolicyEvidence.filter((evidence) =>
+    evidence.kind !== "risky_label" ||
+    evidence.evidenceIds.some((id) => authoritativeRiskyLabelEvidenceIds.has(id))
+  );
+  const originPaths = boundWherePaths.map((path) =>
     incomingPathFromWhere(
       path,
       input.deposit,
       input.fundingBundlesByTxHash,
-      input.whereReport.assessment.sourcePolicyEvidence
+      sourcePolicyEvidence
     )
   );
-  const provenanceWhereOriginPaths = input.whereReport.originPaths.filter((path) =>
+  const provenanceWhereOriginPaths = boundWherePaths.filter((path) =>
     !isExactGasFreeServiceFeePath(path)
   );
   const exactGasFreeFeeOnly = originPaths.length > 0 && provenanceWhereOriginPaths.length === 0;
@@ -1304,7 +1373,7 @@ function incomingReportFromWhere(input: {
       path,
       input.deposit,
       input.fundingBundlesByTxHash,
-      input.whereReport.assessment.sourcePolicyEvidence
+      sourcePolicyEvidence
     )
   );
   const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
@@ -1379,7 +1448,7 @@ function incomingReportFromWhere(input: {
     dataQuality: incomingDataQuality(input.whereReport),
     senderRole: input.whereReport.assessment.walletRole,
     targetedHistoryCoverage: input.targetedHistoryCoverage ?? undefined,
-    sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
+    sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: [],
     contractDrivenReceiverProfile: input.whereReport.contractDrivenReceiverProfile ?? null,
@@ -2000,7 +2069,7 @@ export async function buildIncomingDepositReport(
         })
     : undefined;
   const whereReport = await measureReportStage("run_where_is_money", () =>
-    runWhereIsMoneyCheck({
+    (input.deps.runWhereIsMoneyCheck ?? runWhereIsMoneyCheck)({
       getTrc20Balance: async (address, tokenContractAddress) => {
         if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
         const state = await getStablecoinState(address);

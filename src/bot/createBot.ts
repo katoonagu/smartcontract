@@ -13,6 +13,10 @@ import {
   addressBehaviorEffectiveScore
 } from "../forensics/addressBehavior";
 import {
+  authoritativeApprovalDrainEvidenceBinding,
+  isAuthoritativeDirectApprovalDrainProfile
+} from "../forensics/approvalDrainProvenance";
+import {
   extractUsdtTransferDisplayContext,
   extractUsdtTransferSeedFromTransaction,
   runTransactionOriginCheck,
@@ -23,12 +27,14 @@ import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskCl
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { formatRuntimeVersion, type RuntimeVersionV1 } from "../runtime/runtimeVersion";
+import type { RawEvidenceInput, RiskSignalObservationInput } from "../types";
 import {
   runAckBeforeDeferredWork,
   runRuntimeNavigationProbeV1,
   type RuntimeNavigationProbeV1
 } from "../runtime/runtimeLiveProof";
-import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
+import { calculateUnifiedWalletRisk, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
+import { exactFastHardEvidence } from "../risk/fastEvidence";
 import {
   buildRiskExplanationSummary,
   factDetail,
@@ -777,7 +783,23 @@ function activeStablecoinRestrictionProfile(result: ForensicSurface): Stablecoin
 }
 
 function firstApprovalDrainProfile(result: ForensicSurface): ApprovalDrainProvenanceProfile | null {
-  return result.approvalDrainProvenanceProfiles?.find((profile) => profile.score > 0) ?? null;
+  const checkedSubjectAddress = (result as ForensicSurface & { subjectAddress?: string }).subjectAddress;
+  if (!checkedSubjectAddress) return null;
+  return result.approvalDrainProvenanceProfiles?.find((profile) =>
+    profile.score > 0 && isAuthoritativeDirectApprovalDrainProfile(profile, checkedSubjectAddress)
+  ) ?? null;
+}
+
+function exactApprovalDrainRawEvidenceId(
+  report: DeepAddressForensicReport,
+  profile: ApprovalDrainProvenanceProfile
+): string | null {
+  return authoritativeApprovalDrainEvidenceBinding({
+    checkedSubjectAddress: report.subjectAddress,
+    profile,
+    rawEvidence: report.rawEvidence,
+    observations: report.observations
+  })?.rawEvidenceId ?? null;
 }
 
 function approvalDrainRiskLine(profile: ApprovalDrainProvenanceProfile): string {
@@ -1012,7 +1034,8 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
 
   const graphSignals: RiskSignal[] = [];
   if (approvalDrainProfile) {
-    const isExactApprovalDrain = approvalDrainProfile.evidenceStrength === "exact_approval_and_transfer_from";
+    const evidenceRef = exactApprovalDrainRawEvidenceId(report, approvalDrainProfile);
+    const isExactApprovalDrain = evidenceRef !== null;
     graphSignals.push({
       code: isExactApprovalDrain ? "forensic_approval_drain_provenance" : "forensic_route_linked_approval_pattern",
       message: isExactApprovalDrain
@@ -1020,6 +1043,7 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
         : "Route-linked approval-drain context found without exact approval-drain proof.",
       scoreImpact: isExactApprovalDrain ? approvalDrainProfile.score : Math.min(80, approvalDrainProfile.score),
       source: "approval_drain_provenance",
+      ...(evidenceRef ? { evidenceRef } : {}),
       confidence: "high",
       severity: isExactApprovalDrain ? "critical" : "high"
     });
@@ -1432,7 +1456,7 @@ export function formatAddressCheckStarted(
     : analysis.status === "unavailable"
       ? "Contract safety unavailable; transfer analysis continues and the limitation is preserved."
       : null;
-  if (hasUnifiedFastHardEvidence(result.report)) {
+  if (exactFastHardEvidence(result.report).some((item) => item.code !== "forensic_approval_drain_provenance")) {
     const message = formatManualReport(result, options);
     return contractSafetyLine ? telegramHtmlMessage([message.text, contractSafetyLine]) : message;
   }
@@ -2143,6 +2167,52 @@ function deepProviderBudgetFromResultJson(record: Record<string, unknown>): Deep
   };
 }
 
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function persistedDeepRawEvidence(value: unknown): RawEvidenceInput[] {
+  return recordArray(value).flatMap((evidence) => {
+    if (
+      typeof evidence.id !== "string" ||
+      typeof evidence.source !== "string" ||
+      !["internal_label", "provider_response", "detector_output", "transfer_context", "manual_input"].includes(String(evidence.sourceType)) ||
+      evidence.chain !== "tron" ||
+      !nullableString(evidence.address) ||
+      !nullableString(evidence.txHash) ||
+      !nullableString(evidence.observedTransactionHash) ||
+      !isRecord(evidence.evidenceJson)
+    ) {
+      return [];
+    }
+    return [evidence as RawEvidenceInput];
+  });
+}
+
+function persistedDeepObservations(value: unknown, subjectAddress: string): RiskSignalObservationInput[] {
+  return recordArray(value).flatMap((observation) => {
+    if (
+      typeof observation.id !== "string" ||
+      observation.subjectChain !== "tron" ||
+      observation.subjectAddress !== subjectAddress ||
+      !nullableString(observation.subjectTxHash) ||
+      !nullableString(observation.observedTransactionHash) ||
+      !["internal_label", "provider", "graph", "behavior", "incoming_context", "approval", "manual", "wallet_safety"].includes(String(observation.signalGroup)) ||
+      typeof observation.code !== "string" ||
+      typeof observation.message !== "string" ||
+      !isFiniteNumber(observation.scoreImpact) ||
+      !["low", "medium", "high"].includes(String(observation.confidence)) ||
+      !["info", "low", "medium", "high", "critical"].includes(String(observation.severity)) ||
+      typeof observation.source !== "string" ||
+      typeof observation.policyVersion !== "string" ||
+      !nullableString(observation.rawEvidenceId)
+    ) {
+      return [];
+    }
+    return [observation as RiskSignalObservationInput];
+  });
+}
+
 export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): DeepAddressForensicReport | null {
   if (!job || job.kind !== "address_deep_check" || (job.status !== "completed" && job.status !== "partial")) return null;
   if (!isRecord(job.resultJson)) return null;
@@ -2171,8 +2241,8 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     windowEnd: job.windowEnd,
     runProfile: deepRunProfileFromResultJson(job.resultJson),
     providerBudget: deepProviderBudgetFromResultJson(job.resultJson),
-    rawEvidence: [],
-    observations: [],
+    rawEvidence: persistedDeepRawEvidence(job.resultJson.rawEvidence),
+    observations: persistedDeepObservations(job.resultJson.observations, subjectAddress),
     missingChecks,
     serviceExposureProfiles: serviceExposureProfiles as DeepAddressForensicReport["serviceExposureProfiles"],
     addressBehaviorProfiles: addressBehaviorProfiles as DeepAddressForensicReport["addressBehaviorProfiles"],
@@ -2809,7 +2879,7 @@ function exactApprovalDrainProfileFromReports(input: UnifiedAddressFinalReportIn
   return [
     ...input.whereReport.approvalDrainProvenanceProfiles,
     ...(input.deepReport?.approvalDrainProvenanceProfiles ?? [])
-  ].find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from") ?? null;
+  ].find((profile) => isAuthoritativeDirectApprovalDrainProfile(profile, input.address)) ?? null;
 }
 
 function approvalDrainExactText(profile: ApprovalDrainProvenanceProfile | null, locale: BotLocale): string {
@@ -2904,8 +2974,14 @@ function buildFinalReasonCards(input: UnifiedAddressFinalReportInput, result: Un
   const cards: FinalReasonCard[] = [];
   const whereReport = input.whereReport;
   const exactApprovalDrain = exactApprovalDrainProfileFromReports(input);
-  const hasApprovalDrainHardEvidence = whereReport.assessment.hardBadEvidence.some((evidence) => evidence.kind === "approval_drain") ||
-    result.reasons.some((reason) => reason.code === "exact_approval_drain");
+  const exactApprovalEvidenceIds = new Set(exactApprovalDrain
+    ? [exactApprovalDrain.approvalTxHash, exactApprovalDrain.drainTxHash, ...exactApprovalDrain.pathTxHashes]
+    : []);
+  const hasApprovalDrainHardEvidence = exactApprovalDrain !== null && (
+    whereReport.assessment.hardBadEvidence.some((evidence) =>
+      evidence.kind === "approval_drain" && evidence.evidenceIds.some((id) => exactApprovalEvidenceIds.has(id))) ||
+    result.reasons.some((reason) => reason.code === "exact_approval_drain")
+  );
 
   if (hasApprovalDrainHardEvidence) {
     addFinalReasonCard(cards, {
@@ -2924,12 +3000,12 @@ function buildFinalReasonCards(input: UnifiedAddressFinalReportInput, result: Un
   if (hasSavedApprovalDrainMarker(input.fastReport)) {
     addFinalReasonCard(cards, {
       kind: "approval_drain_saved_marker",
-      priority: hasApprovalDrainHardEvidence ? 45 : 12,
-      decision: hasApprovalDrainHardEvidence ? "context" : "decline",
+      priority: 45,
+      decision: "context",
       dedupeKey: "approval_drain_saved_marker",
       source: "fast",
-      ru: "Ранее система уже сохраняла этот адрес как связанный с exact approval-drain.",
-      en: "The system had already saved this address as linked to exact approval-drain evidence."
+      ru: "Ранее система сохраняла контекст связи этого адреса с approval-drain маршрутом; это требует проверки, но само по себе не является точным доказательством.",
+      en: "The system previously saved approval-drain route context for this address; it requires review but is not exact proof by itself."
     });
   }
 
@@ -3588,7 +3664,10 @@ function buildUnifiedWalletNarrativeEvidence(
 }
 
 function dominantFastNarrativeFact(
-  input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult },
+  input: UnifiedAddressFinalReportInput & {
+    deepReport: DeepAddressForensicReport;
+    unifiedRisk: UnifiedWalletRiskResult;
+  },
   existingFacts: NarrativeFact[]
 ): NarrativeFact | null {
   const fast = input.fastReport;
@@ -3603,7 +3682,12 @@ function dominantFastNarrativeFact(
   const selected = fast.reasons
     .filter((reason) => winner.atomicSignals.includes(reason.code))
     .flatMap((reason) => {
-      const copy = fastNarrativeCopy(reason.code, fast);
+      const verifiedApprovalDrainBinding = reason.code === "forensic_approval_drain_provenance" &&
+        typeof reason.evidenceRef === "string" &&
+        input.deepReport.approvalDrainProvenanceProfiles.some((profile) =>
+          exactApprovalDrainRawEvidenceId(input.deepReport, profile) === reason.evidenceRef
+        );
+      const copy = fastNarrativeCopy(reason, fast, { verifiedApprovalDrainBinding });
       return copy ? [{ reason, copy }] : [];
     })
     .sort((left, right) =>

@@ -28,11 +28,17 @@ describe("exactFastHardEvidence", () => {
     ]);
   });
 
-  it("keeps the saved exact approval-drain proximity label in the allowlist", () => {
-    expect(isExactFastHardEvidenceCode("internal_label_approval_drain_proximity")).toBe(true);
-    expect(exactFastHardEvidence(report(80, "internal_label_approval_drain_proximity"))).toEqual([
-      expect.objectContaining({ score: 95 })
-    ]);
+  it("keeps the saved approval-drain proximity label out of exact evidence", () => {
+    expect(isExactFastHardEvidenceCode("internal_label_approval_drain_proximity")).toBe(false);
+    expect(exactFastHardEvidence(report(80, "internal_label_approval_drain_proximity"))).toEqual([]);
+  });
+
+  it("requires a concrete evidence reference for exact approval-drain provenance", () => {
+    const missing = report(90, "forensic_approval_drain_provenance");
+    delete missing.reasons[0].evidenceRef;
+    expect(isExactFastHardEvidenceReason(missing.reasons[0])).toBe(false);
+    expect(exactFastHardEvidence(missing)).toEqual([]);
+    expect(isExactFastHardEvidenceReason(report(90, "forensic_approval_drain_provenance", "  ").reasons[0])).toBe(false);
   });
 
   it("does not treat proximity as exact self evidence", () => {
@@ -48,12 +54,11 @@ describe("exactFastHardEvidence", () => {
     expect(isExactFastHardEvidenceCode(code)).toBe(false);
   });
 
-  it("applies the exact floor, rounds and clamps observed impact, and falls back the evidence id", () => {
+  it("applies the exact floor and rounds and clamps observed impact", () => {
     const low = report(20, "internal_label_scam");
-    delete low.reasons[0].evidenceRef;
     low.reasons[0].scoreImpact = 20.4;
     expect(exactFastHardEvidence(low)).toEqual([
-      expect.objectContaining({ score: 90, evidenceId: "fast:internal_label_scam" })
+      expect.objectContaining({ score: 90, evidenceId: "evidence:internal_label_scam" })
     ]);
 
     const high = report(100, "internal_label_scam");

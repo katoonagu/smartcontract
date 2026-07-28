@@ -1,6 +1,7 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { normalizeNotificationReason } from "../alerts/notificationText";
 import type { UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
+import { isAuthoritativeDirectApprovalDrainProfile } from "../forensics/approvalDrainProvenance";
 import type {
   ApprovalDrainProvenanceProfile,
   BotLocale,
@@ -131,8 +132,11 @@ function unique(lines: string[]): string[] {
   return lines.filter((line, index, all) => line.trim().length > 0 && all.indexOf(line) === index);
 }
 
-function exactApprovalDrainProfile(profiles: ApprovalDrainProvenanceProfile[] | undefined): ApprovalDrainProvenanceProfile | null {
-  return profiles?.find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from") ?? null;
+function exactApprovalDrainProfile(
+  profiles: ApprovalDrainProvenanceProfile[] | undefined,
+  checkedSubjectAddress: string
+): ApprovalDrainProvenanceProfile | null {
+  return profiles?.find((profile) => isAuthoritativeDirectApprovalDrainProfile(profile, checkedSubjectAddress)) ?? null;
 }
 
 function approvalDrainText(profile: ApprovalDrainProvenanceProfile | null): { ru: string; en: string } {
@@ -236,16 +240,14 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
       actionEn: "Do not accept the deposit automatically."
     });
   }
-  if (fast.reasons.some((reason) =>
-    reason.code === "internal_label_approval_drain_proximity" && hardEvidenceCodes.has(reason.code)
-  )) {
+  if (fast.reasons.some((reason) => reason.code === "internal_label_approval_drain_proximity")) {
     pushFact(allFacts, sections, "fast", {
-      kind: "hard_evidence",
+      kind: "behavior_context",
       source: "fast",
       priority: 12,
       dedupeKey: "approval_drain_saved_marker",
-      textRu: "Раньше система уже находила связь этого адреса с точной drainer-цепочкой. Ранее система уже сохраняла этот адрес как связанный с exact approval-drain.",
-      textEn: "The system had already found this address linked to an exact drainer chain."
+      textRu: "Сохранён контекст связи адреса с approval-drain маршрутом; это требует проверки, но не является точным доказательством.",
+      textEn: "Approval-drain route context was saved for this address; it requires review but is not exact proof."
     });
   }
   const otherHardReason = fast.reasons.find((reason) =>
@@ -365,9 +367,12 @@ function sourceUnresolvedBoundaryLabel(
 
 function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const report = input.whereReport;
-  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles);
-  const hasApprovalDrain = report.assessment.hardBadEvidence.some((evidence) => evidence.kind === "approval_drain") ||
-    exactDrain !== null;
+  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles, input.address);
+  const exactEvidenceIds = new Set(exactDrain
+    ? [exactDrain.approvalTxHash, exactDrain.drainTxHash, ...exactDrain.pathTxHashes]
+    : []);
+  const hasApprovalDrain = exactDrain !== null && report.assessment.hardBadEvidence.some((evidence) =>
+    evidence.kind === "approval_drain" && evidence.evidenceIds.some((id) => exactEvidenceIds.has(id)));
   if (hasApprovalDrain) {
     const text = approvalDrainText(exactDrain);
     pushFact(allFacts, sections, "where", {
@@ -502,7 +507,7 @@ function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFac
 function addDeepFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const report = input.deepReport;
   if (!report) return;
-  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles);
+  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles, input.address);
   if (exactDrain) {
     const text = approvalDrainText(exactDrain);
     pushFact(allFacts, sections, "deep", {

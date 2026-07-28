@@ -1,5 +1,5 @@
 import type { RiskReason } from "../types";
-import { isExactFastHardEvidenceCode } from "./fastEvidence";
+import { isExactFastHardEvidenceReason } from "./fastEvidence";
 
 export type RiskPolicyDimension =
   | "provenance"
@@ -73,13 +73,11 @@ function isProvenanceContext(code: string): boolean {
     code === "internal_label_darknet_exchange_proximity";
 }
 
-export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">): RiskPolicyClassification {
+export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact" | "evidenceRef">): RiskPolicyClassification {
   const code = reason.code;
 
-  if (isExactFastHardEvidenceCode(code)) {
-    const exactApprovalDrain = code === "forensic_approval_drain_provenance" ||
-      code === "internal_label_approval_drain_proximity";
-    return exactApprovalDrain
+  if (isExactFastHardEvidenceReason(reason as RiskReason)) {
+    return code === "forensic_approval_drain_provenance"
       ? { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 95 }
       : { dimension: "provider_label", evidenceClass: "exact_self", hardEvidence: true, cap: 95 };
   }
@@ -93,6 +91,10 @@ export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">
   }
 
   if (code === "forensic_route_linked_approval_pattern") {
+    return { dimension: "provenance", evidenceClass: "weak_inferred", hardEvidence: false, cap: 80 };
+  }
+
+  if (code === "forensic_approval_drain_provenance" || code === "internal_label_approval_drain_proximity") {
     return { dimension: "provenance", evidenceClass: "weak_inferred", hardEvidence: false, cap: 80 };
   }
 
@@ -194,7 +196,11 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
     if (reason.code === "internal_label_darknet_exchange_proximity") {
       strongProvenanceContextScore = Math.max(strongProvenanceContextScore, reason.scoreImpact);
     }
-    if (reason.code === "forensic_route_linked_approval_pattern") {
+    if (
+      reason.code === "forensic_route_linked_approval_pattern" ||
+      reason.code === "forensic_approval_drain_provenance" ||
+      reason.code === "internal_label_approval_drain_proximity"
+    ) {
       strongApprovalContextScore = Math.max(strongApprovalContextScore, reason.scoreImpact);
     }
     if (policy.hardEvidence) hardEvidenceScore = Math.max(hardEvidenceScore, reason.scoreImpact);

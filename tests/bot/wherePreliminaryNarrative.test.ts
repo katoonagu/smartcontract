@@ -176,15 +176,22 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
   });
 
-  it.each([
-    ["victim", /жертва/i, /дрейнер-контракт/i],
-    ["first_receiver", /перв(ым|ый) получ/i, /жертва/i],
-    ["route_linked", /дальше.*маршрут|следующее звено/i, /жертва/i]
-  ] as const)("uses exact approval role %s", (role, expected, forbidden) => {
-    const result = buildWherePreliminaryNarrative(approvalWhereReportFixture(role), { locale: "ru" });
+  it("uses exact approval wording only for the checked direct first receiver", () => {
+    const result = buildWherePreliminaryNarrative(approvalWhereReportFixture("first_receiver"), { locale: "ru" });
     expect(result.score).toBe(95);
-    expect(result.sections.findings[0]).toMatch(expected);
-    expect(text(result)).not.toMatch(forbidden);
+    expect(result.sections.findings[0]).toMatch(/перв(ым|ый) получ/i);
+  });
+
+  it("does not publish stale victim exact wording", () => {
+    const result = buildWherePreliminaryNarrative(approvalWhereReportFixture("victim"), { locale: "ru" });
+    expect(result.score).toBeNull();
+    expect(text(result)).not.toMatch(/точн.*approval-drain|жертва/i);
+  });
+
+  it("caps route-linked approval context at 80 without exact wording", () => {
+    const result = buildWherePreliminaryNarrative(approvalWhereReportFixture("route_linked"), { locale: "ru" });
+    expect(result.score).toBe(80);
+    expect(text(result)).not.toMatch(/точн.*approval-drain/i);
   });
 
   it.each([
@@ -211,7 +218,6 @@ describe("buildWherePreliminaryNarrative", () => {
 
   it.each([
     ["stablecoin_usdt_blacklisted", 95, /чёрн.*списк.*USDT|USDT.*чёрн.*списк/i],
-    ["forensic_approval_drain_provenance", 95, /подтверждённ.*цепочк.*списан/i],
     ["internal_label_scam", 90, /мошенническ/i]
   ] as const)("maps production fast_critical to exact Fast reason %s", (code, score, expected) => {
     const evidenceId = `fast:${code}`;
@@ -233,6 +239,29 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.score).toBe(score);
     expect(result.sections.findings[0]).toMatch(expected);
     expect(result.preferredFactId).toBe(`fast-subject:${code}`);
+  });
+
+  it("keeps an arbitrarily referenced Fast approval reason contextual in preliminary copy", () => {
+    const code = "forensic_approval_drain_provenance";
+    const evidenceId = `fast:${code}`;
+    const report = whereReportFixture({
+      riskScore: 95,
+      fastWalletRisk: {
+        subjectAddress: WHERE_SUBJECT,
+        level: "CRITICAL",
+        score: 95,
+        reasons: [{ code, message: POISON_RAW_REASON, scoreImpact: 95, evidenceRef: evidenceId }]
+      },
+      assessment: whereAssessmentFixture({
+        riskScore: 95,
+        hardBadEvidence: [{ kind: "fast_critical", score: 95, message: POISON_RAW_REASON, evidenceIds: [evidenceId] }],
+        dominantRiskLayer: whereRiskLayerFixture("fast_critical", 95, "hard_proof", [evidenceId])
+      })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
+
+    expect(text(result)).toMatch(/точн.*списан.*не подтвержден/i);
+    expect(text(result)).not.toMatch(/подтверждённ.*цепочк.*списан/i);
   });
 
   it("binds production fast_critical through the fallback Fast evidence id", () => {
@@ -621,8 +650,13 @@ describe("buildWherePreliminaryNarrative", () => {
     ["contract", /^where-contract:/]
   ] as const)("uses semantic compatibility for colliding %s evidence", (target, expectedId) => {
     const result = buildWherePreliminaryNarrative(collidingFactReport(target), { locale: "en" });
-    expect(result.score).not.toBeNull();
-    expect(result.preferredFactId).toMatch(expectedId);
+    if (target === "approval") {
+      expect(result.score).toBeNull();
+      expect(result.preferredFactId).toBeNull();
+    } else {
+      expect(result.score).not.toBeNull();
+      expect(result.preferredFactId).toMatch(expectedId);
+    }
   });
 
   it("fails closed instead of using an unrelated exact Fast fallback", () => {

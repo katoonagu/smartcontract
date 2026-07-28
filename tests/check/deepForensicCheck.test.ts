@@ -1813,9 +1813,11 @@ describe("deep forensic address check", () => {
     expect(report.rawEvidence.some((evidence) => "approvalDrainProvenanceProfile" in evidence.evidenceJson)).toBe(true);
     expect(report.observations).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "forensic_approval_drain_provenance",
+        code: "forensic_route_linked_approval_pattern",
+        message: "Route-linked approval-drain context found without exact approval-drain proof.",
         signalGroup: "approval",
         scoreImpact: 80,
+        confidence: "high",
         severity: "high"
       })
     ]));

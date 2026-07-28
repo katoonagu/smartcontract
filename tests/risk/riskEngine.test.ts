@@ -185,7 +185,7 @@ describe("calculateRisk", () => {
     });
   });
 
-  it("returns CRITICAL for system-derived approval-drain proximity labels", () => {
+  it("keeps system-derived approval-drain proximity labels as review context", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",
       labels: [
@@ -202,16 +202,16 @@ describe("calculateRisk", () => {
       amlSignals: []
     });
 
-    expect(report.level).toBe("CRITICAL");
-    expect(report.score).toBe(95);
+    expect(report.level).toBe("HIGH");
+    expect(report.score).toBe(80);
     expect(report.reasons[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
-      message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.",
-      scoreImpact: 95
+      message: "Derived approval-drain route marker; exact provenance requires retained approval and transferFrom evidence.",
+      scoreImpact: 80
     });
   });
 
-  it("floors exact approval-drain provenance at 95", () => {
+  it("applies the exact reason-level floor to a referenced approval-drain candidate", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",
       labels: [],
@@ -222,7 +222,8 @@ describe("calculateRisk", () => {
           scoreImpact: 80,
           source: "approval_drain_provenance",
           confidence: "high",
-          severity: "high"
+          severity: "high",
+          evidenceRef: "raw-direct-profile"
         }
       ],
       behaviorSignals: [],

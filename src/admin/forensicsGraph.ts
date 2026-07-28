@@ -5,6 +5,8 @@ import {
   classifySourcePostDebitActivity
 } from "../forensics/contractDrivenEvidence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { isAuthoritativeDirectApprovalDrainProfile } from "../forensics/approvalDrainProvenance";
+import type { ApprovalDrainProvenanceProfile } from "../types";
 import {
   buildWhereFundingCandidateVisibility,
   type WhereFundingCandidateCaveat,
@@ -605,11 +607,25 @@ function setNodeIntelligence(
   };
 }
 
-function approvalDrainProfileIsExact(profile: Record<string, unknown>): boolean {
-  return stringField(profile, "evidenceStrength") === "exact_approval_and_transfer_from" &&
-    Boolean(stringField(profile, "approvalTxHash")) &&
-    Boolean(stringField(profile, "drainTxHash")) &&
-    Boolean(stringField(profile, "spenderAddress"));
+function normalizedApprovalDrainProfile(profile: Record<string, unknown>): ApprovalDrainProvenanceProfile | null {
+  const evidenceStrength = stringField(profile, "evidenceStrength");
+  const hopDepth = numberField(profile, "hopDepth");
+  const firstReceiverAddress = stringField(profile, "firstReceiverAddress");
+  const subjectAddress = stringField(profile, "subjectAddress");
+  if ((evidenceStrength !== "exact_approval_and_transfer_from" && evidenceStrength !== "route_linked") ||
+    (hopDepth !== 0 && hopDepth !== 1 && hopDepth !== 2) || !firstReceiverAddress || !subjectAddress) return null;
+  return {
+    ...profile,
+    evidenceStrength,
+    hopDepth,
+    firstReceiverAddress,
+    subjectAddress
+  } as unknown as ApprovalDrainProvenanceProfile;
+}
+
+function approvalDrainProfileIsExact(profile: Record<string, unknown>, checkedSubjectAddress: string): boolean {
+  const normalized = normalizedApprovalDrainProfile(profile);
+  return normalized !== null && isAuthoritativeDirectApprovalDrainProfile(normalized, checkedSubjectAddress);
 }
 
 function approvalDrainProfileHasGraphableTransfer(profile: Record<string, unknown>): boolean {
@@ -626,9 +642,8 @@ function approvalDrainProfileFeatureCodes(profile: Record<string, unknown>): str
   });
 }
 
-function approvalDrainProfileHasExactDrainRoot(profile: Record<string, unknown>): boolean {
-  return approvalDrainProfileIsExact(profile) ||
-    approvalDrainProfileFeatureCodes(profile).includes("approval_drain_exact_transfer_from");
+function approvalDrainProfileHasExactDrainRoot(profile: Record<string, unknown>, checkedSubjectAddress: string): boolean {
+  return approvalDrainProfileIsExact(profile, checkedSubjectAddress);
 }
 
 function sameAdminAddress(left: string | null, right: string | null): boolean {
@@ -687,10 +702,11 @@ function contractDrivenAddressPairKey(
 
 function attachApprovalDrainProvenanceNodeIntelligence(
   nodesById: Map<string, AdminForensicsNode>,
-  profiles: Record<string, unknown>[]
+  profiles: Record<string, unknown>[],
+  checkedSubjectAddress: string
 ): void {
   for (const profile of profiles) {
-    if (!approvalDrainProfileHasExactDrainRoot(profile)) continue;
+    if (!approvalDrainProfileHasExactDrainRoot(profile, checkedSubjectAddress)) continue;
     const confidence = numberField(profile, "score");
     const drainTxHash = stringField(profile, "drainTxHash");
     const signals = ["approval_drain_exact_provenance", ...(drainTxHash ? [`drain_tx:${drainTxHash}`] : [])];
@@ -716,7 +732,7 @@ function attachApprovalDrainProvenanceNodeIntelligence(
     const firstReceiverAddress = stringField(profile, "firstReceiverAddress");
     const subjectAddress = stringField(profile, "subjectAddress");
     setNodeIntelligence(nodesById, firstReceiverAddress, drainer);
-    if (sameAdminAddress(subjectAddress, firstReceiverAddress) || approvalDrainProfileIsExact(profile)) {
+    if (sameAdminAddress(subjectAddress, firstReceiverAddress) || approvalDrainProfileIsExact(profile, checkedSubjectAddress)) {
       setNodeIntelligence(nodesById, subjectAddress, drainer);
     }
     setNodeIntelligence(nodesById, stringField(profile, "spenderAddress"), drainer);
@@ -752,6 +768,8 @@ function appendContractDrivenEvidence(input: {
   edges: AdminForensicsEdge[];
 }): void {
   const receiverProfile = recordField(input.result, "contractDrivenReceiverProfile");
+  const exactApprovalDrainCount = recordArrayField(input.result, "approvalDrainProvenanceProfiles")
+    .filter((profile) => approvalDrainProfileIsExact(profile, input.subjectAddress)).length;
   const contractNames = receiverProfile ? stringArrayField(receiverProfile, "contractNames") : [];
   const receiverClassification = receiverProfile
     ? classifyContractDrivenReceiver({
@@ -763,7 +781,7 @@ function appendContractDrivenEvidence(input: {
       dominantMethod: stringField(receiverProfile, "dominantMethod"),
       contractNames,
       knownServiceIdentity: stringField(receiverProfile, "knownServiceIdentity"),
-      exactApprovalDrainCount: firstNumber(numberField(receiverProfile, "exactApprovalDrainCount")) ?? 0
+      exactApprovalDrainCount
     })
     : null;
   const receiverRole = receiverClassification
@@ -806,7 +824,7 @@ function appendContractDrivenEvidence(input: {
         dominantMethod: stringField(receiverProfile, "dominantMethod"),
         contractNames,
         knownServiceIdentity: stringField(receiverProfile, "knownServiceIdentity"),
-        exactApprovalDrainCount: firstNumber(numberField(receiverProfile, "exactApprovalDrainCount")) ?? 0,
+        exactApprovalDrainCount,
         classification: receiverClassification
       }
     });
@@ -1139,6 +1157,7 @@ function appendContractDrivenEvidence(input: {
 
 function projectApprovalDrainProvenanceEventClusters(input: {
   profiles: Record<string, unknown>[];
+  checkedSubjectAddress: string;
   upsertNode: (address: string, kind: AdminForensicsNode["kind"], metadata?: Record<string, unknown>) => string;
   edges: AdminForensicsEdge[];
   paths: AdminForensicsPath[];
@@ -1194,7 +1213,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     map.set(key, draft);
   };
   input.profiles.forEach((profile) => {
-    if (!approvalDrainProfileHasExactDrainRoot(profile)) return;
+    if (!approvalDrainProfileHasExactDrainRoot(profile, input.checkedSubjectAddress)) return;
     const receiverAddress = firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"));
     const spenderAddress = stringField(profile, "spenderAddress");
     const operatorAddress = stringField(profile, "operatorAddress");
@@ -1233,8 +1252,8 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const approvalAt = stringField(profile, "approvalAt");
     const score = numberField(profile, "score") ?? 95;
     const spenderResolution = stringField(profile, "spenderResolution");
-    const isExactProfile = approvalDrainProfileIsExact(profile);
-    const hasExactDrainRoot = approvalDrainProfileHasExactDrainRoot(profile);
+    const isExactProfile = approvalDrainProfileIsExact(profile, input.checkedSubjectAddress);
+    const hasExactDrainRoot = approvalDrainProfileHasExactDrainRoot(profile, input.checkedSubjectAddress);
     const edgeVerdict = hasExactDrainRoot ? "risk" : "review";
     const pathVerdict = hasExactDrainRoot ? "DECLINE" : "REVIEW";
     const evidenceKind = isExactProfile ? "exact" : hasExactDrainRoot ? "route_linked_exact_root" : "route_linked_review";
@@ -4866,7 +4885,7 @@ function projectWhereIsMoneyJob(
   suppressFundingBundleDuplicateEdges(edges, paths, nodesById);
   removeNoTxTransferDuplicates(edges, paths);
   annotateReciprocalDirectCounterpartyFlows(edges);
-  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
+  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles, subjectAddress);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
@@ -6653,6 +6672,7 @@ function projectAddressDeepJob(
 
   projectApprovalDrainProvenanceEventClusters({
     profiles: approvalDrainProvenanceProfiles,
+    checkedSubjectAddress: subjectAddress,
     upsertNode,
     edges,
     paths,
@@ -6692,7 +6712,7 @@ function projectAddressDeepJob(
   mergeDuplicateTransferEdges(edges, paths);
   removeNoTxTransferDuplicates(edges, paths);
   annotateReciprocalDirectCounterpartyFlows(edges);
-  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
+  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles, subjectAddress);
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const hopDepths = deepCheckHopDepths(subjectNodeId, edges);
