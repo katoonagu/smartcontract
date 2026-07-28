@@ -538,6 +538,50 @@ describe("Unified Telegram presentation", () => {
     }
   });
 
+  it("renders the reachable neutral decisive reason in RU and EN", () => {
+    const dossier = report();
+    const sections = dossier.sections.map((entry) => {
+      if (entry.kind === "score_action") {
+        return {
+          ...entry,
+          score: 0,
+          decision: "ACCEPTABLE" as const,
+          action: "proceed" as const
+        };
+      }
+      if (entry.kind === "score_drivers") {
+        return {
+          ...entry,
+          rows: [{
+            code: "neutral_no_observed_risk",
+            factIds: ["fact-driver"],
+            collapsedFactCount: 1
+          }]
+        };
+      }
+      return entry;
+    });
+    const neutral = {
+      ...dossier,
+      score: 0,
+      decision: "ACCEPTABLE" as const,
+      sections
+    };
+
+    expect(renderUnifiedWalletPresentation({
+      report: neutral,
+      manifest: buildPresentationManifest(neutral, "ru")
+    }).artifact.html).toContain(
+      "В проверенных данных не найдено подтверждённых риск-сигналов."
+    );
+    expect(renderUnifiedWalletPresentation({
+      report: neutral,
+      manifest: buildPresentationManifest(neutral, "en")
+    }).artifact.html).toContain(
+      "No confirmed risk signals were found in the checked data."
+    );
+  });
+
   it("uses neutral localized copy for an unknown non-decisive behavior", () => {
     const dossier = withAdditionalBehaviorCodes(
       customerReport(),

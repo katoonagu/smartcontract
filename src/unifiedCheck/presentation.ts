@@ -213,6 +213,10 @@ const SEMANTIC_REASON: Readonly<Record<
     en: "A new wallet with no USDT activity receives no risk merely because of its age.",
     ru: "Новый кошелёк без USDT-активности не получает риск только из-за возраста."
   },
+  neutral_no_observed_risk: {
+    en: "No confirmed risk signals were found in the checked data.",
+    ru: "В проверенных данных не найдено подтверждённых риск-сигналов."
+  },
   clean_confirmed_context: {
     en: "One direct legitimate exchange transfer was found without a risk pattern.",
     ru: "Найдена одна прямая легитимная биржевая операция без признаков риска."
