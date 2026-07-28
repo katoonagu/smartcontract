@@ -74,6 +74,45 @@ describe("parseBlacklistRows", () => {
 });
 
 describe("verifyBlacklistEvent", () => {
+  const validSignatures: Array<["added" | "removed", string]> = [
+    ["added", "AddedBlackList(address)"],
+    ["added", "AddedBlackList(address _user)"],
+    ["added", "AddedBlackList(address indexed _user)"],
+    ["added", " AddedBlackList ( address indexed _user ) "],
+    ["removed", "RemovedBlackList(address)"],
+    ["removed", "RemovedBlackList(address _user)"],
+    ["removed", "RemovedBlackList(address indexed _user)"],
+    ["removed", " RemovedBlackList ( address indexed _user ) "]
+  ];
+
+  it.each(validSignatures)("accepts the semantic %s signature %j", (kind, signature) => {
+    const added = kind === "added";
+    expect(verifyBlacklistEvent([contractEvent({
+      event_name: added ? "AddedBlackList" : "RemovedBlackList",
+      event: signature,
+      topics: [added ? ADDED_TOPIC : REMOVED_TOPIC, addressTopic(ADDRESS)]
+    })], ADDRESS)).toMatchObject({ eventKind: kind });
+  });
+
+  const invalidSignatures: Array<[string, unknown]> = [
+    ["indexed without a parameter name", "AddedBlackList(address indexed)"],
+    ["a second parameter", "AddedBlackList(address _user, address other)"],
+    ["an array type", "AddedBlackList(address[] _user)"],
+    ["a payable type", "AddedBlackList(address payable _user)"],
+    ["reversed indexed tokens", "AddedBlackList(address _user indexed)"],
+    ["an unknown event name", "Transfer(address _user)"],
+    ["a malformed identifier", "AddedBlackList(address indexed 1user)"],
+    ["a non-string value", 42]
+  ];
+
+  it.each(invalidSignatures)("rejects a signature with %s", (_name, signature) => {
+    expect(verifyBlacklistEvent([contractEvent({ event: signature })], ADDRESS)).toBeNull();
+  });
+
+  it("rejects a semantic signature that contradicts the decoded name and raw topic", () => {
+    expect(verifyBlacklistEvent([contractEvent({ event: "RemovedBlackList(address indexed _user)" })], ADDRESS)).toBeNull();
+  });
+
   it("builds a verified added event from the exact official contract log", () => {
     expect(verifyBlacklistEvent([contractEvent()], ADDRESS)).toEqual({
       eventKind: "added",

@@ -2431,7 +2431,9 @@ describe("TronscanClient", () => {
         data: [blacklistProviderRow(txHash, time)]
       }))
       .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(txHash, time, block)))
-      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(txHash, time, block, 0)] }));
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(txHash, time, block, 0, "added", {
+        event: "AddedBlackList(address indexed _user)"
+      })] }));
     const client = new TronscanClient({
       baseUrl: "https://apilist.tronscanapi.com",
       fullNodeBaseUrl: "https://api.trongrid.io",

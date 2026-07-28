@@ -162,9 +162,22 @@ function eventKindFromName(value: unknown): UsdtBlacklistTimelineEvent["eventKin
 }
 
 function eventKindFromSignature(value: unknown): UsdtBlacklistTimelineEvent["eventKind"] | null {
-  if (value === "AddedBlackList(address)") return "added";
-  if (value === "RemovedBlackList(address)") return "removed";
-  return null;
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(AddedBlackList|RemovedBlackList)\s*\(([^()]*)\)$/u);
+  if (!match) return null;
+  const parameters = match[2].trim().split(/\s+/u);
+  const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
+  const validParameter = parameters.length === 1 && parameters[0] === "address"
+    || parameters.length === 2
+      && parameters[0] === "address"
+      && parameters[1] !== "indexed"
+      && identifier.test(parameters[1])
+    || parameters.length === 3
+      && parameters[0] === "address"
+      && parameters[1] === "indexed"
+      && identifier.test(parameters[2]);
+  if (!validParameter) return null;
+  return match[1] === "AddedBlackList" ? "added" : "removed";
 }
 
 function eventKindFromTopic(value: unknown): UsdtBlacklistTimelineEvent["eventKind"] | null {
