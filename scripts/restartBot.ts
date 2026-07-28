@@ -90,7 +90,8 @@ async function waitForPollingRelease(
   ) {
     const runtime = await deps.loadRuntimeInstance(instanceId);
     if (
-      runtime?.state === "DRAINING" &&
+      runtime !== null &&
+      (runtime.state === "DRAINING" || runtime.state === "STOPPED") &&
       runtime.telegramPollingReleasedAt !== null
     ) return;
     if (elapsed < deps.releaseTimeoutMs) {

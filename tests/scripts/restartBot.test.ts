@@ -129,4 +129,21 @@ describe("safe bot restart", () => {
     );
     expect(deps.spawnProcess).not.toHaveBeenCalled();
   });
+
+  it("accepts a stopped drainer that durably released polling", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.loadRuntimeInstance).mockResolvedValue(
+      runtime("old-runtime", "STOPPED", {
+        telegramPollingReleasedAt: "2026-07-28T10:01:01.000Z",
+        stoppedAt: "2026-07-28T10:01:02.000Z",
+        failureReason: "graceful_exit"
+      })
+    );
+
+    await expect(restartBot(deps)).resolves.toMatchObject({
+      oldInstanceId: "old-runtime",
+      newInstanceId: "new-runtime"
+    });
+    expect(deps.spawnProcess).toHaveBeenCalledOnce();
+  });
 });
