@@ -59,7 +59,7 @@ paths from owning automatic output for the same chat/address pair.
 
 The authority and event-time correctness gate is complete. Historical results
 were not recalculated. Implementation landed as four independent fixes, one
-compatibility gate, and a focused cross-chain authority follow-up:
+compatibility gate, and focused cross-chain authority follow-ups:
 
 - approval authority: [`5f7021768eb5cc941d6758379f6e8e7052bbaa35`](https://github.com/katoonagu/smartcontract/commit/5f7021768eb5cc941d6758379f6e8e7052bbaa35);
 - semantic blacklist declarations: [`b926cea227bc38c7378e32e4d79079e071218550`](https://github.com/katoonagu/smartcontract/commit/b926cea227bc38c7378e32e4d79079e071218550);
@@ -68,7 +68,10 @@ compatibility gate, and a focused cross-chain authority follow-up:
 - legacy compatibility gate: [`d3a4f1b0b7e9d964df6b7bca71b937bb66290f28`](https://github.com/katoonagu/smartcontract/commit/d3a4f1b0b7e9d964df6b7bca71b937bb66290f28);
 - typed cross-chain sanctions authority: [`a169d6f11ca358dd9a51d2416b6a25e018c5e163`](https://github.com/katoonagu/smartcontract/commit/a169d6f11ca358dd9a51d2416b6a25e018c5e163),
   preserving separate exact corridor authority without authorizing colliding
-  local sanctions artifacts.
+  local sanctions artifacts;
+- typed cross-chain sanctions score: [`e0d011bcaf43b47a2cf83628d4ff5a8a0fa29702`](https://github.com/katoonagu/smartcontract/commit/e0d011bcaf43b47a2cf83628d4ff5a8a0fa29702),
+  retaining the validated decline score for that exact typed corridor while
+  local artifacts remain isolated.
 
 Verification passed: the combined targeted suite (`1,690` tests), Golden V2
 verification (`24` tests; locked manifest
