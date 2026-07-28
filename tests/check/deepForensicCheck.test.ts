@@ -668,6 +668,96 @@ describe("deep forensic address check", () => {
     expect(JSON.parse(JSON.stringify(report.firstHopBlacklistFacts))).toEqual(report.firstHopBlacklistFacts);
   });
 
+  it("keeps distinct rich indexed events with an identical transaction tuple in direct facts", async () => {
+    const sourceAddress = "TSubjectRichEventIdentity111111111111";
+    const counterparty = "TRichEventBlacklisted111111111111111";
+    const txHash = "e".repeat(64);
+    const blacklistTxHash = "f".repeat(64);
+    const transfers = [0, 1].map((eventIndex) => ({
+      ...indexed({
+        id: txHash,
+        from: counterparty,
+        to: sourceAddress,
+        amountRaw: "5000000000",
+        at: "2026-06-15T00:00:00.000Z",
+        eventIndex
+      }),
+      transferId: `tronscan:${txHash}:${eventIndex}`,
+      provider: "tronscan" as const,
+      providerRowOrdinalInTx: eventIndex
+    }));
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === sourceAddress ? [transfer({
+          id: txHash,
+          from: counterparty,
+          to: sourceAddress,
+          amountRaw: "5000000000",
+          at: "2026-06-15T00:00:00.000Z"
+        })] : []
+      },
+      listIndexedUsdtTransfersForAddress: async (address, options) => address === sourceAddress
+        ? transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit)
+        : [],
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => ({
+        ...usdtRestriction(address),
+        isBlacklisted: address === counterparty,
+        blacklistEventTxHash: address === counterparty ? blacklistTxHash : null,
+        blacklistEventTimestamp: address === counterparty ? "2026-06-01T00:00:00.000Z" : null,
+        blacklistEventBlock: address === counterparty ? 200 : null,
+        blacklistTimeline: address === counterparty ? {
+          address,
+          events: [{
+            eventKind: "added" as const,
+            address,
+            tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+            occurredAt: "2026-06-01T00:00:00.000Z",
+            txHash: blacklistTxHash,
+            blockNumber: 200,
+            logIndex: 0,
+            verification: "verified_contract_log" as const
+          }],
+          pagination: "complete" as const,
+          failureReason: null,
+          checkedAt: "2026-07-02T00:00:00.000Z"
+        } : null
+      })
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 2, 1),
+      allTimeMode: "strict"
+    });
+
+    expect(report.directCounterpartyInteractionProfiles?.[0]).toMatchObject({
+      counterpartyAddress: counterparty,
+      volumeRaw: "10000000000",
+      txCount: 2,
+      txHashes: [txHash, txHash],
+      transfers: [
+        expect.objectContaining({ transferId: `tronscan:${txHash}:0`, eventIndex: 0 }),
+        expect.objectContaining({ transferId: `tronscan:${txHash}:1`, eventIndex: 1 })
+      ]
+    });
+    expect(report.firstHopBlacklistFacts).toEqual([expect.objectContaining({
+      counterpartyAddress: counterparty,
+      principalAmountRaw: "10000000000",
+      principalTxCount: 1,
+      directionalPrincipalTotalRaw: "10000000000",
+      activeAmountRaw: "10000000000",
+      activeTxCount: 1
+    })]);
+  });
+
   it("builds partial first-hop facts only from the bounded checked window", async () => {
     const sourceAddress = "TSubjectFirstHopBounded111111111111";
     const inWindowCounterparty = "TFirstHopBoundedInside111111111111";
@@ -3322,6 +3412,13 @@ describe("deep forensic address check", () => {
         labels: [{ ...validLabel, createdAt: new Date(validLabel.createdAt) }]
       }]
     });
+    expect(validNormalized.firstHopBlacklistFacts?.[0]).not.toHaveProperty("directionalPrincipalTotalRaw");
+    const validWithDenominator = {
+      ...validEnvelope,
+      firstHopBlacklistFacts: [{ ...validFact, directionalPrincipalTotalRaw: "20000000000", directionalPrincipalShare: 0.5 }]
+    };
+    expect(normalizePersistedDeepFirstHopEvidence(validWithDenominator).firstHopBlacklistFacts?.[0])
+      .toMatchObject({ directionalPrincipalTotalRaw: "20000000000", directionalPrincipalShare: 0.5 });
     expect(normalizePersistedDeepFirstHopEvidence({})).toEqual({});
 
     const uint256Overflow = (1n << 256n).toString();
@@ -3338,6 +3435,14 @@ describe("deep forensic address check", () => {
       { ...validEnvelope, firstHopLabelFacts: [{ ...validLabelFact, evidenceAuthority: "derived" }] },
       { ...validEnvelope, firstHopLabelFacts: [{ ...validLabelFact, recordedAt: "2026-05-02T00:00:00.000Z" }] },
       { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, checkedAt: "2026-05-24T00:00:00Z" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, directionalPrincipalTotalRaw: "01" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, directionalPrincipalTotalRaw: "0" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, directionalPrincipalTotalRaw: "9999999999" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{
+        ...validFact,
+        directionalPrincipalTotalRaw: "20000000000",
+        directionalPrincipalShare: 0.50000001
+      }] },
       { ...validEnvelope, firstHopBlacklistFacts: [{
         ...validFact,
         principalAmountRaw: uint256Overflow,

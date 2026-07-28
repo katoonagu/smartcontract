@@ -13,6 +13,11 @@ import {
   VERIFY20,
   psmObservation
 } from "../fixtures/forensics/remediationScoringCases";
+import {
+  TGYT_DIRECT_BLACKLIST_CASE,
+  tgytDirectInteractionProfiles,
+  tgytFirstHopBlacklistFact
+} from "../fixtures/forensics/directBlacklistCases";
 
 const TX_HASH = "1".repeat(64);
 const FEE_TX_HASH = "2".repeat(64);
@@ -228,6 +233,46 @@ describe("Plan 2 remediation scoring compatibility", () => {
 
     expect(candidates.some((candidate) => candidate.row === "direct_counterparty_policy")).toBe(false);
     expect(JSON.stringify(candidates)).not.toContain(FEE_TX_HASH);
+  });
+
+  it("[COMPAT] recomputes legacy active denominators but never hardens legacy mixed facts", () => {
+    const value = TGYT_DIRECT_BLACKLIST_CASE;
+    const activeEventAt = "2026-05-26T08:00:00.000Z";
+    const active = {
+      ...tgytFirstHopBlacklistFact(),
+      temporalRelation: "active_at_transfer" as const,
+      effectiveAt: activeEventAt,
+      beforeEffectiveAmountRaw: "0",
+      beforeEffectiveTxCount: 0,
+      activeAmountRaw: value.totalPrincipalRaw,
+      activeTxCount: 2,
+      timelineEvents: tgytFirstHopBlacklistFact().timelineEvents.map((event) => ({ ...event, occurredAt: activeEventAt }))
+    } as ReturnType<typeof tgytFirstHopBlacklistFact> & Record<string, unknown>;
+    delete active.directionalPrincipalTotalRaw;
+    const build = (fact: ReturnType<typeof tgytFirstHopBlacklistFact>) => buildWalletMatrixCandidates({
+      address: value.subjectAddress,
+      fastReport: null,
+      whereReport: whereReport({ subjectAddress: value.subjectAddress }),
+      deepReport: {
+        subjectAddress: value.subjectAddress,
+        firstHopBlacklistFacts: [fact],
+        directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles()
+      } as any
+    }).filter((candidate) => candidate.row === "direct_counterparty_policy");
+    expect(build(active)).toHaveLength(1);
+
+    const mixedEventAt = "2026-05-26T09:50:00.000Z";
+    const mixed = {
+      ...active,
+      temporalRelation: "mixed" as const,
+      effectiveAt: mixedEventAt,
+      beforeEffectiveAmountRaw: "15000000",
+      beforeEffectiveTxCount: 1,
+      activeAmountRaw: value.largestPrincipalRaw,
+      activeTxCount: 1,
+      timelineEvents: active.timelineEvents.map((event) => ({ ...event, occurredAt: mixedEventAt }))
+    };
+    expect(build(mixed)).toEqual([]);
   });
 
   it("[REQ-04][COMPAT] legacy v2 result is read without synthesizing ScoreAnchorV2", async () => {

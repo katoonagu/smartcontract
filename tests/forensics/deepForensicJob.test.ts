@@ -6641,20 +6641,40 @@ describe("deep forensic job runner", () => {
     const eventTxHash = "b".repeat(64);
     const sourceJob = job();
     const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+    const allTimeState: TronAddressUsdtIndexState = {
+      ...queuedIndexState(subject),
+      status: "complete",
+      statusReason: "complete_provider_windowed",
+      provider: "tronscan",
+      totalReported: 1,
+      fetchedTransferCount: 1,
+      uniqueCounterpartyCount: 1,
+      newestTransferAt: new Date("2026-05-20T10:00:00.000Z"),
+      oldestTransferAt: new Date("2026-05-20T10:00:00.000Z"),
+      coveredUntilTimestamp: new Date("2026-05-20T10:00:00.000Z"),
+      fetchedPageCount: 1,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    };
+    const indexedDirectTransfer = indexedTransfer({
+      txHash: directTxHash,
+      fromAddress: counterparty,
+      toAddress: subject,
+      amountRaw: "10000000000",
+      blockTimestamp: new Date("2026-05-20T10:00:00.000Z")
+    });
 
     const handled = await runSingleDeepForensicJobCycle({
       claimNextForensicCheckJob: async () => sourceJob,
       completeForensicCheckJob,
       recordRiskEvaluation: vi.fn(async () => undefined),
       upsertAddressLabelAssertion: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory: async () => allTimeState,
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const rows = address === subject ? [indexedDirectTransfer] : [];
+        return rows.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
       tronClient: {
-        listRelatedTrc20Transfers: async (address) => address === subject ? [transfer({
-          id: directTxHash,
-          from: counterparty,
-          to: subject,
-          amountRaw: "10000000000",
-          at: "2026-05-20T10:00:00.000Z"
-        })] : []
+        listRelatedTrc20Transfers: async () => []
       },
       getLabelsForAddress: async (address) => address === counterparty ? [{
         address,
@@ -6697,7 +6717,8 @@ describe("deep forensic job runner", () => {
       maxInboundSenders: 0,
       extendedSearchMode: "disabled",
       recentFallbackMinTransferCount: 0,
-      recentFallbackTransferLimit: 0
+      recentFallbackTransferLimit: 0,
+      allTimeDeepCheckMode: "strict"
     });
 
     expect(handled).toBe(true);
@@ -6709,6 +6730,7 @@ describe("deep forensic job runner", () => {
         counterpartyAddress: counterparty,
         direction: "inbound",
         principalAmountRaw: "10000000000",
+        directionalPrincipalTotalRaw: "10000000000",
         transferTxHashes: [directTxHash],
         activeAmountRaw: "10000000000",
         timelineEvents: [expect.objectContaining({ txHash: eventTxHash, logIndex: 2 })]
@@ -6722,9 +6744,9 @@ describe("deep forensic job runner", () => {
       })],
       firstHopBlacklistCoverage: expect.objectContaining({
         requiredForDecision: true,
-        scope: "checked_window",
-        directPrincipalTransferCoverage: "partial",
-        blacklistCheckCoverage: "history_partial"
+        scope: "all_time",
+        directPrincipalTransferCoverage: "complete",
+        blacklistCheckCoverage: "complete"
       })
     });
     expect(serialized.progressJson).toMatchObject({

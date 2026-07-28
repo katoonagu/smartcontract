@@ -28,6 +28,11 @@ import {
   selectedMoneyOriginPathShare
 } from "../forensics/moneyOriginAttribution";
 import { buildUsddPsmExposure, usddPsmMatrixCandidate } from "./usddPsmExposure";
+import {
+  exactEightDecimalShare,
+  isPersistableUsdtBlacklistTimelineEvent,
+  partitionPrincipalTransfersByBlacklistTimeline
+} from "../forensics/directHardEvidence";
 
 export type WalletMatrixCandidateInput = {
   address: string;
@@ -104,15 +109,37 @@ function contextScore(value: number, max = 59): number {
 
 const DIRECT_POLICY_ABSOLUTE_RAW = 10_000n * 1_000_000n;
 const DIRECT_POLICY_RELATIVE_MIN_RAW = 100n * 1_000_000n;
-const DIRECT_POLICY_RELATIVE_MIN_SHARE = 0.01;
+
+type DirectPolicyPrincipalTransfer = {
+  txHash: string;
+  amountRaw: bigint;
+  occurredAt: string;
+  signature: string;
+  identity: string | null;
+};
 
 type DirectPolicyProfileBinding = {
+  kind: "principal";
+  key: string;
+  direction: CounterpartyRiskDirection;
   principalAmountRaw: bigint;
   principalTxCount: number;
   scoreContribution: number;
+  principalTransfers: DirectPolicyPrincipalTransfer[];
 };
 
-type DirectPolicyProfileIndex = Map<string, DirectPolicyProfileBinding[]>;
+type DirectPolicyProfileResult = DirectPolicyProfileBinding | {
+  kind: "valid_fee_only";
+  direction: CounterpartyRiskDirection;
+} | {
+  kind: "invalid";
+  direction: CounterpartyRiskDirection | null;
+};
+
+type DirectPolicyProfileIndex = {
+  results: DirectPolicyProfileResult[];
+  conflictingPrincipalTxHashes: Set<string>;
+};
 
 function directPolicyProfileKey(input: {
   subjectAddress: string;
@@ -134,18 +161,27 @@ function directPolicyProfileKey(input: {
 function indexedDirectPolicyProfile(
   reportSubjectAddress: string,
   profile: DirectCounterpartyInteractionProfile
-): { key: string; binding: DirectPolicyProfileBinding } | null {
+): DirectPolicyProfileResult {
+  const direction = profile.direction === "inbound" || profile.direction === "outbound"
+    ? profile.direction
+    : null;
   if (
+    direction === null ||
     !sameAddress(profile.subjectAddress, reportSubjectAddress) ||
     !Number.isFinite(profile.scoreContribution) ||
     profile.scoreContribution < 0 ||
     profile.scoreContribution > 100 ||
     !Array.isArray(profile.transfers) ||
     profile.transfers.length === 0
-  ) return null;
+  ) return { kind: "invalid", direction };
 
-  const principalAmountByTxHash = new Map<string, bigint>();
-  const seenPrincipalMovements = new Set<string>();
+  const principalTransfers: DirectPolicyPrincipalTransfer[] = [];
+  const profileMovementTxHashes: string[] = [];
+  let profileAmountRaw = 0n;
+  let hasValidFee = false;
+  const exactIdentities = new Set<string>();
+  const richSignatures = new Set<string>();
+  const legacySignatures = new Set<string>();
   for (const transfer of profile.transfers) {
     if (
       !transfer ||
@@ -153,94 +189,177 @@ function indexedDirectPolicyProfile(
       transfer.txHash.trim().length === 0 ||
       typeof transfer.amountRaw !== "string" ||
       !/^(0|[1-9]\d*)$/.test(transfer.amountRaw) ||
+      typeof transfer.timestamp !== "string" ||
+      !Number.isFinite(Date.parse(transfer.timestamp)) ||
       (transfer.economicRole !== undefined &&
         transfer.economicRole !== "principal" &&
-        transfer.economicRole !== "service_fee")
-    ) return null;
-    const endpointsMatch = profile.direction === "inbound"
+        transfer.economicRole !== "service_fee") ||
+      (transfer.transferId !== undefined && transfer.transferId !== null &&
+        (typeof transfer.transferId !== "string" || transfer.transferId.trim().length === 0)) ||
+      (transfer.eventIndex !== undefined && transfer.eventIndex !== null &&
+        (!Number.isSafeInteger(transfer.eventIndex) || transfer.eventIndex < 0)) ||
+      (transfer.provider !== undefined && transfer.provider !== null &&
+        (typeof transfer.provider !== "string" || transfer.provider.trim().length === 0)) ||
+      (transfer.providerRowOrdinalInTx !== undefined && transfer.providerRowOrdinalInTx !== null &&
+        (!Number.isSafeInteger(transfer.providerRowOrdinalInTx) || transfer.providerRowOrdinalInTx < 0))
+    ) return { kind: "invalid", direction };
+    const txHash = transfer.txHash.trim();
+    const occurredAt = new Date(transfer.timestamp).toISOString();
+    const endpointsMatch = direction === "inbound"
       ? sameAddress(transfer.fromAddress, profile.counterpartyAddress) &&
         sameAddress(transfer.toAddress, profile.subjectAddress)
       : sameAddress(transfer.fromAddress, profile.subjectAddress) &&
         sameAddress(transfer.toAddress, profile.counterpartyAddress);
-    if (!endpointsMatch) return null;
-    if (transfer.economicRole === "service_fee") continue;
+    if (!endpointsMatch) return { kind: "invalid", direction };
     const amountRaw = BigInt(transfer.amountRaw);
-    if (amountRaw === 0n) continue;
+    const isFee = transfer.economicRole === "service_fee";
+    if (isFee && transfer.economicProtocol !== "tron_gasfree") {
+      return { kind: "invalid", direction };
+    }
     const movementSignature = JSON.stringify({
-      txHash: transfer.txHash,
+      txHash,
       fromAddress: transfer.fromAddress,
       toAddress: transfer.toAddress,
       amountRaw: transfer.amountRaw,
-      timestamp: transfer.timestamp,
+      timestamp: occurredAt,
       method: transfer.method,
       edgeType: transfer.edgeType,
       economicRole: transfer.economicRole ?? null,
       economicProtocol: transfer.economicProtocol ?? null
     });
-    if (seenPrincipalMovements.has(movementSignature)) return null;
-    seenPrincipalMovements.add(movementSignature);
-    principalAmountByTxHash.set(
-      transfer.txHash,
-      (principalAmountByTxHash.get(transfer.txHash) ?? 0n) + amountRaw
-    );
+    const transferId = transfer.transferId?.trim() || null;
+    const provider = transfer.provider?.trim() || null;
+    const movementIdentity = transferId
+      ? `transfer:${transferId}`
+      : transfer.eventIndex !== null && transfer.eventIndex !== undefined
+        ? `event:${txHash}:${transfer.eventIndex}`
+        : provider && transfer.providerRowOrdinalInTx !== null && transfer.providerRowOrdinalInTx !== undefined
+          ? `provider:${provider}:${txHash}:${transfer.providerRowOrdinalInTx}`
+          : null;
+    if (movementIdentity) {
+      if (exactIdentities.has(movementIdentity) || legacySignatures.has(movementSignature)) {
+        return { kind: "invalid", direction };
+      }
+      exactIdentities.add(movementIdentity);
+      richSignatures.add(movementSignature);
+    } else {
+      if (legacySignatures.has(movementSignature) || richSignatures.has(movementSignature)) {
+        return { kind: "invalid", direction };
+      }
+      legacySignatures.add(movementSignature);
+    }
+    profileAmountRaw += amountRaw;
+    profileMovementTxHashes.push(txHash);
+    if (isFee) {
+      hasValidFee = true;
+      continue;
+    }
+    if (amountRaw === 0n) continue;
+    principalTransfers.push({
+      txHash,
+      amountRaw,
+      occurredAt,
+      signature: movementSignature,
+      identity: movementIdentity
+    });
   }
-  if (principalAmountByTxHash.size === 0) return null;
+  if (
+    !/^(0|[1-9]\d*)$/.test(profile.volumeRaw) ||
+    BigInt(profile.volumeRaw) !== profileAmountRaw ||
+    profile.txCount !== profileMovementTxHashes.length ||
+    !Array.isArray(profile.txHashes) ||
+    profile.txHashes.length !== profileMovementTxHashes.length ||
+    profile.txHashes.some((txHash, index) =>
+      typeof txHash !== "string" || txHash.trim() !== profileMovementTxHashes[index]
+    )
+  ) return { kind: "invalid", direction };
+  if (principalTransfers.length === 0) {
+    return hasValidFee
+      ? { kind: "valid_fee_only", direction }
+      : { kind: "invalid", direction };
+  }
 
-  const principalTxHashes = [...principalAmountByTxHash.keys()];
+  const principalTxHashes = [...new Set(principalTransfers.map((transfer) => transfer.txHash))];
   const key = directPolicyProfileKey({
     subjectAddress: profile.subjectAddress,
     counterpartyAddress: profile.counterpartyAddress,
     direction: profile.direction,
     txHashes: principalTxHashes
   });
-  if (key === null) return null;
+  if (key === null) return { kind: "invalid", direction };
   return {
+    kind: "principal",
     key,
-    binding: {
-      principalAmountRaw: [...principalAmountByTxHash.values()].reduce((sum, amountRaw) => sum + amountRaw, 0n),
-      principalTxCount: principalAmountByTxHash.size,
-      scoreContribution: profile.scoreContribution
-    }
+    direction,
+    principalAmountRaw: principalTransfers.reduce((sum, transfer) => sum + transfer.amountRaw, 0n),
+    principalTxCount: principalTxHashes.length,
+    scoreContribution: profile.scoreContribution,
+    principalTransfers
   };
 }
 
 function buildDirectPolicyProfileIndex(report: DeepAddressForensicReport): DirectPolicyProfileIndex {
-  const index: DirectPolicyProfileIndex = new Map();
+  const results: DirectPolicyProfileResult[] = [];
+  const timestampsByTxHash = new Map<string, string>();
+  const conflictingPrincipalTxHashes = new Set<string>();
   for (const profile of arrayOrEmpty(report.directCounterpartyInteractionProfiles)) {
-    const indexed = indexedDirectPolicyProfile(report.subjectAddress, profile);
-    if (!indexed) continue;
-    index.set(indexed.key, [...(index.get(indexed.key) ?? []), indexed.binding]);
+    const result = indexedDirectPolicyProfile(report.subjectAddress, profile);
+    results.push(result);
+    if (result.kind !== "principal") continue;
+    for (const transfer of result.principalTransfers) {
+      const previous = timestampsByTxHash.get(transfer.txHash);
+      if (previous !== undefined && previous !== transfer.occurredAt) {
+        conflictingPrincipalTxHashes.add(transfer.txHash);
+      } else {
+        timestampsByTxHash.set(transfer.txHash, transfer.occurredAt);
+      }
+    }
   }
-  return index;
+  return { results, conflictingPrincipalTxHashes };
 }
 
-function boundDirectPolicyProfileScore(
-  report: DeepAddressForensicReport,
+function selectedDirectPolicyProfile(
+  reportSubjectAddress: string,
   fact: FirstHopBlacklistFact,
   profileIndex: DirectPolicyProfileIndex
-): number | null {
+): { binding: DirectPolicyProfileBinding; denominator: bigint } | null {
+  const sameDirection = profileIndex.results.filter((result) => result.direction === fact.direction);
+  if (sameDirection.some((result) => result.kind === "invalid")) return null;
+  const principal = sameDirection.filter((result): result is DirectPolicyProfileBinding => result.kind === "principal");
+  const keys = new Set<string>();
+  const exactIdentities = new Set<string>();
+  const richSignatures = new Set<string>();
+  const legacySignatures = new Set<string>();
+  let denominator = 0n;
+  for (const binding of principal) {
+    if (keys.has(binding.key)) return null;
+    keys.add(binding.key);
+    denominator += binding.principalAmountRaw;
+    for (const transfer of binding.principalTransfers) {
+      if (transfer.identity) {
+        if (exactIdentities.has(transfer.identity) || legacySignatures.has(transfer.signature)) return null;
+        exactIdentities.add(transfer.identity);
+        richSignatures.add(transfer.signature);
+      } else {
+        if (legacySignatures.has(transfer.signature) || richSignatures.has(transfer.signature)) return null;
+        legacySignatures.add(transfer.signature);
+      }
+    }
+  }
   const key = directPolicyProfileKey({
-    subjectAddress: report.subjectAddress,
+    subjectAddress: reportSubjectAddress,
     counterpartyAddress: fact.counterpartyAddress,
     direction: fact.direction,
     txHashes: fact.transferTxHashes
   });
   if (key === null || fact.principalTxCount !== fact.transferTxHashes.length) return null;
   const principalAmountRaw = BigInt(fact.principalAmountRaw);
-  const bindings = (profileIndex.get(key) ?? []).filter((binding) =>
+  const bindings = principal.filter((binding) =>
+    binding.key === key &&
     binding.principalAmountRaw === principalAmountRaw &&
     binding.principalTxCount === fact.principalTxCount
   );
-  return bindings.length > 0
-    ? Math.max(...bindings.map((binding) => binding.scoreContribution))
-    : null;
-}
-
-function verifiedBlacklistEventTxHash(fact: FirstHopBlacklistFact): string | null {
-  if (!fact.effectiveTxHash) return null;
-  return fact.timelineEvents.some((event) =>
-    event.txHash === fact.effectiveTxHash && event.verification === "verified_contract_log"
-  ) ? fact.effectiveTxHash : null;
+  return bindings.length === 1 ? { binding: bindings[0], denominator } : null;
 }
 
 function directCounterpartyPolicyCandidate(
@@ -248,38 +367,81 @@ function directCounterpartyPolicyCandidate(
   report: DeepAddressForensicReport,
   profileIndex: DirectPolicyProfileIndex,
   fact: FirstHopBlacklistFact,
-  actionUnit: "wallet" | "incoming_deposit"
+  actionUnit: "wallet" | "incoming_deposit",
+  requiredActiveTxHash?: string
 ): MatrixCandidate | null {
   if (
     fact.evidenceKind !== "usdt_blacklist" ||
     fact.evidenceAuthority !== "official_contract" ||
     fact.statusAtCheck !== "active" ||
+    (fact.temporalRelation !== "active_at_transfer" && fact.temporalRelation !== "mixed") ||
+    fact.timelineCoverage !== "complete" ||
+    fact.directTransferCoverage !== "complete" ||
+    fact.shareSemantics !== "exact" ||
+    typeof fact.directionalPrincipalShare !== "number" ||
     !/^(0|[1-9]\d*)$/.test(fact.principalAmountRaw) ||
     BigInt(fact.principalAmountRaw) <= 0n ||
     fact.principalTxCount <= 0 ||
     fact.transferTxHashes.length === 0
   ) return null;
 
-  const boundProfileScore = boundDirectPolicyProfileScore(report, fact, profileIndex);
-  if (boundProfileScore === null) return null;
-
+  if (!fact.timelineEvents.every(isPersistableUsdtBlacklistTimelineEvent)) return null;
+  const timelineEvents = [...fact.timelineEvents].sort((left, right) =>
+    Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+    (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+    (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+    left.txHash.localeCompare(right.txHash)
+  );
+  const finalEvent = timelineEvents.at(-1);
+  if (
+    !finalEvent ||
+    finalEvent.eventKind !== "added" ||
+    finalEvent.txHash !== fact.effectiveTxHash ||
+    finalEvent.occurredAt !== fact.effectiveAt
+  ) return null;
+  const selected = selectedDirectPolicyProfile(report.subjectAddress, fact, profileIndex);
+  if (!selected || selected.denominator <= 0n) return null;
   const principalAmountRaw = BigInt(fact.principalAmountRaw);
-  const absoluteMaterial = principalAmountRaw >= DIRECT_POLICY_ABSOLUTE_RAW;
-  const exactShare = fact.directTransferCoverage === "complete" && fact.shareSemantics === "exact";
-  const relativeMaterial = exactShare &&
-    fact.directionalPrincipalShare !== null &&
-    principalAmountRaw >= DIRECT_POLICY_RELATIVE_MIN_RAW &&
-    fact.directionalPrincipalShare >= DIRECT_POLICY_RELATIVE_MIN_SHARE;
+  if (selected.denominator < principalAmountRaw) return null;
+  if (
+    fact.directionalPrincipalShare !== exactEightDecimalShare(principalAmountRaw, selected.denominator) ||
+    (fact.directionalPrincipalTotalRaw !== undefined &&
+      (!/^[1-9]\d*$/.test(fact.directionalPrincipalTotalRaw) || BigInt(fact.directionalPrincipalTotalRaw) !== selected.denominator)) ||
+    (fact.temporalRelation === "mixed" && fact.directionalPrincipalTotalRaw === undefined)
+  ) return null;
+  const partition = partitionPrincipalTransfersByBlacklistTimeline({
+    principalTransfers: selected.binding.principalTransfers,
+    timeline: { events: timelineEvents, pagination: "complete", failureReason: null },
+    conflictingTxHashes: profileIndex.conflictingPrincipalTxHashes
+  });
+  if (
+    partition.temporalRelation !== fact.temporalRelation ||
+    partition.before.amountRaw.toString() !== fact.beforeEffectiveAmountRaw ||
+    partition.before.txHashes.length !== fact.beforeEffectiveTxCount ||
+    partition.active.amountRaw.toString() !== fact.activeAmountRaw ||
+    partition.active.txHashes.length !== fact.activeTxCount ||
+    partition.unknown.amountRaw.toString() !== fact.unknownTimingAmountRaw ||
+    partition.unknown.txHashes.length !== fact.unknownTimingTxCount ||
+    (fact.temporalRelation === "active_at_transfer" && (
+      partition.active.amountRaw !== principalAmountRaw ||
+      partition.active.txHashes.length !== fact.principalTxCount
+    )) ||
+    (requiredActiveTxHash !== undefined && !partition.active.txHashes.includes(requiredActiveTxHash.trim()))
+  ) return null;
+  const activeAmountRaw = partition.active.amountRaw;
+  const absoluteMaterial = activeAmountRaw >= DIRECT_POLICY_ABSOLUTE_RAW;
+  const relativeMaterial = activeAmountRaw >= DIRECT_POLICY_RELATIVE_MIN_RAW &&
+    activeAmountRaw * 100n >= selected.denominator;
   if (!absoluteMaterial && !relativeMaterial) return null;
 
   const currentStateId = `usdt_blacklist_state:${fact.counterpartyAddress}:${fact.checkedAt}`;
-  const eventTxHash = verifiedBlacklistEventTxHash(fact);
   const ids = [...new Set([
-    ...fact.transferTxHashes,
-    ...(eventTxHash ? [eventTxHash] : []),
+    ...partition.active.txHashes,
+    finalEvent.txHash,
     currentStateId
   ])].sort((left, right) => left.localeCompare(right));
-  const profileScore = exactShare ? boundProfileScore : 0;
+  const profileScore = selected.binding.scoreContribution;
+  const mixed = fact.temporalRelation === "mixed";
   return candidate(context, {
     kind: "policy",
     decisionEligibility: "can_decline",
@@ -287,12 +449,12 @@ function directCounterpartyPolicyCandidate(
   }, {
     row: "direct_counterparty_policy",
     actionUnit,
-    score: exactShare ? Math.max(60, Math.min(90, Math.round(profileScore))) : 60,
+    score: mixed ? 60 : Math.max(60, Math.min(90, Math.round(profileScore))),
     evidenceIds: ids,
     evidenceEpisodeIds: [`direct_counterparty_policy:${fact.direction}:${fact.counterpartyAddress}`],
     atomicSignals: ["direct_counterparty_current_usdt_blacklist"],
     modifiers: [`direction_${fact.direction}`, `blacklist_timing_${fact.temporalRelation}`],
-    caps: profileScore > 90 ? ["direct_counterparty_policy_cap_90"] : [],
+    caps: !mixed && profileScore > 90 ? ["direct_counterparty_policy_cap_90"] : [],
     dampeners: [],
     caveats: []
   });
@@ -322,7 +484,7 @@ function incomingDirectCounterpartyPolicyCandidates(
       sameAddress(fact.counterpartyAddress, input.senderAddress) &&
       fact.transferTxHashes.includes(input.txHash)
     )
-    .map((fact) => directCounterpartyPolicyCandidate(context, report, profileIndex, fact, "incoming_deposit"))
+    .map((fact) => directCounterpartyPolicyCandidate(context, report, profileIndex, fact, "incoming_deposit", input.txHash))
     .filter((item): item is MatrixCandidate => item !== null)
     .map((item) => ({
       ...item,

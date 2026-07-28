@@ -2531,6 +2531,8 @@ describe("buildIncomingDepositReport", () => {
   });
 
   it("[REQ-31][AC-13][INCOMING] persists transaction-seed coverage with the checked deposit context", async () => {
+    const blacklistEventTxHash = "b".repeat(64);
+    const blacklistEffectiveAt = "2026-05-29T14:00:00.000Z";
     const receiverDeepReport = {
       subjectAddress: validProgressJson.watchedWallet,
       firstHopBlacklistFacts: [{
@@ -2539,24 +2541,33 @@ describe("buildIncomingDepositReport", () => {
         evidenceKind: "usdt_blacklist",
         evidenceAuthority: "official_contract",
         statusAtCheck: "active",
-        temporalRelation: "unknown",
-        effectiveAt: null,
-        effectiveTxHash: null,
+        temporalRelation: "active_at_transfer",
+        effectiveAt: blacklistEffectiveAt,
+        effectiveTxHash: blacklistEventTxHash,
         checkedAt: "2026-05-29T14:02:00.000Z",
         principalAmountRaw: validProgressJson.amountRaw,
         principalTxCount: 1,
+        directionalPrincipalTotalRaw: validProgressJson.amountRaw,
         directionalPrincipalShare: 1,
         shareSemantics: "exact",
         transferTxHashes: [depositTxHash],
         beforeEffectiveAmountRaw: "0",
         beforeEffectiveTxCount: 0,
-        activeAmountRaw: "0",
-        activeTxCount: 0,
-        unknownTimingAmountRaw: validProgressJson.amountRaw,
-        unknownTimingTxCount: 1,
+        activeAmountRaw: validProgressJson.amountRaw,
+        activeTxCount: 1,
+        unknownTimingAmountRaw: "0",
+        unknownTimingTxCount: 0,
         directTransferCoverage: "complete",
-        timelineCoverage: "partial",
-        timelineEvents: []
+        timelineCoverage: "complete",
+        timelineEvents: [{
+          eventKind: "added",
+          occurredAt: blacklistEffectiveAt,
+          txHash: blacklistEventTxHash,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          blockNumber: 1,
+          logIndex: 0,
+          verification: "verified_contract_log"
+        }]
       }],
       directCounterpartyInteractionProfiles: [{
         subjectAddress: validProgressJson.watchedWallet,

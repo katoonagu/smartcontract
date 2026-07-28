@@ -10950,7 +10950,7 @@ describe("bot command and inline UX smoke coverage", () => {
   });
 
   describe("compact wallet narrative integration", () => {
-    it("keeps legacy TGyt at 78 and publishes the exact fresh v2 blacklist result at 90", () => {
+    it("keeps TGyt bridge policy at 78 while showing the later blacklist as context", () => {
       const value = TGYT_DIRECT_BLACKLIST_CASE;
       const bridgePolicy = tgytBridgePolicyEvidence();
       const whereReport = whereIsMoneyReportForTest({
@@ -11003,7 +11003,7 @@ describe("bot command and inline UX smoke coverage", () => {
         locale: "ru"
       });
 
-      expect(fresh).toMatch(/^🔴 90\/100 — критический риск\. Операцию не проводить\./u);
+      expect(fresh).toMatch(/^🟠 78\/100 — высокий риск\. Операцию не проводить\./u);
       expect(fresh).toContain("1 176 317 USDT");
       expect(fresh).toContain("TWGC…TdTm");
       expect(fresh).toContain("100% исходящей суммы");
@@ -11014,6 +11014,7 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(fresh).not.toContain("Границы проверки");
       expect(fresh).toMatch(/GasFree|Техническая деталь/u);
       expect(fresh).not.toMatch(/45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
+      expect(fresh).not.toContain("90/100");
 
       expect(legacy).toContain("78/100");
       expect(legacy).toMatch(/устаревш|свеж/u);

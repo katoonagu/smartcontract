@@ -65,7 +65,7 @@ function principalAmountRaw(amountRaw: string): bigint {
   return BigInt(amountRaw);
 }
 
-function exactShare(numerator: bigint, denominator: bigint): number {
+export function exactEightDecimalShare(numerator: bigint, denominator: bigint): number {
   return denominator > 0n
     ? Number(numerator * 100_000_000n / denominator) / 100_000_000
     : 0;
@@ -161,7 +161,8 @@ export function groupDirectPrincipalCounterparties(input: {
         direction: group.direction,
         principalAmountRaw: group.principalAmountRaw,
         principalTxCount: group.transferTxHashes.length,
-        directionalPrincipalShare: shareExact ? exactShare(group.principalAmountRaw, denominator) : null,
+        directionalPrincipalTotalRaw: denominator,
+        directionalPrincipalShare: shareExact ? exactEightDecimalShare(group.principalAmountRaw, denominator) : null,
         shareSemantics: shareExact ? "exact" : "unavailable",
         transferTxHashes: group.transferTxHashes,
         principalTransfers: group.principalTransfers,
@@ -241,6 +242,13 @@ function uniqueAddresses(addresses: string[]): string[] {
 }
 
 type TransferTiming = "before" | "active" | "unknown";
+
+export type PrincipalTransferTimelinePartition = {
+  before: { amountRaw: bigint; txHashes: string[] };
+  active: { amountRaw: bigint; txHashes: string[] };
+  unknown: { amountRaw: bigint; txHashes: string[] };
+  temporalRelation: FirstHopBlacklistFact["temporalRelation"];
+};
 
 export function isPersistableUsdtBlacklistTimelineEvent(
   value: unknown
@@ -327,15 +335,13 @@ function transferTiming(
   return active ? "active" : "before";
 }
 
-function buildBlacklistFact(input: {
-  group: DirectPrincipalCounterpartyGroup;
-  restriction: TimelineBearingStablecoinRestrictionProfile;
-  directTransferCoverage: "complete" | "partial";
-  conflictingTxHashes: Set<string>;
-}): FirstHopBlacklistFact {
-  const timeline = input.restriction.blacklistTimeline ?? null;
-  const events = sortedVerifiedTimeline(timeline?.events ?? []);
-  const timelineComplete = completeActiveTimeline(timeline);
+export function partitionPrincipalTransfersByBlacklistTimeline(input: {
+  principalTransfers: DirectPrincipalCounterpartyGroup["principalTransfers"];
+  timeline: UsdtBlacklistTimeline | null | undefined;
+  conflictingTxHashes?: ReadonlySet<string>;
+}): PrincipalTransferTimelinePartition {
+  const events = sortedVerifiedTimeline(input.timeline?.events ?? []);
+  const timelineComplete = completeActiveTimeline(input.timeline);
   const repeatedAdditionLifecycle = events.filter((event) => event.eventKind === "added").length > 1;
   const amounts: Record<TransferTiming, bigint> = { before: 0n, active: 0n, unknown: 0n };
   const hashes: Record<TransferTiming, Set<string>> = {
@@ -344,7 +350,7 @@ function buildBlacklistFact(input: {
     unknown: new Set<string>()
   };
   const transfersByTxHash = new Map<string, DirectPrincipalCounterpartyGroup["principalTransfers"]>();
-  for (const transfer of input.group.principalTransfers) {
+  for (const transfer of input.principalTransfers) {
     const transfers = transfersByTxHash.get(transfer.txHash) ?? [];
     transfers.push(transfer);
     transfersByTxHash.set(transfer.txHash, transfers);
@@ -355,7 +361,7 @@ function buildBlacklistFact(input: {
       transferTiming(transfer.occurredAt, events, timelineComplete)
     ));
     const timing = repeatedAdditionLifecycle ||
-      input.conflictingTxHashes.has(txHash) ||
+      input.conflictingTxHashes?.has(txHash) === true ||
       occurredAtValues.size !== 1 ||
       transferTimings.size !== 1
       ? "unknown"
@@ -370,6 +376,32 @@ function buildBlacklistFact(input: {
       : hashes.active.size > 0
         ? "active_at_transfer" as const
         : "became_active_after" as const;
+  const partition = (timing: TransferTiming) => ({
+    amountRaw: amounts[timing],
+    txHashes: [...hashes[timing]].sort(compareText)
+  });
+  return {
+    before: partition("before"),
+    active: partition("active"),
+    unknown: partition("unknown"),
+    temporalRelation
+  };
+}
+
+function buildBlacklistFact(input: {
+  group: DirectPrincipalCounterpartyGroup;
+  restriction: TimelineBearingStablecoinRestrictionProfile;
+  directTransferCoverage: "complete" | "partial";
+  conflictingTxHashes: Set<string>;
+}): FirstHopBlacklistFact {
+  const timeline = input.restriction.blacklistTimeline ?? null;
+  const events = sortedVerifiedTimeline(timeline?.events ?? []);
+  const timelineComplete = completeActiveTimeline(timeline);
+  const partition = partitionPrincipalTransfersByBlacklistTimeline({
+    principalTransfers: input.group.principalTransfers,
+    timeline,
+    conflictingTxHashes: input.conflictingTxHashes
+  });
   const effectiveEvent = [...events].reverse().find((event) => event.eventKind === "added") ?? null;
 
   return {
@@ -378,23 +410,26 @@ function buildBlacklistFact(input: {
     evidenceKind: "usdt_blacklist",
     evidenceAuthority: "official_contract",
     statusAtCheck: "active",
-    temporalRelation,
+    temporalRelation: partition.temporalRelation,
     effectiveAt: effectiveEvent?.occurredAt ?? input.restriction.blacklistEventTimestamp ?? null,
     effectiveTxHash: effectiveEvent?.txHash ?? input.restriction.blacklistEventTxHash ?? null,
     checkedAt: input.restriction.checkedAt,
     principalAmountRaw: input.group.principalAmountRaw.toString(),
     principalTxCount: input.group.principalTxCount,
+    ...(input.directTransferCoverage === "complete"
+      ? { directionalPrincipalTotalRaw: input.group.directionalPrincipalTotalRaw.toString() }
+      : {}),
     directionalPrincipalShare: input.directTransferCoverage === "complete"
       ? input.group.directionalPrincipalShare
       : null,
     shareSemantics: input.directTransferCoverage === "complete" ? "exact" : "unavailable",
     transferTxHashes: [...input.group.transferTxHashes].sort(compareText),
-    beforeEffectiveAmountRaw: amounts.before.toString(),
-    beforeEffectiveTxCount: hashes.before.size,
-    activeAmountRaw: amounts.active.toString(),
-    activeTxCount: hashes.active.size,
-    unknownTimingAmountRaw: amounts.unknown.toString(),
-    unknownTimingTxCount: hashes.unknown.size,
+    beforeEffectiveAmountRaw: partition.before.amountRaw.toString(),
+    beforeEffectiveTxCount: partition.before.txHashes.length,
+    activeAmountRaw: partition.active.amountRaw.toString(),
+    activeTxCount: partition.active.txHashes.length,
+    unknownTimingAmountRaw: partition.unknown.amountRaw.toString(),
+    unknownTimingTxCount: partition.unknown.txHashes.length,
     directTransferCoverage: input.directTransferCoverage,
     timelineCoverage: timelineComplete ? "complete" : "partial",
     timelineEvents: events

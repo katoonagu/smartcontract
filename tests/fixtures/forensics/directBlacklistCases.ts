@@ -37,6 +37,7 @@ export function tgytFirstHopBlacklistFact(): FirstHopBlacklistFact {
     checkedAt: "2026-07-11T00:00:00.000Z",
     principalAmountRaw: value.totalPrincipalRaw,
     principalTxCount: 2,
+    directionalPrincipalTotalRaw: value.totalPrincipalRaw,
     directionalPrincipalShare: 1,
     shareSemantics: "exact",
     transferTxHashes: [value.smallPrincipalTxHash, value.largePrincipalTxHash],

@@ -131,6 +131,30 @@ describe("direct counterparty interaction profiles", () => {
     ]);
   });
 
+  it("preserves exact indexed movement identity in persisted transfer details", () => {
+    const indexedEdge: ForensicRouteEdge = {
+      ...edge({ id: "tx-rich-identity", from: highRisk, to: subject, amountRaw: "1000000000" }),
+      transferId: "tronscan:tx-rich-identity:7",
+      eventIndex: 7,
+      provider: "tronscan",
+      providerRowOrdinalInTx: 2
+    };
+
+    const profiles = buildDirectCounterpartyInteractionProfiles({
+      subjectAddress: subject,
+      edges: [indexedEdge],
+      snapshotsByAddress: new Map([[highRisk, snapshot(highRisk)]]),
+      classifications: new Map()
+    });
+
+    expect(profiles[0]?.transfers?.[0]).toMatchObject({
+      transferId: "tronscan:tx-rich-identity:7",
+      eventIndex: 7,
+      provider: "tronscan",
+      providerRowOrdinalInTx: 2
+    });
+  });
+
   it("keeps lower-share behavior-risk counterparties below HIGH", () => {
     const profiles = buildDirectCounterpartyInteractionProfiles({
       subjectAddress: subject,

@@ -18,6 +18,7 @@ import {
   DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE,
   DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
   buildDirectHardEvidenceSnapshots,
+  exactEightDecimalShare,
   groupDirectPrincipalCounterparties,
   isPersistableUsdtBlacklistTimelineEvent,
   type DirectHardEvidenceResult,
@@ -47,7 +48,11 @@ import {
   runForensicAddressExposureSearch,
   type RouteSearchTronClient
 } from "../forensics/routeSearch";
-import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
+import {
+  forensicRouteEdgeIdentity,
+  indexedTransferToRouteEdge,
+  mergeForensicRouteEdges
+} from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
 import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
@@ -273,6 +278,18 @@ function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact 
     !Array.isArray(value.timelineEvents) ||
     !value.timelineEvents.every(isPersistableUsdtBlacklistTimelineEvent)
   ) return false;
+  const hasDirectionalTotal = Object.prototype.hasOwnProperty.call(value, "directionalPrincipalTotalRaw");
+  if (hasDirectionalTotal) {
+    if (
+      !persistedRawAmount(value.directionalPrincipalTotalRaw) ||
+      BigInt(value.directionalPrincipalTotalRaw) <= 0n ||
+      value.directTransferCoverage !== "complete" ||
+      value.shareSemantics !== "exact" ||
+      typeof value.directionalPrincipalShare !== "number" ||
+      BigInt(value.directionalPrincipalTotalRaw) < BigInt(value.principalAmountRaw) ||
+      exactEightDecimalShare(BigInt(value.principalAmountRaw), BigInt(value.directionalPrincipalTotalRaw)) !== value.directionalPrincipalShare
+    ) return false;
+  }
   return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
     value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount &&
     chronologyRelationValid(value);
@@ -932,9 +949,11 @@ function directCounterpartyAddresses(subjectAddress: string, edges: ForensicRout
 }
 
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const retainedIdentities = new Set(mergeForensicRouteEdges(edges).map(forensicRouteEdgeIdentity));
   const result = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    const key = `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+    const key = forensicRouteEdgeIdentity(edge);
+    if (!retainedIdentities.has(key)) continue;
     result.set(key, betterDedupeEdge(result.get(key), edge));
   }
   return [...result.values()];

@@ -2775,6 +2775,7 @@ export type DirectPrincipalCounterpartyGroup = {
   direction: CounterpartyRiskDirection;
   principalAmountRaw: bigint;
   principalTxCount: number;
+  directionalPrincipalTotalRaw: bigint;
   directionalPrincipalShare: number | null;
   shareSemantics: "exact" | "unavailable";
   transferTxHashes: string[];
@@ -2804,6 +2805,7 @@ export type FirstHopBlacklistFact = {
   checkedAt: string;
   principalAmountRaw: string;
   principalTxCount: number;
+  directionalPrincipalTotalRaw?: string;
   directionalPrincipalShare: number | null;
   shareSemantics: "exact" | "lower_bound" | "unavailable";
   transferTxHashes: string[];
@@ -2918,6 +2920,10 @@ export type DirectCounterpartyInteractionProfile = {
     timestamp: string;
     method: string;
     edgeType: ForensicRouteEdgeType;
+    transferId?: string | null;
+    eventIndex?: number | null;
+    provider?: string | null;
+    providerRowOrdinalInTx?: number | null;
     economicRole?: ForensicEconomicRole;
     economicProtocol?: ForensicEconomicProtocol;
   }>;

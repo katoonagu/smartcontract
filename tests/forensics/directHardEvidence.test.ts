@@ -4,6 +4,7 @@ import {
   groupDirectPrincipalCounterparties,
   selectDirectPrincipalLookupAddresses
 } from "../../src/forensics/directHardEvidence";
+import * as directHardEvidence from "../../src/forensics/directHardEvidence";
 import { normalizePersistedDeepFirstHopEvidence } from "../../src/check/deepForensicCheck";
 import type {
   ForensicRouteEdge,
@@ -85,12 +86,47 @@ describe("direct hard evidence helper", () => {
     expect(groups[1]).toMatchObject({
       principalTxCount: 1,
       transferTxHashes: ["tx-shared"],
+      directionalPrincipalTotalRaw: 600_000000n,
       directionalPrincipalShare: 0.5,
       shareSemantics: "exact"
     });
     expect(groups[0]).toMatchObject({
+      directionalPrincipalTotalRaw: 400_000000n,
       directionalPrincipalShare: 1,
       shareSemantics: "exact"
+    });
+  });
+
+  it("exports one exact share helper and a pure blacklist-timeline partition", () => {
+    expect(directHardEvidence.exactEightDecimalShare(1n, 3n)).toBe(0.33333333);
+    const event = {
+      eventKind: "added" as const,
+      occurredAt: "2026-07-02T00:00:00.000Z",
+      txHash: "b".repeat(64),
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 100,
+      logIndex: 1,
+      verification: "verified_contract_log" as const
+    };
+    const result = directHardEvidence.partitionPrincipalTransfersByBlacklistTimeline({
+      principalTransfers: [{
+        txHash: "a".repeat(64),
+        amountRaw: 5_000_000000n,
+        occurredAt: "2026-07-01T00:00:00.000Z"
+      }, {
+        txHash: "c".repeat(64),
+        amountRaw: 10_000_000000n,
+        occurredAt: "2026-07-03T00:00:00.000Z"
+      }],
+      timeline: { events: [event], pagination: "complete", failureReason: null },
+      conflictingTxHashes: new Set<string>()
+    });
+
+    expect(result).toEqual({
+      before: { amountRaw: 5_000_000000n, txHashes: ["a".repeat(64)] },
+      active: { amountRaw: 10_000_000000n, txHashes: ["c".repeat(64)] },
+      unknown: { amountRaw: 0n, txHashes: [] },
+      temporalRelation: "mixed"
     });
   });
 
@@ -669,6 +705,7 @@ describe("direct hard evidence helper", () => {
       checkedAt: "2026-07-02T00:00:00.000Z",
       principalAmountRaw: "12000000000",
       principalTxCount: 2,
+      directionalPrincipalTotalRaw: "34000000000",
       beforeEffectiveAmountRaw: "6000000000",
       beforeEffectiveTxCount: 1,
       activeAmountRaw: "6000000000",
@@ -748,6 +785,7 @@ describe("direct hard evidence helper", () => {
       unknownTimingAmountRaw: "12000000000",
       unknownTimingTxCount: 1
     });
+    expect(result.blacklistFacts[0]).not.toHaveProperty("directionalPrincipalTotalRaw");
     expect(result.firstHopBlacklistCoverage).toMatchObject({
       scope: "checked_window",
       windowStart: "2026-07-01T00:00:00.000Z",

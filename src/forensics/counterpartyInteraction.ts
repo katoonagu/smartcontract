@@ -241,6 +241,12 @@ export function buildDirectCounterpartyInteractionProfiles(
           timestamp: edge.timestamp.toISOString(),
           method: edge.method,
           edgeType: edge.edgeType,
+          ...(edge.transferId !== undefined ? { transferId: edge.transferId } : {}),
+          ...(edge.eventIndex !== undefined ? { eventIndex: edge.eventIndex } : {}),
+          ...(edge.provider !== undefined ? { provider: edge.provider } : {}),
+          ...(edge.providerRowOrdinalInTx !== undefined
+            ? { providerRowOrdinalInTx: edge.providerRowOrdinalInTx }
+            : {}),
           ...(edge.economicRole ? { economicRole: edge.economicRole } : {}),
           ...(edge.economicProtocol ? { economicProtocol: edge.economicProtocol } : {})
         })),

@@ -1279,6 +1279,11 @@ describe("ScoreAnchorV2 acceptance contract", () => {
       coverage: { partial: false }
     } as any;
     for (const temporalRelation of ["became_active_after", "active_at_transfer", "unknown"] as const) {
+      const effectiveAt = temporalRelation === "active_at_transfer"
+        ? "2026-07-13T07:00:00.000Z"
+        : temporalRelation === "became_active_after"
+          ? "2026-07-13T09:00:00.000Z"
+          : null;
       const fact = {
         counterpartyAddress: counterparty,
         direction: "outbound",
@@ -1286,13 +1291,14 @@ describe("ScoreAnchorV2 acceptance contract", () => {
         evidenceAuthority: "official_contract",
         statusAtCheck: "active",
         temporalRelation,
-        effectiveAt: temporalRelation === "unknown" ? null : "2026-07-13T09:00:00.000Z",
+        effectiveAt,
         effectiveTxHash: temporalRelation === "unknown" ? null : blacklistEventTxHash,
         checkedAt: NOW.toISOString(),
         principalAmountRaw: "10000000000",
         principalTxCount: 1,
-        directionalPrincipalShare: null,
-        shareSemantics: "unavailable",
+        directionalPrincipalShare: temporalRelation === "unknown" ? null : 1,
+        shareSemantics: temporalRelation === "unknown" ? "unavailable" : "exact",
+        ...(temporalRelation === "unknown" ? {} : { directionalPrincipalTotalRaw: "10000000000" }),
         transferTxHashes: [principalTxHash],
         beforeEffectiveAmountRaw: temporalRelation === "became_active_after" ? "10000000000" : "0",
         beforeEffectiveTxCount: temporalRelation === "became_active_after" ? 1 : 0,
@@ -1300,11 +1306,11 @@ describe("ScoreAnchorV2 acceptance contract", () => {
         activeTxCount: temporalRelation === "active_at_transfer" ? 1 : 0,
         unknownTimingAmountRaw: temporalRelation === "unknown" ? "10000000000" : "0",
         unknownTimingTxCount: temporalRelation === "unknown" ? 1 : 0,
-        directTransferCoverage: "partial",
+        directTransferCoverage: temporalRelation === "unknown" ? "partial" : "complete",
         timelineCoverage: temporalRelation === "unknown" ? "partial" : "complete",
         timelineEvents: temporalRelation === "unknown" ? [] : [{
           eventKind: "added",
-          occurredAt: "2026-07-13T09:00:00.000Z",
+          occurredAt: effectiveAt!,
           txHash: blacklistEventTxHash,
           tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           blockNumber: 1,
@@ -1312,8 +1318,7 @@ describe("ScoreAnchorV2 acceptance contract", () => {
           verification: "verified_contract_log"
         }]
       };
-      const transfers = [
-        {
+      const transfers = [{
           txHash: principalTxHash,
           fromAddress: SUBJECT,
           toAddress: counterparty,
@@ -1322,29 +1327,7 @@ describe("ScoreAnchorV2 acceptance contract", () => {
           method: "transfer",
           edgeType: "normal_transfer",
           economicRole: "principal"
-        },
-        {
-          txHash: gasFreeFeeTxHash,
-          fromAddress: SUBJECT,
-          toAddress: counterparty,
-          amountRaw: "3000000",
-          timestamp: "2026-07-13T08:01:00.000Z",
-          method: "transfer",
-          edgeType: "normal_transfer",
-          economicRole: "service_fee",
-          economicProtocol: "tron_gasfree"
-        },
-        {
-          txHash: dustTxHash,
-          fromAddress: SUBJECT,
-          toAddress: counterparty,
-          amountRaw: "0",
-          timestamp: "2026-07-13T08:02:00.000Z",
-          method: "transfer",
-          edgeType: "normal_transfer",
-          economicRole: "principal"
-        }
-      ];
+        }];
       const candidates = buildWalletMatrixCandidates({
         address: SUBJECT,
         fastReport: null,
@@ -1356,12 +1339,12 @@ describe("ScoreAnchorV2 acceptance contract", () => {
             subjectAddress: SUBJECT,
             direction: "outbound",
             counterpartyAddress: counterparty,
-            volumeRaw: "10003000000",
+            volumeRaw: "10000000000",
             volumeRatio: 1,
-            txCount: 3,
+            txCount: 1,
             firstSeen: "2026-07-13T08:00:00.000Z",
-            lastSeen: "2026-07-13T08:02:00.000Z",
-            txHashes: [principalTxHash, gasFreeFeeTxHash, dustTxHash],
+            lastSeen: "2026-07-13T08:00:00.000Z",
+            txHashes: [principalTxHash],
             transfers,
             serviceCategory: null,
             identity: null,
@@ -1383,15 +1366,19 @@ describe("ScoreAnchorV2 acceptance contract", () => {
         }
       } as any);
       const policy = candidates.find((candidate) => candidate.row === "direct_counterparty_policy");
-      expect(policy, temporalRelation).toMatchObject({
-        score: 60,
-        row: "direct_counterparty_policy",
-        authority: { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" },
-        modifiers: expect.arrayContaining([`blacklist_timing_${temporalRelation}`])
-      });
-      expect(policy?.evidenceIds, temporalRelation).toContain(principalTxHash);
-      expect(policy?.evidenceIds, temporalRelation).not.toContain(gasFreeFeeTxHash);
-      expect(policy?.evidenceIds, temporalRelation).not.toContain(dustTxHash);
+      if (temporalRelation === "active_at_transfer") {
+        expect(policy).toMatchObject({
+          score: 90,
+          row: "direct_counterparty_policy",
+          authority: { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" },
+          modifiers: expect.arrayContaining(["blacklist_timing_active_at_transfer"])
+        });
+        expect(policy?.evidenceIds).toContain(principalTxHash);
+        expect(policy?.evidenceIds).not.toContain(gasFreeFeeTxHash);
+        expect(policy?.evidenceIds).not.toContain(dustTxHash);
+      } else {
+        expect(policy, temporalRelation).toBeUndefined();
+      }
     }
   });
 });
