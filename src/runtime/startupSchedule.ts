@@ -14,7 +14,8 @@ export const UNIFIED_RESOURCE_WORK_LABELS = [
   "unified_cpu_aggregation",
   "unified_scoring_rendering",
   "unified_delivery",
-  "unified_watchdog"
+  "unified_watchdog",
+  "unified_lifecycle"
 ] as const;
 
 export type UnifiedResourceWorkLabel =

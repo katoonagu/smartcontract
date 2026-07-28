@@ -74,6 +74,7 @@ type ForensicRuntimeOrchestrationInput = {
     messageThreadId: string;
     payload: { text: string; parseMode: "HTML" };
   }): Promise<UnifiedTelegramSendResult>;
+  unifiedRuntimeCommit?: string;
 };
 
 const deliveryRepository: ForensicTelegramDeliveryRepository<Db> = {
@@ -187,8 +188,13 @@ export function createForensicRuntimeOrchestration(
 
   const runUnifiedWalletDeliveryCycle = async (): Promise<void> => {
     if (!input.db || !input.sendUnifiedTelegram) return;
+    if (!input.unifiedRuntimeCommit) {
+      throw new Error("unified_delivery_runtime_commit_missing");
+    }
     await runUnifiedDeliveryCycle({
-      repository: createPostgresUnifiedDeliveryRepository(input.db),
+      repository: createPostgresUnifiedDeliveryRepository(input.db, {
+        runtimeCommit: input.unifiedRuntimeCommit
+      }),
       now: input.now ?? (() => new Date()),
       leaseToken: randomUUID,
       leaseMs: 30_000,

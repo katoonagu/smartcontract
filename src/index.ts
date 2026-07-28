@@ -49,6 +49,7 @@ import {
 } from "./monitor/addressPoisoningWorker";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
+import { createRuntimeHandoffCoordinator } from "./runtime/runtimeHandoffCoordinator";
 import {
   createForensicRuntimeOrchestration,
   type ForensicRuntimeOrchestration
@@ -204,6 +205,27 @@ import {
   runUnifiedDeliveryCycle
 } from "./unifiedCheck/delivery";
 import {
+  createPostgresUnifiedLifecycleNotificationRepository,
+  runUnifiedLifecycleNotificationCycle
+} from "./unifiedCheck/lifecycleNotification";
+import {
+  cancelStaleLongRunningNotifications,
+  countNonTerminalRunsForRuntime,
+  enqueueDueLongRunningNotifications,
+  hasLiveEquivalentReplacement,
+  heartbeatRuntime,
+  markRuntimePollingReleased,
+  markRuntimeStopped,
+  reconcileOrphanedUnifiedRuns,
+  registerActiveRuntime,
+  terminalizeExpiredRuntimeRuns,
+  type UnifiedRuntimeInstanceV1
+} from "./unifiedCheck/runtimeHandoffRepository";
+import {
+  RUNTIME_HEARTBEAT_INTERVAL_MS,
+  RUNTIME_HEARTBEAT_STALE_MS
+} from "./unifiedCheck/runtimeHandoffPolicy";
+import {
   buildManualResendWarningPresentation
 } from "./unifiedCheck/presentation";
 import {
@@ -311,8 +333,10 @@ const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMa
 );
 const db = createDb(config.databaseUrl);
 const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
+const runtimeInstanceId = randomUUID();
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
+let runtimeInstance: UnifiedRuntimeInstanceV1 | null = null;
 try {
   let schemaVerification: Schema037Verification | null = null;
   const schema032MigrationBytes = await readFile(
@@ -378,6 +402,19 @@ try {
     runtimeInstanceLabel: config.runtimeInstanceLabel,
     migration: schemaVerification
   });
+  if (!config.unifiedIsolatedWorkerOnly) {
+    runtimeInstance = await registerActiveRuntime(unifiedTransactionHost, {
+      instanceId: runtimeInstanceId,
+      runtimeCommit: runtimeVersion.gitCommitSha,
+      instanceLabel: runtimeVersion.runtimeInstanceLabel,
+      now: new Date()
+    });
+    logger.info("unified_runtime_registered", {
+      instanceId: runtimeInstanceId,
+      runtimeCommit: runtimeVersion.gitCommitSha,
+      state: "ACTIVE"
+    });
+  }
 } catch (error) {
   await closeDb(db);
   throw error;
@@ -2817,7 +2854,9 @@ const forensicTelegramDeliveryWork = createNonOverlappingStartupWork(
 const unifiedTelegramDeliveryWork = createNonOverlappingStartupWork(
   () => ownsWalletDelivery(activeCheckGeneration, "unified")
     ? runUnifiedDeliveryCycle({
-    repository: createPostgresUnifiedDeliveryRepository(db),
+    repository: createPostgresUnifiedDeliveryRepository(db, {
+      runtimeCommit: runtimeVersion.gitCommitSha
+    }),
     now: () => new Date(),
     leaseToken: randomUUID,
     leaseMs: 30_000,
@@ -2858,6 +2897,169 @@ const unifiedTelegramDeliveryWork = createNonOverlappingStartupWork(
     : Promise.resolve(),
   () => shuttingDown
 );
+
+const unifiedLifecycleRepository =
+  createPostgresUnifiedLifecycleNotificationRepository(unifiedTransactionHost);
+let runtimeHandoffExitRequested = false;
+const requireRuntimeInstance = (): UnifiedRuntimeInstanceV1 => {
+  if (runtimeInstance === null) {
+    throw new Error("unified_runtime_instance_unavailable");
+  }
+  return runtimeInstance;
+};
+const runtimeHandoffCoordinator = createRuntimeHandoffCoordinator({
+  now: () => new Date(),
+  heartbeat: async () => {
+    runtimeInstance = await heartbeatRuntime(unifiedTransactionHost, {
+      instanceId: runtimeInstanceId,
+      now: new Date()
+    });
+    return runtimeInstance;
+  },
+  stopTelegramPolling: async () => {
+    if (bot.isRunning()) await bot.stop();
+  },
+  stopLegacySchedules: () => {
+    startupWorkSchedule?.stop();
+    startupWorkSchedule = null;
+  },
+  markPollingReleased: async (now) => {
+    runtimeInstance = await markRuntimePollingReleased(
+      unifiedTransactionHost,
+      { instanceId: runtimeInstanceId, now }
+    );
+    return runtimeInstance;
+  },
+  countCompatibleRuns: () => countNonTerminalRunsForRuntime(
+    unifiedTransactionHost,
+    { runtimeCommit: runtimeVersion.gitCommitSha }
+  ),
+  hasEquivalentActiveReplacement: () => hasLiveEquivalentReplacement(
+    unifiedTransactionHost,
+    {
+      drainingInstanceId: runtimeInstanceId,
+      runtimeCommit: runtimeVersion.gitCommitSha,
+      now: new Date(),
+      heartbeatStaleMs: RUNTIME_HEARTBEAT_STALE_MS
+    }
+  ),
+  terminalizeExpiredCompatibleRuns: async (now) => {
+    const result = await terminalizeExpiredRuntimeRuns(
+      unifiedTransactionHost,
+      {
+        now,
+        drainingInstanceId: runtimeInstanceId,
+        runtimeCommit: runtimeVersion.gitCommitSha,
+        heartbeatStaleMs: RUNTIME_HEARTBEAT_STALE_MS,
+        limit: 100
+      }
+    );
+    if (result.terminalized > 0) {
+      logger.warn("unified_orphan_terminalized", {
+        reason: "runtime_handoff_deadline_exceeded",
+        ...result
+      });
+    }
+  },
+  markStopped: async (now, failureReason) => {
+    runtimeInstance = await markRuntimeStopped(unifiedTransactionHost, {
+      instanceId: runtimeInstanceId,
+      now,
+      failureReason
+    });
+  },
+  requestGracefulExit: () => {
+    runtimeHandoffExitRequested = true;
+  },
+  onEvent: (event, fields = {}) => logger.info(event, {
+    instanceId: runtimeInstanceId,
+    runtimeCommit: runtimeVersion.gitCommitSha,
+    ...fields
+  })
+});
+
+const unifiedLifecycleWork = async (): Promise<void> => {
+  await runtimeHandoffCoordinator.tick();
+  let enqueued = 0;
+  let staleCancelled = 0;
+  let reconciliation = { terminalized: 0, notificationsCreated: 0 };
+  if (requireRuntimeInstance().state === "ACTIVE") {
+    const now = new Date();
+    enqueued = await enqueueDueLongRunningNotifications(
+      unifiedTransactionHost,
+      { now, limit: 100 }
+    );
+    staleCancelled = await cancelStaleLongRunningNotifications(
+      unifiedTransactionHost,
+      { now, limit: 100 }
+    );
+    reconciliation = await reconcileOrphanedUnifiedRuns(
+      unifiedTransactionHost,
+      {
+        now,
+        heartbeatStaleMs: RUNTIME_HEARTBEAT_STALE_MS,
+        currentRuntimeCommit: runtimeVersion.gitCommitSha,
+        limit: 100
+      }
+    );
+    if (reconciliation.terminalized > 0) {
+      logger.warn("unified_orphan_terminalized", {
+        reason: "runtime_handoff_unavailable_or_expired",
+        ...reconciliation
+      });
+    }
+  }
+  const delivery = await runUnifiedLifecycleNotificationCycle({
+    repository: unifiedLifecycleRepository,
+    now: () => new Date(),
+    leaseToken: randomUUID,
+    leaseMs: 30_000,
+    sendTimeoutMs: 25_000,
+    limit: 10,
+    sendTelegram: async ({ chatId, messageThreadId, payload }, signal) => {
+      const parsedThreadId = messageThreadId === ""
+        ? undefined
+        : Number(messageThreadId);
+      if (
+        parsedThreadId !== undefined &&
+        (!Number.isSafeInteger(parsedThreadId) || parsedThreadId < 1)
+      ) {
+        return {
+          kind: "rejected_permanent",
+          code: "telegram_message_thread_id_invalid"
+        };
+      }
+      const sent = await bot.api.sendMessage(chatId, payload.text, {
+        parse_mode: payload.parseMode,
+        ...(payload.replyMarkup === undefined
+          ? {}
+          : { reply_markup: payload.replyMarkup }),
+        ...(parsedThreadId === undefined
+          ? {}
+          : { message_thread_id: parsedThreadId })
+      }, signal as Parameters<typeof bot.api.sendMessage>[3]);
+      return {
+        kind: "confirmed",
+        telegramMessageId: String(sent.message_id)
+      };
+    }
+  });
+  if (
+    enqueued > 0 || staleCancelled > 0 ||
+    reconciliation.terminalized > 0 || delivery.claimed > 0 ||
+    delivery.expiredLeasesMarkedUnknown > 0
+  ) {
+    logger.info("unified_lifecycle_notification_outcome", {
+      enqueued,
+      staleCancelled,
+      ...reconciliation,
+      ...delivery
+    });
+  }
+  if (runtimeHandoffExitRequested) {
+    void shutdown("SIGTERM");
+  }
+};
 
 const approvalAllowanceRefreshWork = createNonOverlappingStartupWork(
   () => runRecordedRuntimeCycle(
@@ -3619,21 +3821,26 @@ function startBackgroundWorkSchedule(
     unified_cpu_aggregation: unifiedAnalysisWork,
     unified_scoring_rendering: unifiedFinalizationWork,
     unified_delivery: unifiedTelegramDeliveryWork.run,
-    unified_watchdog: unifiedWatchdogWork
+    unified_watchdog: unifiedWatchdogWork,
+    unified_lifecycle: unifiedLifecycleWork
   };
   unifiedWorkSchedule = startUnifiedResourceWorkSchedule({
     schedule: buildUnifiedResourceWorkSchedule().filter((item) =>
-      item.label !== "unified_delivery" ||
-      (
-        !config.unifiedIsolatedWorkerOnly &&
-        ownsWalletDelivery(activeCheckGeneration, "unified")
-      )
+      item.label === "unified_lifecycle"
+        ? !config.unifiedIsolatedWorkerOnly
+        : item.label !== "unified_delivery" ||
+          (
+            !config.unifiedIsolatedWorkerOnly &&
+            ownsWalletDelivery(activeCheckGeneration, "unified")
+          )
     ),
     startupWork: unifiedWork,
     intervalByLabel: Object.fromEntries(
       Object.keys(unifiedWork).map((label) => [
         label,
-        config.forensicIncomingPollIntervalMs
+        label === "unified_lifecycle"
+          ? RUNTIME_HEARTBEAT_INTERVAL_MS
+          : config.forensicIncomingPollIntervalMs
       ])
     ) as Record<UnifiedResourceWorkLabel, number>,
     onError: (eventName, error) => {
@@ -3755,10 +3962,12 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     }
   }
 
-  try {
-    await bot.stop();
-  } catch (error) {
-    logger.error("bot_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
+  if (bot.isRunning()) {
+    try {
+      await bot.stop();
+    } catch (error) {
+      logger.error("bot_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   if (adminDashboard) {
@@ -3767,6 +3976,20 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       logger.info("admin_dashboard_stopped", {});
     } catch (error) {
       logger.error("admin_dashboard_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (runtimeInstance !== null) {
+    try {
+      runtimeInstance = await markRuntimeStopped(unifiedTransactionHost, {
+        instanceId: runtimeInstanceId,
+        now: new Date(),
+        failureReason: "graceful_exit"
+      });
+    } catch (error) {
+      logger.error("unified_runtime_stop_persist_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 

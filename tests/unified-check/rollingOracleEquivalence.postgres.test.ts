@@ -881,7 +881,9 @@ async function finalizeOracleFacts(input: {
     }
   };
   const deliveryCycle = await runUnifiedDeliveryCycle({
-    repository: createPostgresUnifiedDeliveryRepository(input.client),
+    repository: createPostgresUnifiedDeliveryRepository(input.client, {
+      runtimeCommit: input.run.analysisManifest.runtimeCommit
+    }),
     now: () => new Date("2026-07-24T12:06:00.000Z"),
     leaseToken: () => "oracle-isolated-delivery-lease",
     leaseMs: 60_000,
@@ -1269,7 +1271,9 @@ async function productionOracleFacts(input: {
     }
   };
   const delivery = await runUnifiedDeliveryCycle({
-    repository: createPostgresUnifiedDeliveryRepository(input.client),
+    repository: createPostgresUnifiedDeliveryRepository(input.client, {
+      runtimeCommit: "candidate"
+    }),
     now: () => new Date(input.replay.frozenClockIso),
     leaseToken: () => "oracle-delivery-lease",
     leaseMs: 60_000,
@@ -1293,7 +1297,9 @@ async function productionOracleFacts(input: {
   await expect(completedRestart.runFinalizationCycle())
     .resolves.toMatchObject({ finalized: false });
   const secondDelivery = await runUnifiedDeliveryCycle({
-    repository: createPostgresUnifiedDeliveryRepository(input.client),
+    repository: createPostgresUnifiedDeliveryRepository(input.client, {
+      runtimeCommit: "candidate"
+    }),
     now: () => new Date(input.replay.frozenClockIso),
     leaseToken: () => "oracle-delivery-lease-2",
     leaseMs: 60_000,

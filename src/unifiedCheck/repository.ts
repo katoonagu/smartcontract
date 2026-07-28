@@ -3590,21 +3590,35 @@ export async function loadUnifiedUnknownDeliveryPresentation(
 
 export async function claimUnifiedDelivery(
   db: UnifiedQueryable,
-  input: { leaseToken: string; leaseMs: number; now: Date }
+  input: {
+    leaseToken: string;
+    leaseMs: number;
+    now: Date;
+    runtimeCommit: string;
+  }
 ) {
-  if (Number.isNaN(input.now.getTime())) {
+  if (
+    Number.isNaN(input.now.getTime()) ||
+    input.runtimeCommit.trim().length === 0
+  ) {
     throw new TypeError("unified_delivery_claim_time_invalid");
   }
   const result = await db.query(
     `with candidate as (
-      select id from unified_check_deliveries
-       where status = 'PENDING'
+      select delivery.id from unified_check_deliveries delivery
+       join unified_check_requests request on request.id=delivery.request_id
+       join unified_check_runs run on run.id=request.run_id
+       join unified_check_artifacts manifest
+         on manifest.sha256=run.analysis_manifest_sha256
+        and manifest.kind='analysis_manifest'
+       where manifest.artifact_json->>'runtimeCommit'=$4
+         and (delivery.status = 'PENDING'
           or (
-            status = 'RETRYABLE'
-            and next_attempt_at is not null
-            and next_attempt_at <= $3::timestamptz
-          )
-       order by updated_at, created_at
+            delivery.status = 'RETRYABLE'
+            and delivery.next_attempt_at is not null
+            and delivery.next_attempt_at <= $3::timestamptz
+          ))
+       order by delivery.updated_at, delivery.created_at
        for update skip locked limit 1
     )
     update unified_check_deliveries delivery
@@ -3616,7 +3630,12 @@ export async function claimUnifiedDelivery(
       from candidate
      where delivery.id = candidate.id
     returning delivery.*`,
-    [input.leaseToken, input.leaseMs, input.now.toISOString()]
+    [
+      input.leaseToken,
+      input.leaseMs,
+      input.now.toISOString(),
+      input.runtimeCommit
+    ]
   );
   return result.rows[0] ?? null;
 }

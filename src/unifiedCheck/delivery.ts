@@ -273,13 +273,17 @@ export async function runUnifiedDeliveryCycle(input: {
 }
 
 export function createPostgresUnifiedDeliveryRepository(
-  db: UnifiedQueryable
+  db: UnifiedQueryable,
+  options: { readonly runtimeCommit: string }
 ): UnifiedDeliveryRepository {
   return {
     markExpiredLeasesUnknown: (input) =>
       markExpiredUnifiedDeliveryLeasesUnknown(db, input),
     async claimNext(input) {
-      const row = await claimUnifiedDelivery(db, input);
+      const row = await claimUnifiedDelivery(db, {
+        ...input,
+        runtimeCommit: options.runtimeCommit
+      });
       if (row === null) return null;
       try {
         const request = record((await db.query(

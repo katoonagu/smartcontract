@@ -280,10 +280,13 @@ describe("Unified request-scoped Telegram delivery", () => {
     await expect(claimUnifiedDelivery(db, {
       leaseToken: "lease-1",
       leaseMs: 30_000,
-      now
+      now,
+      runtimeCommit: "candidate"
     })).resolves.toBeNull();
     expect(calls[0]?.sql).toContain("next_attempt_at <= $3::timestamptz");
     expect(calls[0]?.values[2]).toBe(now.toISOString());
+    expect(calls[0]?.values[3]).toBe("candidate");
+    expect(calls[0]?.sql).toContain("manifest.artifact_json->>'runtimeCommit'=$4");
     await expect(settleUnifiedDelivery(db, {
       deliveryId: "delivery-1",
       leaseToken: "lease-1",
