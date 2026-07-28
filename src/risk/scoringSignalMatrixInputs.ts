@@ -1097,6 +1097,36 @@ function whereCandidates(
 
   if (notApplicable) return candidates;
 
+  for (const path of arrayOrEmpty(report.crossChainCorridor?.paths)) {
+    const layer = path.riskLayer;
+    const ids = layer.evidenceIds.filter((id) => id.trim().length > 0);
+    if (
+      path.terminalBoundary !== "sanctioned_service" ||
+      layer.kind !== "cross_chain_sanctioned_service" ||
+      layer.sourceExposureKind !== "sanctioned_service" ||
+      layer.evidenceClass !== "hard_proof" ||
+      layer.proofLevel !== "exact_scam_or_taint_proof" ||
+      ids.length === 0 ||
+      !admits(ids)
+    ) continue;
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
+      row: "source_policy",
+      actionUnit: "source_path",
+      score: contextScore(layer.score),
+      evidenceIds: ids,
+      evidenceEpisodeIds: ids,
+      atomicSignals: ["where_sanctioned_service"],
+      modifiers: [],
+      caps: [],
+      dampeners: [],
+      caveats: []
+    }));
+  }
+
   for (const item of report.assessment.hardBadEvidence) {
     if (deterministicWhereHardKinds.has(item.kind)) continue;
     if (!item.kind.includes("contract_suspicion")) continue;

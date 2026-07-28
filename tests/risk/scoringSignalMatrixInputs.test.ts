@@ -2039,57 +2039,132 @@ describe("scoring signal matrix input mappers", () => {
       expect(sanctionsCandidates(closed)).toHaveLength(3);
       expect(sanctionsCandidates(closed).every((item) => item.authority.kind === "context")).toBe(true);
     }
+  });
 
-    const collisionReport = whereReport({
-      ...report,
-      originPaths: [],
-      crossChainCorridor: {
-        enabled: true,
-        triggered: true,
-        skippedReason: null,
-        paths: [{
-          id: "typed-cross-chain-sanctions",
-          triggerReason: "large_single_boundary",
-          balanceTransferTxHashes: ["cross-chain-balance"],
-          targetAmountRaw: "1000000",
-          selectedAmountRaw: "1000000",
-          edges: [],
-          terminalBoundary: "sanctioned_service",
-          riskLayer: {
-            evidenceClass: "hard_proof",
-            kind: "cross_chain_sanctioned_service",
-            sourceExposureKind: "sanctioned_service",
-            score: 95,
-            rawScore: 95,
-            adjustedScore: 95,
-            proofLevel: "exact_scam_or_taint_proof",
-            canBeDampened: false,
-            reasons: ["Typed cross-chain sanctions."],
-            warnings: [],
-            evidenceIds: ["active-sanction-event"]
-          },
-          partial: false,
+  it("preserves one typed cross-chain sanctions candidate without authorizing colliding local artifacts", () => {
+    const evidenceId = "cross-chain-sanction-event";
+    const exactCorridor: NonNullable<WhereIsMoneyReport["crossChainCorridor"]> = {
+      enabled: true,
+      triggered: true,
+      skippedReason: null,
+      paths: [{
+        id: "typed-cross-chain-sanctions",
+        triggerReason: "large_single_boundary",
+        balanceTransferTxHashes: ["cross-chain-balance"],
+        targetAmountRaw: "1000000",
+        selectedAmountRaw: "1000000",
+        edges: [],
+        terminalBoundary: "sanctioned_service",
+        riskLayer: {
+          evidenceClass: "hard_proof",
+          kind: "cross_chain_sanctioned_service",
+          sourceExposureKind: "sanctioned_service",
+          score: 95,
+          rawScore: 95,
+          adjustedScore: 95,
+          proofLevel: "exact_scam_or_taint_proof",
+          canBeDampened: false,
           reasons: ["Typed cross-chain sanctions."],
-          warnings: []
-        }],
-        providerCalls: 1,
+          warnings: [],
+          evidenceIds: [evidenceId]
+        },
         partial: false,
-        coverageNotes: [],
-        payloadRefs: []
+        reasons: ["Typed cross-chain sanctions."],
+        warnings: []
+      }],
+      providerCalls: 1,
+      partial: false,
+      coverageNotes: [],
+      payloadRefs: []
+    };
+    const typedOnly = buildWalletMatrixCandidates({
+      address,
+      whereReport: whereReport({ originPaths: [], crossChainCorridor: exactCorridor })
+    });
+    const typedCandidates = (items: ReturnType<typeof buildWalletMatrixCandidates>) =>
+      items.filter((item) => item.atomicSignals.includes("where_sanctioned_service") && item.authority.kind === "policy");
+    expect(typedCandidates(typedOnly)).toEqual([expect.objectContaining({
+      row: "source_policy",
+      actionUnit: "source_path",
+      score: 59,
+      evidenceIds: [evidenceId],
+      evidenceEpisodeIds: [evidenceId],
+      authority: {
+        kind: "policy",
+        decisionEligibility: "can_decline",
+        coverageDependency: "wallet_provenance"
+      }
+    })]);
+
+    const base = whereReport();
+    const collisionReport = whereReport({
+      originPaths: [],
+      crossChainCorridor: exactCorridor,
+      assessment: {
+        ...base.assessment,
+        hardBadEvidence: [{
+          kind: "sanctioned_service",
+          score: 95,
+          message: "Stale local sanctions.",
+          evidenceIds: [evidenceId]
+        }],
+        sourcePolicyEvidence: [{
+          kind: "sanctioned_service",
+          aggregateShare: 1,
+          effectiveShare: 1,
+          pathCount: 1,
+          score: 95,
+          riskBand: "CRITICAL",
+          proofLevel: "exchange_policy_decline",
+          canBeDampened: false,
+          reasons: ["Stale local sanctions."],
+          warnings: [],
+          evidenceIds: [evidenceId]
+        }],
+        riskLayers: [{
+          evidenceClass: "source_policy",
+          kind: "sanctioned_service",
+          sourceExposureKind: "sanctioned_service",
+          score: 95,
+          rawScore: 95,
+          adjustedScore: 95,
+          proofLevel: "exchange_policy_decline",
+          canBeDampened: false,
+          reasons: ["Stale local sanctions."],
+          warnings: [],
+          evidenceIds: [evidenceId]
+        }]
       }
     });
-    const collision = buildWalletMatrixCandidates({
-      address,
-      whereReport: collisionReport,
-      deepReport: deepReport({ assetContinuationProfiles: [assetContinuationProfile("active-sanction-event")] })
+    const collision = buildWalletMatrixCandidates({ address, whereReport: collisionReport });
+    expect(typedCandidates(collision)).toHaveLength(1);
+    expect(collision.filter((item) => item.evidenceIds.includes(evidenceId) && item.authority.kind === "context")).toHaveLength(3);
+    const scoredCollision = scoreMatrixCandidates(collision, walletContext());
+    expect(Object.values(scoredCollision.riskVector).flat()).toHaveLength(1);
+    expect(scoredCollision.winningCandidate).toMatchObject({
+      atomicSignals: ["where_sanctioned_service"],
+      authority: { kind: "policy", decisionEligibility: "can_decline" }
     });
-    expect(collision.find((item) => item.row === "asset_continuation")?.authority).toMatchObject({
-      kind: "pattern",
-      decisionEligibility: "can_decline"
-    });
-    expect(sanctionsCandidates(collision).filter((item) => item.row !== "asset_continuation")).toHaveLength(3);
-    expect(sanctionsCandidates(collision).filter((item) => item.row !== "asset_continuation")
-      .every((item) => item.authority.kind === "context")).toBe(true);
+
+    for (const crossChainCorridor of [
+      {
+        ...exactCorridor,
+        paths: [{
+          ...exactCorridor.paths[0]!,
+          riskLayer: { ...exactCorridor.paths[0]!.riskLayer, proofLevel: "exchange_policy_decline" as const }
+        }]
+      },
+      {
+        ...exactCorridor,
+        paths: [{ ...exactCorridor.paths[0]!, terminalBoundary: "bridge_boundary" as const }]
+      }
+    ]) {
+      const candidates = buildWalletMatrixCandidates({
+        address,
+        whereReport: whereReport({ originPaths: [], crossChainCorridor })
+      });
+      expect(typedCandidates(candidates)).toHaveLength(0);
+    }
   });
 
   it("admits only deposit-path-linked evidence from a mismatched transaction-seeded Where report", () => {
