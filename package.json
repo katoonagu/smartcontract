@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "bot:restart": "node --import tsx scripts/restartBot.ts",
     "test": "vitest run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000",
     "test:watch": "vitest --configLoader bundle",
     "typecheck": "tsc --noEmit",

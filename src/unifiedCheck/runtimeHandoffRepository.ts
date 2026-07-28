@@ -96,6 +96,32 @@ async function lockRegistry(db: UnifiedQueryable): Promise<void> {
   ]);
 }
 
+export async function loadRuntimeInstance(
+  db: UnifiedQueryable,
+  instanceId: string
+): Promise<UnifiedRuntimeInstanceV1 | null> {
+  if (instanceId.trim().length === 0) {
+    throw new TypeError("unified_runtime_identity_invalid");
+  }
+  const row = (await db.query(
+    "select * from unified_runtime_instances where instance_id=$1",
+    [instanceId]
+  )).rows[0];
+  return row ? runtimeRow(row) : null;
+}
+
+export async function loadActiveRuntimeOwner(
+  db: UnifiedQueryable
+): Promise<UnifiedRuntimeInstanceV1 | null> {
+  const row = (await db.query(
+    `select * from unified_runtime_instances
+      where state='ACTIVE' and telegram_polling_released_at is null
+      order by started_at desc
+      limit 1`
+  )).rows[0];
+  return row ? runtimeRow(row) : null;
+}
+
 export async function registerActiveRuntime(
   db: UnifiedTransactionalQueryable,
   input: {
