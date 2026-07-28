@@ -490,3 +490,28 @@ and incomplete coverage, and be stopped immediately when claim fencing fails.
 A post-candidate callback is not a heartbeat for a long pending provider
 promise; the claimed job also needs one periodic, non-overlapping CAS
 coordinator shared by all of its concurrent enrichment invocations.
+
+## 2026-07-28: A Process Restart Must Produce A Durable User Outcome
+
+Repeated mistake: an accepted check was pinned to the old runtime commit, the
+replacement correctly refused its artifacts, and the observational watchdog
+left the request running without a result or technical message.
+
+Correct rule: deployment ownership is durable state. Release Telegram polling
+before replacement intake, keep the old compatible worker draining for a
+bounded two hours, and atomically convert only truly orphaned/expired work to a
+no-score technical outcome with an outbox notification. A user must see a
+progress or terminal lifecycle outcome; watchdog logging alone is not product
+completion.
+
+## 2026-07-28: Reachable Decisive Codes Need Executable Copy Coverage
+
+Agent mistake: customer-copy tests covered behavior codes but omitted the
+default `neutral_no_observed_risk` decisive outcome even though production
+scoring emits it. PostgreSQL finalization therefore failed after analysis was
+complete.
+
+Correct rule: derive the test set from every production-reachable scoring
+outcome, including neutral defaults. Each decisive code has explicit RU and EN
+copy and must reach the real finalizer in a PostgreSQL regression; fail-closed
+handling for unknown codes is not a substitute for mapping reachable ones.

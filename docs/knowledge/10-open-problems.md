@@ -106,6 +106,10 @@ signal with tests.
 - Recipient wallet precheck before signing.
 - Additional Admin exploration and presentation refinements that do not change
   correctness contracts.
+The former silent old-runtime orphan is closed by schema 037: incompatible
+unfinished work now receives a no-score technical terminal state and a durable
+user notification. Dense traversal duration remains a separate performance
+problem and is not reclassified as a handoff failure before the deadline.
 
 ## Anti-Loop Rule
 

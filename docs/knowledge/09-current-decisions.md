@@ -13,6 +13,7 @@ code_refs:
   - migrations/034_unified_check_adaptive_planner.sql
   - migrations/035_unified_check_run_rollout_policy.sql
   - migrations/036_remove_rollout_authority.sql
+  - migrations/037_unified_runtime_handoff.sql
   - scripts/runUnifiedWalletCanary.ts
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - scripts/captureUnifiedWslMemory.ps1
@@ -30,11 +31,16 @@ code_refs:
 - Fast, Where, and Deep keep separate analytical responsibilities but are
   evidence-only children. No preliminary child report is sent.
 - `COMPLETED` always has one score and decision.
-- `FAILED_TECHNICAL` has no score, decision, report, presentation, or delivery.
+- `FAILED_TECHNICAL` has no score, decision, report, analytical presentation,
+  or analytical delivery. A separate lifecycle notification may explain the
+  stop and offer a retry without creating a risk conclusion.
 - Coverage is audit metadata. It never adds risk or blocks a completed score.
 - `DELIVERY_UNKNOWN` forbids automatic retry. Manual resend is explicit,
   warned, and audited.
 - Isolated canaries create no Telegram delivery intent.
+- A non-terminal user check receives at most one five-minute progress message.
+  An incompatible or expired runtime handoff receives exactly one durable
+  technical-stop notification with the existing address retry callback.
 
 ## Evidence, Traversal, And Scoring
 
@@ -162,8 +168,18 @@ code_refs:
 - Migration 035 remains immutable historical evidence. Migration 036 removes
   its rollout-receipt column and receipt-specific constraints while retaining
   stage, bucket, admission policy, capacity ceiling, and immutability.
-- Startup verifies exact migration 036 plus exact predecessor receipts and
-  structure for migrations 032–035 before provider, bot, or worker startup.
+- Startup verifies exact migration 037 plus exact predecessor receipts and
+  structure for migrations 032–036 before provider, bot, or worker startup.
+- One registered `ACTIVE` runtime owns Telegram intake. Restart requests an
+  exact two-hour drain; the old runtime releases polling before a replacement
+  can acquire it and continues only work pinned to its own commit. A different
+  commit never claims the old manifest, task, or analytical delivery.
+- At the handoff deadline, or when no fresh compatible drainer exists, the
+  affected unfinished authoritative run becomes `FAILED_TECHNICAL`
+  transactionally. Its request retains `run_id`; no score is fabricated.
+- Local Windows deployment uses `npm.cmd run bot:restart`. It never scans or
+  kills arbitrary Node processes. The first deployment from a pre-registry
+  runtime requires a separately verified manual stop of that exact process.
 - Existing runs created before schema 035 remain barrier. New runs persist their
   selected policy in the run creation transaction.
 - `UNIFIED_TRAVERSAL_POLICY_VERSION` selects `snapshot-closure-v1` or
@@ -240,6 +256,9 @@ provider waits, capacity and limiting reason, planner backlog/admission/leases,
 ready-buffer bytes, canonical-head age, closure/coverage, hashes, score anchor,
 delivery state, and watchdog actions. Progress reports exact counters only; an
 expanding frontier has no percent or ETA.
+The Unified page also exposes runtime generation/heartbeat/drain state,
+compatible unfinished run counts, and aggregate lifecycle-notification states
+without chat IDs, wallet addresses, or mutation controls.
 
 ## Benchmark And Memory Evidence
 
@@ -380,6 +399,10 @@ expanding frontier has no percent or ETA.
   reason, and always gives separate sending and receiving guidance. It uses
   localized USDT/date/count formatting and hides internal scope, role, code,
   fact-count, and raw coverage names.
+- The reachable neutral decisive code `neutral_no_observed_risk` renders as
+  “no confirmed risk signals were found in the checked data” in RU and EN.
+  Unknown decisive codes still fail closed; every reachable code requires an
+  explicit customer-copy regression.
 - Exact canonical details remain in the completeness receipt and Admin.
   Compaction may remove repeated display examples but cannot remove decisive
   reasons, guidance, material hard evidence, material coverage limitations, or

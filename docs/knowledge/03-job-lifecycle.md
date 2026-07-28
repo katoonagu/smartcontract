@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-28
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -20,7 +20,10 @@ code_refs:
   - src/unifiedCheck/productionFinalizer.ts
   - src/unifiedCheck/delivery.ts
   - src/unifiedCheck/watchdog.ts
-  - migrations/036_remove_rollout_authority.sql
+  - src/unifiedCheck/runtimeHandoffRepository.ts
+  - src/unifiedCheck/lifecycleNotification.ts
+  - src/runtime/runtimeHandoffCoordinator.ts
+  - migrations/037_unified_runtime_handoff.sql
 ---
 
 # Job Lifecycle
@@ -144,7 +147,9 @@ identity, traversal closure, fact reconciliation, and matching hashes.
 Finalization, final hash-chain commit, and completed-presentation reconciliation
 all parse the hash-verified manifest against the locked run, subject, and sole
 run-owned confirmed snapshot before writing score, report, or delivery state.
-`FAILED_TECHNICAL` has no score, decision, report, presentation, or send.
+`FAILED_TECHNICAL` has no score, decision, report, analytical presentation, or
+analytical delivery. A separate lifecycle notification may explain the
+technical stop without implying a risk result.
 
 Delivery is a separate state machine. `DELIVERY_UNKNOWN` records an ambiguous
 external effect and forbids automatic resend. Manual resend creates a new
@@ -152,7 +157,7 @@ warned presentation and audit record.
 
 These contracts are implemented independently of delivery ownership.
 
-Startup requires exact schema 036 with verified schema-032 through schema-035
+Startup requires exact schema 037 with verified schema-032 through schema-036
 predecessor receipts. Migration 035 historically added immutable rollout
 policy. Migration 036 removes its receipt field while retaining rollout stage,
 stable bucket, admission policy, and provider ceiling on `unified_check_runs`.
@@ -174,6 +179,30 @@ planner may attach a new row only to an existing unaccepted `QUEUED` or
 `WAITING_RETRY` task. It rejects `LEASED`, `BLOCKED_ADMIN`,
 `FAILED_TECHNICAL`, `CANCELLED`, and `COMPLETED`; a task that already owns a
 planner row remains idempotently reusable after it is admitted or leased.
+
+Schema 037 adds a single-owner runtime registry and a separate lifecycle
+notification outbox. A deployment first records `DRAIN_REQUESTED` with an
+exact two-hour deadline. The old process stops Telegram polling and legacy
+claims, records `DRAINING`, and continues only provider, coordinator,
+finalizer, and delivery work whose analysis manifest is pinned to its own Git
+commit. A replacement may acquire intake only after polling release or a
+proven stale owner. A same-commit replacement may resume compatible work; a
+different commit never claims it.
+
+At drain completion the old runtime records `STOPPED`. At the exact deadline
+it atomically terminalizes only its remaining compatible authoritative runs as
+technical failures, preserves the request-to-run audit link, releases leases
+and reservations, and enqueues one technical lifecycle notification. The
+active runtime performs the same no-score terminalization for old-commit runs
+that have no fresh compatible drainer. Completed runs, committed attempts,
+artifacts, and confirmed deliveries are never downgraded.
+
+The lifecycle outbox sends one five-minute `LONG_RUNNING` message while a run
+is still non-terminal and one `FAILED_TECHNICAL_RUNTIME_HANDOFF` message with
+the existing address retry callback when an incompatible deployment stops a
+check. Applicability is rechecked before send. Confirmed, retryable, permanent,
+and ambiguous Telegram effects are persisted; `DELIVERY_UNKNOWN` is not sent
+again automatically.
 
 For `snapshot-closure-v2`, the traversal coordinator first evaluates the
 canonical frontier against the exact frozen label dataset bound by the run
@@ -312,7 +341,7 @@ rewrite either traversal policy or reopen a terminal V2 state.
 
 ## Remaining Operational Work
 
-The schema-036 startup verifier, planner, adaptive capacity, structured slot
+The schema-037 startup verifier, planner, adaptive capacity, structured slot
 assignment outcomes, bounded refill diagnostics, reconciliation,
 staged policy, barrier fallback, and memory diagnostics are implemented.
 Configuration defaults to `global_barrier`; isolated or broader rolling is an

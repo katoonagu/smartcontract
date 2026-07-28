@@ -11,6 +11,8 @@ code_refs:
   - src/unifiedCheck/delivery.ts
   - src/unifiedCheck/productionFinalizer.ts
   - src/unifiedCheck/watchdog.ts
+  - src/unifiedCheck/lifecycleNotification.ts
+  - src/unifiedCheck/runtimeHandoffRepository.ts
 ---
 
 # Admin And Bot UX
@@ -36,6 +38,15 @@ check. While Fast, Where, or Deep is running, Unified sends no child result.
 After the parent reaches `COMPLETED`, the bot sends one immutable locale
 presentation derived from the same report hash. RU and EN share analysis/report
 identity and differ only in presentation artifacts.
+
+If a check remains non-terminal for five minutes, the bot sends one plain
+progress message explaining that a large transaction history can take longer;
+it contains no score or risk conclusion. If a runtime update cannot safely
+continue the pinned analysis before the two-hour drain deadline, the bot sends
+one explicit technical-stop message and a `Повторить` / `Retry` button for the
+same address. This lifecycle outbox is separate from completed analytical
+delivery, and ambiguous Telegram acknowledgement remains
+`DELIVERY_UNKNOWN` rather than being resent automatically.
 
 New Unified Telegram presentations use the customer-facing V2 renderer. The
 Telegram dossier order is:
@@ -84,9 +95,14 @@ and warned. It keeps the original stored HTML unchanged inside the warning
 wrapper and retains the original V1/V2 manifest version; it never rerenders a
 historical result with current copy.
 
+The Unified list also shows a read-only runtime handoff summary: instance
+label, short commit, lifecycle state, heartbeat age, drain deadline, compatible
+non-terminal run count, and aggregate lifecycle-notification states. It does
+not expose wallet addresses or chat IDs and has no runtime mutation buttons.
+
 The `/check` wiring and delivery fence are implemented. The fence selects one
 delivery owner only; it does not gate planner/controller work or isolated
-canaries. Startup schema verification requires schema 036.
+canaries. Startup schema verification requires schema 037.
 
 ## Remaining Product Work
 
