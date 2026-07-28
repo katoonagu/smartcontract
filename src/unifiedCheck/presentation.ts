@@ -6,6 +6,12 @@ import {
 } from "../alerts/telegramHtml";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import { telegramAddressRef } from "../telegram/forensicPresentation";
+import {
+  formatCustomerPercent,
+  formatCustomerTransferCount,
+  formatCustomerUsdtRaw,
+  formatCustomerUtcDate
+} from "./customerPresentationFormat";
 import type {
   PresentationArtifactV1,
   PresentationCompletenessReceiptV1
@@ -136,8 +142,8 @@ const SEMANTIC_REASON: Readonly<Record<
   Readonly<Record<Locale, string>>
 >> = {
   rapid_forwarding: {
-    en: "Repeated rapid forwarding of inbound funds was observed. This is a behavioral pattern, not direct proof of abuse.",
-    ru: "Найден повторяющийся быстрый перевод входящих средств дальше. Это поведенческий паттерн, а не прямое доказательство злоупотребления."
+    en: "The wallet forwards received funds almost immediately. It may be an ordinary transit or service wallet, but extra caution is appropriate before a transaction. This behavior alone does not prove fraud.",
+    ru: "Кошелёк почти сразу переводит полученные средства дальше. Это может быть обычный транзитный или сервисный кошелёк, но перед сделкой стоит проявить осторожность. Сам по себе этот признак не доказывает мошенничество."
   },
   high_volume_transit: {
     en: "High inbound and outbound throughput forms a dense transit pattern. Contract-creation metadata alone does not add risk.",
@@ -237,6 +243,10 @@ function fail(): never {
   throw new Error("presentation_contract_failed");
 }
 
+function failCustomerCopy(): never {
+  throw new Error("unified_customer_copy_decisive_code_unmapped");
+}
+
 function lexical(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -257,27 +267,6 @@ function sumRaw(values: readonly string[]): string {
   return values.reduce((sum, value) => sum + BigInt(value), 0n).toString();
 }
 
-function formatRaw(raw: string, locale: Locale): string {
-  if (!/^\d+$/u.test(raw)) fail();
-  const padded = raw.padStart(7, "0");
-  const whole = padded.slice(0, -6);
-  const fraction = padded.slice(-6).replace(/0+$/u, "");
-  const grouped = whole.replace(
-    /\B(?=(\d{3})+(?!\d))/gu,
-    locale === "ru" ? " " : ","
-  );
-  return fraction.length === 0 ? grouped : `${grouped}.${fraction}`;
-}
-
-function percent(ppm: number, locale: Locale): string {
-  if (!Number.isSafeInteger(ppm) || ppm < 0 || ppm > 1_000_000) fail();
-  const value = ppm / 10_000;
-  const text = Number.isInteger(value) ? String(value) : value.toFixed(2)
-    .replace(/0+$/u, "")
-    .replace(/\.$/u, "");
-  return locale === "ru" ? text.replace(".", ",") : text;
-}
-
 function scoreLine(report: UnifiedWalletDossierV1, locale: Locale): string {
   const copy = report.decision === "ACCEPTABLE"
     ? { icon: "🟢", ru: "низкий риск", en: "low risk" }
@@ -290,16 +279,51 @@ function scoreLine(report: UnifiedWalletDossierV1, locale: Locale): string {
 function header(report: UnifiedWalletDossierV1, locale: Locale): string {
   return [
     locale === "ru" ? "<b>🧾 Проверка кошелька</b>" : "<b>🧾 Wallet check</b>",
-    `${locale === "ru" ? "Кошелёк" : "Wallet"}: <code>${escapeHtml(report.subjectAddress)}</code>`,
+    "",
+    `<code>${escapeHtml(report.subjectAddress)}</code>`,
     "",
     scoreLine(report, locale)
   ].join("\n");
 }
 
 function snapshotLine(report: UnifiedWalletDossierV1, locale: Locale): string {
-  return `<i>${locale === "ru" ? "Снимок" : "Snapshot"}: TRON #${escapeHtml(
+  return `<i>${locale === "ru" ? "Данные актуальны на блоке" : "Data current at block"} TRON #${escapeHtml(
     section(report, "snapshot").blockNumber
-  )}</i>`;
+  )}.</i>`;
+}
+
+function customerKey(value: string): string {
+  return TronWeb.isAddress(value)
+    ? renderTelegramAddressRef(telegramAddressRef(value))
+    : escapeHtml(value);
+}
+
+function customerDirectionCount(
+  incoming: number,
+  outgoing: number,
+  locale: Locale
+): string {
+  if (locale === "en") {
+    return `${incoming} incoming, ${outgoing} outgoing`;
+  }
+  const adjective = (count: number, singular: string, plural: string) =>
+    `${count} ${count === 1 ? singular : plural}`;
+  return `${adjective(incoming, "входящий", "входящих")}, ` +
+    adjective(outgoing, "исходящий", "исходящих");
+}
+
+function customerCounterpartyCount(count: number, locale: Locale): string {
+  if (locale === "en") return `${count} ${count === 1 ? "counterparty" : "counterparties"}`;
+  const lastTwo = count % 100;
+  const last = count % 10;
+  const noun = lastTwo >= 11 && lastTwo <= 14
+    ? "контрагентов"
+    : last === 1
+      ? "контрагент"
+      : last >= 2 && last <= 4
+        ? "контрагента"
+        : "контрагентов";
+  return `${count} ${noun}`;
 }
 
 function aggregateScoreDrivers(
@@ -474,107 +498,242 @@ function scoreDriverLines(
   locale: Locale
 ): string[] {
   return presentation.scoreDrivers.map((driver) => {
-    const reason = SEMANTIC_REASON[driver.code]?.[locale] ??
-      driver.code.replaceAll("_", " ");
+    const reason = SEMANTIC_REASON[driver.code]?.[locale] ?? failCustomerCopy();
     return escapeHtml(reason);
   });
 }
 
-function amountLines(
-  title: string,
-  scope: string,
-  denominatorRaw: string,
-  rows: readonly AmountRow[],
+function guidanceLines(
+  report: UnifiedWalletDossierV1,
+  presentation: PresentationModel,
   locale: Locale
 ): string[] {
-  const total = sumRaw(rows.map((row) => row.amount.amountRaw));
-  const body = rows.length === 0
-    ? [locale === "ru" ? "Относящихся переводов нет." : "No transfers in this scope."]
-    : rows.map((row) =>
-        `• ${escapeHtml(row.key)}: ${formatRaw(row.amount.amountRaw, locale)} USDT ` +
-        `(${percent(row.amount.sharePpm, locale)}%, ${row.transferCount} ` +
-        `${locale === "ru" ? "перевода(ов)" : "transfer(s)"}, ${row.factIds.length} facts)`
+  const unknownSource = presentation.behaviorCodes.includes("unknown_source");
+  if (report.decision === "ACCEPTABLE") {
+    return locale === "ru"
+      ? [
+          "<b>Что делать перед сделкой</b>",
+          "• <b>Если отправляете деньги:</b> существенных риск-сигналов не найдено. Проверьте адрес и владельца кошелька обычным способом.",
+          "• <b>Если принимаете деньги:</b> достаточно обычной проверки отправителя и назначения платежа."
+        ]
+      : [
+          "<b>What to do before the transaction</b>",
+          "• <b>If you are sending funds:</b> no material risk signal was found. Verify the address and wallet owner as usual.",
+          "• <b>If you are receiving funds:</b> ordinary checks of the sender and payment purpose are appropriate."
+        ];
+  }
+  if (report.decision === "DECLINE") {
+    return locale === "ru"
+      ? [
+          "<b>Что делать перед сделкой</b>",
+          "• <b>Если отправляете деньги:</b> не отправляйте средства до ручной проверки выявленных рисков.",
+          "• <b>Если принимаете деньги:</b> не принимайте перевод до ручной проверки контрагента и происхождения средств."
+        ]
+      : [
+          "<b>What to do before the transaction</b>",
+          "• <b>If you are sending funds:</b> do not send funds until the identified risks are reviewed manually.",
+          "• <b>If you are receiving funds:</b> do not accept the transfer until the counterparty and source of funds are reviewed manually."
+        ];
+  }
+  if (locale === "ru") {
+    return [
+      "<b>Что делать перед сделкой</b>",
+      "• <b>Если отправляете деньги:</b> явных запрещающих сигналов не найдено. Для крупной суммы сначала проверьте владельца и сделайте небольшой тестовый перевод.",
+      unknownSource
+        ? "• <b>Если принимаете деньги:</b> попросите контрагента подтвердить происхождение средств — источник поступления определить не удалось."
+        : "• <b>Если принимаете деньги:</b> перед крупной сделкой проверьте контрагента и назначение платежа."
+    ];
+  }
+  return [
+    "<b>What to do before the transaction</b>",
+    "• <b>If you are sending funds:</b> no clear prohibitive signal was found. For a large amount, verify the owner and make a small test transfer first.",
+    unknownSource
+      ? "• <b>If you are receiving funds:</b> ask the counterparty to confirm the source of funds because the original source could not be determined."
+      : "• <b>If you are receiving funds:</b> verify the counterparty and payment purpose before a large transaction."
+  ];
+}
+
+function moneyLines(
+  report: UnifiedWalletDossierV1,
+  presentation: PresentationModel,
+  locale: Locale
+): string[] {
+  const latest = report.latestPrincipalInboundEvents;
+  const receivedTotal = sumRaw(latest.map((event) => event.amountRaw));
+  const outgoingTotal = sumRaw(presentation.outgoingRows.map((row) =>
+    row.amount.amountRaw
+  ));
+  const profile = section(report, "wallet_profile").profile;
+  const lines = [
+    `<b>${locale === "ru" ? "💰 Движение денег" : "💰 Money movement"}</b>`
+  ];
+
+  if (latest.length > 0) {
+    if (presentation.showExamples) {
+      for (const event of latest) {
+        lines.push(
+          locale === "ru"
+            ? `• Получено: ${formatCustomerUsdtRaw(event.amountRaw, locale)} от ${customerKey(event.fromAddress)}`
+            : `• Received: ${formatCustomerUsdtRaw(event.amountRaw, locale)} from ${customerKey(event.fromAddress)}`,
+          locale === "ru"
+            ? `• Время: ${escapeHtml(formatCustomerUtcDate(event.timestamp, locale))}`
+            : `• Time: ${escapeHtml(formatCustomerUtcDate(event.timestamp, locale))}`
+        );
+      }
+    } else {
+      lines.push(locale === "ru"
+        ? `• Получено: ${formatCustomerUsdtRaw(receivedTotal, locale)}`
+        : `• Received: ${formatCustomerUsdtRaw(receivedTotal, locale)}`);
+    }
+  } else if (presentation.balanceRows.length > 0) {
+    for (const row of presentation.balanceRows) {
+      lines.push(locale === "ru"
+        ? `• В текущем остатке: ${formatCustomerUsdtRaw(row.amount.amountRaw, locale)} от ${customerKey(row.key)}`
+        : `• In the current balance: ${formatCustomerUsdtRaw(row.amount.amountRaw, locale)} from ${customerKey(row.key)}`);
+    }
+  } else {
+    lines.push(locale === "ru"
+      ? "• Значимых поступлений USDT не найдено."
+      : "• No material incoming USDT transfer was found.");
+  }
+
+  if (presentation.outgoingRows.length > 0) {
+    if (presentation.showExamples) {
+      for (const row of presentation.outgoingRows) {
+        lines.push(locale === "ru"
+          ? `• Отправлено дальше: ${formatCustomerUsdtRaw(row.amount.amountRaw, locale)} на ${customerKey(row.key)} (${formatCustomerTransferCount(row.transferCount, locale)})`
+          : `• Sent onward: ${formatCustomerUsdtRaw(row.amount.amountRaw, locale)} to ${customerKey(row.key)} (${formatCustomerTransferCount(row.transferCount, locale)})`);
+      }
+    } else {
+      lines.push(locale === "ru"
+        ? `• Отправлено дальше: ${formatCustomerUsdtRaw(outgoingTotal, locale)}`
+        : `• Sent onward: ${formatCustomerUsdtRaw(outgoingTotal, locale)}`);
+    }
+  }
+  lines.push(locale === "ru"
+    ? `• Остаток: ${formatCustomerUsdtRaw(profile.snapshotUsdtBalanceRaw, locale)}`
+    : `• Balance: ${formatCustomerUsdtRaw(profile.snapshotUsdtBalanceRaw, locale)}`);
+  return lines;
+}
+
+const CONTRACT_COPY: Readonly<Record<string, Readonly<Record<Locale, string>>>> = {
+  dangerous_approval: {
+    ru: "Найдено опасное разрешение на расходование токенов.",
+    en: "A dangerous token spending approval was found."
+  },
+  dangerous_unlimited_approval: {
+    ru: "Найдено опасное неограниченное разрешение на расходование токенов.",
+    en: "A dangerous unlimited token spending approval was found."
+  }
+};
+
+function serviceContractLines(
+  presentation: PresentationModel,
+  locale: Locale
+): string[] {
+  const lines = [
+    `<b>${locale === "ru" ? "🏦 Сервисы и контракты" : "🏦 Services and contracts"}</b>`
+  ];
+  if (presentation.services.length === 0) {
+    lines.push(locale === "ru"
+      ? "• Связей с известными биржами, мостами и другими размеченными сервисами не найдено."
+      : "• No links to known exchanges, bridges, or other labeled services were found.");
+  } else {
+    for (const row of presentation.services) {
+      const denominator = BigInt(row.denominatorRaw);
+      const sharePpm = denominator === 0n
+        ? 0
+        : Number(BigInt(row.amountRaw) * 1_000_000n / denominator);
+      const example = presentation.showExamples && row.addresses[0]
+        ? ` · ${customerKey(row.addresses[0])}`
+        : "";
+      const direction = locale === "ru"
+        ? row.direction === "incoming" ? "входящая" : "исходящая"
+        : row.direction;
+      const directness = locale === "ru"
+        ? row.directness === "direct" ? "прямая" : "косвенная"
+        : row.directness;
+      lines.push(
+        locale === "ru"
+          ? `• ${direction} ${directness} связь с ${escapeHtml(row.service)}: ${formatCustomerUsdtRaw(row.amountRaw, locale)} (${formatCustomerPercent(sharePpm, locale)}, ${formatCustomerTransferCount(row.transferCount, locale)})${example}`
+          : `• ${directness} ${direction} link to ${escapeHtml(row.service)}: ${formatCustomerUsdtRaw(row.amountRaw, locale)} (${formatCustomerPercent(sharePpm, locale)}, ${formatCustomerTransferCount(row.transferCount, locale)})${example}`
       );
-  return [
-    `<b>${title}</b>`,
-    `<i>${escapeHtml(scope)} · ${formatRaw(total, locale)} / ${formatRaw(denominatorRaw, locale)} USDT</i>`,
-    ...body
-  ];
+    }
+  }
+
+  if (presentation.contracts.length === 0) {
+    lines.push(locale === "ru"
+      ? "• Значимых контрактных рисков и опасных разрешений не найдено."
+      : "• No material contract risk or dangerous approval was found.");
+  } else {
+    for (const row of presentation.contracts) {
+      const copy = CONTRACT_COPY[row.code]?.[locale] ?? failCustomerCopy();
+      const amount = row.amountObservationCount > 0
+        ? ` ${formatCustomerUsdtRaw(row.amountRaw, locale)}`
+        : "";
+      const example = presentation.showExamples && row.counterparties[0]
+        ? ` · ${customerKey(row.counterparties[0])}`
+        : "";
+      const counterparties = row.counterparties.length > 0
+        ? ` · ${customerCounterpartyCount(row.counterparties.length, locale)}`
+        : "";
+      lines.push(`• ${escapeHtml(copy)}${amount}${counterparties}${example}`);
+    }
+  }
+  return lines;
 }
 
-function serviceLines(
-  presentation: PresentationModel,
-  locale: Locale
-): string[] {
-  const body = presentation.services.map((row) => {
-    const denominator = BigInt(row.denominatorRaw);
-    const sharePpm = denominator === 0n
-      ? 0
-      : Number(BigInt(row.amountRaw) * 1_000_000n / denominator);
-    const example = presentation.showExamples && row.addresses[0]
-      ? ` · ${renderTelegramAddressRef(telegramAddressRef(row.addresses[0]))}`
-      : "";
-    return `• ${escapeHtml(row.service)} · ${row.direction}/${row.directness}: ` +
-      `${formatRaw(row.amountRaw, locale)} / ${formatRaw(row.denominatorRaw, locale)} USDT ` +
-      `(${percent(sharePpm, locale)}%, ${row.transferCount} ` +
-      `${locale === "ru" ? "перевода(ов)" : "transfer(s)"}, ` +
-      `${row.addresses.length} address(es), ${row.factIds.length} facts)${example}`;
-  });
-  return [
-    `<b>${locale === "ru" ? "🏦 Сервисы и границы" : "🏦 Services and boundaries"}</b>`,
-    ...(body.length === 0
-      ? [locale === "ru" ? "Размеченных сервисных связей нет." :
-        "No labeled service links were found."]
-      : body)
-  ];
-}
+const BEHAVIOR_COPY: Readonly<Record<
+  string,
+  Readonly<Record<Locale, string>>
+>> = {
+  dense_fan_in_fan_out: {
+    ru: "Найден плотный поток от многих отправителей ко многим получателям.",
+    en: "A dense flow from many senders to many recipients was found."
+  },
+  high_volume_inbound_outbound: {
+    ru: "Через кошелёк регулярно проходят крупные входящие и исходящие объёмы.",
+    en: "Large incoming and outgoing volumes regularly pass through the wallet."
+  },
+  rapid_forwarding: {
+    ru: "Полученные средства вскоре переводились дальше.",
+    en: "Received funds were forwarded soon afterward."
+  }
+};
 
-function contractLines(
-  presentation: PresentationModel,
-  locale: Locale
-): string[] {
-  const body = presentation.contracts.map((row) => {
-    const amount = row.amountObservationCount === 0
-      ? locale === "ru" ? "сумма не применима" : "amount not applicable"
-      : `${formatRaw(row.amountRaw, locale)} USDT (${row.amountObservationCount} amount fact(s))`;
-    const example = presentation.showExamples && row.counterparties[0]
-      ? ` · ${renderTelegramAddressRef(telegramAddressRef(row.counterparties[0]))}`
-      : "";
-    return `• ${escapeHtml(row.code)}: ${amount}, ` +
-      `${row.counterparties.length} counterparties, ${row.factIds.length} facts${example}`;
-  });
-  return [
-    `<b>${locale === "ru" ? "🧩 Контракты и разрешения" : "🧩 Contracts and approvals"}</b>`,
-    ...(body.length === 0
-      ? [locale === "ru" ? "Значимых контрактных фактов нет." :
-        "No material contract fact was found."]
-      : body)
-  ];
-}
+const COVERAGE_BEHAVIOR_CODES = new Set([
+  "direct_activity_observed",
+  "history_exhausted_to_account_creation",
+  "unknown_source"
+]);
 
 function behaviorLines(
+  report: UnifiedWalletDossierV1,
   presentation: PresentationModel,
   locale: Locale
 ): string[] {
-  const body = presentation.behaviors.map((row) => {
-    const label = row.codes.length === 1
-      ? row.codes[0]!
-      : `${row.codes.length} ${locale === "ru" ? "класса" : "classes"}`;
-    return `• ${escapeHtml(row.role)} · ${escapeHtml(label)}: ` +
-      `${row.collapsedFactCount} collapsed facts, ${row.factIds.length} evidence facts`;
-  });
-  const total = presentation.behaviors.reduce(
-    (sum, row) => sum + row.collapsedFactCount,
-    0
+  const visibleCodes = presentation.behaviorCodes.filter((code) =>
+    !COVERAGE_BEHAVIOR_CODES.has(code)
   );
-  return [
-    `<b>${locale === "ru" ? "🧠 Поведение и связи" : "🧠 Behavior and connections"}</b>`,
-    `<i>${presentation.behaviorCodes.length} risk/context classes · ${total} collapsed facts</i>`,
-    ...(body.length === 0
-      ? [locale === "ru" ? "Составных поведенческих сигналов нет." :
-        "No composite behavior signal was found."]
-      : body)
-  ];
+  const latestTotal = BigInt(sumRaw(report.latestPrincipalInboundEvents.map(
+    (event) => event.amountRaw
+  )));
+  const outgoingTotal = BigInt(sumRaw(presentation.outgoingRows.map((row) =>
+    row.amount.amountRaw
+  )));
+  const almostAllForwarded = latestTotal > 0n &&
+    outgoingTotal * 100n >= latestTotal * 90n;
+  const sentences = unique(visibleCodes.map((code) => {
+    if (code === "rapid_forwarding" && almostAllForwarded) {
+      return locale === "ru"
+        ? "Почти вся полученная сумма была переведена дальше."
+        : "Almost all received funds were forwarded onward.";
+    }
+    return BEHAVIOR_COPY[code]?.[locale] ?? (locale === "ru"
+      ? "Найден дополнительный поведенческий контекст; сам по себе он не доказывает злоупотребление."
+      : "Additional behavioral context was found; by itself it does not prove abuse.");
+  }));
+  return sentences.map((sentence) => escapeHtml(sentence));
 }
 
 function profileLines(
@@ -583,58 +742,118 @@ function profileLines(
   locale: Locale
 ): string[] {
   const profile = section(report, "wallet_profile").profile;
+  const created = escapeHtml(formatCustomerUtcDate(profile.createdAt, locale));
+  const transferCounts = customerDirectionCount(
+    profile.incomingUsdtTransferCount,
+    profile.outgoingUsdtTransferCount,
+    locale
+  );
   if (presentation.compactProfile) {
     return [
-      `<b>${locale === "ru" ? "👛 Профиль" : "👛 Wallet profile"}</b>`,
-      `${formatRaw(profile.snapshotUsdtBalanceRaw, locale)} USDT · ` +
-      `${profile.incomingUsdtTransferCount}/${profile.outgoingUsdtTransferCount} in/out`
+      `<b>${locale === "ru" ? "👛 Профиль кошелька" : "👛 Wallet profile"}</b>`,
+      `• ${locale === "ru" ? "Создан" : "Created"}: ${created}`,
+      `• USDT: ${transferCounts}`
     ];
+  }
+  const first = profile.firstUsdtActivityAt;
+  const last = profile.lastUsdtActivityAt;
+  let activity: string;
+  if (
+    first !== null &&
+    last !== null &&
+    new Date(last).getTime() - new Date(first).getTime() <= 60_000
+  ) {
+    activity = locale === "ru"
+      ? "Активность наблюдалась в течение нескольких секунд."
+      : "Activity was observed over a few seconds.";
+  } else {
+    activity = locale === "ru"
+      ? `Активность: ${formatCustomerUtcDate(first, locale)} — ${formatCustomerUtcDate(last, locale)}.`
+      : `Activity: ${formatCustomerUtcDate(first, locale)} — ${formatCustomerUtcDate(last, locale)}.`;
   }
   return [
     `<b>${locale === "ru" ? "👛 Профиль кошелька" : "👛 Wallet profile"}</b>`,
-    `${locale === "ru" ? "Создан" : "Created"}: ${escapeHtml(profile.createdAt ?? "—")}`,
-    `${locale === "ru" ? "Баланс" : "Balance"}: ${formatRaw(profile.snapshotUsdtBalanceRaw, locale)} USDT`,
-    `USDT in/out: ${profile.incomingUsdtTransferCount}/${profile.outgoingUsdtTransferCount}`,
-    `${locale === "ru" ? "Первая/последняя активность" : "First/last activity"}: ` +
-      `${escapeHtml(profile.firstUsdtActivityAt ?? "—")} / ${escapeHtml(profile.lastUsdtActivityAt ?? "—")}`
+    `• ${locale === "ru" ? "Создан" : "Created"}: ${created}`,
+    `• ${locale === "ru" ? "Переводы USDT" : "USDT transfers"}: ${transferCounts}`,
+    `• ${escapeHtml(activity)}`
   ];
 }
 
 function coverageLines(
   report: UnifiedWalletDossierV1,
+  presentation: PresentationModel,
   locale: Locale
 ): string[] {
   const rows = section(report, "coverage").dimensions;
-  return [
-    `<b>${locale === "ru" ? "📐 Покрытие анализа" : "📐 Analysis coverage"}</b>`,
-    ...(rows.length === 0
-      ? [locale === "ru" ? "Нет применимых денежных направлений." :
-        "No applicable money-flow direction."]
-      : rows.map((row) =>
-          `• ${row.direction}: selection ${percent(row.selectionPpm, locale)}% · ` +
-          `trace ${percent(row.tracePpm, locale)}% · ` +
-          `identified ${percent(row.identifiedPpm, locale)}% · ` +
-          `unknown ${percent(row.unknownBoundaryPpm, locale)}% · ` +
-          `untraced ${percent(row.untracedPpm, locale)}%`
-        ))
+  const lines = [
+    `<b>${locale === "ru" ? "🔍 Что удалось проверить" : "🔍 What was checked"}</b>`
   ];
+  if (rows.length === 0) {
+    lines.push(locale === "ru"
+      ? "• Денежных направлений для трассировки нет."
+      : "• There is no money-flow direction to trace.");
+    return lines;
+  }
+  if (presentation.behaviorCodes.includes(
+    "history_exhausted_to_account_creation"
+  )) {
+    lines.push(locale === "ru"
+      ? "• История входящих и исходящих переводов изучена до момента создания кошелька."
+      : "• Incoming and outgoing history was checked back to wallet creation.");
+  }
+  if (rows.every((row) =>
+    row.tracePpm === 1_000_000 && row.untracedPpm === 0
+  )) {
+    lines.push(locale === "ru"
+      ? "• Переводы прослежены полностью."
+      : "• Transfers were traced completely.");
+  }
+  if (
+    presentation.behaviorCodes.includes("unknown_source") ||
+    rows.some((row) => row.unknownBoundaryPpm > 0)
+  ) {
+    lines.push(locale === "ru"
+      ? "• Первоначальный источник средств определить не удалось."
+      : "• The original source of funds could not be determined.");
+  }
+  for (const row of rows.filter((item) => item.untracedPpm > 0)) {
+    const direction = locale === "ru"
+      ? row.direction === "backward" ? "входящих" : "исходящих"
+      : row.direction === "backward" ? "incoming" : "outgoing";
+    lines.push(locale === "ru"
+      ? `• Часть ${direction} переводов не прослежена (${formatCustomerPercent(row.untracedPpm, locale)}); вывод ограничен этой неполнотой.`
+      : `• Part of the ${direction} transfers is untraced (${formatCustomerPercent(row.untracedPpm, locale)}); this limits the conclusion.`);
+  }
+  return lines;
 }
 
-function isCompactSummary(
+function conclusionLines(
   report: UnifiedWalletDossierV1,
-  presentation: PresentationModel
-): boolean {
-  const profile = section(report, "wallet_profile").profile;
-  return presentation.scoreDrivers.length === 1 &&
-    presentation.balanceRows.length === 0 &&
-    presentation.outgoingRows.length === 0 &&
-    presentation.services.length === 0 &&
-    presentation.contracts.length === 0 &&
-    presentation.behaviors.length === 0 &&
-    report.latestPrincipalInboundEvents.length === 0 &&
-    profile.createdAt === null &&
-    profile.incomingUsdtTransferCount === 0 &&
-    profile.outgoingUsdtTransferCount === 0;
+  presentation: PresentationModel,
+  locale: Locale
+): string[] {
+  let conclusion: string;
+  if (report.decision === "ACCEPTABLE") {
+    conclusion = locale === "ru"
+      ? "В проверенных данных существенных риск-сигналов не найдено. Это не гарантирует безопасность будущей сделки."
+      : "No material risk signal was found in the checked data. This does not guarantee the safety of a future transaction.";
+  } else if (report.decision === "DECLINE") {
+    conclusion = locale === "ru"
+      ? "Найдены существенные риск-сигналы. Не продолжайте сделку до ручной проверки."
+      : "Material risk signals were found. Do not proceed until a manual review is completed.";
+  } else if (presentation.behaviorCodes.includes("rapid_forwarding")) {
+    conclusion = locale === "ru"
+      ? "Прямых доказательств высокого риска не найдено. Однако кошелёк имеет транзитное поведение, поэтому для крупной сделки рекомендуется дополнительная проверка контрагента."
+      : "No direct evidence of high risk was found. However, the wallet shows transit behavior, so additional counterparty checks are recommended for a large transaction.";
+  } else {
+    conclusion = locale === "ru"
+      ? "Перечисленные сигналы требуют ручной проверки перед крупной сделкой."
+      : "The listed signals require manual review before a large transaction.";
+  }
+  return [
+    `<b>${locale === "ru" ? "🧭 Вывод" : "🧭 Conclusion"}</b>`,
+    escapeHtml(conclusion)
+  ];
 }
 
 function render(
@@ -642,64 +861,21 @@ function render(
   presentation: PresentationModel,
   locale: Locale
 ): string {
-  if (isCompactSummary(report, presentation)) {
-    return [
-      header(report, locale),
-      "",
-      `<b>${locale === "ru" ? "Почему такая оценка" : "Why this score"}</b>`,
-      scoreDriverLines(presentation, locale)[0]!,
-      "",
-      snapshotLine(report, locale)
-    ].join("\n");
-  }
-  const balance = section(report, "balance_formation");
-  const outgoing = section(report, "outgoing_movement");
-  const latest = report.latestPrincipalInboundEvents;
-  const latestLines = [
-    `<b>${locale === "ru" ? "Последние значимые пополнения" : "Latest principal inbound events"}</b>`,
-    `<i>${escapeHtml(report.latestPrincipalInboundEventsScope)} · ${latest.length} event(s)</i>`,
-    ...(presentation.showExamples
-      ? latest.map((event) =>
-          `• ${escapeHtml(event.timestamp)} · ${formatRaw(event.amountRaw, locale)} USDT · ` +
-          `${event.factIds.length} facts`
-        )
-      : [])
-  ];
-  const conclusion = report.decision === "ACCEPTABLE"
-    ? locale === "ru" ? "Подтверждённых риск-сигналов не найдено." :
-      "No confirmed risk signal was found."
-    : report.decision === "REVIEW"
-      ? locale === "ru" ? "Нужна ручная проверка перечисленных фактов." :
-        "The listed facts require manual review."
-      : locale === "ru" ? "Не продолжайте операцию." :
-        "Do not proceed with the operation.";
   const blocks = [
     [header(report, locale)],
     [
       `<b>${locale === "ru" ? "Почему такая оценка" : "Why this score"}</b>`,
       ...scoreDriverLines(presentation, locale)
     ],
-    amountLines(
-      locale === "ru" ? "💰 Как сформировался баланс" : "💰 Balance formation",
-      balance.scope,
-      balance.denominatorRaw,
-      presentation.balanceRows,
-      locale
-    ),
-    latestLines,
-    amountLines(
-      locale === "ru" ? "💸 Куда двигались деньги" : "💸 Outgoing movement",
-      outgoing.scope,
-      outgoing.denominatorRaw,
-      presentation.outgoingRows,
-      locale
-    ),
-    serviceLines(presentation, locale),
-    contractLines(presentation, locale),
-    behaviorLines(presentation, locale),
+    guidanceLines(report, presentation, locale),
+    [
+      ...moneyLines(report, presentation, locale),
+      ...behaviorLines(report, presentation, locale)
+    ],
+    serviceContractLines(presentation, locale),
     profileLines(report, presentation, locale),
-    coverageLines(report, locale),
-    [`<b>${locale === "ru" ? "🧭 Вывод" : "🧭 Conclusion"}</b>`, conclusion],
+    coverageLines(report, presentation, locale),
+    conclusionLines(report, presentation, locale),
     [snapshotLine(report, locale)]
   ];
   return blocks.map((block) => block.join("\n")).join("\n\n");

@@ -199,7 +199,263 @@ function report(): UnifiedWalletDossierV1 {
   };
 }
 
+function customerReport(): UnifiedWalletDossierV1 {
+  const base = report();
+  const source = "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn";
+  const destination = "TJZxcWCDxf5zgYMA1snogPWxyR9MeXDwoq";
+  const balance = {
+    kind: "balance_formation" as const,
+    scope: "current_balance_attribution" as const,
+    denominatorRaw: "1",
+    rows: [{
+      key: source,
+      amount: {
+        scope: "current_balance_attribution",
+        amountRaw: "1",
+        denominatorRaw: "1",
+        sharePpm: 1_000_000
+      },
+      transferCount: 1,
+      factIds: ["fact-unknown"]
+    }]
+  };
+  const sections: UnifiedWalletReportSection[] = base.sections.map((entry) => {
+    switch (entry.kind) {
+      case "score_action":
+        return { ...entry, score: 35, decision: "REVIEW", action: "review" };
+      case "score_drivers":
+        return {
+          ...entry,
+          rows: [{
+            code: "rapid_forwarding",
+            factIds: ["fact-rapid"],
+            collapsedFactCount: 1
+          }]
+        };
+      case "balance_formation":
+        return balance;
+      case "outgoing_movement":
+        return {
+          ...entry,
+          denominatorRaw: "10000000",
+          rows: [{
+            key: destination,
+            amount: {
+              scope: "all_direct_outgoing_to_snapshot",
+              amountRaw: "10000000",
+              denominatorRaw: "10000000",
+              sharePpm: 1_000_000
+            },
+            transferCount: 1,
+            factIds: ["fact-rapid"]
+          }]
+        };
+      case "services_boundaries":
+        return {
+          ...entry,
+          rows: [],
+          reconciliation: {
+            incoming: { attributedAmountRaw: "0", denominatorRaw: "0" },
+            outgoing: { attributedAmountRaw: "0", denominatorRaw: "0" }
+          }
+        };
+      case "behavior_connections":
+        return {
+          ...entry,
+          rows: [
+            {
+              code: "history_exhausted_to_account_creation",
+              role: "recipient",
+              factIds: ["fact-history-in"],
+              collapsedFactCount: 1
+            },
+            {
+              code: "unknown_source",
+              role: "recipient",
+              factIds: ["fact-unknown"],
+              collapsedFactCount: 1
+            },
+            {
+              code: "history_exhausted_to_account_creation",
+              role: "sender",
+              factIds: ["fact-history-out"],
+              collapsedFactCount: 1
+            },
+            {
+              code: "direct_activity_observed",
+              role: "subject",
+              factIds: ["fact-direct"],
+              collapsedFactCount: 1
+            },
+            {
+              code: "rapid_forwarding",
+              role: "transit_sender",
+              factIds: ["fact-rapid"],
+              collapsedFactCount: 1
+            }
+          ]
+        };
+      case "wallet_profile":
+        return {
+          ...entry,
+          profile: {
+            ...entry.profile,
+            createdAt: "2026-07-20T13:53:09.000Z",
+            firstUsdtActivityAt: "2026-07-20T13:53:09.000Z",
+            lastUsdtActivityAt: "2026-07-20T13:53:12.000Z",
+            incomingUsdtTransferCount: 1,
+            outgoingUsdtTransferCount: 1,
+            snapshotUsdtBalanceRaw: "1"
+          }
+        };
+      case "coverage":
+        return {
+          ...entry,
+          dimensions: [
+            {
+              direction: "backward",
+              selectionPpm: 1_000_000,
+              tracePpm: 1_000_000,
+              identifiedPpm: 0,
+              unknownBoundaryPpm: 1_000_000,
+              untracedPpm: 0
+            },
+            {
+              direction: "forward",
+              selectionPpm: 1_000_000,
+              tracePpm: 1_000_000,
+              identifiedPpm: 0,
+              unknownBoundaryPpm: 1_000_000,
+              untracedPpm: 0
+            }
+          ]
+        };
+      case "snapshot":
+        return { ...entry, blockNumber: "84727122" };
+      default:
+        return entry;
+    }
+  });
+  const inventory = {
+    version: "report-fact-inventory-v1" as const,
+    canonicalFactIds: [
+      "fact-direct",
+      "fact-history-in",
+      "fact-history-out",
+      "fact-rapid",
+      "fact-unknown"
+    ],
+    sections: sections.map((entry) => ({
+      sectionId: entry.kind,
+      factIds: "rows" in entry
+        ? [...new Set(entry.rows.flatMap((row) =>
+            "factIds" in row ? row.factIds : []
+          ))].sort()
+        : [],
+      collapsedFactCount:
+        entry.kind === "score_drivers" ||
+        entry.kind === "behavior_connections"
+          ? entry.rows.reduce((sum, row) => sum + row.collapsedFactCount, 0)
+          : "rows" in entry
+            ? entry.rows.length
+            : 0
+    }))
+  };
+  return {
+    ...base,
+    subjectAddress: "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
+    score: 35,
+    decision: "REVIEW",
+    sections,
+    currentBalanceAttribution: balance,
+    latestPrincipalInboundEvents: [{
+      eventId: "event-inbound",
+      txHash: "a".repeat(64),
+      timestamp: "2026-07-20T13:53:09.000Z",
+      fromAddress: source,
+      amountRaw: "10000001",
+      factIds: ["fact-unknown"]
+    }],
+    factInventory: inventory,
+    factInventoryHash: fingerprintCanonicalArtifact(inventory)
+  };
+}
+
 describe("Unified Telegram presentation", () => {
+  it("renders the approved customer report without internal terminology", () => {
+    const dossier = customerReport();
+    const ru = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "ru")
+    }).artifact.html;
+    const en = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "en")
+    }).artifact.html;
+
+    for (const fragment of [
+      "🧾 Проверка кошелька",
+      dossier.subjectAddress,
+      "🟡 <b>35/100 — нужна проверка</b>",
+      "Почему такая оценка",
+      "Что делать перед сделкой",
+      "Если отправляете деньги",
+      "Если принимаете деньги",
+      "💰 Движение денег",
+      "10 USDT",
+      "TWkv…8cdn",
+      "20 июля 2026, 13:53 UTC",
+      "TJZx…Dwoq",
+      "меньше 0,01 USDT",
+      "Почти вся полученная сумма была переведена дальше",
+      "🏦 Сервисы и контракты",
+      "Связей с известными биржами, мостами и другими размеченными сервисами не найдено",
+      "Значимых контрактных рисков и опасных разрешений не найдено",
+      "👛 Профиль кошелька",
+      "1 входящий, 1 исходящий",
+      "🔍 Что удалось проверить",
+      "Переводы прослежены полностью",
+      "Первоначальный источник средств определить не удалось",
+      "🧭 Вывод",
+      "Данные актуальны на блоке TRON #84727122"
+    ]) {
+      expect(ru).toContain(fragment);
+    }
+    for (const forbidden of [
+      "current_balance_attribution",
+      "latest_five_principal_inbound_events",
+      "all_direct_outgoing_to_snapshot",
+      "collapsed facts",
+      "evidence facts",
+      "risk/context classes",
+      "history_exhausted_to_account_creation",
+      "unknown_source",
+      "direct_activity_observed",
+      "rapid_forwarding",
+      "recipient",
+      "sender",
+      "subject",
+      "transit_sender",
+      "selection",
+      "trace",
+      "identified",
+      "untraced",
+      "2026-07-20T13:53:09.000Z",
+      "0.000001 / 0.000001",
+      "facts",
+      "in/out"
+    ]) {
+      expect(ru).not.toContain(forbidden);
+    }
+
+    expect(en).toContain("What to do before the transaction");
+    expect(en).toContain("If you are sending funds");
+    expect(en).toContain("If you are receiving funds");
+    expect(en).toContain("20 Jul 2026, 13:53 UTC");
+    expect(en).toContain("less than 0.01 USDT");
+    expect(en).not.toMatch(/[А-Яа-яЁё]/u);
+  });
+
   it("renders one deterministic locale payload and proves all normative sections", () => {
     const dossier = report();
     const ruManifest = buildPresentationManifest(dossier, "ru");
@@ -297,12 +553,14 @@ describe("Unified Telegram presentation", () => {
     expect(result.artifact.html.length).toBeLessThanOrEqual(
       TELEGRAM_MESSAGE_LIMIT
     );
-    expect(result.artifact.html).toContain("180 collapsed facts");
+    expect(result.artifact.html).not.toContain("collapsed facts");
+    expect(result.artifact.html)
+      .toContain("Additional behavioral context was found");
     expect(result.receipt.sections.find((entry) =>
       entry.sectionId === "behavior_connections"
     )).toMatchObject({
       collapsedFactCount: 180,
-      aggregateCount: 1
+      aggregateCount: 180
     });
     expect(result.receipt.omittedCanonicalFactIds).toEqual([]);
   });
@@ -340,7 +598,7 @@ describe("Unified Telegram presentation", () => {
     expect(() => renderUnifiedWalletPresentation({
       report: impossible,
       manifest: buildPresentationManifest(impossible, "ru")
-    })).toThrow("presentation_contract_failed");
+    })).toThrow("unified_customer_copy_decisive_code_unmapped");
   });
 
   it("keeps aggregate approval amounts and counterparty counts through compaction", () => {
@@ -378,8 +636,9 @@ describe("Unified Telegram presentation", () => {
       report: expanded,
       manifest: buildPresentationManifest(expanded, "en")
     });
-    expect(result.artifact.html).toContain("50 USDT (50 amount fact(s))");
+    expect(result.artifact.html).toContain("50 USDT");
     expect(result.artifact.html).toContain("50 counterparties");
+    expect(result.artifact.html).not.toContain("amount fact(s)");
     expect(result.receipt.sections.find((entry) =>
       entry.sectionId === "contracts_approvals"
     )?.scopes[0]).toMatchObject({
