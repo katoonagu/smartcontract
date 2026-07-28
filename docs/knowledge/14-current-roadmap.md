@@ -58,20 +58,23 @@ paths from owning automatic output for the same chat/address pair.
 ## Correctness Gate
 
 The authority and event-time correctness gate is complete. Historical results
-were not recalculated. Implementation landed as four independent fixes followed
-by one compatibility gate:
+were not recalculated. Implementation landed as four independent fixes, one
+compatibility gate, and a focused cross-chain authority follow-up:
 
 - approval authority: [`5f7021768eb5cc941d6758379f6e8e7052bbaa35`](https://github.com/katoonagu/smartcontract/commit/5f7021768eb5cc941d6758379f6e8e7052bbaa35);
 - semantic blacklist declarations: [`b926cea227bc38c7378e32e4d79079e071218550`](https://github.com/katoonagu/smartcontract/commit/b926cea227bc38c7378e32e4d79079e071218550);
 - blacklist event-time active subset: [`99ed99e38f6a55a38906781de913fa45152485d7`](https://github.com/katoonagu/smartcontract/commit/99ed99e38f6a55a38906781de913fa45152485d7);
 - sanctions tri-state and local evidence binding: [`a8370d1d8ea79c1f31537c1cb14fa6db9c448e9c`](https://github.com/katoonagu/smartcontract/commit/a8370d1d8ea79c1f31537c1cb14fa6db9c448e9c);
-- legacy compatibility gate: [`d3a4f1b0b7e9d964df6b7bca71b937bb66290f28`](https://github.com/katoonagu/smartcontract/commit/d3a4f1b0b7e9d964df6b7bca71b937bb66290f28).
+- legacy compatibility gate: [`d3a4f1b0b7e9d964df6b7bca71b937bb66290f28`](https://github.com/katoonagu/smartcontract/commit/d3a4f1b0b7e9d964df6b7bca71b937bb66290f28);
+- typed cross-chain sanctions authority: [`a169d6f11ca358dd9a51d2416b6a25e018c5e163`](https://github.com/katoonagu/smartcontract/commit/a169d6f11ca358dd9a51d2416b6a25e018c5e163),
+  preserving separate exact corridor authority without authorizing colliding
+  local sanctions artifacts.
 
-Verification passed: the combined targeted suite (`1,689` tests), Golden V2
+Verification passed: the combined targeted suite (`1,690` tests), Golden V2
 verification (`24` tests; locked manifest
 `4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`),
 the production comparator contract (`8` tests), typecheck, the full suite
-(`4,941` passed, `157` skipped), and the forbidden-shortcut audit. Skipped
+(`4,942` passed, `157` skipped), and the forbidden-shortcut audit. Skipped
 PostgreSQL-gated tests are not PostgreSQL proof; the existing database and
 Stage B operational blockers below remain open.
 
