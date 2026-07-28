@@ -1,7 +1,7 @@
 # Customer-Friendly Unified Wallet Telegram Report
 
 Date: 2026-07-28
-Status: approved design
+Status: implemented; full rollout verification pending
 
 ## Context
 
@@ -388,3 +388,11 @@ The redesign is complete when:
 - the relevant knowledge page records the customer-facing V2 presentation
   contract;
 - the live bot produces the V2 template and runtime verification succeeds.
+
+## Implementation Status
+
+The presentation-only V2 renderer, formatters, mapping contract, deterministic
+compaction, V1 artifact compatibility, and V2 Golden comparator binding are
+implemented and covered by focused tests. Full repository verification and the
+live Telegram rollout check remain required before the final acceptance
+criterion is complete.

@@ -361,6 +361,33 @@ expanding frontier has no percent or ETA.
   counters with the retained process-global deltas. Deep remains a separate
   singleton residual measurement under the same isolation/deadline policy.
 
+## Customer-Facing Unified Telegram Presentation V2
+
+- The presentation manifest schema remains `presentation-manifest-v1`; no
+  database migration is required.
+- Every newly created Unified presentation binds
+  `unified-telegram-renderer-v2` and
+  `unified-wallet-dossier-template-v2`, including a new request attached to a
+  reusable completed analysis.
+- Stored V1 presentation artifacts and delivery intents remain immutable and
+  deliverable. They are not rewritten to V2. Manual resend preserves the
+  original manifest and embeds the original HTML unchanged in the existing
+  warning wrapper.
+- This is a presentation-only change. The Unified report schema, report hash,
+  canonical facts, evidence authority, score, decision, and completeness
+  inventory remain authoritative and unchanged.
+- Customer Telegram text keeps the numeric score primary, explains the decisive
+  reason, and always gives separate sending and receiving guidance. It uses
+  localized USDT/date/count formatting and hides internal scope, role, code,
+  fact-count, and raw coverage names.
+- Exact canonical details remain in the completeness receipt and Admin.
+  Compaction may remove repeated display examples but cannot remove decisive
+  reasons, guidance, material hard evidence, material coverage limitations, or
+  the conclusion.
+- The locked Golden V1 HTML remains protected by the locked manifest. Current
+  production replay uses V2 semantic assertions and a V2-bound comparator input
+  lock rather than comparing new customer copy to archived V1 bytes.
+
 ## Separate Decisions
 
 Address-poisoning remains a separate wallet-safety feature and cannot influence

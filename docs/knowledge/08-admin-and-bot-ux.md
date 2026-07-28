@@ -37,24 +37,33 @@ After the parent reaches `COMPLETED`, the bot sends one immutable locale
 presentation derived from the same report hash. RU and EN share analysis/report
 identity and differ only in presentation artifacts.
 
-The Telegram dossier order is:
+New Unified Telegram presentations use the customer-facing V2 renderer. The
+Telegram dossier order is:
 
-1. wallet;
-2. final score and risk level;
-3. decisive reasons and evidence;
-4. balance formation;
-5. outgoing movement;
-6. services, contracts, labels, and approvals;
-7. confirmed relationships and behavior;
-8. explicitly scoped coverage;
-9. wallet profile;
-10. compact conclusion.
+1. full checked wallet address;
+2. final numeric score and risk level;
+3. a plain-language decisive reason;
+4. separate guidance for sending and receiving funds;
+5. chronological money movement and current balance;
+6. labeled services, contracts, and approvals;
+7. grouped customer-relevant behavior;
+8. compact wallet profile;
+9. plain-language coverage and limitations;
+10. conclusion and snapshot block.
 
-Repeated transfers are evidence aggregates rather than raw-row spam. The
-dossier includes available USDT/TRX balance, age and first/last USDT activity,
-counts/volumes, direct incoming/outgoing services, contract/approval facts,
-restriction timing, boundaries, and labelled indirect paths. Essential
-evidence cannot be silently truncated; an impossible presentation fails before
+Customer copy never exposes canonical scope, role, code, fact-count, or raw
+coverage-key names. USDT values remain exact in the report and receipt but are
+shown with at most two decimals; non-zero dust below `0.01 USDT` is described
+as such. Dates are readable UTC values, counts are localized, and counterparties
+remain shortened clickable TronScan links while the checked wallet stays full.
+Repeated transfers are grouped instead of becoming raw-row spam.
+
+The visible V2 text does not replace audit detail. The completeness receipt
+continues to bind every canonical fact ID, exact raw amount, denominator, risk
+class, and report hash. Deterministic length-reduction removes repeated examples
+before compacting profile detail. It never removes the score, decisive reason,
+sending/receiving guidance, material hard evidence, material coverage limits,
+or conclusion. If those cannot fit, presentation creation fails before
 delivery.
 
 Admin exposes parent/child states, immutable attempts, provider waits,
@@ -71,7 +80,9 @@ do not become permanent metric labels.
 When the frontier can expand it says `total still expanding`; it never invents
 percent complete or ETA. `FAILED_TECHNICAL` is operational.
 `DELIVERY_UNKNOWN` is visible and never auto-retried; manual resend is explicit
-and warned.
+and warned. It keeps the original stored HTML unchanged inside the warning
+wrapper and retains the original V1/V2 manifest version; it never rerenders a
+historical result with current copy.
 
 The `/check` wiring and delivery fence are implemented. The fence selects one
 delivery owner only; it does not gate planner/controller work or isolated
