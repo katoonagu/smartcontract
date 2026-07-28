@@ -1116,7 +1116,7 @@ function whereCandidates(
     }, {
       row: "source_policy",
       actionUnit: "source_path",
-      score: contextScore(layer.score),
+      score: contextScore(layer.score, 100),
       evidenceIds: ids,
       evidenceEpisodeIds: ids,
       atomicSignals: ["where_sanctioned_service"],

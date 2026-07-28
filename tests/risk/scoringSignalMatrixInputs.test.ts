@@ -2086,7 +2086,7 @@ describe("scoring signal matrix input mappers", () => {
     expect(typedCandidates(typedOnly)).toEqual([expect.objectContaining({
       row: "source_policy",
       actionUnit: "source_path",
-      score: 59,
+      score: 95,
       evidenceIds: [evidenceId],
       evidenceEpisodeIds: [evidenceId],
       authority: {
@@ -2095,6 +2095,16 @@ describe("scoring signal matrix input mappers", () => {
         coverageDependency: "wallet_provenance"
       }
     })]);
+    const scoredTypedOnly = scoreMatrixCandidates(typedOnly, walletContext());
+    expect(scoredTypedOnly).toMatchObject({
+      policyScore: 95,
+      matrixDecision: "DECLINE",
+      winningCandidate: {
+        score: 95,
+        atomicSignals: ["where_sanctioned_service"],
+        authority: { kind: "policy", decisionEligibility: "can_decline" }
+      }
+    });
 
     const base = whereReport();
     const collisionReport = whereReport({
@@ -2141,9 +2151,14 @@ describe("scoring signal matrix input mappers", () => {
     expect(collision.filter((item) => item.evidenceIds.includes(evidenceId) && item.authority.kind === "context")).toHaveLength(3);
     const scoredCollision = scoreMatrixCandidates(collision, walletContext());
     expect(Object.values(scoredCollision.riskVector).flat()).toHaveLength(1);
-    expect(scoredCollision.winningCandidate).toMatchObject({
-      atomicSignals: ["where_sanctioned_service"],
-      authority: { kind: "policy", decisionEligibility: "can_decline" }
+    expect(scoredCollision).toMatchObject({
+      policyScore: 95,
+      matrixDecision: "DECLINE",
+      winningCandidate: {
+        score: 95,
+        atomicSignals: ["where_sanctioned_service"],
+        authority: { kind: "policy", decisionEligibility: "can_decline" }
+      }
     });
 
     for (const crossChainCorridor of [
