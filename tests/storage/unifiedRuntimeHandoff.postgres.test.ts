@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
 import {
+  createPostgresUnifiedLifecycleNotificationRepository
+} from "../../src/unifiedCheck/lifecycleNotification";
+import {
   cancelStaleLongRunningNotifications,
   enqueueDueLongRunningNotifications,
   hasLiveEquivalentReplacement,
@@ -395,6 +398,73 @@ postgresDescribe("Unified runtime handoff repository", () => {
         now: new Date("2026-07-28T12:00:01.000Z"),
         limit: 100
       })).resolves.toBe(0);
+    } finally {
+      await client.query("reset search_path").catch(() => undefined);
+      await client.query(`drop schema if exists "${schema}" cascade`)
+        .catch(() => undefined);
+      client.release();
+      await pool.end();
+    }
+  });
+
+  it("leases and settles lifecycle notifications without duplicate claim", async () => {
+    const pool = new pg.Pool({ connectionString, max: 3 });
+    const client = await pool.connect();
+    const schema = `handoff_outbox_${randomUUID().replaceAll("-", "")}`;
+    try {
+      await createSchema(client, schema);
+      const db = queryable(client);
+      await seedRun(client, { runId: "run-old", runtimeCommit: "a".repeat(40) });
+      await client.query(`insert into unified_check_notifications (
+        id,request_id,kind,locale,copy_version,status,ready_at,created_at,updated_at
+      ) values (
+        'notice-1','run-old-request-a','LONG_RUNNING','ru',
+        'unified-lifecycle-copy-v1','PENDING',$1,$1,$1
+      )`, [new Date("2026-07-28T10:05:00.000Z")]);
+      const outbox = createPostgresUnifiedLifecycleNotificationRepository(db);
+      const claimed = await outbox.claimNext({
+        leaseToken: "lease-1",
+        leaseMs: 30_000,
+        now: new Date("2026-07-28T10:06:00.000Z")
+      });
+      expect(claimed).toMatchObject({
+        notificationId: "notice-1",
+        leaseToken: "lease-1",
+        kind: "LONG_RUNNING"
+      });
+      await expect(outbox.claimNext({
+        leaseToken: "lease-2",
+        leaseMs: 30_000,
+        now: new Date("2026-07-28T10:06:00.000Z")
+      })).resolves.toBeNull();
+      await expect(outbox.isStillSendable({
+        notificationId: "notice-1",
+        leaseToken: "lease-1"
+      })).resolves.toBe(true);
+      await expect(outbox.settle({
+        notificationId: "notice-1",
+        leaseToken: "lease-1",
+        status: "RETRYABLE",
+        errorCode: "telegram_rate_limited",
+        retryAt: "2026-07-28T10:07:00.000Z",
+        telegramMessageId: null
+      })).resolves.toBe(true);
+      await expect(outbox.claimNext({
+        leaseToken: "lease-3",
+        leaseMs: 30_000,
+        now: new Date("2026-07-28T10:06:59.999Z")
+      })).resolves.toBeNull();
+      await expect(outbox.claimNext({
+        leaseToken: "lease-4",
+        leaseMs: 30_000,
+        now: new Date("2026-07-28T10:07:00.000Z")
+      })).resolves.toMatchObject({ leaseToken: "lease-4", attempt: 2 });
+      await expect(outbox.markExpiredLeasesUnknown({
+        now: new Date("2026-07-28T10:07:30.000Z")
+      })).resolves.toBe(1);
+      expect((await client.query(
+        "select status from unified_check_notifications where id='notice-1'"
+      )).rows[0].status).toBe("DELIVERY_UNKNOWN");
     } finally {
       await client.query("reset search_path").catch(() => undefined);
       await client.query(`drop schema if exists "${schema}" cascade`)
