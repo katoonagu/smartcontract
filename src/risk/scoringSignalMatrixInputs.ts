@@ -1017,7 +1017,7 @@ function hasExactWhereHardProof(
 }
 
 function activeLocalSanctionsEvidenceIds(report: WhereIsMoneyReport): Set<string> {
-  return new Set(report.originPaths.flatMap((path) =>
+  return new Set(arrayOrEmpty(report.originPaths).flatMap((path) =>
     activeSanctionedServicePathEvidence(path)?.evidenceIds ?? []
   ));
 }

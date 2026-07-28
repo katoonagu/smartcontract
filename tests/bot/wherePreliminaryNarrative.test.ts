@@ -196,7 +196,6 @@ describe("buildWherePreliminaryNarrative", () => {
 
   it.each([
     ["mixer", 88, "Mixer X", /Mixer X/i, /нельзя надёжно проследить/i],
-    ["sanctioned_service", 90, "Sanctioned X", /санкцион/i, /санкционн.*источник/i],
     ["allowlisted_cex", 18, "Binance", /Binance/i, /общ.*ликвидност|сервис/i]
   ] as const)("renders typed source %s", (kind, score, label, finding, conclusion) => {
     const result = buildWherePreliminaryNarrative(
@@ -206,6 +205,19 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.score).toBe(score);
     expect(result.sections.findings[0]).toMatch(finding);
     expect(result.sections.conclusion).toMatch(conclusion);
+    expect(result.diagnosticCode).toBeNull();
+  });
+
+  it("keeps an unresolvable sanctioned-service label as unknown-time context", () => {
+    const result = buildWherePreliminaryNarrative(
+      sourceWhereReportFixture({ kind: "sanctioned_service", score: 90, share: 0.61, label: "Sanctioned X" }),
+      { locale: "ru" }
+    );
+
+    expect(result.score).toBe(90);
+    expect(result.sections.findings[0]).toMatch(/время перевода неизвестно/i);
+    expect(result.sections.conclusion).toMatch(/контекст.*не.*прямое подтверждение/i);
+    expect(text(result)).not.toMatch(/была до.*санкцион|на дату перевода.*под санкци|источник подтверждён как санкционный/i);
     expect(result.diagnosticCode).toBeNull();
   });
 
@@ -646,7 +658,7 @@ describe("buildWherePreliminaryNarrative", () => {
   it.each([
     ["approval", /^approval-drain:/],
     ["bridge", /^cross-chain:/],
-    ["sanction", /^sanctioned-source:/],
+    ["sanction", /^sanctioned-source-context:/],
     ["contract", /^where-contract:/]
   ] as const)("uses semantic compatibility for colliding %s evidence", (target, expectedId) => {
     const result = buildWherePreliminaryNarrative(collidingFactReport(target), { locale: "en" });
