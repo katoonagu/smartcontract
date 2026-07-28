@@ -5300,9 +5300,13 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     })).rejects.toThrow("does not match locked observed transaction");
     const counts = await pgDb.query(
       `select
-         (select count(*)::int from address_poisoning_candidates) as candidates,
-         (select count(*)::int from raw_evidence) as evidence,
-         (select count(*)::int from risk_signal_observations) as observations`
+         (select count(*)::int from address_poisoning_candidates
+           where watched_wallet_id = $1 or suspicious_incoming_tx_hash like $2) as candidates,
+         (select count(*)::int from raw_evidence
+           where observed_transaction_hash like $2) as evidence,
+         (select count(*)::int from risk_signal_observations
+           where observed_transaction_hash like $2) as observations`,
+      [walletId, `${txPrefix}%`]
     );
     expect(counts.rows[0]).toEqual({ candidates: 0, evidence: 0, observations: 0 });
   });
