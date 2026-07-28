@@ -78,10 +78,11 @@ import {
   SCHEMA_034_FILENAME,
   SCHEMA_035_FILENAME,
   SCHEMA_036_FILENAME,
-  SCHEMA_036_VERSION,
+  SCHEMA_037_FILENAME,
+  SCHEMA_037_VERSION,
   checksumMigrationBytes,
-  verifyRequiredSchema036,
-  type Schema036Verification
+  verifyRequiredSchema037,
+  type Schema037Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -313,7 +314,7 @@ const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
-  let schemaVerification: Schema036Verification | null = null;
+  let schemaVerification: Schema037Verification | null = null;
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
   );
@@ -325,8 +326,11 @@ try {
   const schema035MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)
   );
-  const requiredMigrationBytes = await readFile(
+  const schema036MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_036_FILENAME}`, import.meta.url)
+  );
+  const requiredMigrationBytes = await readFile(
+    new URL(`../migrations/${SCHEMA_037_FILENAME}`, import.meta.url)
   );
   const schema034MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
@@ -337,17 +341,21 @@ try {
   const schema035Checksum = await checksumMigrationBytes(
     schema035MigrationBytes
   );
+  const schema036Checksum = await checksumMigrationBytes(
+    schema036MigrationBytes
+  );
   const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
     verifyStartupSchema: () => runStartupSchemaGate({
       verify: () =>
-        verifyRequiredSchema036(
+        verifyRequiredSchema037(
           db,
           requiredChecksum,
           schema032Checksum,
           schema033Checksum,
           schema034Checksum,
-          schema035Checksum
+          schema035Checksum,
+          schema036Checksum
         ),
       onVerified: (verification) => {
         schemaVerification = verification;
@@ -2422,7 +2430,7 @@ const bot = createBot(config, db, tronClient, {
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
         traversalPolicyVersion: config.unifiedTraversalPolicyVersion,
         runtimeCommit: runtimeVersion.gitCommitSha,
-        schemaVersion: SCHEMA_036_VERSION
+        schemaVersion: SCHEMA_037_VERSION
       },
       rolloutPolicy: {
         stage: unifiedRolloutPolicy.stage,

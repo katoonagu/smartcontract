@@ -15,8 +15,11 @@ export const SCHEMA_035_FILENAME =
 export const SCHEMA_036_VERSION = 36;
 export const SCHEMA_036_FILENAME =
   "036_remove_rollout_authority.sql";
-export const REQUIRED_SCHEMA_VERSION = SCHEMA_036_VERSION;
-export const REQUIRED_SCHEMA_FILENAME = SCHEMA_036_FILENAME;
+export const SCHEMA_037_VERSION = 37;
+export const SCHEMA_037_FILENAME =
+  "037_unified_runtime_handoff.sql";
+export const REQUIRED_SCHEMA_VERSION = SCHEMA_037_VERSION;
+export const REQUIRED_SCHEMA_FILENAME = SCHEMA_037_FILENAME;
 export const SCHEMA_MIGRATION_LOCK_ID = 20260712032n;
 export const SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE = 250;
 
@@ -70,6 +73,19 @@ export interface Schema036Verification {
   schema035ChecksumSha256: string;
 }
 
+export interface Schema037Verification {
+  verified: true;
+  version: typeof SCHEMA_037_VERSION;
+  filename: typeof SCHEMA_037_FILENAME;
+  checksumSha256: string;
+  shortChecksum: string;
+  schema032ChecksumSha256: string;
+  schema033ChecksumSha256: string;
+  schema034ChecksumSha256: string;
+  schema035ChecksumSha256: string;
+  schema036ChecksumSha256: string;
+}
+
 export interface SchemaQueryable {
   query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
 }
@@ -79,6 +95,7 @@ interface SchemaOptions {
   allowNewerReceipt?: boolean;
   allowSchema035Additions?: boolean;
   allowSchema036Projection?: boolean;
+  allowSchema037Projection?: boolean;
 }
 
 interface ApplyVerifiedMigration032Options extends SchemaOptions {
@@ -93,6 +110,7 @@ interface ApplyVerifiedTrackedMigrationOptions extends SchemaOptions {
   requiredSchema033Checksum?: string;
   requiredSchema034Checksum?: string;
   requiredSchema035Checksum?: string;
+  requiredSchema036Checksum?: string;
 }
 
 export interface TrackedMigrationVerification {
@@ -668,7 +686,8 @@ type Schema033CatalogRows = Readonly<{
 
 export function projectSchema033CatalogAfter034(
   catalog: Schema033CatalogRows,
-  allowSchema035Additions = false
+  allowSchema035Additions = false,
+  allowSchema037Projection = false
 ): Schema033CatalogRows {
   const columnIsAdded = (identity: string) =>
     SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES.has(identity) ||
@@ -682,14 +701,35 @@ export function projectSchema033CatalogAfter034(
       allowSchema035Additions &&
       SCHEMA_035_CONSTRAINTS_ADDED_TO_033_TABLES.has(identity)
     );
+  const projectedConstraints = catalog.constraints.filter((row) =>
+    !constraintIsAdded(`${row.table_name}.${row.conname}`) &&
+    !(
+      allowSchema037Projection &&
+      row.table_name === "unified_check_requests" &&
+      row.conname === "unified_check_requests_run_shape_check"
+    )
+  );
+  if (allowSchema037Projection) {
+    projectedConstraints.push({
+      table_name: "unified_check_requests",
+      conname: "unified_check_requests_check1",
+      contype: "c",
+      convalidated: true,
+      definition:
+        "CHECK ((((status = 'ATTACHED'::text) AND (run_id IS NOT NULL)) OR ((status <> 'ATTACHED'::text) AND (run_id IS NULL))))"
+    });
+    projectedConstraints.sort((left, right) =>
+      `${left.table_name}.${left.conname}`.localeCompare(
+        `${right.table_name}.${right.conname}`
+      )
+    );
+  }
   return {
     ...catalog,
     columns: catalog.columns.filter((row) => !columnIsAdded(
       `${row.table_name}.${row.column_name}`
     )),
-    constraints: catalog.constraints.filter((row) => !constraintIsAdded(
-      `${row.table_name}.${row.conname}`
-    )),
+    constraints: projectedConstraints,
     indexes: catalog.indexes.filter((row) => !SCHEMA_034_INDEXES_ADDED_TO_033_TABLES.has(
       `${row.tablename}.${row.indexname}`
     ))
@@ -802,7 +842,8 @@ async function verifySchema033StructureInternal(
       columns: columns.rows,
       constraints: constraints.rows,
       indexes: indexes.rows
-    }, options?.allowSchema035Additions === true)
+    }, options?.allowSchema035Additions === true,
+    options?.allowSchema037Projection === true)
     : { columns: columns.rows, constraints: constraints.rows, indexes: indexes.rows };
   const projectedTriggers = projectSchema033TriggersAfter035(
     triggers.rows,
@@ -844,7 +885,9 @@ export async function verifyRequiredSchema033(
     {
       schemaName,
       allowSchema035Additions:
-        options?.allowSchema035Additions === true
+        options?.allowSchema035Additions === true,
+      allowSchema037Projection:
+        options?.allowSchema037Projection === true
     },
     options?.allowSchema035Additions === true
   );
@@ -863,7 +906,8 @@ async function verifySchema033LineageForSchema034(
   expectedChecksum: string,
   schema032ChecksumSha256: string,
   schemaName: string,
-  allowSchema035Additions = false
+  allowSchema035Additions = false,
+  allowSchema037Projection = false
 ): Promise<void> {
   if (!CHECKSUM_PATTERN.test(expectedChecksum)) fail("schema_033_invalid_expected_checksum");
   await verifyRequiredSchema032(queryable, schema032ChecksumSha256, { schemaName });
@@ -875,7 +919,7 @@ async function verifySchema033LineageForSchema034(
   });
   await verifySchema033StructureInternal(
     queryable,
-    { schemaName, allowSchema035Additions },
+    { schemaName, allowSchema035Additions, allowSchema037Projection },
     true
   );
 }
@@ -1091,7 +1135,8 @@ export async function verifyRequiredSchema034(
     schema033ChecksumSha256,
     schema032ChecksumSha256,
     schemaName,
-    options?.allowSchema035Additions === true
+    options?.allowSchema035Additions === true,
+    options?.allowSchema037Projection === true
   );
   await verifyTrackedMigrationReceipt(queryable, {
     schemaName,
@@ -1306,7 +1351,9 @@ export async function verifyRequiredSchema035(
     {
       schemaName,
       allowNewerReceipt: true,
-      allowSchema035Additions: true
+      allowSchema035Additions: true,
+      allowSchema037Projection:
+        options?.allowSchema037Projection === true
     }
   );
   await verifyTrackedMigrationReceipt(queryable, {
@@ -1402,7 +1449,10 @@ export async function verifyRequiredSchema036(
       limit 1`,
     [SCHEMA_036_VERSION]
   );
-  if (newerReceipt.rows.length > 0) {
+  if (
+    newerReceipt.rows.length > 0 &&
+    options?.allowNewerReceipt !== true
+  ) {
     fail("schema_036_newer_receipt_present");
   }
   await verifyRequiredSchema035(
@@ -1414,7 +1464,9 @@ export async function verifyRequiredSchema036(
     {
       schemaName,
       allowNewerReceipt: true,
-      allowSchema036Projection: true
+      allowSchema036Projection: true,
+      allowSchema037Projection:
+        options?.allowSchema037Projection === true
     }
   );
   await verifyTrackedMigrationReceipt(queryable, {
@@ -1434,6 +1486,219 @@ export async function verifyRequiredSchema036(
     schema033ChecksumSha256,
     schema034ChecksumSha256,
     schema035ChecksumSha256
+  };
+}
+
+const SCHEMA_037_TABLES = [
+  "unified_check_notifications",
+  "unified_runtime_instances"
+] as const;
+
+const SCHEMA_037_COLUMNS = [
+  ["unified_runtime_instances", "instance_id", "text", "NO", null],
+  ["unified_runtime_instances", "runtime_commit", "text", "NO", null],
+  ["unified_runtime_instances", "instance_label", "text", "NO", null],
+  ["unified_runtime_instances", "state", "text", "NO", null],
+  ["unified_runtime_instances", "started_at", "timestamp with time zone", "NO", null],
+  ["unified_runtime_instances", "heartbeat_at", "timestamp with time zone", "NO", null],
+  ["unified_runtime_instances", "drain_requested_at", "timestamp with time zone", "YES", null],
+  ["unified_runtime_instances", "drain_deadline_at", "timestamp with time zone", "YES", null],
+  ["unified_runtime_instances", "telegram_polling_released_at", "timestamp with time zone", "YES", null],
+  ["unified_runtime_instances", "stopped_at", "timestamp with time zone", "YES", null],
+  ["unified_runtime_instances", "failure_reason", "text", "YES", null],
+  ["unified_runtime_instances", "created_at", "timestamp with time zone", "NO", "now()"],
+  ["unified_runtime_instances", "updated_at", "timestamp with time zone", "NO", "now()"],
+  ["unified_check_notifications", "id", "text", "NO", null],
+  ["unified_check_notifications", "request_id", "text", "NO", null],
+  ["unified_check_notifications", "kind", "text", "NO", null],
+  ["unified_check_notifications", "locale", "text", "NO", null],
+  ["unified_check_notifications", "copy_version", "text", "NO", null],
+  ["unified_check_notifications", "status", "text", "NO", null],
+  ["unified_check_notifications", "ready_at", "timestamp with time zone", "NO", null],
+  ["unified_check_notifications", "lease_token", "text", "YES", null],
+  ["unified_check_notifications", "lease_expires_at", "timestamp with time zone", "YES", null],
+  ["unified_check_notifications", "attempt_count", "integer", "NO", "0"],
+  ["unified_check_notifications", "next_attempt_at", "timestamp with time zone", "YES", null],
+  ["unified_check_notifications", "last_error", "text", "YES", null],
+  ["unified_check_notifications", "telegram_message_id", "text", "YES", null],
+  ["unified_check_notifications", "created_at", "timestamp with time zone", "NO", "now()"],
+  ["unified_check_notifications", "updated_at", "timestamp with time zone", "NO", "now()"]
+] as const;
+
+const SCHEMA_037_CONSTRAINTS = new Map<string, "c" | "f" | "p" | "u">([
+  ["unified_runtime_instances_commit_check", "c"],
+  ["unified_runtime_instances_deadline_order_check", "c"],
+  ["unified_runtime_instances_failure_reason_check", "c"],
+  ["unified_runtime_instances_label_check", "c"],
+  ["unified_runtime_instances_pkey", "p"],
+  ["unified_runtime_instances_state_check", "c"],
+  ["unified_runtime_instances_state_shape_check", "c"],
+  ["unified_check_notifications_copy_check", "c"],
+  ["unified_check_notifications_kind_check", "c"],
+  ["unified_check_notifications_lease_shape_check", "c"],
+  ["unified_check_notifications_locale_check", "c"],
+  ["unified_check_notifications_pkey", "p"],
+  ["unified_check_notifications_request_id_fkey", "f"],
+  ["unified_check_notifications_request_id_kind_key", "u"],
+  ["unified_check_notifications_retry_shape_check", "c"],
+  ["unified_check_notifications_status_check", "c"],
+  ["unified_check_requests_run_shape_check", "c"]
+]);
+
+const SCHEMA_037_INDEXES = new Set([
+  "unified_check_notifications_claim_idx",
+  "unified_check_notifications_pkey",
+  "unified_check_notifications_request_id_kind_key",
+  "unified_runtime_instances_compatible_drainer_idx",
+  "unified_runtime_instances_one_intake_owner_idx",
+  "unified_runtime_instances_pkey"
+]);
+
+export async function verifySchema037Structure(
+  queryable: SchemaQueryable,
+  options?: SchemaOptions
+): Promise<void> {
+  const schemaName = resolveSchemaName(options);
+  await verifySchema036Structure(queryable, { schemaName });
+  const tables = await queryable.query(
+    `select c.relname as table_name,
+            pg_get_userbyid(c.relowner) as table_owner,
+            current_user as current_user
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relkind = 'r'
+        and c.relname = any($2::text[])
+      order by c.relname`,
+    [schemaName, [...SCHEMA_037_TABLES]]
+  );
+  if (
+    tables.rows.length !== SCHEMA_037_TABLES.length ||
+    tables.rows.some((row) => row.table_owner !== row.current_user) ||
+    SCHEMA_037_TABLES.some((name) =>
+      !tables.rows.some((row) => row.table_name === name)
+    )
+  ) fail("schema_037_catalog_mismatch");
+
+  const columns = await queryable.query(
+    `select table_name, column_name, data_type, is_nullable, column_default
+       from information_schema.columns
+      where table_schema = $1 and table_name = any($2::text[])
+      order by table_name, ordinal_position`,
+    [schemaName, [...SCHEMA_037_TABLES]]
+  );
+  if (
+    columns.rows.length !== SCHEMA_037_COLUMNS.length ||
+    SCHEMA_037_COLUMNS.some(([table, name, type, nullable, columnDefault]) => {
+      const row = columns.rows.find((candidate) =>
+        candidate.table_name === table && candidate.column_name === name
+      );
+      return row === undefined || row.data_type !== type ||
+        row.is_nullable !== nullable ||
+        normalizeDefinition(row.column_default) !==
+          normalizeDefinition(columnDefault);
+    })
+  ) fail("schema_037_catalog_mismatch");
+
+  const constraints = await queryable.query(
+    `select t.relname as table_name, c.conname, c.contype, c.convalidated,
+            pg_get_constraintdef(c.oid) as definition
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       join pg_namespace n on n.oid = t.relnamespace
+      where n.nspname = $1
+        and (t.relname = any($2::text[])
+          or (t.relname = 'unified_check_requests'
+            and c.conname = 'unified_check_requests_run_shape_check'))
+      order by t.relname, c.conname`,
+    [schemaName, [...SCHEMA_037_TABLES]]
+  );
+  if (
+    constraints.rows.length !== SCHEMA_037_CONSTRAINTS.size ||
+    constraints.rows.some((row) =>
+      SCHEMA_037_CONSTRAINTS.get(String(row.conname)) !== row.contype ||
+      row.convalidated !== true
+    ) ||
+    constraints.rows.some((row) =>
+      row.conname === "unified_check_requests_run_shape_check" &&
+      !normalizeDefinition(row.definition).includes("FAILED_TECHNICAL")
+    )
+  ) fail("schema_037_catalog_mismatch");
+
+  const indexes = await queryable.query(
+    `select indexname, indexdef
+       from pg_indexes
+      where schemaname = $1 and tablename = any($2::text[])
+      order by indexname`,
+    [schemaName, [...SCHEMA_037_TABLES]]
+  );
+  if (
+    indexes.rows.length !== SCHEMA_037_INDEXES.size ||
+    indexes.rows.some((row) => !SCHEMA_037_INDEXES.has(String(row.indexname))) ||
+    !normalizeDefinition(indexes.rows.find((row) =>
+      row.indexname === "unified_runtime_instances_one_intake_owner_idx"
+    )?.indexdef).includes("DRAIN_REQUESTED") ||
+    !normalizeDefinition(indexes.rows.find((row) =>
+      row.indexname === "unified_check_notifications_claim_idx"
+    )?.indexdef).includes("RETRYABLE")
+  ) fail("schema_037_catalog_mismatch");
+}
+
+export async function verifyRequiredSchema037(
+  queryable: SchemaQueryable,
+  expectedChecksum: string,
+  schema032ChecksumSha256: string,
+  schema033ChecksumSha256: string,
+  schema034ChecksumSha256: string,
+  schema035ChecksumSha256: string,
+  schema036ChecksumSha256: string,
+  options?: SchemaOptions
+): Promise<Schema037Verification> {
+  if (!CHECKSUM_PATTERN.test(expectedChecksum)) {
+    fail("schema_037_invalid_expected_checksum");
+  }
+  const schemaName = resolveSchemaName(options);
+  const newerReceipt = await queryable.query(
+    `select version
+       from ${quoteIdentifier(schemaName)}.schema_migration_receipts
+      where version > $1
+      order by version asc
+      limit 1`,
+    [SCHEMA_037_VERSION]
+  );
+  if (newerReceipt.rows.length > 0) {
+    fail("schema_037_newer_receipt_present");
+  }
+  await verifyRequiredSchema036(
+    queryable,
+    schema036ChecksumSha256,
+    schema032ChecksumSha256,
+    schema033ChecksumSha256,
+    schema034ChecksumSha256,
+    schema035ChecksumSha256,
+    {
+      schemaName,
+      allowNewerReceipt: true,
+      allowSchema037Projection: true
+    }
+  );
+  await verifyTrackedMigrationReceipt(queryable, {
+    schemaName,
+    version: SCHEMA_037_VERSION,
+    filename: SCHEMA_037_FILENAME,
+    checksumSha256: expectedChecksum
+  });
+  await verifySchema037Structure(queryable, { schemaName });
+  return {
+    verified: true,
+    version: SCHEMA_037_VERSION,
+    filename: SCHEMA_037_FILENAME,
+    checksumSha256: expectedChecksum,
+    shortChecksum: expectedChecksum.slice(0, 12),
+    schema032ChecksumSha256,
+    schema033ChecksumSha256,
+    schema034ChecksumSha256,
+    schema035ChecksumSha256,
+    schema036ChecksumSha256
   };
 }
 
@@ -1464,6 +1729,9 @@ export async function applyVerifiedTrackedMigration(
   if (options.version === SCHEMA_036_VERSION && options.filename !== SCHEMA_036_FILENAME) {
     fail("schema_036_filename_mismatch");
   }
+  if (options.version === SCHEMA_037_VERSION && options.filename !== SCHEMA_037_FILENAME) {
+    fail("schema_037_filename_mismatch");
+  }
   if (options.version > SCHEMA_032_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema032Checksum ?? "")) {
     fail("schema_migration_schema_032_checksum_required");
   }
@@ -1475,6 +1743,9 @@ export async function applyVerifiedTrackedMigration(
   }
   if (options.version > SCHEMA_035_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema035Checksum ?? "")) {
     fail("schema_migration_schema_035_checksum_required");
+  }
+  if (options.version > SCHEMA_036_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema036Checksum ?? "")) {
+    fail("schema_migration_schema_036_checksum_required");
   }
   const checksumSha256 = await checksumMigrationBytes(options.migrationBytes);
   let sql: string;
@@ -1510,6 +1781,17 @@ export async function applyVerifiedTrackedMigration(
         });
         if (options.version === SCHEMA_032_VERSION) {
           await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+        } else if (options.version === SCHEMA_037_VERSION && options.filename === SCHEMA_037_FILENAME) {
+          await verifyRequiredSchema037(
+            queryable,
+            checksumSha256,
+            options.requiredSchema032Checksum!,
+            options.requiredSchema033Checksum!,
+            options.requiredSchema034Checksum!,
+            options.requiredSchema035Checksum!,
+            options.requiredSchema036Checksum!,
+            { schemaName }
+          );
         } else if (options.version === SCHEMA_036_VERSION && options.filename === SCHEMA_036_FILENAME) {
           await verifyRequiredSchema036(
             queryable,
@@ -1518,7 +1800,12 @@ export async function applyVerifiedTrackedMigration(
             options.requiredSchema033Checksum!,
             options.requiredSchema034Checksum!,
             options.requiredSchema035Checksum!,
-            { schemaName }
+            {
+              schemaName,
+              allowNewerReceipt: options.allowNewerReceipt,
+              allowSchema037Projection:
+                options.allowSchema037Projection
+            }
           );
         } else if (options.version === SCHEMA_035_VERSION && options.filename === SCHEMA_035_FILENAME) {
           await verifyRequiredSchema035(
@@ -1531,7 +1818,9 @@ export async function applyVerifiedTrackedMigration(
               schemaName,
               allowNewerReceipt: options.allowNewerReceipt,
               allowSchema036Projection:
-                options.allowSchema036Projection
+                options.allowSchema036Projection,
+              allowSchema037Projection:
+                options.allowSchema037Projection
             }
           );
         } else if (options.version === SCHEMA_034_VERSION && options.filename === SCHEMA_034_FILENAME) {
@@ -1544,7 +1833,9 @@ export async function applyVerifiedTrackedMigration(
               schemaName,
               allowNewerReceipt: options.allowNewerReceipt,
               allowSchema035Additions:
-                options.allowSchema035Additions
+                options.allowSchema035Additions,
+              allowSchema037Projection:
+                options.allowSchema037Projection
             }
           );
         } else if (options.version === SCHEMA_033_VERSION && options.filename === SCHEMA_033_FILENAME) {
@@ -1555,7 +1846,9 @@ export async function applyVerifiedTrackedMigration(
             {
               schemaName,
               allowSchema035Additions:
-                options.allowSchema035Additions
+                options.allowSchema035Additions,
+              allowSchema037Projection:
+                options.allowSchema037Projection
             }
           );
         } else {
@@ -1573,7 +1866,17 @@ export async function applyVerifiedTrackedMigration(
       }
     }
 
-    if (options.version > SCHEMA_035_VERSION) {
+    if (options.version > SCHEMA_036_VERSION) {
+      await verifyRequiredSchema036(
+        queryable,
+        options.requiredSchema036Checksum!,
+        options.requiredSchema032Checksum!,
+        options.requiredSchema033Checksum!,
+        options.requiredSchema034Checksum!,
+        options.requiredSchema035Checksum!,
+        { schemaName }
+      );
+    } else if (options.version > SCHEMA_035_VERSION) {
       await verifyRequiredSchema035(
         queryable,
         options.requiredSchema035Checksum!,
@@ -1618,6 +1921,17 @@ export async function applyVerifiedTrackedMigration(
     });
     if (options.version === SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+    } else if (options.version === SCHEMA_037_VERSION && options.filename === SCHEMA_037_FILENAME) {
+      await verifyRequiredSchema037(
+        queryable,
+        checksumSha256,
+        options.requiredSchema032Checksum!,
+        options.requiredSchema033Checksum!,
+        options.requiredSchema034Checksum!,
+        options.requiredSchema035Checksum!,
+        options.requiredSchema036Checksum!,
+        { schemaName }
+      );
     } else if (options.version === SCHEMA_036_VERSION && options.filename === SCHEMA_036_FILENAME) {
       await verifyRequiredSchema036(
         queryable,

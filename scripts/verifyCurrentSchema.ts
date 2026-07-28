@@ -7,8 +7,9 @@ import {
   SCHEMA_034_FILENAME,
   SCHEMA_035_FILENAME,
   SCHEMA_036_FILENAME,
+  SCHEMA_037_FILENAME,
   checksumMigrationBytes,
-  verifyRequiredSchema036
+  verifyRequiredSchema037
 } from "../src/storage/schemaMigrations";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -25,13 +26,14 @@ async function checksum(filename: string): Promise<string> {
 const client = new Client({ connectionString: databaseUrl });
 await client.connect();
 try {
-  const verification = await verifyRequiredSchema036(
+  const verification = await verifyRequiredSchema037(
     client,
-    await checksum(SCHEMA_036_FILENAME),
+    await checksum(SCHEMA_037_FILENAME),
     await checksum(SCHEMA_032_FILENAME),
     await checksum(SCHEMA_033_FILENAME),
     await checksum(SCHEMA_034_FILENAME),
-    await checksum(SCHEMA_035_FILENAME)
+    await checksum(SCHEMA_035_FILENAME),
+    await checksum(SCHEMA_036_FILENAME)
   );
   process.stdout.write(
     `Schema ${verification.version} verified (${verification.shortChecksum})\n`

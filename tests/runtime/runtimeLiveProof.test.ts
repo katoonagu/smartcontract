@@ -15,14 +15,15 @@ function runtimeVersion() {
     runtimeInstanceLabel: `candidate-${SHA.slice(0, 8)}`,
     migration: {
       verified: true,
-      version: 36,
-      filename: "036_remove_rollout_authority.sql",
+      version: 37,
+      filename: "037_unified_runtime_handoff.sql",
       checksumSha256: CHECKSUM,
       shortChecksum: CHECKSUM.slice(0, 12),
       schema032ChecksumSha256: "b".repeat(64),
       schema033ChecksumSha256: "c".repeat(64),
       schema034ChecksumSha256: "d".repeat(64),
-      schema035ChecksumSha256: "e".repeat(64)
+      schema035ChecksumSha256: "e".repeat(64),
+      schema036ChecksumSha256: "f".repeat(64)
     }
   });
 }

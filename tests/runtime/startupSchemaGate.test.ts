@@ -17,14 +17,15 @@ describe("schema-verified startup gate", () => {
   it("returns verified metadata and invokes the callback once", async () => {
     const verification = {
       verified: true as const,
-      version: 36 as const,
-      filename: "036_remove_rollout_authority.sql" as const,
+      version: 37 as const,
+      filename: "037_unified_runtime_handoff.sql" as const,
       checksumSha256: "a".repeat(64),
       shortChecksum: "a".repeat(12),
       schema032ChecksumSha256: "b".repeat(64),
       schema033ChecksumSha256: "c".repeat(64),
       schema034ChecksumSha256: "d".repeat(64),
-      schema035ChecksumSha256: "e".repeat(64)
+      schema035ChecksumSha256: "e".repeat(64),
+      schema036ChecksumSha256: "f".repeat(64)
     };
     const onVerified = vi.fn(() => undefined);
     await expect(runStartupSchemaGate({
@@ -136,8 +137,10 @@ describe("schema-verified startup gate", () => {
     expect(source).toContain("new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)");
     expect(source).toContain("new URL(`../migrations/${SCHEMA_035_FILENAME}`, import.meta.url)");
     expect(source).toContain("new URL(`../migrations/${SCHEMA_036_FILENAME}`, import.meta.url)");
-    expect(source).toContain("verifyRequiredSchema036(");
+    expect(source).toContain("new URL(`../migrations/${SCHEMA_037_FILENAME}`, import.meta.url)");
+    expect(source).toContain("verifyRequiredSchema037(");
     expect(source).toContain("schema034Checksum");
     expect(source).toContain("schema035Checksum");
+    expect(source).toContain("schema036Checksum");
   });
 });

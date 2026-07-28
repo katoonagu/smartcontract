@@ -13,6 +13,8 @@ import {
   SCHEMA_035_VERSION,
   SCHEMA_036_FILENAME,
   SCHEMA_036_VERSION,
+  SCHEMA_037_FILENAME,
+  SCHEMA_037_VERSION,
   SCHEMA_032_FILENAME,
   SCHEMA_032_VERSION,
   SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
@@ -327,8 +329,10 @@ describe("verified schema 032 metadata", () => {
     expect(SCHEMA_035_FILENAME).toBe("035_unified_check_run_rollout_policy.sql");
     expect(SCHEMA_036_VERSION).toBe(36);
     expect(SCHEMA_036_FILENAME).toBe("036_remove_rollout_authority.sql");
-    expect(REQUIRED_SCHEMA_VERSION).toBe(36);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe(SCHEMA_036_FILENAME);
+    expect(SCHEMA_037_VERSION).toBe(37);
+    expect(SCHEMA_037_FILENAME).toBe("037_unified_runtime_handoff.sql");
+    expect(REQUIRED_SCHEMA_VERSION).toBe(37);
+    expect(REQUIRED_SCHEMA_FILENAME).toBe(SCHEMA_037_FILENAME);
     expect(SCHEMA_MIGRATION_LOCK_ID).toBe(20260712032n);
     await expect(checksumMigrationBytes(Buffer.from("a\nb\n"))).resolves.toMatch(/^[a-f0-9]{64}$/);
     expect(await checksumMigrationBytes(Buffer.from("a\nb\n"))).not.toBe(

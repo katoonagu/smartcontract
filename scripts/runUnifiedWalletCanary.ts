@@ -21,7 +21,8 @@ import {
   SCHEMA_034_FILENAME,
   SCHEMA_035_FILENAME,
   SCHEMA_036_FILENAME,
-  verifyRequiredSchema036
+  SCHEMA_037_FILENAME,
+  verifyRequiredSchema037
 } from "../src/storage/schemaMigrations";
 import {
   buildUnifiedAdaptiveBenchmarkSelection,
@@ -230,13 +231,17 @@ export async function runUnifiedWalletCanaryCli(
     const schema036Bytes = await readFile(
       new URL(`../migrations/${SCHEMA_036_FILENAME}`, import.meta.url)
     );
-    const schemaVerification = await verifyRequiredSchema036(
+    const schema037Bytes = await readFile(
+      new URL(`../migrations/${SCHEMA_037_FILENAME}`, import.meta.url)
+    );
+    const schemaVerification = await verifyRequiredSchema037(
       db,
-      await checksumMigrationBytes(schema036Bytes),
+      await checksumMigrationBytes(schema037Bytes),
       await checksumMigrationBytes(schema032Bytes),
       await checksumMigrationBytes(schema033Bytes),
       await checksumMigrationBytes(schema034Bytes),
-      await checksumMigrationBytes(schema035Bytes)
+      await checksumMigrationBytes(schema035Bytes),
+      await checksumMigrationBytes(schema036Bytes)
     );
     const canary = options.resumeBatchIdentitySha256 === null
       ? await (async () => {

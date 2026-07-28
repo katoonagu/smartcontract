@@ -1,11 +1,11 @@
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
-import type { Schema036Verification } from "../storage/schemaMigrations";
+import type { Schema037Verification } from "../storage/schemaMigrations";
 import {
-  SCHEMA_036_FILENAME,
-  SCHEMA_036_VERSION
+  SCHEMA_037_FILENAME,
+  SCHEMA_037_VERSION
 } from "../storage/schemaMigrations";
 
-type RuntimeSchemaVerification = Schema036Verification;
+type RuntimeSchemaVerification = Schema037Verification;
 import type { TelegramForensicResultV1 } from "../telegram/forensicPresentation";
 import type { ForensicCoverageV2, ScoreAnchorV2 } from "../types";
 
@@ -97,14 +97,15 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
     "schema032ChecksumSha256",
     "schema033ChecksumSha256",
     "schema034ChecksumSha256",
-    "schema035ChecksumSha256"
+    "schema035ChecksumSha256",
+    "schema036ChecksumSha256"
   ];
   exactKeys(migration, migrationKeys, "runtime_version_migration_shape_invalid");
   if (migration.verified !== true) fail("runtime_version_migration_unverified");
-  if (migration.version !== SCHEMA_036_VERSION) {
+  if (migration.version !== SCHEMA_037_VERSION) {
     fail("runtime_version_migration_version_mismatch");
   }
-  if (migration.filename !== SCHEMA_036_FILENAME) {
+  if (migration.filename !== SCHEMA_037_FILENAME) {
     fail("runtime_version_migration_filename_mismatch");
   }
   if (typeof migration.checksumSha256 !== "string" || !CHECKSUM_PATTERN.test(migration.checksumSha256)) {
@@ -136,6 +137,12 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
     !CHECKSUM_PATTERN.test(migration.schema035ChecksumSha256)
   ) {
     fail("runtime_version_schema_035_checksum_invalid");
+  }
+  if (
+    typeof migration.schema036ChecksumSha256 !== "string" ||
+    !CHECKSUM_PATTERN.test(migration.schema036ChecksumSha256)
+  ) {
+    fail("runtime_version_schema_036_checksum_invalid");
   }
 
   Object.freeze(migration);
