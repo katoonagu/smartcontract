@@ -46,6 +46,9 @@ export type LedgerConsumptionVectorV1 = {
 
 export type LedgerInputV1 = {
   readonly subjectAddress: string;
+  readonly snapshotBlockNumber: number;
+  readonly snapshotBlockHash: string;
+  readonly snapshotEvidenceRef: string;
   readonly historyCompleteness: "genesis_complete" | "partial";
   readonly openingBalanceRaw: bigint;
   readonly events: readonly LedgerEventV1[];
@@ -61,6 +64,9 @@ export type LedgerResultV1 = {
   readonly reason: LedgerFailureReasonV1 | null;
   readonly authoritative: boolean;
   readonly subjectAddress: string;
+  readonly snapshotBlockNumber: number;
+  readonly snapshotBlockHash: string;
+  readonly snapshotEvidenceRef: string;
   readonly events: readonly LedgerEventV1[];
   readonly lots: readonly LedgerLotV1[];
   readonly consumptionVectors: readonly LedgerConsumptionVectorV1[];
@@ -74,6 +80,10 @@ export type SnapshotBalanceWitnessV1 = {
   readonly amountRaw: bigint;
   readonly pinned: boolean;
   readonly independent: boolean;
+  readonly subjectAddress: string;
+  readonly snapshotBlockNumber: number;
+  readonly snapshotBlockHash: string;
+  readonly evidenceRef: string;
 };
 
 export type LedgerQueryV1 = {
@@ -88,6 +98,7 @@ export type LedgerQueryV1 = {
 export type LedgerSelectionReasonV1 =
   | LedgerFailureReasonV1
   | "balance_witness_missing"
+  | "balance_witness_binding_mismatch"
   | "snapshot_balance_mismatch"
   | "requested_amount_missing"
   | "requested_amount_exceeds_balance"
@@ -110,8 +121,20 @@ export type LedgerSelectionV1 = {
   readonly deepSelectedLotIds: readonly string[];
 };
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeTxHash(txHash: string): string {
+  return txHash.trim().toLowerCase();
+}
+
+function receiptEventId(txHash: string, eventIndex: number): string {
+  return `receipt:${normalizeTxHash(txHash)}:${eventIndex}`;
+}
+
 function sameEventPayload(left: LedgerEventV1, right: LedgerEventV1): boolean {
-  return left.txHash === right.txHash &&
+  return normalizeTxHash(left.txHash) === normalizeTxHash(right.txHash) &&
     left.blockNumber === right.blockNumber &&
     left.transactionIndex === right.transactionIndex &&
     left.eventIndex === right.eventIndex &&
@@ -131,17 +154,26 @@ function compareCanonicalOrder(left: LedgerEventV1, right: LedgerEventV1): numbe
 }
 
 function hasUnresolvedBlockOrder(events: readonly LedgerEventV1[]): number | null {
-  for (let index = 0; index < events.length; index += 1) {
-    const left = events[index];
-    if (!left) continue;
-    for (let otherIndex = index + 1; otherIndex < events.length; otherIndex += 1) {
-      const right = events[otherIndex];
-      if (!right || left.blockNumber !== right.blockNumber) continue;
-      if (
-        left.transactionIndex === null ||
-        right.transactionIndex === null ||
-        (left.transactionIndex === right.transactionIndex && left.eventIndex === right.eventIndex)
-      ) return left.blockNumber;
+  const byBlock = new Map<number, LedgerEventV1[]>();
+  for (const event of events) {
+    const block = byBlock.get(event.blockNumber) ?? [];
+    block.push(event);
+    byBlock.set(event.blockNumber, block);
+  }
+  for (const blockNumber of [...byBlock.keys()].sort((left, right) => left - right)) {
+    const block = byBlock.get(blockNumber) as LedgerEventV1[];
+    if (block.length < 2) continue;
+    if (block.some(({ transactionIndex }) => transactionIndex === null)) return blockNumber;
+    for (let index = 0; index < block.length; index += 1) {
+      const left = block[index];
+      if (!left) continue;
+      for (let otherIndex = index + 1; otherIndex < block.length; otherIndex += 1) {
+        const right = block[otherIndex];
+        if (!right) continue;
+        if (
+          left.transactionIndex === right.transactionIndex && left.eventIndex === right.eventIndex
+        ) return blockNumber;
+      }
     }
   }
   return null;
@@ -151,29 +183,46 @@ export function canonicalizeChronologicalLedgerEventsV1(
   events: readonly LedgerEventV1[]
 ): CanonicalizationResultV1 {
   const byIdentity = new Map<string, LedgerEventV1>();
+  const collisionIds = new Set<string>();
+  let hasUnresolvedIdentity = false;
 
   for (const event of events) {
     if (
-      event.canonicalEventId === null ||
+      normalizeTxHash(event.txHash) === "" ||
       event.eventIndex === null ||
       event.eventIndexAuthority !== "receipt_log_index"
     ) {
-      return { state: "unresolved", reason: "identity_unresolved", events: [] };
+      hasUnresolvedIdentity = true;
+      continue;
     }
-    const existing = byIdentity.get(event.canonicalEventId);
+    const canonicalEventId = receiptEventId(event.txHash, event.eventIndex);
+    const canonicalEvent = {
+      ...event,
+      canonicalEventId,
+      txHash: normalizeTxHash(event.txHash)
+    };
+    const existing = byIdentity.get(canonicalEventId);
     if (existing && !sameEventPayload(existing, event)) {
-      return {
-        state: "unresolved",
-        reason: "identity_collision",
-        events: [],
-        canonicalEventId: event.canonicalEventId
-      };
+      collisionIds.add(canonicalEventId);
+      continue;
     }
     const providerEventIds = [...new Set([
       ...(existing?.providerEventIds ?? []),
       ...event.providerEventIds
-    ])].sort();
-    byIdentity.set(event.canonicalEventId, { ...(existing ?? event), providerEventIds });
+    ])].sort(compareCodeUnits);
+    byIdentity.set(canonicalEventId, { ...(existing ?? canonicalEvent), providerEventIds });
+  }
+
+  if (collisionIds.size > 0) {
+    return {
+      state: "unresolved",
+      reason: "identity_collision",
+      events: [],
+      canonicalEventId: [...collisionIds].sort(compareCodeUnits)[0]
+    };
+  }
+  if (hasUnresolvedIdentity) {
+    return { state: "unresolved", reason: "identity_unresolved", events: [] };
   }
 
   const deduped = [...byIdentity.values()];
@@ -208,7 +257,7 @@ export function apportionRawLargestRemainderV1(
   if (totalRaw === 0n) {
     return capacities
       .map(({ lotId }) => ({ lotId, amountRaw: 0n }))
-      .sort((left, right) => left.lotId.localeCompare(right.lotId));
+      .sort((left, right) => compareCodeUnits(left.lotId, right.lotId));
   }
 
   const shares = capacities.map(({ lotId, remainingRaw }) => {
@@ -222,7 +271,7 @@ export function apportionRawLargestRemainderV1(
   let undistributedRaw = targetRaw - shares.reduce((sum, share) => sum + share.amountRaw, 0n);
   const ranked = [...shares].sort((left, right) => {
     if (left.remainder !== right.remainder) return left.remainder > right.remainder ? -1 : 1;
-    return left.lotId.localeCompare(right.lotId);
+    return compareCodeUnits(left.lotId, right.lotId);
   });
   for (const share of ranked) {
     if (undistributedRaw === 0n) break;
@@ -231,7 +280,7 @@ export function apportionRawLargestRemainderV1(
   }
   return shares
     .map(({ lotId, amountRaw }) => ({ lotId, amountRaw }))
-    .sort((left, right) => left.lotId.localeCompare(right.lotId));
+    .sort((left, right) => compareCodeUnits(left.lotId, right.lotId));
 }
 
 function ledgerResult(
@@ -243,6 +292,9 @@ function ledgerResult(
     reason: null,
     authoritative: true,
     subjectAddress: input.subjectAddress,
+    snapshotBlockNumber: input.snapshotBlockNumber,
+    snapshotBlockHash: input.snapshotBlockHash,
+    snapshotEvidenceRef: input.snapshotEvidenceRef,
     events: [],
     lots: [],
     consumptionVectors: [],
@@ -357,7 +409,7 @@ function selectDeepContributorIds(
     .filter(({ amountRaw }) => amountRaw > 0n)
     .sort((left, right) => {
       if (left.amountRaw !== right.amountRaw) return left.amountRaw > right.amountRaw ? -1 : 1;
-      return left.lotId.localeCompare(right.lotId);
+      return compareCodeUnits(left.lotId, right.lotId);
     });
   const selected: string[] = [];
   let selectedRaw = 0n;
@@ -366,7 +418,7 @@ function selectDeepContributorIds(
     selected.push(allocation.lotId);
     selectedRaw += allocation.amountRaw;
   }
-  for (const lotId of [...new Set(redLotIds)].sort()) {
+  for (const lotId of [...new Set(redLotIds)].sort(compareCodeUnits)) {
     if (ranked.some((allocation) => allocation.lotId === lotId) && !selected.includes(lotId)) {
       selected.push(lotId);
     }
@@ -393,9 +445,14 @@ export function selectLedgerProvenanceV1(input: LedgerQueryV1): LedgerSelectionV
     allocations = apportionRawLargestRemainderV1(targetRaw, vectorLots);
   } else {
     const witness = input.snapshotBalanceWitness;
-    if (!witness?.pinned || !witness.independent) {
+    if (!witness?.pinned || !witness.independent || !witness.evidenceRef?.trim()) {
       return unresolvedSelection("balance_witness_missing");
     }
+    if (
+      witness.subjectAddress !== input.ledger.subjectAddress ||
+      witness.snapshotBlockNumber !== input.ledger.snapshotBlockNumber ||
+      witness.snapshotBlockHash !== input.ledger.snapshotBlockHash
+    ) return unresolvedSelection("balance_witness_binding_mismatch");
     if (witness.amountRaw !== input.ledger.remainingRaw) {
       return unresolvedSelection("snapshot_balance_mismatch");
     }
