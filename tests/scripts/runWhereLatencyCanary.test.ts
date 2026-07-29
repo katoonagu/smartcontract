@@ -333,6 +333,56 @@ async function runVmChild(
   return JSON.parse(result.stdout.trim()) as unknown;
 }
 
+async function git(directory: string, ...args: string[]): Promise<string> {
+  return (await execFileAsync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  })).stdout.trim();
+}
+
+async function createBindingGitRoots(directory: string) {
+  const trustedCliRoot = join(directory, "trusted-cli");
+  await mkdir(join(trustedCliRoot, "scripts"), { recursive: true });
+  await writeFile(
+    join(trustedCliRoot, "scripts", "runWhereLatencyCanary.ts"),
+    await readFile(resolve("scripts/runWhereLatencyCanary.ts"))
+  );
+  await git(trustedCliRoot, "init");
+  await git(trustedCliRoot, "config", "user.email", "stage-b@example.test");
+  await git(trustedCliRoot, "config", "user.name", "Stage B Test");
+  await git(trustedCliRoot, "add", "scripts/runWhereLatencyCanary.ts");
+  await git(trustedCliRoot, "commit", "-m", "trusted cli");
+  const trustedCliCommit = await git(trustedCliRoot, "rev-parse", "HEAD");
+  const trustedCliTree = await git(trustedCliRoot, "rev-parse", "HEAD^{tree}");
+
+  const deploymentRoot = join(directory, "deployment");
+  await mkdir(deploymentRoot);
+  await git(deploymentRoot, "init");
+  await git(deploymentRoot, "config", "user.email", "stage-b@example.test");
+  await git(deploymentRoot, "config", "user.name", "Stage B Test");
+  await writeFile(join(deploymentRoot, "combined.txt"), "combined\n", "utf8");
+  await git(deploymentRoot, "add", "combined.txt");
+  await git(deploymentRoot, "commit", "-m", "combined candidate");
+  const combinedCommit = await git(deploymentRoot, "rev-parse", "HEAD");
+  const combinedTree = await git(deploymentRoot, "rev-parse", "HEAD^{tree}");
+  await writeFile(join(deploymentRoot, "deployment.txt"), "deployment\n", "utf8");
+  await git(deploymentRoot, "add", "deployment.txt");
+  await git(deploymentRoot, "commit", "-m", "deployment integration");
+  const deploymentCommit = await git(deploymentRoot, "rev-parse", "HEAD");
+  const deploymentTree = await git(deploymentRoot, "rev-parse", "HEAD^{tree}");
+  return {
+    trustedCliRoot: await realpath(trustedCliRoot),
+    trustedCliCommit,
+    trustedCliTree,
+    deploymentRoot: await realpath(deploymentRoot),
+    deploymentCommit,
+    deploymentTree,
+    combinedCommit,
+    combinedTree
+  };
+}
+
 describe("Where latency canary", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -467,6 +517,240 @@ describe("Where latency canary", () => {
     await writeFile(output, "owned", "utf8");
     await expect(prepareWhereLatencyCanary({ out: output, config: config(), runtime: runtime() }))
       .rejects.toThrow("where_latency_canary_output_exists");
+  });
+
+  it("writes a canonical create-only canary run receipt through --out", async () => {
+    const api = await import("../../scripts/runWhereLatencyCanary") as Record<string, any>;
+    expect(typeof api.readWhereLatencyCanaryRunDocument).toBe("function");
+    expect(typeof api.readWhereLatencyDeepResidualDocument).toBe("function");
+    await expect(api.runWhereLatencyCanaryCli([
+      "run",
+      "--confirm",
+      "--isolation-receipt",
+      "missing-isolation.json"
+    ])).rejects.toThrow("where_latency_canary_run_output_required");
+
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-readback-"));
+    const isolationReceipt = await receiptFile(directory, runtime());
+    const runPath = join(directory, "run.json");
+    const runReceipt = await runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: runPath,
+      config: config(),
+      runtime: runtime(),
+      canaryId: "caller-bound-run",
+      now: () => 4_000
+    });
+    const runDocument = await api.readWhereLatencyCanaryRunDocument(runPath);
+    expect(runDocument.receipt).toEqual(runReceipt);
+    expect(runDocument.fileSha256).toBe(createHash("sha256")
+      .update(await readFile(runPath)).digest("hex"));
+
+    const deepPath = join(directory, "deep.json");
+    const deepReceipt = await captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: deepPath,
+      config: {
+        ...config(),
+        enabledRuntimeCycles: ["deep", "address_index", "delivery_reconciliation"]
+      },
+      runtime: deepRuntime(),
+      measurementId: "caller-bound-deep",
+      now: () => 5_000
+    });
+    const deepDocument = await api.readWhereLatencyDeepResidualDocument(deepPath);
+    expect(deepDocument.receipt).toEqual(deepReceipt);
+    expect(deepDocument.fileSha256).toBe(createHash("sha256")
+      .update(await readFile(deepPath)).digest("hex"));
+
+    await writeFile(runPath, JSON.stringify(runReceipt, null, 2), "utf8");
+    await expect(api.readWhereLatencyCanaryRunDocument(runPath))
+      .rejects.toThrow("where_latency_canary_run_receipt_not_canonical");
+    const incompleteRun = structuredClone(runReceipt) as any;
+    delete incompleteRun.schedulerGate.end;
+    delete incompleteRun.sha256;
+    incompleteRun.sha256 = fingerprintCanonicalArtifact(incompleteRun);
+    const incompleteRunPath = join(directory, "incomplete-run.json");
+    await writeFile(incompleteRunPath, `${canonicalizeArtifactJson(incompleteRun)}\n`, "utf8");
+    await expect(api.readWhereLatencyCanaryRunDocument(incompleteRunPath))
+      .rejects.toThrow("where_latency_canary_run_receipt_invalid");
+    const tampered = { ...deepReceipt, queueAgeMs: deepReceipt.queueAgeMs + 1 };
+    await writeFile(deepPath, `${canonicalizeArtifactJson(tampered)}\n`, "utf8");
+    await expect(api.readWhereLatencyDeepResidualDocument(deepPath))
+      .rejects.toThrow("where_latency_deep_residual_receipt_invalid");
+  });
+
+  it("attests caller-bound receipts to clean CLI and deployment identities", async () => {
+    const api = await import("../../scripts/runWhereLatencyCanary") as Record<string, any>;
+    expect(typeof api.createWhereLatencyEvidenceBinding).toBe("function");
+    expect(typeof api.readWhereLatencyEvidenceBindingDocument).toBe("function");
+    const directory = await mkdtemp(join(tmpdir(), "where-canary-binding-"));
+    const roots = await createBindingGitRoots(directory);
+    const immutableArtifactDigest = `sha256:${"4".repeat(64)}`;
+    const boundDeploymentIdentity = {
+      ...deploymentIdentity(),
+      gitCommit: roots.deploymentCommit,
+      gitTree: roots.deploymentTree,
+      immutableArtifactDigest
+    };
+    const boundConfig = {
+      ...config(),
+      deploymentIdentity: boundDeploymentIdentity
+    };
+    const boundAttestation = {
+      ...attestation(),
+      deploymentIdentity: boundDeploymentIdentity
+    };
+    const isolationReceipt = await receiptFile(
+      directory,
+      runtime({ runtimeAttestation: vi.fn(async () => boundAttestation) }),
+      boundConfig
+    );
+    const runReceipt = join(directory, "bound-run.json");
+    await runWhereLatencyCanary({
+      confirm: true,
+      isolationReceipt,
+      out: runReceipt,
+      config: boundConfig,
+      runtime: runtime({ runtimeAttestation: vi.fn(async () => boundAttestation) }),
+      canaryId: "bound-canary"
+    });
+    const out = join(directory, "binding.json");
+    const bindingInput = {
+      trustedCliRoot: roots.trustedCliRoot,
+      expectedTrustedCliCommit: roots.trustedCliCommit,
+      expectedTrustedCliTree: roots.trustedCliTree,
+      combinedCandidateCommit: roots.combinedCommit,
+      combinedCandidateTree: roots.combinedTree,
+      deploymentRoot: roots.deploymentRoot,
+      expectedDeploymentCommit: roots.deploymentCommit,
+      expectedDeploymentTree: roots.deploymentTree,
+      immutableArtifactDigest,
+      isolationReceipt,
+      runReceipt
+    };
+    const manifest = await api.createWhereLatencyEvidenceBinding({ ...bindingInput, out });
+    expect(manifest).toMatchObject({
+      schema: "where-latency-evidence-binding-v1",
+      version: 1,
+      kind: "where",
+      trustedCli: {
+        rootRealPath: roots.trustedCliRoot,
+        gitCommit: roots.trustedCliCommit,
+        gitTree: roots.trustedCliTree
+      },
+      combinedCandidate: {
+        gitCommit: roots.combinedCommit,
+        gitTree: roots.combinedTree
+      },
+      deployment: {
+        rootRealPath: roots.deploymentRoot,
+        gitCommit: roots.deploymentCommit,
+        gitTree: roots.deploymentTree,
+        immutableArtifactDigest
+      },
+      artifacts: [
+        expect.objectContaining({ kind: "isolation", schema: "where-latency-canary-isolation-v1" }),
+        expect.objectContaining({ kind: "run", schema: "where-latency-canary-run-v1" })
+      ],
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    const reopened = await api.readWhereLatencyEvidenceBindingDocument(out);
+    expect(reopened.manifest).toEqual(manifest);
+    expect(reopened.fileSha256).toBe(createHash("sha256")
+      .update(await readFile(out)).digest("hex"));
+    await expect(api.createWhereLatencyEvidenceBinding({ ...bindingInput, out }))
+      .rejects.toThrow("where_latency_canary_output_exists");
+    await expect(api.createWhereLatencyEvidenceBinding({
+      ...bindingInput,
+      expectedTrustedCliCommit: "f".repeat(40),
+      out: join(directory, "wrong-cli.json")
+    })).rejects.toThrow("where_latency_evidence_binding_trusted_cli_identity_mismatch");
+    await expect(api.createWhereLatencyEvidenceBinding({
+      ...bindingInput,
+      combinedCandidateTree: "f".repeat(40),
+      out: join(directory, "wrong-combined.json")
+    })).rejects.toThrow("where_latency_evidence_binding_combined_identity_mismatch");
+    await expect(api.createWhereLatencyEvidenceBinding({
+      ...bindingInput,
+      immutableArtifactDigest: `sha256:${"5".repeat(64)}`,
+      out: join(directory, "wrong-digest.json")
+    })).rejects.toThrow("where_latency_evidence_binding_deployment_identity_mismatch");
+    const otherIsolationDirectory = join(directory, "other-isolation");
+    const otherIsolation = join(otherIsolationDirectory, "isolation.json");
+    await prepareWhereLatencyCanary({
+      out: otherIsolation,
+      config: boundConfig,
+      runtime: runtime({ runtimeAttestation: vi.fn(async () => boundAttestation) }),
+      now: () => 101
+    });
+    await expect(api.createWhereLatencyEvidenceBinding({
+      ...bindingInput,
+      isolationReceipt: otherIsolation,
+      out: join(directory, "mismatched-receipts.json")
+    })).rejects.toThrow("where_latency_evidence_binding_isolation_run_mismatch");
+
+    const deepReceiptPath = join(directory, "bound-deep.json");
+    const deepCycles = ["address_index", "deep", "delivery_reconciliation"];
+    await captureWhereLatencyDeepResidual({
+      confirm: true,
+      out: deepReceiptPath,
+      config: { ...boundConfig, enabledRuntimeCycles: deepCycles },
+      runtime: deepRuntime({
+        runtimeAttestation: vi.fn(async () => ({
+          ...boundAttestation,
+          enabledRuntimeCycles: deepCycles
+        }))
+      }),
+      measurementId: "bound-deep"
+    });
+    const deepBinding = await api.createWhereLatencyEvidenceBinding({
+      ...bindingInput,
+      isolationReceipt: undefined,
+      runReceipt: undefined,
+      deepReceipt: deepReceiptPath,
+      out: join(directory, "deep-binding.json")
+    });
+    expect(deepBinding).toMatchObject({
+      kind: "deep",
+      artifacts: [expect.objectContaining({
+        kind: "deep",
+        schema: "where-latency-deep-residual-v1"
+      })]
+    });
+
+    const cliOut = join(directory, "cli-binding.json");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await api.runWhereLatencyCanaryCli([
+      "attest",
+      "--trusted-cli-root", roots.trustedCliRoot,
+      "--expected-cli-commit", roots.trustedCliCommit,
+      "--expected-cli-tree", roots.trustedCliTree,
+      "--combined-commit", roots.combinedCommit,
+      "--combined-tree", roots.combinedTree,
+      "--deployment-root", roots.deploymentRoot,
+      "--expected-deployment-commit", roots.deploymentCommit,
+      "--expected-deployment-tree", roots.deploymentTree,
+      "--immutable-artifact-digest", immutableArtifactDigest,
+      "--isolation-receipt", isolationReceipt,
+      "--run-receipt", runReceipt,
+      "--out", cliOut
+    ]);
+    expect(stdout).toHaveBeenCalledWith(`${canonicalizeArtifactJson(
+      (await api.readWhereLatencyEvidenceBindingDocument(cliOut)).manifest
+    )}\n`);
+    stdout.mockRestore();
+
+    const mutatedManifest = { ...manifest, kind: "deep" };
+    await writeFile(out, `${canonicalizeArtifactJson(mutatedManifest)}\n`, "utf8");
+    await expect(api.readWhereLatencyEvidenceBindingDocument(out))
+      .rejects.toThrow("where_latency_evidence_binding_invalid");
+
+    const dirtyOut = join(directory, "dirty-binding.json");
+    await writeFile(join(roots.trustedCliRoot, "untracked.txt"), "dirty\n", "utf8");
+    await expect(api.createWhereLatencyEvidenceBinding({ ...bindingInput, out: dirtyOut }))
+      .rejects.toThrow("where_latency_evidence_binding_trusted_cli_dirty");
   });
 
   it("requires confirm and valid TRON source addresses before runtime mutation", async () => {

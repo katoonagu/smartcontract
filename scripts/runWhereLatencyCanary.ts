@@ -678,6 +678,37 @@ function assertRuntimeAttestationShape(
   return cycles;
 }
 
+function assertDeepResidualRuntimeAttestationShape(
+  value: WhereLatencyCanaryRuntimeAttestation
+): string[] {
+  const cycles = canonicalDeepResidualCycles(value.enabledRuntimeCycles);
+  const bindings = [
+    value.wherePumpBindingIdentity,
+    value.schedulerBindingIdentity,
+    value.forensicRepositoryBindingIdentity,
+    value.deliveryRepositoryBindingIdentity,
+    value.addressIndexBindingIdentity,
+    value.deepWorkerBindingIdentity,
+    value.schedulerOwnershipBindingIdentity
+  ];
+  for (const identity of bindings) {
+    assertSha256(identity, "where_latency_deep_residual_runtime_binding_invalid");
+  }
+  if (new Set(bindings).size !== bindings.length) {
+    throw new Error("where_latency_deep_residual_runtime_binding_identity_collision");
+  }
+  if (
+    value.schema !== "where-latency-canary-runtime-attestation-v1" ||
+    typeof value.runtimeInstanceLabel !== "string" || !value.runtimeInstanceLabel ||
+    value.whereWorkerConcurrency !== 2 || value.deepWorkerConcurrency !== 1
+  ) throw new Error("where_latency_deep_residual_runtime_attestation_mismatch");
+  assertSha256(value.runtimeConfigIdentity, "where_latency_deep_residual_runtime_attestation_mismatch");
+  assertSha256(value.databaseFingerprint, "where_latency_deep_residual_runtime_attestation_mismatch");
+  assertSha256(value.schedulerCapacityFingerprint, "where_latency_deep_residual_runtime_attestation_mismatch");
+  assertDeploymentIdentity(value.deploymentIdentity);
+  return cycles;
+}
+
 function canonicalDeepResidualAttestation(
   config: WhereLatencyCanaryConfig,
   scheduler: WhereLatencySchedulerDiagnostics,
@@ -895,6 +926,564 @@ export async function readWhereLatencyCanaryIsolationDocument(
     receipt: parseIsolationReceipt(parsed),
     fileSha256: createHash("sha256").update(bytes).digest("hex")
   };
+}
+
+type CanonicalReceiptDocument<T> = {
+  receipt: T;
+  fileSha256: string;
+};
+
+function exactRecord(
+  value: unknown,
+  keys: readonly string[],
+  code: string
+): Record<string, unknown> {
+  if (!record(value)) throw new Error(code);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(code);
+  }
+  return value;
+}
+
+function assertNonNegativeInteger(value: unknown, code: string): void {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(code);
+}
+
+function assertCountPair(value: unknown, code: string): void {
+  const pair = exactRecord(value, ["intentCount", "claimCount"], code);
+  assertNonNegativeInteger(pair.intentCount, code);
+  assertNonNegativeInteger(pair.claimCount, code);
+}
+
+function assertLaneDiagnosticsShape(value: unknown, code: string): void {
+  const lanes = exactRecord(value, ["allForensic", "where", "deep"], code);
+  for (const lane of Object.values(lanes)) {
+    const counts = exactRecord(lane, ["runnableQueuedCount", "dbRunningCount"], code);
+    assertNonNegativeInteger(counts.runnableQueuedCount, code);
+    assertNonNegativeInteger(counts.dbRunningCount, code);
+  }
+}
+
+function assertOwnershipDiagnosticsShape(value: unknown, code: string): void {
+  const ownership = exactRecord(value, [
+    "preExistingAddressIndexWork",
+    "preExistingCanaryExternalWork",
+    "canaryOwned",
+    "foreign"
+  ], code);
+  assertNonNegativeInteger(ownership.preExistingAddressIndexWork, code);
+  assertNonNegativeInteger(ownership.preExistingCanaryExternalWork, code);
+  for (const counters of [ownership.canaryOwned, ownership.foreign]) {
+    const shaped = exactRecord(counters, [
+      "queued", "inFlight", "dispatched", "completed", "failed", "rateLimited"
+    ], code);
+    for (const count of Object.values(shaped)) assertNonNegativeInteger(count, code);
+  }
+}
+
+function assertTerminalShape(value: unknown, code: string): void {
+  const terminal = exactRecord(value, ["jobId", "status", "completedAtMs"], code);
+  if (typeof terminal.jobId !== "string" || !terminal.jobId) throw new Error(code);
+  if (!(terminal.status === "completed" || terminal.status === "partial" || terminal.status === "failed")) {
+    throw new Error(code);
+  }
+  assertNonNegativeInteger(terminal.completedAtMs, code);
+}
+
+function assertJobShape(value: unknown, terminalNullable: boolean, code: string): void {
+  const job = exactRecord(value, ["id", "createdAtMs", "startedAtMs", "terminal"], code);
+  if (typeof job.id !== "string" || !job.id) throw new Error(code);
+  assertNonNegativeInteger(job.createdAtMs, code);
+  assertNonNegativeInteger(job.startedAtMs, code);
+  if (job.terminal === null && terminalNullable) return;
+  assertTerminalShape(job.terminal, code);
+  if ((job.terminal as Record<string, unknown>).jobId !== job.id) throw new Error(code);
+}
+
+function parseWhereLatencyCanaryRunReceipt(value: unknown): WhereLatencyCanaryRunReceipt {
+  const code = "where_latency_canary_run_receipt_invalid";
+  try {
+    const receipt = exactRecord(value, [
+      "schema", "version", "result", "diagnosticCode", "createdAt", "canaryId",
+      "requestedBy", "isolationReceiptSha256", "isolationReceiptFileSha256",
+      "adapterIdentity", "deploymentIdentity", "runtimeAttestation", "addresses",
+      "jobs", "startGate", "slotGate", "deliveryGate", "laneGate", "schedulerGate",
+      "schedulerIsolationGate", "terminalAndDrainGate", "deepConcurrency",
+      "residualDeepLatencyMeasuredSeparately", "sha256"
+    ], code);
+    const { sha256, ...payload } = receipt;
+    if (
+      receipt.schema !== RUN_SCHEMA || receipt.version !== 1 ||
+      !(receipt.result === "pass" || receipt.result === "non_gating_not_isolated") ||
+      typeof sha256 !== "string" || sha256 !== fingerprintCanonicalArtifact(payload) ||
+      typeof receipt.createdAt !== "string" || !Number.isFinite(Date.parse(receipt.createdAt)) ||
+      typeof receipt.canaryId !== "string" || !receipt.canaryId ||
+      receipt.requestedBy !== `where-latency-canary:${receipt.canaryId}` ||
+      typeof receipt.isolationReceiptSha256 !== "string" ||
+      typeof receipt.isolationReceiptFileSha256 !== "string" ||
+      receipt.deepConcurrency !== 1 || receipt.residualDeepLatencyMeasuredSeparately !== true
+    ) throw new Error(code);
+    assertSha256(receipt.isolationReceiptSha256, code);
+    assertSha256(receipt.isolationReceiptFileSha256, code);
+    assertAdapterIdentity(receipt.adapterIdentity as WhereLatencyCanaryAdapterIdentity);
+    assertDeploymentIdentity(receipt.deploymentIdentity as WhereLatencyCanaryDeploymentIdentity);
+    assertRuntimeAttestationShape(receipt.runtimeAttestation as WhereLatencyCanaryRuntimeAttestation);
+    if (canonicalizeArtifactJson((receipt.runtimeAttestation as WhereLatencyCanaryRuntimeAttestation).deploymentIdentity) !==
+      canonicalizeArtifactJson(receipt.deploymentIdentity)) throw new Error(code);
+
+    const addresses = exactRecord(receipt.addresses, ["long", "fresh"], code);
+    if (typeof addresses.long !== "string" || typeof addresses.fresh !== "string") throw new Error(code);
+    assertValidTronAddress(addresses.long);
+    assertValidTronAddress(addresses.fresh);
+    const jobs = exactRecord(receipt.jobs, ["long", "fresh"], code);
+    assertJobShape(jobs.long, true, code);
+    if (jobs.fresh !== null) assertJobShape(jobs.fresh, false, code);
+
+    const startGate = exactRecord(receipt.startGate, ["elapsedMs", "maximumMs", "passed"], code);
+    if (startGate.elapsedMs !== null) assertNonNegativeInteger(startGate.elapsedMs, code);
+    assertNonNegativeInteger(startGate.maximumMs, code);
+    if (typeof startGate.passed !== "boolean") throw new Error(code);
+    const slotGate = exactRecord(receipt.slotGate, ["maximumActiveHandlers", "configuredHandlers", "passed"], code);
+    assertNonNegativeInteger(slotGate.maximumActiveHandlers, code);
+    if (slotGate.configuredHandlers !== 2 || typeof slotGate.passed !== "boolean") throw new Error(code);
+
+    const deliveryGate = exactRecord(receipt.deliveryGate, [
+      "beforeDrain", "endAfterDrain", "intentCount", "claimCount", "passed"
+    ], code);
+    assertCountPair(deliveryGate.beforeDrain, code);
+    assertCountPair(deliveryGate.endAfterDrain, code);
+    assertNonNegativeInteger(deliveryGate.intentCount, code);
+    assertNonNegativeInteger(deliveryGate.claimCount, code);
+    if (typeof deliveryGate.passed !== "boolean") throw new Error(code);
+
+    const laneGate = exactRecord(receipt.laneGate, ["start", "end", "passed"], code);
+    assertLaneDiagnosticsShape(laneGate.start, code);
+    assertLaneDiagnosticsShape(laneGate.end, code);
+    if (typeof laneGate.passed !== "boolean") throw new Error(code);
+
+    const schedulerGate = exactRecord(receipt.schedulerGate, [
+      "start", "end", "dispatchedRequestDelta", "completedRequestDelta",
+      "failedRequestDelta", "rateLimitedRequestDelta", "capacityFingerprintAtStart",
+      "capacityFingerprintAtEnd", "passed"
+    ], code);
+    assertSchedulerShape(schedulerGate.start as WhereLatencySchedulerDiagnostics);
+    assertSchedulerShape(schedulerGate.end as WhereLatencySchedulerDiagnostics);
+    for (const field of [
+      schedulerGate.dispatchedRequestDelta,
+      schedulerGate.completedRequestDelta,
+      schedulerGate.failedRequestDelta,
+      schedulerGate.rateLimitedRequestDelta
+    ]) assertNonNegativeInteger(field, code);
+    assertSha256(schedulerGate.capacityFingerprintAtStart, code);
+    assertSha256(schedulerGate.capacityFingerprintAtEnd, code);
+    if (typeof schedulerGate.passed !== "boolean") throw new Error(code);
+
+    const isolationGate = exactRecord(receipt.schedulerIsolationGate, ["start", "end", "passed"], code);
+    assertOwnershipDiagnosticsShape(isolationGate.start, code);
+    assertOwnershipDiagnosticsShape(isolationGate.end, code);
+    if (typeof isolationGate.passed !== "boolean") throw new Error(code);
+    const terminalGate = exactRecord(receipt.terminalAndDrainGate, ["bothTerminal", "drained", "passed"], code);
+    if (typeof terminalGate.bothTerminal !== "boolean" || typeof terminalGate.drained !== "boolean" || typeof terminalGate.passed !== "boolean") {
+      throw new Error(code);
+    }
+
+    const passing = receipt.result === "pass";
+    if (
+      (passing && receipt.diagnosticCode !== null) ||
+      (!passing && receipt.diagnosticCode !== "no_stage_b_start_guarantee") ||
+      (passing && jobs.fresh === null) || (!passing && jobs.fresh !== null)
+    ) throw new Error(code);
+    return receipt as unknown as WhereLatencyCanaryRunReceipt;
+  } catch {
+    throw new Error(code);
+  }
+}
+
+function parseWhereLatencyDeepResidualReceipt(value: unknown): WhereLatencyDeepResidualReceipt {
+  const code = "where_latency_deep_residual_receipt_invalid";
+  try {
+    const receipt = exactRecord(value, [
+      "schema", "version", "result", "createdAt", "measurementId", "requestedBy",
+      "adapterIdentity", "deploymentIdentity", "runtimeAttestation", "configSha256",
+      "subjectAddress", "job", "queueAgeMs", "providerErrors", "memory", "delivery",
+      "lanes", "scheduler", "schedulerIsolation", "drained", "sha256"
+    ], code);
+    const { sha256, ...payload } = receipt;
+    if (
+      receipt.schema !== "where-latency-deep-residual-v1" || receipt.version !== 1 ||
+      receipt.result !== "measured" || typeof sha256 !== "string" ||
+      sha256 !== fingerprintCanonicalArtifact(payload) ||
+      typeof receipt.createdAt !== "string" || !Number.isFinite(Date.parse(receipt.createdAt)) ||
+      typeof receipt.measurementId !== "string" || !receipt.measurementId ||
+      receipt.requestedBy !== `where-latency-deep-residual:${receipt.measurementId}` ||
+      typeof receipt.subjectAddress !== "string" || receipt.drained !== true
+    ) throw new Error(code);
+    assertValidTronAddress(receipt.subjectAddress);
+    assertSha256(receipt.configSha256, code);
+    assertAdapterIdentity(receipt.adapterIdentity as WhereLatencyCanaryAdapterIdentity);
+    assertDeploymentIdentity(receipt.deploymentIdentity as WhereLatencyCanaryDeploymentIdentity);
+    assertDeepResidualRuntimeAttestationShape(receipt.runtimeAttestation as WhereLatencyCanaryRuntimeAttestation);
+    if (canonicalizeArtifactJson((receipt.runtimeAttestation as WhereLatencyCanaryRuntimeAttestation).deploymentIdentity) !==
+      canonicalizeArtifactJson(receipt.deploymentIdentity)) throw new Error(code);
+    assertJobShape(receipt.job, false, code);
+    assertNonNegativeInteger(receipt.queueAgeMs, code);
+    const providerErrors = exactRecord(receipt.providerErrors, [
+      "jobReported", "schedulerFailedRequestDelta", "schedulerRateLimitedRequestDelta"
+    ], code);
+    for (const count of Object.values(providerErrors)) assertNonNegativeInteger(count, code);
+    const memory = exactRecord(receipt.memory, ["before", "atStart", "afterDrain"], code);
+    for (const snapshot of Object.values(memory)) {
+      const shaped = exactRecord(snapshot, ["rssBytes", "heapUsedBytes"], code);
+      assertNonNegativeInteger(shaped.rssBytes, code);
+      assertNonNegativeInteger(shaped.heapUsedBytes, code);
+    }
+    const delivery = exactRecord(receipt.delivery, ["beforeDrain", "afterDrain"], code);
+    assertCountPair(delivery.beforeDrain, code);
+    assertCountPair(delivery.afterDrain, code);
+    const lanes = exactRecord(receipt.lanes, ["start", "end"], code);
+    assertLaneDiagnosticsShape(lanes.start, code);
+    assertLaneDiagnosticsShape(lanes.end, code);
+    const scheduler = exactRecord(receipt.scheduler, ["start", "end"], code);
+    assertSchedulerShape(scheduler.start as WhereLatencySchedulerDiagnostics);
+    assertSchedulerShape(scheduler.end as WhereLatencySchedulerDiagnostics);
+    const isolation = exactRecord(receipt.schedulerIsolation, ["start", "end"], code);
+    assertOwnershipDiagnosticsShape(isolation.start, code);
+    assertOwnershipDiagnosticsShape(isolation.end, code);
+    return receipt as unknown as WhereLatencyDeepResidualReceipt;
+  } catch {
+    throw new Error(code);
+  }
+}
+
+async function readCanonicalReceiptDocument<T>(
+  path: string,
+  parse: (value: unknown) => T,
+  invalidCode: string,
+  nonCanonicalCode: string
+): Promise<CanonicalReceiptDocument<T>> {
+  const bytes = await readFile(resolve(path));
+  const text = bytes.toString("utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(invalidCode);
+  }
+  if (text !== `${canonicalizeArtifactJson(parsed)}\n`) throw new Error(nonCanonicalCode);
+  return {
+    receipt: parse(parsed),
+    fileSha256: createHash("sha256").update(bytes).digest("hex")
+  };
+}
+
+export type WhereLatencyCanaryRunDocument = CanonicalReceiptDocument<WhereLatencyCanaryRunReceipt>;
+
+export async function readWhereLatencyCanaryRunDocument(
+  path: string
+): Promise<WhereLatencyCanaryRunDocument> {
+  return readCanonicalReceiptDocument(
+    path,
+    parseWhereLatencyCanaryRunReceipt,
+    "where_latency_canary_run_receipt_invalid",
+    "where_latency_canary_run_receipt_not_canonical"
+  );
+}
+
+export type WhereLatencyDeepResidualDocument = CanonicalReceiptDocument<WhereLatencyDeepResidualReceipt>;
+
+export async function readWhereLatencyDeepResidualDocument(
+  path: string
+): Promise<WhereLatencyDeepResidualDocument> {
+  return readCanonicalReceiptDocument(
+    path,
+    parseWhereLatencyDeepResidualReceipt,
+    "where_latency_deep_residual_receipt_invalid",
+    "where_latency_deep_residual_receipt_not_canonical"
+  );
+}
+
+export type WhereLatencyEvidenceBindingV1 = {
+  schema: "where-latency-evidence-binding-v1";
+  version: 1;
+  kind: "where" | "deep";
+  trustedCli: {
+    rootRealPath: string;
+    gitCommit: string;
+    gitTree: string;
+    runnerFileSha256: string;
+  };
+  combinedCandidate: { gitCommit: string; gitTree: string };
+  deployment: {
+    rootRealPath: string;
+    gitCommit: string;
+    gitTree: string;
+    immutableArtifactDigest: string;
+  };
+  artifacts: Array<{
+    kind: "isolation" | "run" | "deep";
+    realPath: string;
+    schema: string;
+    selfSha256: string;
+    fileSha256: string;
+  }>;
+  sha256: string;
+};
+
+export type WhereLatencyEvidenceBindingDocument = {
+  manifest: WhereLatencyEvidenceBindingV1;
+  fileSha256: string;
+};
+
+function parseWhereLatencyEvidenceBinding(value: unknown): WhereLatencyEvidenceBindingV1 {
+  const code = "where_latency_evidence_binding_invalid";
+  try {
+    const manifest = exactRecord(value, [
+      "schema", "version", "kind", "trustedCli", "combinedCandidate",
+      "deployment", "artifacts", "sha256"
+    ], code);
+    const { sha256, ...payload } = manifest;
+    if (
+      manifest.schema !== "where-latency-evidence-binding-v1" ||
+      manifest.version !== 1 || !(manifest.kind === "where" || manifest.kind === "deep") ||
+      typeof sha256 !== "string" || sha256 !== fingerprintCanonicalArtifact(payload)
+    ) throw new Error(code);
+    const trustedCli = exactRecord(manifest.trustedCli, [
+      "rootRealPath", "gitCommit", "gitTree", "runnerFileSha256"
+    ], code);
+    const combined = exactRecord(manifest.combinedCandidate, ["gitCommit", "gitTree"], code);
+    const deployment = exactRecord(manifest.deployment, [
+      "rootRealPath", "gitCommit", "gitTree", "immutableArtifactDigest"
+    ], code);
+    for (const path of [trustedCli.rootRealPath, deployment.rootRealPath]) {
+      if (typeof path !== "string" || !isAbsolute(path)) throw new Error(code);
+    }
+    for (const commit of [trustedCli.gitCommit, combined.gitCommit, deployment.gitCommit]) {
+      if (typeof commit !== "string" || !/^[a-f0-9]{40}$/.test(commit)) throw new Error(code);
+    }
+    for (const tree of [trustedCli.gitTree, combined.gitTree, deployment.gitTree]) {
+      if (typeof tree !== "string" || !/^[a-f0-9]{40}$/.test(tree)) throw new Error(code);
+    }
+    assertSha256(trustedCli.runnerFileSha256, code);
+    if (typeof deployment.immutableArtifactDigest !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/.test(deployment.immutableArtifactDigest)) throw new Error(code);
+    if (!Array.isArray(manifest.artifacts)) throw new Error(code);
+    const expectedKinds = manifest.kind === "where" ? ["isolation", "run"] : ["deep"];
+    if (manifest.artifacts.length !== expectedKinds.length) throw new Error(code);
+    manifest.artifacts.forEach((artifact, index) => {
+      const shaped = exactRecord(artifact, [
+        "kind", "realPath", "schema", "selfSha256", "fileSha256"
+      ], code);
+      if (
+        shaped.kind !== expectedKinds[index] || typeof shaped.realPath !== "string" ||
+        !isAbsolute(shaped.realPath) || typeof shaped.schema !== "string" || !shaped.schema
+      ) throw new Error(code);
+      assertSha256(shaped.selfSha256, code);
+      assertSha256(shaped.fileSha256, code);
+    });
+    return manifest as unknown as WhereLatencyEvidenceBindingV1;
+  } catch {
+    throw new Error(code);
+  }
+}
+
+export async function readWhereLatencyEvidenceBindingDocument(
+  path: string
+): Promise<WhereLatencyEvidenceBindingDocument> {
+  const document = await readCanonicalReceiptDocument(
+    path,
+    parseWhereLatencyEvidenceBinding,
+    "where_latency_evidence_binding_invalid",
+    "where_latency_evidence_binding_not_canonical"
+  );
+  return { manifest: document.receipt, fileSha256: document.fileSha256 };
+}
+
+function sameBindingPath(left: string, right: string): boolean {
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+async function canonicalBindingRoot(path: string, code: string): Promise<string> {
+  if (!isAbsolute(path)) throw new Error(code);
+  const lexical = resolve(path);
+  const actual = await realpath(lexical);
+  if (!sameBindingPath(lexical, actual) || !(await stat(actual)).isDirectory()) throw new Error(code);
+  return actual;
+}
+
+async function bindingGit(
+  root: string,
+  args: readonly string[],
+  code: string
+): Promise<string> {
+  try {
+    return (await execFileAsync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    })).stdout.trim();
+  } catch {
+    throw new Error(code);
+  }
+}
+
+function assertBindingDeploymentIdentity(
+  identity: WhereLatencyCanaryDeploymentIdentity,
+  expected: { commit: string; tree: string; digest: string }
+): void {
+  if (
+    identity.gitCommit !== expected.commit || identity.gitTree !== expected.tree ||
+    identity.immutableArtifactDigest !== expected.digest
+  ) throw new Error("where_latency_evidence_binding_deployment_identity_mismatch");
+}
+
+export async function createWhereLatencyEvidenceBinding(input: {
+  trustedCliRoot: string;
+  expectedTrustedCliCommit: string;
+  expectedTrustedCliTree: string;
+  combinedCandidateCommit: string;
+  combinedCandidateTree: string;
+  deploymentRoot: string;
+  expectedDeploymentCommit: string;
+  expectedDeploymentTree: string;
+  immutableArtifactDigest: string;
+  isolationReceipt?: string;
+  runReceipt?: string;
+  deepReceipt?: string;
+  out: string;
+}): Promise<WhereLatencyEvidenceBindingV1> {
+  await ensureOutputAbsent(input.out);
+  for (const commit of [
+    input.expectedTrustedCliCommit,
+    input.combinedCandidateCommit,
+    input.expectedDeploymentCommit
+  ]) if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("where_latency_evidence_binding_git_identity_invalid");
+  for (const tree of [
+    input.expectedTrustedCliTree,
+    input.combinedCandidateTree,
+    input.expectedDeploymentTree
+  ]) if (!/^[a-f0-9]{40}$/.test(tree)) throw new Error("where_latency_evidence_binding_git_identity_invalid");
+  if (!/^sha256:[a-f0-9]{64}$/.test(input.immutableArtifactDigest)) {
+    throw new Error("where_latency_evidence_binding_artifact_digest_invalid");
+  }
+  const whereInput = Boolean(input.isolationReceipt && input.runReceipt && !input.deepReceipt);
+  const deepInput = Boolean(input.deepReceipt && !input.isolationReceipt && !input.runReceipt);
+  if (!whereInput && !deepInput) throw new Error("where_latency_evidence_binding_artifact_set_invalid");
+
+  const trustedCliRoot = await canonicalBindingRoot(
+    input.trustedCliRoot,
+    "where_latency_evidence_binding_trusted_cli_root_invalid"
+  );
+  const deploymentRoot = await canonicalBindingRoot(
+    input.deploymentRoot,
+    "where_latency_evidence_binding_deployment_root_invalid"
+  );
+  if (sameBindingPath(trustedCliRoot, deploymentRoot)) {
+    throw new Error("where_latency_evidence_binding_trust_roots_not_isolated");
+  }
+  const trustedState = await inspectGitCheckout(trustedCliRoot);
+  if (trustedState.status) throw new Error("where_latency_evidence_binding_trusted_cli_dirty");
+  if (trustedState.commit !== input.expectedTrustedCliCommit || trustedState.tree !== input.expectedTrustedCliTree) {
+    throw new Error("where_latency_evidence_binding_trusted_cli_identity_mismatch");
+  }
+  const deploymentState = await inspectGitCheckout(deploymentRoot);
+  if (deploymentState.status) throw new Error("where_latency_evidence_binding_deployment_dirty");
+  if (deploymentState.commit !== input.expectedDeploymentCommit || deploymentState.tree !== input.expectedDeploymentTree) {
+    throw new Error("where_latency_evidence_binding_deployment_identity_mismatch");
+  }
+  const combinedTree = await bindingGit(
+    deploymentRoot,
+    ["rev-parse", `${input.combinedCandidateCommit}^{tree}`],
+    "where_latency_evidence_binding_combined_identity_missing"
+  );
+  if (combinedTree !== input.combinedCandidateTree) {
+    throw new Error("where_latency_evidence_binding_combined_identity_mismatch");
+  }
+  await bindingGit(
+    deploymentRoot,
+    ["merge-base", "--is-ancestor", input.combinedCandidateCommit, input.expectedDeploymentCommit],
+    "where_latency_evidence_binding_deployment_not_descended"
+  );
+  const runnerPath = await realpath(resolve(trustedCliRoot, "scripts", "runWhereLatencyCanary.ts"));
+  assertContained(trustedCliRoot, runnerPath);
+  const runnerFileSha256 = createHash("sha256").update(await readFile(runnerPath)).digest("hex");
+  const expectedDeployment = {
+    commit: input.expectedDeploymentCommit,
+    tree: input.expectedDeploymentTree,
+    digest: input.immutableArtifactDigest
+  };
+
+  const artifacts: WhereLatencyEvidenceBindingV1["artifacts"] = [];
+  if (whereInput) {
+    const isolationPath = await realpath(resolve(input.isolationReceipt!));
+    const runPath = await realpath(resolve(input.runReceipt!));
+    const isolation = await readWhereLatencyCanaryIsolationDocument(isolationPath);
+    const run = await readWhereLatencyCanaryRunDocument(runPath);
+    if (
+      run.receipt.isolationReceiptSha256 !== isolation.receipt.sha256 ||
+      run.receipt.isolationReceiptFileSha256 !== isolation.fileSha256 ||
+      canonicalizeArtifactJson(run.receipt.adapterIdentity) !== canonicalizeArtifactJson(isolation.receipt.adapterIdentity) ||
+      canonicalizeArtifactJson(run.receipt.deploymentIdentity) !== canonicalizeArtifactJson(isolation.receipt.deploymentIdentity)
+    ) throw new Error("where_latency_evidence_binding_isolation_run_mismatch");
+    assertBindingDeploymentIdentity(isolation.receipt.deploymentIdentity, expectedDeployment);
+    assertBindingDeploymentIdentity(run.receipt.deploymentIdentity, expectedDeployment);
+    artifacts.push({
+      kind: "isolation",
+      realPath: isolationPath,
+      schema: isolation.receipt.schema,
+      selfSha256: isolation.receipt.sha256,
+      fileSha256: isolation.fileSha256
+    }, {
+      kind: "run",
+      realPath: runPath,
+      schema: run.receipt.schema,
+      selfSha256: run.receipt.sha256,
+      fileSha256: run.fileSha256
+    });
+  } else {
+    const deepPath = await realpath(resolve(input.deepReceipt!));
+    const deep = await readWhereLatencyDeepResidualDocument(deepPath);
+    assertBindingDeploymentIdentity(deep.receipt.deploymentIdentity, expectedDeployment);
+    artifacts.push({
+      kind: "deep",
+      realPath: deepPath,
+      schema: deep.receipt.schema,
+      selfSha256: deep.receipt.sha256,
+      fileSha256: deep.fileSha256
+    });
+  }
+
+  const manifest = withHash({
+    schema: "where-latency-evidence-binding-v1" as const,
+    version: 1 as const,
+    kind: whereInput ? "where" as const : "deep" as const,
+    trustedCli: {
+      rootRealPath: trustedCliRoot,
+      gitCommit: trustedState.commit,
+      gitTree: trustedState.tree,
+      runnerFileSha256
+    },
+    combinedCandidate: {
+      gitCommit: input.combinedCandidateCommit,
+      gitTree: input.combinedCandidateTree
+    },
+    deployment: {
+      rootRealPath: deploymentRoot,
+      gitCommit: deploymentState.commit,
+      gitTree: deploymentState.tree,
+      immutableArtifactDigest: input.immutableArtifactDigest
+    },
+    artifacts
+  });
+  await writeCanonicalExclusive(input.out, manifest);
+  const reopened = await readWhereLatencyEvidenceBindingDocument(input.out);
+  if (reopened.manifest.sha256 !== manifest.sha256) {
+    throw new Error("where_latency_evidence_binding_readback_mismatch");
+  }
+  return reopened.manifest;
 }
 
 function assertValidTronAddress(address: string): void {
@@ -2419,8 +3008,32 @@ function assertDeepResidualRuntime(
 
 export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise<void> {
   const command = args[0];
-  if (command !== "prepare" && command !== "run" && command !== "deep-residual") {
-    throw new Error("Usage: forensic:where-latency:canary -- <prepare|run|deep-residual> [options]");
+  if (command !== "prepare" && command !== "run" && command !== "deep-residual" && command !== "attest") {
+    throw new Error("Usage: forensic:where-latency:canary -- <prepare|run|deep-residual|attest> [options]");
+  }
+  if (command === "attest") {
+    const required = (name: string) => {
+      const value = argument(args, name);
+      if (!value) throw new Error(`where_latency_evidence_binding_${name.slice(2).replaceAll("-", "_")}_required`);
+      return value;
+    };
+    const manifest = await createWhereLatencyEvidenceBinding({
+      trustedCliRoot: required("--trusted-cli-root"),
+      expectedTrustedCliCommit: required("--expected-cli-commit"),
+      expectedTrustedCliTree: required("--expected-cli-tree"),
+      combinedCandidateCommit: required("--combined-commit"),
+      combinedCandidateTree: required("--combined-tree"),
+      deploymentRoot: required("--deployment-root"),
+      expectedDeploymentCommit: required("--expected-deployment-commit"),
+      expectedDeploymentTree: required("--expected-deployment-tree"),
+      immutableArtifactDigest: required("--immutable-artifact-digest"),
+      isolationReceipt: argument(args, "--isolation-receipt") ?? undefined,
+      runReceipt: argument(args, "--run-receipt") ?? undefined,
+      deepReceipt: argument(args, "--deep-receipt") ?? undefined,
+      out: required("--out")
+    });
+    process.stdout.write(`${canonicalizeArtifactJson(manifest)}\n`);
+    return;
   }
   if (command === "prepare") {
     const out = argument(args, "--out");
@@ -2467,12 +3080,18 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
       runtime: loaded.runtime,
       subjectAddress
     });
-    process.stdout.write(`${canonicalizeArtifactJson(receipt)}\n`);
+    const reopened = await readWhereLatencyDeepResidualDocument(out);
+    if (reopened.receipt.sha256 !== receipt.sha256) {
+      throw new Error("where_latency_deep_residual_receipt_readback_mismatch");
+    }
+    process.stdout.write(`${canonicalizeArtifactJson(reopened.receipt)}\n`);
     return;
   }
   if (!flag(args, "--confirm")) throw new Error("where_latency_canary_confirm_required");
   const isolationReceipt = argument(args, "--isolation-receipt");
   if (!isolationReceipt) throw new Error("where_latency_canary_isolation_receipt_required");
+  const out = argument(args, "--out");
+  if (!out) throw new Error("where_latency_canary_run_output_required");
   const longAddress = argument(args, "--long-address") ?? WHERE_LATENCY_CANARY_LONG_ADDRESS;
   const freshAddress = argument(args, "--fresh-address") ?? WHERE_LATENCY_CANARY_FRESH_ADDRESS;
   assertValidTronAddress(longAddress);
@@ -2492,7 +3111,6 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
     isolation
   );
   const canaryId = randomUUID();
-  const out = resolve("outputs", "where-latency-canary", `run-${canaryId}.json`);
   await ensureOutputAbsent(out);
   const loaded = await loadRuntimeBridge(unboundConfig);
   const config: WhereLatencyCanaryConfig = {
@@ -2512,7 +3130,11 @@ export async function runWhereLatencyCanaryCli(args: readonly string[]): Promise
     freshAddress,
     canaryId
   });
-  process.stdout.write(`${canonicalizeArtifactJson(receipt)}\n`);
+  const reopened = await readWhereLatencyCanaryRunDocument(out);
+  if (reopened.receipt.sha256 !== receipt.sha256) {
+    throw new Error("where_latency_canary_run_receipt_readback_mismatch");
+  }
+  process.stdout.write(`${canonicalizeArtifactJson(reopened.receipt)}\n`);
 }
 
 const isMain = process.argv[1] !== undefined &&

@@ -445,17 +445,17 @@ export function projectWhereReplayConfig(config: WhereReplayConfigSource): Recor
     crossChainStage2MaxProviderCalls: config.crossChainStage2MaxProviderCalls,
     directHardEvidenceConcurrency: config.directHardEvidenceConcurrency ?? null,
     directHardEvidenceLiveLimit: config.directHardEvidenceLiveLimit ?? null,
-    evmExplorerBaseUrl: config.evmExplorerBaseUrl.href,
+    evmExplorerBaseUrl: projectReplayProviderUrl(config.evmExplorerBaseUrl),
     evmExplorerMaxCallsPerCheck: config.evmExplorerMaxCallsPerCheck,
     evmExplorerProviderConfigured: Boolean(config.evmExplorerApiKey),
     evmExplorerTimeoutMs: config.evmExplorerTimeoutMs,
-    rangeBaseUrl: config.rangeBaseUrl.href,
+    rangeBaseUrl: projectReplayProviderUrl(config.rangeBaseUrl),
     rangeMaxCallsPerCheck: config.rangeMaxCallsPerCheck,
     rangeProviderConfigured: Boolean(config.rangeApiKey),
     rangeTimeoutMs: config.rangeTimeoutMs,
     tronAddressIndexSecondLayerMaxActiveWalletsPerJob: config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob ?? null,
     tronFullNodeApiKeyConfigured: Boolean(config.tronFullNodeApiKey),
-    tronFullNodeBaseUrl: config.tronFullNodeBaseUrl.href,
+    tronFullNodeBaseUrl: projectReplayProviderUrl(config.tronFullNodeBaseUrl),
     tronGridRequestMinIntervalMs: config.tronGridRequestMinIntervalMs,
     tronscanAccountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
     tronscanApiKeyConfigured: config.tronscanApiKeys.length > 0,
@@ -463,7 +463,7 @@ export function projectWhereReplayConfig(config: WhereReplayConfigSource): Recor
     tronscanApiKeyGroupIds: config.tronscanApiKeyGroups.map((group) => group.groupId),
     tronscanApiKeyGroupSizes: config.tronscanApiKeyGroups.map((group) => group.apiKeys.length),
     tronscanApprovalRequestMinIntervalMs: config.tronscanApprovalRequestMinIntervalMs,
-    tronscanBaseUrl: config.tronscanBaseUrl.href,
+    tronscanBaseUrl: projectReplayProviderUrl(config.tronscanBaseUrl),
     tronscanContractRequestMinIntervalMs: config.tronscanContractRequestMinIntervalMs,
     tronscanFullNodeRequestMinIntervalMs: config.tronscanFullNodeRequestMinIntervalMs,
     tronscanGlobalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
@@ -479,6 +479,13 @@ export function projectWhereReplayConfig(config: WhereReplayConfigSource): Recor
   };
 }
 
+function projectReplayProviderUrl(value: URL): string {
+  if (!(value instanceof URL) || value.protocol !== "https:" || value.username || value.password || value.search || value.hash) {
+    fail("where_latency_replay_provider_url_unsafe");
+  }
+  return `${value.origin}${value.pathname}`;
+}
+
 function assertWhereReplayConfigProjection(value: unknown): asserts value is Record<string, unknown> {
   const config = asObject(value, "where_latency_replay_config_invalid");
   const keys = Object.keys(config).sort();
@@ -488,7 +495,9 @@ function assertWhereReplayConfigProjection(value: unknown): asserts value is Rec
   for (const key of ["tronscanBaseUrl", "tronFullNodeBaseUrl", "rangeBaseUrl", "evmExplorerBaseUrl"] as const) {
     if (typeof config[key] !== "string") fail("where_latency_replay_config_invalid");
     try {
-      new URL(config[key]);
+      if (projectReplayProviderUrl(new URL(config[key])) !== config[key]) {
+        fail("where_latency_replay_config_invalid");
+      }
     } catch {
       fail("where_latency_replay_config_invalid");
     }
@@ -639,6 +648,17 @@ function sanitizeReplayValue(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value)
     .filter(([key, child]) => !FORBIDDEN_FIELD.test(key) && child !== undefined)
     .map(([key, child]) => [key, sanitizeReplayValue(child)]));
+}
+
+export function projectWhereReplayAssertionRows(
+  rows: readonly Record<string, unknown>[]
+): Array<Record<string, unknown>> {
+  return rows.map((row) => ({
+    chain: row.chain,
+    address: row.address,
+    status: row.status,
+    evidenceJson: sanitizeReplayValue(row.evidenceJson)
+  }));
 }
 
 function fail(code: string): never {

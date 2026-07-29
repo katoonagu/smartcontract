@@ -389,6 +389,93 @@ describe("where latency replay v1", () => {
     expect(envelope.dependencies.at(-1)?.response).toEqual([{ address: base.job.sourceAddress }]);
   });
 
+  it("projects replay assertions and provider URLs safely", async () => {
+    const api = await import("../../src/forensics/whereLatencyReplay") as Record<string, any>;
+    expect(typeof api.projectWhereReplayAssertionRows).toBe("function");
+    const projected = api.projectWhereReplayAssertionRows([{
+      chain: "tron",
+      address: base.job.sourceAddress,
+      status: "active",
+      createdByTelegramId: null,
+      evidenceJson: {
+        approvalTxHash: "a".repeat(64),
+        drainTxHash: "b".repeat(64),
+        pathTxHashes: ["c".repeat(64)],
+        nested: { chatId: "9001", safe: true }
+      },
+      unrelated: "drop-me"
+    }]);
+    expect(projected).toEqual([{
+      chain: "tron",
+      address: base.job.sourceAddress,
+      status: "active",
+      evidenceJson: {
+        approvalTxHash: "a".repeat(64),
+        drainTxHash: "b".repeat(64),
+        pathTxHashes: ["c".repeat(64)],
+        nested: { safe: true }
+      }
+    }]);
+
+    const configSource = {
+      tronscanBaseUrl: new URL("https://apilist.tronscanapi.com/v1/"),
+      tronFullNodeBaseUrl: new URL("https://api.trongrid.io/wallet/"),
+      rangeBaseUrl: new URL("https://api.range.org/v2/"),
+      evmExplorerBaseUrl: new URL("https://api.etherscan.io/api/"),
+      tronscanTimeoutMs: 1,
+      tronscanRetryAttempts: 1,
+      tronscanRetryBaseDelayMs: 1,
+      tronscanRequestMinIntervalMs: 1,
+      tronscanGlobalRequestMinIntervalMs: 1,
+      tronscanTransferRequestMinIntervalMs: 1,
+      tronscanApprovalRequestMinIntervalMs: 1,
+      tronscanContractRequestMinIntervalMs: 1,
+      tronscanFullNodeRequestMinIntervalMs: 1,
+      tronGridRequestMinIntervalMs: 1,
+      tronscanAccountGroupRequestMinIntervalMs: 1,
+      tronscanRateLimitCooldownMs: 1,
+      tronscanPageLimit: 100,
+      tronscanMaxInFlight: 1,
+      tronscanGroupMaxInFlight: 1,
+      tronscanApiKeys: ["secret-a"],
+      tronscanApiKeyGroups: [{ groupId: "group-a", apiKeys: ["secret-a"] }],
+      tronFullNodeApiKey: "secret-b",
+      crossChainStage2Enabled: true,
+      crossChainStage2MaxProviderCalls: 1,
+      crossChainStage2CacheTtlMs: 1,
+      rangeApiKey: "secret-c",
+      rangeTimeoutMs: 1,
+      rangeMaxCallsPerCheck: 1,
+      evmExplorerApiKey: "secret-d",
+      evmExplorerTimeoutMs: 1,
+      evmExplorerMaxCallsPerCheck: 1,
+      directHardEvidenceLiveLimit: null,
+      directHardEvidenceConcurrency: null,
+      tronAddressIndexSecondLayerMaxActiveWalletsPerJob: null,
+      adminSecondLayerMaxActiveWallets: null
+    } as any;
+    expect(projectWhereReplayConfig(configSource)).toMatchObject({
+      tronscanBaseUrl: "https://apilist.tronscanapi.com/v1/",
+      tronFullNodeBaseUrl: "https://api.trongrid.io/wallet/",
+      rangeBaseUrl: "https://api.range.org/v2/",
+      evmExplorerBaseUrl: "https://api.etherscan.io/api/",
+      tronscanApiKeyConfigured: true,
+      tronscanApiKeyCount: 1,
+      tronscanApiKeyGroupSizes: [1]
+    });
+    for (const key of ["tronscanBaseUrl", "tronFullNodeBaseUrl", "rangeBaseUrl", "evmExplorerBaseUrl"] as const) {
+      for (const unsafe of [
+        "https://user@example.com/path",
+        "https://user:pass@example.com/path",
+        "https://example.com/path?token=secret",
+        "https://example.com/path#secret"
+      ]) {
+        expect(() => projectWhereReplayConfig({ ...configSource, [key]: new URL(unsafe) }))
+          .toThrow("where_latency_replay_provider_url_unsafe");
+      }
+    }
+  });
+
   it("keeps repeated legacy invocations as separate ordered tape entries", () => {
     const { envelope } = buildWhereLatencyReplayV1({
       ...base,
