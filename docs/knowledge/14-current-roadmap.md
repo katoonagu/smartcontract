@@ -15,6 +15,8 @@ code_refs:
   - src/unifiedCheck
   - docs/superpowers/specs/2026-07-26-unified-service-boundary-and-latency-design.md
   - docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md
+  - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
+  - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
   - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
 ---
@@ -26,11 +28,18 @@ implementation plans do not override the status recorded here.
 
 ## Current Order
 
-1. Close Stage B operational evidence without changing legacy defaults.
-2. Implement Stage C as shadow-only behavior profiling.
-3. Freeze a separate blind set, complete two reviews, and adjudicate it.
-4. Plan and implement disabled-by-default Stage D / snapshot-closure-v3.
-5. Build recipient wallet precheck before signing or broadcasting.
+1. Keep legacy Where at concurrency 1; reopen Stage B rollout only when genuine
+   replay, deployment, and attributable observation evidence exists.
+2. Review and freeze the forensic-model details, then run the manual read-only
+   corpus replay: chronological proportional provenance plus the revised
+   `100 + 100` service probe.
+3. Implement the provenance ledger as a separate versioned correctness change.
+4. Implement Stage C as shadow-only behavior profiling.
+5. Freeze a separate blind set, complete two reviews, and adjudicate it.
+6. Plan and implement disabled-by-default Stage D / `snapshot-closure-v3`.
+7. Run the full post-model knowledge/code conformance cleanup; factual
+   contradictions already proven are corrected immediately, not deferred.
+8. Build recipient wallet precheck before signing or broadcasting.
 
 Unified TQr latency is a separate diagnostic track. It is not Stage B release
 evidence and does not change the order above.
@@ -49,9 +58,11 @@ paths from owning automatic output for the same chat/address pair.
 |---|---|---|
 | Correctness gate | Complete; four authority/temporal defects closed without historical recalculation | Preserve the gate while later stages add evidence or policy |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
-| Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; real replay blocked by missing completed TXc job plus recorder/approved-tree incompatibility; deployment integration and attributable observer absent; repository default 1 | Review historical-recorder identity, obtain genuine TXc replay, then design deployment integration and observability separately; retain 1 |
-| Stage C | Design-only | Shadow implementation, frozen blind set, two reviews and adjudication |
+| Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
+| Forensic query/provenance model | Direction approved; detailed design awaiting user review; not implemented | Freeze the spec, complete manual deterministic corpus replay and conservation/order review, then write a separate versioned implementation plan |
+| Stage C | `100 + 100` sampling rule approved; detailed amendment awaiting review; code absent | Manual corpus replay, then shadow implementation and frozen blind review |
 | Stage D | Design-only and blocked by C | Separate V3 plan, disabled default, replay and live canary |
+| Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
 
@@ -143,10 +154,12 @@ heartbeats ruled out a simple provider outage or frozen lease at observation
 time.
 
 This delay is not caused by legacy Stage B. TQr is also a mandatory negative
-inferred-boundary case: Stage C must produce `wouldStop=false`, and Stage D must
-never make the subject terminal. Savings may come from exact event-time-valid
-boundaries or separately adjudicated intermediate nodes, not by classifying
-TQr itself as a service boundary.
+inferred-boundary case: reconstructed Stage C must produce
+`estimatedWouldAction=continue_full`; any exact-page profile must produce
+authoritative `wouldAction=continue_full`, and Stage D must never make the
+subject terminal. Savings may come from exact event-time-valid boundaries or
+separately adjudicated intermediate nodes, not by classifying TQr itself as a
+service boundary.
 
 ## Non-Blocking Maintenance Queue
 
@@ -164,8 +177,14 @@ Do not split large files merely to reduce line counts.
 
 ## Detailed Design
 
-The approved rationale, scope, stop rules, and acceptance criteria are in
-`docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md`.
-Execution is split into
+The current approved designs and the two review drafts are in
+`docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md`,
+`docs/superpowers/specs/2026-07-26-unified-service-boundary-and-latency-design.md`,
+`docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`,
+and
+`docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md`.
+The completed correctness and Stage B work is split into
 `docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md` and
 `docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md`.
+The two 2026-07-29 review drafts intentionally have no implementation plans
+until their pre-code manual corpus gates pass.

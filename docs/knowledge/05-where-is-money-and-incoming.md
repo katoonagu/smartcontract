@@ -6,12 +6,18 @@ code_refs:
   - src/index.ts
   - src/bot/createBot.ts
   - src/forensics/moneyOriginTrace.ts
+  - src/forensics/balanceFormingTransfers.ts
+  - src/forensics/incomingDepositCashflow.ts
   - src/forensics/incomingDepositJob.ts
+  - src/forensics/provenanceTracingConfig.ts
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/recentFlowProvenanceSelection.ts
   - src/forensics/selectiveTransactionEnrichment.ts
   - src/storage/repositories.ts
   - src/unifiedCheck/branchAdapters.ts
+  - src/unifiedCheck/productionCompletion.ts
+  - src/unifiedCheck/productionTraversal.ts
+  - src/unifiedCheck/traversal.ts
   - src/unifiedCheck/report.ts
   - src/unifiedCheck/presentation.ts
 ---
@@ -20,9 +26,11 @@ code_refs:
 
 ## Questions
 
-Where Is Money explains where the wallet sent funds. Incoming Deposit explains
-where a selected received amount came from. They use related transfer evidence
-but have different subjects, denominators, and directions.
+Where Is Money is an origin check: it explains which incoming funds formed the
+wallet's current balance, requested amount, or selected recent-flow episode and
+follows those sources backward. Incoming Deposit starts from one concrete
+received deposit and explains its sender-side source path. The modes use related
+transfer evidence but have different subjects, denominators, and anchors.
 
 ## Production Truth
 
@@ -46,13 +54,31 @@ and indirect paths remain semantically distinct. Confirmed CEX/DEX/bridge
 labels are shown with their direction; unknown counterparties remain neutral
 unless behavior supplies a separate risk pattern.
 
-For a zero or very small current balance, the deterministic recent-funding
-episode uses up to five latest relevant funding events, filters dust/spam, and
-follows where those funds moved. There is no abrupt 1,000-USDT product switch.
+Without a requested amount, legacy Where currently switches internally at a
+1,000-USDT balance threshold. A known balance below that threshold uses bounded
+recent-flow selection; a known balance at or above it selects newest inbound
+transfers until the numeric balance target is covered. Recent-flow is a separate
+scope and is not current-balance attribution.
 
 Coverage remains a factual denominator, not a risk floor or publication gate.
 `COMPLETED` requires traversal closure and produces one parent score.
 Provider/execution failure remains `FAILED_TECHNICAL` without a partial report.
+
+## Current Attribution Limits
+
+Production does not yet use one common chronological cashflow ledger. Legacy
+current-balance selection takes newest inbound transfers until the target is
+covered and does not debit those source lots for later outgoing transfers.
+Unified traversal starts from all direct incoming and outgoing events and uses
+a separate greedy hop allocation; completion may separately present a
+proportional inbound aggregate, but neither shares one chronological source
+inventory. Intermediate legacy tracing uses a third, newest-first
+spend-overhang bundle with an 80% default threshold and at most three funders.
+These are current implementations, not the approved target model.
+
+The proposed replacement is documented in
+`docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`.
+It is a review draft and is not implemented.
 
 Exact TRON movement and traced-coverage proof requires rich identity on every
 contributing on-chain edge: a transfer ID, an event index, or a provider plus

@@ -1,10 +1,19 @@
 # Unified Service Boundaries And Check Latency Design
 
-**Статус:** утверждено пользователем; готово к implementation planning
+**Статус:** Stage A/B утверждены; прежние Stage C/D historical и не готовы к
+implementation planning до проверки V2 amendment
 
 **Дата:** 2026-07-26
 
 **Базовая версия:** `2f3b9b298de91bd021ff403bd3607c6744221115`
+
+**Поправка на проверке:** пользователь подтвердил новое `100 + 100` sampling и
+общую selective adverse-routing логику. Прежние Stage C/D, включая
+`service-behavior-profile-v1`, A/S authority, `wouldStop` и `500 total`, нельзя
+реализовывать. Их V2-детализация находится в
+`2026-07-29-service-boundary-sampling-amendment-design.md` и станет нормативной
+после проверки этой версии. Stage A/B и прочие инварианты этого документа
+сохраняются.
 
 ## Назначение
 

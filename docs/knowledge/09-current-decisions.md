@@ -17,6 +17,8 @@ code_refs:
   - scripts/runUnifiedWalletCanary.ts
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - scripts/captureUnifiedWslMemory.ps1
+  - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
+  - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
 ---
 
 # Current Decisions
@@ -270,10 +272,65 @@ scores, assertions, and delivery artifacts are not recalculated or rewritten.
 - Exact scores exist only after two blind reviews and adjudication.
 - FIFO, LIFO, and proportional attribution were compared; proportional is the
   selected locked policy.
+- That locked policy allocates a selected amount across inbound events. It is
+  not chronological cashflow accounting and does not prove that production
+  debits source lots for later outgoing transfers. The approved chronological
+  ledger requires a new policy version and cannot rewrite Golden V2 artifacts.
 - TBL7 and TQr are frozen regression cases. Live runs are separate canaries and
   cannot rewrite Golden expected artifacts.
 - Locked manifest SHA-256 is
   `4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`.
+
+## Approved Forensic Direction And Review Draft — Not Yet Production
+
+The ledger direction, 95%-plus-red expansion rule, and `100 + 100` sampling
+budget are approved. The exact rounding, opening/residual, artifact, probe, and
+closure contracts remain a review draft in the linked 2026-07-29 designs.
+Current legacy Where, Unified completion, `snapshot-closure-v1/v2`, matrix-v4,
+locked Golden artifacts, and historical reports remain unchanged until
+separate implementation and acceptance.
+
+- One versioned chronological proportional ledger will serve current-balance,
+  amount-only, exact-episode, and intermediate-hop provenance. Current balance
+  is attributed only after later outgoing debits have consumed the available
+  source inventory.
+- The review draft makes canonically ordered incoming principal create source
+  lots and debits them proportionally with deterministic integer allocation.
+  Exact self-transfer is a cashflow no-op; different addresses receive
+  same-owner treatment only under exact event-time-valid ownership evidence.
+  GasFree principal remains an ordinary money path while an exact payer fee is
+  accounting-only consumption.
+- Selection, recursion, branch share, and coverage carry the same
+  `usedAmountRaw`. Every funder receives a short adverse probe. Deep recursion
+  covers at least 95% of the target plus every proven-red contributor,
+  regardless of share or top-k. The review draft represents a probe-complete,
+  non-red ordinary remainder of at most 5% as an explicit
+  `screened_nonmaterial_tail`; it is not identified origin or a clean source.
+  Missing order, history, reconciliation, or adverse evidence remains
+  unresolved.
+- Every unlabeled service-like intermediate EOA uses exactly two physical
+  recent pages and two physical historical pages, at most 100 rows per window.
+  The windows are at or before the route anchor and separated by at least seven
+  days. Duplicates are not backfilled; fewer than 100 canonical events in
+  either window forbids an inferred boundary.
+- An ambiguous profile may expand only recent sampling to ten pages / at most
+  500 physical rows, but only after the `100 recent + 100 historical` baseline
+  is frozen. Expansion may repair only recent breadth/geometry; it never moves
+  the historical cutoff or replaces temporal baseline evidence. Historical
+  remains two pages / at most 100. Sampling costs have cold upper bounds of
+  four or twelve history-page requests plus one account request (`5`/`13`),
+  excluding adverse checks and any separately required anchor-role witness;
+  the current account response does not prove `EOAAtAnchor`.
+- Stage C reconstruction records a three-way `estimatedWouldAction` but no
+  authoritative `wouldAction`/boundary unless exact cached, frozen-fixture, or
+  live physical pages already exist. It changes no frontier, score, report, or
+  delivery. Stage D may suppress ordinary expansion after a complete probe: a
+  clean high-service intermediate stops ordinary fan-out; a high-service
+  intermediate with exact adverse evidence stops ordinary fan-out but deepens
+  only the bound red branches. Incomplete evidence continues normal traversal.
+  The checked subject is never an inferred boundary.
+- `TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL` (`…W8SRL`) is a positive
+  calibration/replay case, not a blind case and not yet a production boundary.
 
 ## Telegram And Admin
 
