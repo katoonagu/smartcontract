@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  extractGasFreeSettlement,
+  isGasFreeServiceFeeEdge
+} from "../../src/forensics/gasFreeSettlement";
 
 type Case = {
   readonly id: string;
@@ -34,6 +38,78 @@ function collectAmountRawValues(value: unknown): unknown[] {
       ? [child, ...collectAmountRawValues(child)]
       : collectAmountRawValues(child)
   );
+}
+
+type FeatureVector = {
+  physicalRowCount: number;
+  canonicalEventCount: number;
+  featureEligibleEventCount: number;
+  incomingCount: number;
+  outgoingCount: number;
+  uniqueSenders: number;
+  uniqueRecipients: number;
+  uniqueCounterparties: number;
+  largestCounterparty: { count: number; shareDenominator: number };
+  dominantDirection: "incoming" | "outgoing";
+  dominantDirectionCount: number;
+  uniqueDominantCounterparties: number;
+  dominantShareDenominator: number;
+  medianDominantDirectionGapSeconds: { numerator: number; denominator: number };
+  maxDominantDirectionEventsPerHour: number;
+  activeUtcHourOfDayCount: number;
+  dominantExactAmount: { amountRaw: string; count: number; shareDenominator: number };
+  observedStartTimestamp: string;
+  observedEndTimestamp: string;
+  observedWindowDurationSeconds: number;
+  recordedPredicate: Record<"C" | "B" | "G" | "H" | "R" | "X" | "P", boolean>;
+};
+
+function recomputePredicate(vector: FeatureVector): FeatureVector["recordedPredicate"] {
+  const medianAtMost = (seconds: number) =>
+    vector.medianDominantDirectionGapSeconds.numerator <=
+      seconds * vector.medianDominantDirectionGapSeconds.denominator;
+  const C = vector.dominantDirectionCount >= 20 && (
+    medianAtMost(120) || vector.maxDominantDirectionEventsPerHour >= 15
+  );
+  const B = vector.uniqueCounterparties >= 25 &&
+    vector.uniqueCounterparties * 5 >= vector.featureEligibleEventCount &&
+    vector.largestCounterparty.count * 2 <= vector.largestCounterparty.shareDenominator;
+  const G = (
+    vector.dominantDirectionCount * 10 >= vector.dominantShareDenominator * 7 &&
+    vector.uniqueDominantCounterparties >= 20
+  ) || (vector.uniqueSenders >= 10 && vector.uniqueRecipients >= 10);
+  const H = vector.activeUtcHourOfDayCount >= 12;
+  const R = vector.dominantExactAmount.count >= 10 &&
+    vector.dominantExactAmount.count * 10 >= vector.dominantExactAmount.shareDenominator;
+  const X = vector.dominantDirectionCount >= 80 &&
+    vector.dominantDirectionCount * 10 >= vector.dominantShareDenominator * 8 &&
+    vector.uniqueDominantCounterparties >= 80 && (
+      medianAtMost(15) || vector.maxDominantDirectionEventsPerHour >= 80
+    );
+  return { C, B, G, H, R, X, P: C && B && G && (H || R || X) };
+}
+
+function expectReplayableFeatureVector(vector: FeatureVector): void {
+  expect(vector.physicalRowCount).toBeGreaterThanOrEqual(vector.canonicalEventCount);
+  expect(vector.canonicalEventCount).toBeGreaterThanOrEqual(vector.featureEligibleEventCount);
+  expect(vector.incomingCount + vector.outgoingCount).toBe(vector.featureEligibleEventCount);
+  expect(vector.uniqueCounterparties).toBeLessThanOrEqual(
+    vector.uniqueSenders + vector.uniqueRecipients
+  );
+  expect(vector.largestCounterparty.shareDenominator).toBe(vector.featureEligibleEventCount);
+  expect(vector.largestCounterparty.count).toBeLessThanOrEqual(vector.featureEligibleEventCount);
+  expect(vector.dominantDirectionCount).toBe(Math.max(vector.incomingCount, vector.outgoingCount));
+  expect(vector.uniqueDominantCounterparties).toBe(
+    vector.dominantDirection === "incoming" ? vector.uniqueSenders : vector.uniqueRecipients
+  );
+  expect(vector.dominantShareDenominator).toBe(vector.featureEligibleEventCount);
+  expect([1, 2]).toContain(vector.medianDominantDirectionGapSeconds.denominator);
+  expect(vector.dominantExactAmount.amountRaw).toMatch(/^(0|[1-9]\d*)$/u);
+  expect(vector.dominantExactAmount.shareDenominator).toBe(vector.dominantDirectionCount);
+  expect(vector.dominantExactAmount.count).toBeLessThanOrEqual(vector.dominantDirectionCount);
+  expect(Date.parse(vector.observedEndTimestamp) - Date.parse(vector.observedStartTimestamp))
+    .toBe(vector.observedWindowDurationSeconds * 1_000);
+  expect(vector.recordedPredicate).toEqual(recomputePredicate(vector));
 }
 
 describe("forensic model offline corpus v1", () => {
@@ -144,6 +220,24 @@ describe("forensic model offline corpus v1", () => {
       });
       expect((control.source as { fileName: string }).fileName).toMatch(/^Transfers_20260726.*\.csv$/u);
       expect((control.source as { sha256: string }).sha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(control.source).toMatchObject({
+        classification: "whole_export_x_calibration_non_authoritative"
+      });
+      expectReplayableFeatureVector(control.observedVector as FeatureVector);
+    }
+  });
+
+  it("freezes replayable W8SRL window feature inputs", () => {
+    const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration") as unknown as {
+      windows: readonly (FeatureVector & { source: unknown })[];
+    };
+    expect(w8srl.windows).toHaveLength(2);
+    for (const window of w8srl.windows) {
+      expect(window.source).toMatchObject({
+        classification: "recovered_fixed_cutoff_provider_vector",
+        rawPagesPersisted: false
+      });
+      expectReplayableFeatureVector(window);
     }
   });
 
@@ -178,5 +272,101 @@ describe("forensic model offline corpus v1", () => {
     expect(collision.events).toHaveLength(2);
     expect(collision.events[0]?.canonicalIdentity).toEqual(collision.events[1]?.canonicalIdentity);
     expect(collision.events[0]?.amountRaw).not.toBe(collision.events[1]?.amountRaw);
+  });
+
+  it("freezes internally consistent adverse replay scenes", () => {
+    const blacklist = corpus.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions") as unknown as {
+      principalTransfers: readonly { amountRaw: string; temporalClass: string; timestamp: string | null }[];
+      timelineEvents: readonly { eventKind: string; confirmed: boolean; successful: boolean }[];
+      partitions: Record<string, string>;
+    };
+    expect(blacklist.principalTransfers).toHaveLength(3);
+    expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
+      eventKind: "added", confirmed: true, successful: true
+    }));
+    const partitionSum = (temporalClass: string) => blacklist.principalTransfers
+      .filter((row) => row.temporalClass === temporalClass)
+      .reduce((sum, row) => sum + BigInt(row.amountRaw), 0n).toString();
+    expect(partitionSum("before_activation")).toBe(blacklist.partitions.beforeActivationAmountRaw);
+    expect(partitionSum("active_at_event")).toBe(blacklist.partitions.activeAtEventAmountRaw);
+    expect(partitionSum("unknown_time")).toBe(blacklist.partitions.unknownTimeAmountRaw);
+    expect(blacklist.principalTransfers.find(({ temporalClass }) => temporalClass === "unknown_time")?.timestamp)
+      .toBeNull();
+
+    const gasFree = corpus.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification") as unknown as {
+      ledgerExecutionCase: boolean;
+      transactionInfo: {
+        confirmed: boolean;
+        contractRet: string;
+        revert: boolean;
+        contractData: { contract_address: string; data: string };
+        trc20TransferInfo: readonly { from_address: string; to_address: string; amount_str: string; contract_address: string }[];
+      };
+      replayEdges: readonly {
+        fromAddress: string;
+        toAddress: string;
+        amountRaw: string;
+        economicRole: "principal" | "service_fee";
+        economicProtocol: "tron_gasfree";
+      }[];
+    };
+    expect(gasFree.ledgerExecutionCase).toBe(false);
+    expect(gasFree.transactionInfo).toMatchObject({ confirmed: true, contractRet: "SUCCESS", revert: false });
+    expect(gasFree.transactionInfo.contractData.data).toMatch(/^6f21b898[0-9a-f]+$/u);
+    expect(gasFree.transactionInfo.trc20TransferInfo).toHaveLength(2);
+    expect(gasFree.replayEdges).toContainEqual(expect.objectContaining({
+      economicRole: "principal", economicProtocol: "tron_gasfree"
+    }));
+    expect(gasFree.replayEdges).toContainEqual(expect.objectContaining({
+      economicRole: "service_fee", economicProtocol: "tron_gasfree"
+    }));
+    const settlement = extractGasFreeSettlement(gasFree.transactionInfo);
+    expect(settlement).toMatchObject({
+      principalAmountRaw: "4691000000",
+      serviceFeeAmountRaw: "1500000",
+      evidenceStrength: "exact"
+    });
+    expect(gasFree.replayEdges.map((edge) => isGasFreeServiceFeeEdge(edge))).toEqual([false, true]);
+    expect(settlement?.movements.map(({ fromAddress, toAddress, amountRaw, role }) => ({
+      fromAddress,
+      toAddress,
+      amountRaw,
+      economicRole: role
+    }))).toEqual(gasFree.replayEdges.map(({ economicProtocol: _protocol, ...edge }) => edge));
+
+    const methodOnly = corpus.adverseCases.find(({ id }) => id === "drainer-method-only") as unknown as {
+      methodEvidence: { bytecodeFingerprint: string; methodMap: readonly unknown[] };
+      approvalCall: null;
+      transferFromCall: null;
+      movement: null;
+    };
+    expect(methodOnly.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:/u);
+    expect(methodOnly.methodEvidence.methodMap).toHaveLength(1);
+    expect(methodOnly.approvalCall).toBeNull();
+    expect(methodOnly.transferFromCall).toBeNull();
+    expect(methodOnly.movement).toBeNull();
+
+    const complete = corpus.adverseCases.find(({ id }) => id === "drainer-complete-evidence") as unknown as {
+      methodEvidence: { bytecodeFingerprint: string; methodMap: readonly unknown[] };
+      approvalCall: { tokenContract: string; ownerAddress: string; spenderAddress: string; confirmed: boolean; successful: boolean };
+      transferFromCall: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+      movement: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+    };
+    expect(complete.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:/u);
+    expect(complete.methodEvidence.methodMap).toHaveLength(1);
+    expect(complete.approvalCall).toMatchObject({ confirmed: true, successful: true });
+    expect(complete.transferFromCall).toMatchObject({ confirmed: true, successful: true });
+    expect(complete.movement).toEqual(expect.objectContaining({
+      txHash: complete.transferFromCall.txHash,
+      tokenContract: complete.transferFromCall.tokenContract,
+      fromAddress: complete.transferFromCall.fromAddress,
+      toAddress: complete.transferFromCall.toAddress,
+      amountRaw: complete.transferFromCall.amountRaw,
+      confirmed: true,
+      successful: true
+    }));
+    expect(complete.approvalCall.tokenContract).toBe(complete.transferFromCall.tokenContract);
+    expect(complete.approvalCall.ownerAddress).toBe(complete.transferFromCall.fromAddress);
+    expect(complete.approvalCall.spenderAddress).toBeDefined();
   });
 });
