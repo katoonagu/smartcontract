@@ -1,5 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  apportionRawLargestRemainderV1,
+  canonicalizeChronologicalLedgerEventsV1,
+  runChronologicalProportionalLedgerV1,
+  selectLedgerProvenanceV1,
+  type LedgerEventV1,
+  type LedgerLotV1
+} from "../../src/forensics/chronologicalProportionalLedger.js";
 
 type Case = {
   readonly id: string;
@@ -476,5 +484,283 @@ describe("forensic model offline corpus v1", () => {
     expect(complete.approvalCall.tokenContract).toBe(complete.transferFromCall.tokenContract);
     expect(complete.approvalCall.ownerAddress).toBe(complete.transferFromCall.fromAddress);
     expect(BigInt(complete.approvalCall.amountRaw)).toBeGreaterThanOrEqual(BigInt(complete.transferFromCall.amountRaw));
+  });
+});
+
+const subjectAddress = "subject";
+
+function ledgerEvent(input: Partial<LedgerEventV1> & {
+  canonicalEventId: string | null;
+  blockNumber: number;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: bigint;
+}): LedgerEventV1 {
+  return {
+    providerEventIds: [`provider:${input.canonicalEventId ?? input.blockNumber}`],
+    txHash: `tx:${input.canonicalEventId ?? input.blockNumber}`,
+    transactionIndex: 0,
+    eventIndex: 0,
+    eventIndexAuthority: "receipt_log_index",
+    occurredAtMs: input.blockNumber * 1_000,
+    ...input
+  };
+}
+
+function lot(lotId: string, remainingRaw: bigint): LedgerLotV1 {
+  return {
+    lotId,
+    sourceEventId: lotId,
+    sourceAddress: `source:${lotId}`,
+    originalRaw: remainingRaw,
+    remainingRaw
+  };
+}
+
+describe("chronological proportional ledger v1", () => {
+  const zeroOpeningEvents = [
+    ledgerEvent({ canonicalEventId: "in-300", blockNumber: 1, fromAddress: "funder-old", toAddress: subjectAddress, amountRaw: 300n }),
+    ledgerEvent({ canonicalEventId: "out-70", blockNumber: 2, fromAddress: subjectAddress, toAddress: "recipient-70", amountRaw: 70n }),
+    ledgerEvent({ canonicalEventId: "out-12", blockNumber: 3, fromAddress: subjectAddress, toAddress: "recipient-12", amountRaw: 12n }),
+    ledgerEvent({ canonicalEventId: "out-180", blockNumber: 4, fromAddress: subjectAddress, toAddress: "recipient-180", amountRaw: 180n }),
+    ledgerEvent({ canonicalEventId: "out-38", blockNumber: 5, fromAddress: subjectAddress, toAddress: "recipient-38", amountRaw: 38n })
+  ] as const;
+
+  it("covers the exact 180 episode while using 180 of the original 300 lot", () => {
+    const ledger = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: zeroOpeningEvents
+    });
+    const selection = selectLedgerProvenanceV1({
+      ledger,
+      purpose: "exact_episode",
+      exactEventId: "out-180"
+    });
+
+    expect(ledger.state).toBe("complete");
+    expect(selection).toMatchObject({
+      state: "complete",
+      targetRaw: 180n,
+      coveredRaw: 180n,
+      allocations: [{ lotId: "in-300", amountRaw: 180n }]
+    });
+    expect(selection.allocations[0]).toMatchObject({
+      sourceOriginalRaw: 300n,
+      sourceUtilizedRaw: 180n
+    });
+  });
+
+  it("keeps the recorded PacGy fixture unresolved without authoritative opening history", () => {
+    const recorded = corpus.ledgerCases.find(({ id }) => id === "pacgy-recorded-chronology");
+    const result = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "partial",
+      openingBalanceRaw: 0n,
+      events: []
+    });
+
+    expect(recorded?.expectedAuthoritativeState).toBe("history_incomplete");
+    expect(result).toMatchObject({ state: "unresolved", reason: "history_incomplete" });
+  });
+
+  it("is invariant to provider row permutation after canonical ordering", () => {
+    const forward = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: zeroOpeningEvents
+    });
+    const reversed = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [...zeroOpeningEvents].reverse()
+    });
+
+    expect(reversed).toEqual(forward);
+  });
+
+  it("dedupes exact receipt identity and preserves provider aliases", () => {
+    const first = ledgerEvent({
+      canonicalEventId: "receipt:tx-1:0",
+      providerEventIds: ["provider:a"],
+      blockNumber: 1,
+      fromAddress: "funder",
+      toAddress: subjectAddress,
+      amountRaw: 5n
+    });
+    const result = canonicalizeChronologicalLedgerEventsV1([
+      first,
+      { ...first, providerEventIds: ["provider:b"] }
+    ]);
+
+    expect(result).toMatchObject({ state: "complete" });
+    expect(result.events).toEqual([{ ...first, providerEventIds: ["provider:a", "provider:b"] }]);
+  });
+
+  it("rejects conflicting payloads under one canonical identity", () => {
+    const first = ledgerEvent({ canonicalEventId: "same", blockNumber: 1, fromAddress: "a", toAddress: subjectAddress, amountRaw: 5n });
+    expect(canonicalizeChronologicalLedgerEventsV1([first, { ...first, amountRaw: 7n }]))
+      .toMatchObject({ state: "unresolved", reason: "identity_collision", canonicalEventId: "same" });
+  });
+
+  it("rejects synthetic-only event identity", () => {
+    expect(canonicalizeChronologicalLedgerEventsV1([
+      ledgerEvent({
+        canonicalEventId: null,
+        blockNumber: 1,
+        eventIndex: 99,
+        eventIndexAuthority: "provider_synthetic",
+        fromAddress: "a",
+        toAddress: subjectAddress,
+        amountRaw: 5n
+      })
+    ])).toMatchObject({ state: "unresolved", reason: "identity_unresolved" });
+  });
+
+  it("rejects missing authoritative same-block transaction order", () => {
+    expect(canonicalizeChronologicalLedgerEventsV1([
+      ledgerEvent({ canonicalEventId: "in", blockNumber: 10, transactionIndex: null, fromAddress: "a", toAddress: subjectAddress, amountRaw: 10n }),
+      ledgerEvent({ canonicalEventId: "out", blockNumber: 10, transactionIndex: 1, fromAddress: subjectAddress, toAddress: "b", amountRaw: 8n })
+    ])).toMatchObject({ state: "unresolved", reason: "order_unresolved", blockNumber: 10 });
+  });
+
+  it("breaks equal largest-remainder ties by canonical lot ID", () => {
+    expect(apportionRawLargestRemainderV1(1n, [lot("b", 1n), lot("a", 1n)]))
+      .toEqual([
+        { lotId: "a", amountRaw: 1n },
+        { lotId: "b", amountRaw: 0n }
+      ]);
+  });
+
+  it("treats exact self-transfer as a balance and provenance no-op", () => {
+    const result = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [
+        ledgerEvent({ canonicalEventId: "in", blockNumber: 1, fromAddress: "funder", toAddress: subjectAddress, amountRaw: 10n }),
+        ledgerEvent({ canonicalEventId: "self", blockNumber: 2, fromAddress: subjectAddress, toAddress: subjectAddress, amountRaw: 7n })
+      ]
+    });
+
+    expect(result).toMatchObject({ state: "complete", remainingRaw: 10n, totalOutgoingRaw: 0n });
+    expect(result.consumptionVectors).toEqual([]);
+    expect(result.lots).toHaveLength(1);
+  });
+
+  it("invalidates the whole ledger when a debit exceeds inventory", () => {
+    const result = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [
+        ledgerEvent({ canonicalEventId: "in", blockNumber: 1, fromAddress: "funder", toAddress: subjectAddress, amountRaw: 10n }),
+        ledgerEvent({ canonicalEventId: "out", blockNumber: 2, fromAddress: subjectAddress, toAddress: "recipient", amountRaw: 11n })
+      ]
+    });
+
+    expect(result).toMatchObject({
+      state: "unresolved",
+      reason: "debit_exceeds_inventory",
+      unresolvedRaw: 1n,
+      authoritative: false
+    });
+    expect(selectLedgerProvenanceV1({ ledger: result, purpose: "exact_episode", exactEventId: "out" }))
+      .toMatchObject({ state: "unresolved", reason: "debit_exceeds_inventory" });
+  });
+
+  it("requires a matching pinned independent witness for balance projections", () => {
+    const ledger = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [ledgerEvent({ canonicalEventId: "in", blockNumber: 1, fromAddress: "funder", toAddress: subjectAddress, amountRaw: 10n })]
+    });
+
+    expect(selectLedgerProvenanceV1({ ledger, purpose: "current_balance" }))
+      .toMatchObject({ state: "unresolved", reason: "balance_witness_missing" });
+    expect(selectLedgerProvenanceV1({ ledger, purpose: "amount_only", requestedAmountRaw: 5n }))
+      .toMatchObject({ state: "unresolved", reason: "balance_witness_missing" });
+    expect(selectLedgerProvenanceV1({
+      ledger,
+      purpose: "current_balance",
+      snapshotBalanceWitness: { amountRaw: 9n, pinned: true, independent: true }
+    })).toMatchObject({ state: "unresolved", reason: "snapshot_balance_mismatch" });
+    expect(selectLedgerProvenanceV1({
+      ledger,
+      purpose: "amount_only",
+      requestedAmountRaw: 5n,
+      snapshotBalanceWitness: { amountRaw: 9n, pinned: true, independent: true }
+    })).toMatchObject({ state: "unresolved", reason: "snapshot_balance_mismatch" });
+    expect(selectLedgerProvenanceV1({
+      ledger,
+      purpose: "amount_only",
+      requestedAmountRaw: 5n,
+      snapshotBalanceWitness: { amountRaw: 10n, pinned: true, independent: true }
+    })).toMatchObject({ state: "complete", targetRaw: 5n, coveredRaw: 5n });
+  });
+
+  it("does not make exact episode selection depend on a current live balance", () => {
+    const ledger = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: zeroOpeningEvents
+    });
+    const selection = selectLedgerProvenanceV1({
+      ledger,
+      purpose: "exact_episode",
+      exactEventId: "out-180",
+      snapshotBalanceWitness: { amountRaw: 999n, pinned: false, independent: false }
+    });
+
+    expect(selection).toMatchObject({ state: "complete", targetRaw: 180n, coveredRaw: 180n });
+  });
+
+  it("retains an exact-red contributor below the ordinary 95 percent cutoff", () => {
+    const ledger = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [
+        ledgerEvent({ canonicalEventId: "lot-94", blockNumber: 1, fromAddress: "ordinary-a", toAddress: subjectAddress, amountRaw: 94n }),
+        ledgerEvent({ canonicalEventId: "lot-5", blockNumber: 2, fromAddress: "ordinary-b", toAddress: subjectAddress, amountRaw: 5n }),
+        ledgerEvent({ canonicalEventId: "lot-red-1", blockNumber: 3, fromAddress: "red", toAddress: subjectAddress, amountRaw: 1n })
+      ]
+    });
+    const selection = selectLedgerProvenanceV1({
+      ledger,
+      purpose: "current_balance",
+      snapshotBalanceWitness: { amountRaw: 100n, pinned: true, independent: true },
+      exactRedContributorLotIds: ["lot-red-1"]
+    });
+
+    expect(selection.deepSelectedLotIds).toEqual(["lot-94", "lot-5", "lot-red-1"]);
+  });
+
+  it("conserves integer value across deterministic replay cases", () => {
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const incomingA = BigInt(seed * 3 + 1);
+      const incomingB = BigInt(seed * 2 + 3);
+      const outgoing = BigInt(seed % Number(incomingA + incomingB));
+      const result = runChronologicalProportionalLedgerV1({
+        subjectAddress,
+        historyCompleteness: "genesis_complete",
+        openingBalanceRaw: 0n,
+        events: [
+          ledgerEvent({ canonicalEventId: `a-${seed}`, blockNumber: 1, fromAddress: "a", toAddress: subjectAddress, amountRaw: incomingA }),
+          ledgerEvent({ canonicalEventId: `b-${seed}`, blockNumber: 2, fromAddress: "b", toAddress: subjectAddress, amountRaw: incomingB }),
+          ledgerEvent({ canonicalEventId: `out-${seed}`, blockNumber: 3, fromAddress: subjectAddress, toAddress: "recipient", amountRaw: outgoing })
+        ]
+      });
+
+      expect(result.state).toBe("complete");
+      expect(result.totalIncomingRaw).toBe(result.totalOutgoingRaw + result.remainingRaw);
+      expect(result.consumptionVectors.flatMap((item) => item.allocations)
+        .every((item) => item.amountRaw >= 0n)).toBe(true);
+    }
   });
 });
