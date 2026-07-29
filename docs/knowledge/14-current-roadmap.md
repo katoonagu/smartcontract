@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-28
+last_verified: 2026-07-29
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -49,7 +49,7 @@ paths from owning automatic output for the same chat/address pair.
 |---|---|---|
 | Correctness gate | Complete; four authority/temporal defects closed without historical recalculation | Preserve the gate while later stages add evidence or policy |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
-| Stage B | Runtime core complete; unit/client contracts present; real capture needs confirmed read-only/date/assertion/dispose plus endpoint/secret-output repairs; canary run output is not caller-bound; deployment integration and attributable rollout proof are missing; repository default 1 | Repair evidence tooling, obtain real replay/PostgreSQL proof, then take explicit deployment/observability branches; retain 1 unless all later gates pass and a reversible trial observation supports 2 |
+| Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; real replay blocked by missing completed TXc job plus recorder/approved-tree incompatibility; deployment integration and attributable observer absent; repository default 1 | Review historical-recorder identity, obtain genuine TXc replay, then design deployment integration and observability separately; retain 1 |
 | Stage C | Design-only | Shadow implementation, frozen blind set, two reviews and adjudication |
 | Stage D | Design-only and blocked by C | Separate V3 plan, disabled default, replay and live canary |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -78,29 +78,39 @@ verification (`24` tests; locked manifest
 `4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`),
 the production comparator contract (`8` tests), typecheck, the full suite
 (`4,942` passed, `157` skipped), and the forbidden-shortcut audit. Skipped
-PostgreSQL-gated tests are not PostgreSQL proof; the existing database and
-Stage B operational blockers below remain open.
+PostgreSQL-gated tests in that run were not PostgreSQL proof; the separate
+Stage B dedicated PostgreSQL gate below now closes that one evidence item while
+the replay, deployment, canary, Deep, and observer blockers remain open.
 
 ## Stage B Release Closure
 
 Stage B is the legacy Where/selective-enrichment track. Its runtime core and
-replay/canary client contracts are present, but the real capture path is not yet
-proved and production Where concurrency two is not accepted. Code review of
-`scripts/captureWhereLatencyReplay.ts` confirmed that capture must first accept
-PostgreSQL `Date` values, stop exposing a completed job to mutation/claim-fence
-callbacks, project assertion rows without Telegram-owned fields, and dispose the
-shared execution on every exit. It must also reject credential/query-bearing
-endpoint identities, reject any configured secret echoed into canonical output,
-and bind the actual canary run receipt to an explicit create-only path. The
-repository also does not currently provide
-the deployment-owned bridge/server, tracked adapter, cycle-isolated composition,
-or request attribution needed to finish the operational gates by itself.
+replay/canary client contracts are present, but production Where concurrency
+two is not accepted. Evidence-tooling hardening landed in `6bf24285` and merged
+through `8bbbbc00`: PostgreSQL `Date` handling, read-only capture dependencies,
+safe assertion/endpoint projection, configured-secret rejection, disposal,
+create-only caller-bound canary output, canonical readers, and evidence binding
+are covered by 92 targeted tests. Combined master passed 4,951 tests and
+typecheck.
+
+The real PostgreSQL gate is also complete: the dedicated `tron_watch_plan3`
+database verified schema 037 and passed four migration plus 168
+claim/fairness/evidence/delivery tests without skips. The replay gate remains
+blocked for two independent reasons. The configured schema-037 database has no
+completed TXc legacy Where job/report, and exact recorder `6bf24285` is not on
+the approved historical behavior tree. A direct historical backport lacks the
+later execution `dispose` and replay-schema contracts; baseline hashes and
+behavior files were not weakened. The repository and all available
+worktrees/refs also lack the deployment-owned bridge/server, tracked adapter,
+cycle-isolated composition, deployment receipt builder, and attributable
+observer required for canary and rollout proof.
 
 Required capabilities and evidence:
 
-- a clean tooling-only capture-harness fix followed by a real checked-in
-  pre-Stage-B TXc replay tape and passing strict replay;
-- real PostgreSQL claim/fairness tests and current schema verification;
+- a reviewed historical-recorder identity that preserves the approved behavior
+  tree while satisfying the hardened recorder contract;
+- a genuine completed TXc legacy Where job followed by a checked-in replay tape
+  and passing strict replay;
 - an approved deployment path supplying the immutable bridge, tracked adapter, cycle
   composition and deployment receipt required by the trusted canary CLI;
 - dedicated isolated canary deployment and clone;
@@ -114,8 +124,8 @@ Required capabilities and evidence:
   produced during that trial. Current process-global endpoint logs alone are
   insufficient.
 
-Replay, PostgreSQL proof, deployment integration, the Where canary and the Deep
-receipt, plus observer readiness proof, are required before a separately
+Replay, deployment integration, the Where canary and the Deep receipt, plus
+observer readiness proof, are required before a separately
 approved reversible production trial at Where 2. The attributable before/after
 observation produced by that trial then decides whether it remains 2 or is
 restored to 1. If deployment or attribution capabilities remain absent, the

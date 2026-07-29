@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-29
 owner_area: docs
 code_refs:
   - package.json
@@ -25,11 +25,12 @@ code_refs:
 Get-Content -Raw -Encoding UTF8 docs/knowledge/AGENT_BRIEF.md
 ```
 
-## Schema 036
+## Schema 037
 
-Migration 036 is additive history: it removes the obsolete rollout-receipt
-authority from the current run policy while leaving migrations 032–035 bytes
-unchanged.
+Migration 036 is historical: it removed the obsolete rollout-receipt authority
+from the current run policy. Migration 037 adds runtime-handoff ownership and
+lifecycle notification state. Startup requires exact schema 037 and verified
+predecessor receipts for migrations 032–036.
 
 Apply all migrations and verify the current schema:
 
@@ -39,13 +40,13 @@ npm.cmd run schema:verify
 ```
 
 For a migration rehearsal, use a disposable PostgreSQL database and run
-`db:migrate` twice. The first run must apply and verify 032–036; the second must
+`db:migrate` twice. The first run must apply and verify 032–037; the second must
 report all tracked migrations already verified. PostgreSQL integration tests
 must not be counted as passed if Vitest reports them skipped.
 
 ```powershell
 $env:TEST_DATABASE_URL = "<temporary-postgresql-url>"
-npm.cmd test -- tests/storage/migration034.postgres.test.ts tests/storage/migration035.postgres.test.ts tests/storage/migration036.postgres.test.ts tests/unified-check/requestService.postgres.test.ts tests/unified-check/rollingAdmission.postgres.test.ts tests/unified-check/claimPermits.postgres.test.ts tests/unified-check/reconciliation.postgres.test.ts tests/unified-check/barrierFallback.postgres.test.ts tests/unified-check/productionRuntime.postgres.test.ts tests/unified-check/plannerRestart.postgres.test.ts tests/unified-check/orderedCommit.postgres.test.ts
+npm.cmd test -- tests/storage/migration034.postgres.test.ts tests/storage/migration035.postgres.test.ts tests/storage/migration036.postgres.test.ts tests/storage/migration037.postgres.test.ts tests/unified-check/requestService.postgres.test.ts tests/unified-check/rollingAdmission.postgres.test.ts tests/unified-check/claimPermits.postgres.test.ts tests/unified-check/reconciliation.postgres.test.ts tests/unified-check/barrierFallback.postgres.test.ts tests/unified-check/productionRuntime.postgres.test.ts tests/unified-check/plannerRestart.postgres.test.ts tests/unified-check/orderedCommit.postgres.test.ts
 ```
 
 Never edit historical migration files and never generate a destructive down
@@ -196,7 +197,7 @@ create-if-absent and reject differing existing bytes.
 
 The canary can run with legacy or Unified delivery ownership because isolated
 runs create no delivery intent. It requires the same committed runtime SHA and
-schema 036, but no release generation or signed rollout receipt.
+schema 037, but no release generation or signed rollout receipt.
 
 When `UNIFIED_TRAVERSAL_POLICY_VERSION=snapshot-closure-v2`, preparation freezes
 and persists the production label dataset separately for each confirmed
@@ -546,27 +547,28 @@ and the real legacy TXc replay evidence is still absent. Do not run against the
 current shared environment and do not treat the deterministic fake-runtime
 tests as rollout evidence; production concurrency two remains blocked.
 
-### 2026-07-27 local release-gate record
+### 2026-07-29 Stage B evidence-gate record
 
-This record distinguishes code-complete checks from external release evidence:
+This record distinguishes the closed PostgreSQL gate from missing external
+release evidence:
 
-- the exact targeted Stage B suite passed 20 files and 996 tests; one file and
-  80 PostgreSQL-gated tests skipped because `TEST_DATABASE_URL` was absent;
-- `npm run typecheck` passed;
-- the full `npm test` suite passed 279 files and 4,806 tests; 25 files and 151
-  tests skipped under their existing environment gates;
-- `git diff --check` and the forbidden-shortcut audits passed; Stage B added no
-  migration, Unified manifest/hash/golden change, or snapshot/fixture update;
-- `npm run schema:verify` could not run because `DATABASE_URL` was absent;
-- the final read-only replay stopped with
-  `where_latency_replay_fixture_missing` because
-  `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` does not exist.
+- evidence tooling commit `6bf24285` passed its 92-test targeted suite; combined
+  master passed 4,951 tests plus typecheck;
+- the dedicated `tron_watch_plan3` database migrated to schema 037, verified
+  receipt `5e2a97a91fcd`, and passed four migration plus 168 repository tests
+  without skips;
+- the configured local schema-037 database contains zero completed TXc legacy
+  Where jobs/reports; its only TXc Where row is cancelled and is not evidence;
+- capture from exact recorder `6bf24285` stopped before DB selection with
+  `where_latency_replay_behavior_source_mismatch`; the approved historical tree
+  lacks the later recorder execution/schema contracts, so no fixture was
+  created and no strict replay ran;
+- no deployment-owned adapter/bridge, cycle-isolated composition, deployment
+  receipt builder, or attributable observer exists in the available repository,
+  worktrees, or refs. No Where canary or Deep residual was run.
 
-These results close the local code regression gate only. Before any canary,
-rerun the PostgreSQL claim-generation/fairness tests and `schema:verify` against
-the dedicated database. Before production concurrency 2, also capture and pass
-the real replay fixture, produce an accepted Where canary receipt, and produce
-the required separate Deep singleton residual receipt. Its measured latency
-does not change the Where start-SLA result or authorize Deep concurrency above
-1; a high residual is a separate follow-up. No live canary was run during this
-gate.
+Repository Where remains 1 and Deep remains 1. Capturing a real fixture now
+requires both a genuine completed TXc source job and a separately reviewed
+historical-recorder identity resolution. Deployment integration and observer
+designs remain separate prerequisites before any isolated canary or reversible
+production trial.
