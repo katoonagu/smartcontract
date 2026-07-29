@@ -281,11 +281,11 @@ scores, assertions, and delivery artifacts are not recalculated or rewritten.
 - Locked manifest SHA-256 is
   `4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`.
 
-## Approved Forensic Direction And Review Draft — Not Yet Production
+## Approved Forensic Model — Not Yet Production
 
-The ledger direction, 95%-plus-red expansion rule, and `100 + 100` sampling
-budget are approved. The exact rounding, opening/residual, artifact, probe, and
-closure contracts remain a review draft in the linked 2026-07-29 designs.
+The chronological ledger, exact rounding, opening/residual, artifact, probe,
+closure, 95%-plus-red expansion and `100 + 100` sampling contracts are approved
+after the 2026-07-29 manual corpus replay. They remain design-only.
 Current legacy Where, Unified completion, `snapshot-closure-v1/v2`, matrix-v4,
 locked Golden artifacts, and historical reports remain unchanged until
 separate implementation and acceptance.
@@ -294,7 +294,7 @@ separate implementation and acceptance.
   amount-only, exact-episode, and intermediate-hop provenance. Current balance
   is attributed only after later outgoing debits have consumed the available
   source inventory.
-- The review draft makes canonically ordered incoming principal create source
+- The approved ledger makes canonically ordered incoming principal create source
   lots and debits them proportionally with deterministic integer allocation.
   Exact self-transfer is a cashflow no-op; different addresses receive
   same-owner treatment only under exact event-time-valid ownership evidence.
@@ -303,7 +303,7 @@ separate implementation and acceptance.
 - Selection, recursion, branch share, and coverage carry the same
   `usedAmountRaw`. Every funder receives a short adverse probe. Deep recursion
   covers at least 95% of the target plus every proven-red contributor,
-  regardless of share or top-k. The review draft represents a probe-complete,
+  regardless of share or top-k. The model represents a probe-complete,
   non-red ordinary remainder of at most 5% as an explicit
   `screened_nonmaterial_tail`; it is not identified origin or a clean source.
   Missing order, history, reconciliation, or adverse evidence remains
@@ -321,6 +321,14 @@ separate implementation and acceptance.
   four or twelve history-page requests plus one account request (`5`/`13`),
   excluding adverse checks and any separately required anchor-role witness;
   the current account response does not prove `EOAAtAnchor`.
+- The deterministic behavior predicate is `P=C AND B AND G AND (H OR R OR X)`.
+  `H` counts distinct UTC hour-of-day values, `R` captures exact amount
+  repetition, and `X` captures an extreme dominant queue: at least 80 dominant
+  rows, 80% dominant share, 80 unique dominant counterparties, plus median gap
+  at most 15 seconds or at least 80 dominant events in one UTC hour. `X` is a
+  role feature, not an AML-risk score. It corrected a real false negative on
+  `…98cdn` and `…aEGqTr` and fired on no other non-Binance case in the 21-wallet
+  calibration worksheet.
 - Stage C reconstruction records a three-way `estimatedWouldAction` but no
   authoritative `wouldAction`/boundary unless exact cached, frozen-fixture, or
   live physical pages already exist. It changes no frontier, score, report, or
@@ -331,6 +339,15 @@ separate implementation and acceptance.
   The checked subject is never an inferred boundary.
 - `TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL` (`…W8SRL`) is a positive
   calibration/replay case, not a blind case and not yet a production boundary.
+- The `…W8SRL → …PacGy → …WqQPC` replay separates target coverage from source
+  utilization: the exact `180 USDT` episode is 100% covered by the `300 USDT`
+  lot and uses 60% of that lot. After later spending exhausted the lot, the
+  current `…PacGy` balance `82.7 USDT` came from `…gsFCa`.
+- No available case activated the `500 + 100` expansion trigger. A dedicated
+  frozen ambiguous fixture is required before that branch is replay-proven.
+- Manual live reads were not stored as raw fixture bytes. Stage D remains
+  blocked on frozen evidence, `EOAAtAnchor`, a complete adverse receipt, a blind
+  set, two reviews, adjudication, and a separate rollout decision.
 
 ## Telegram And Admin
 

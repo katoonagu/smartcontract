@@ -30,11 +30,12 @@ implementation plans do not override the status recorded here.
 
 1. Keep legacy Where at concurrency 1; reopen Stage B rollout only when genuine
    replay, deployment, and attributable observation evidence exists.
-2. Review and freeze the forensic-model details, then run the manual read-only
-   corpus replay: chronological proportional provenance plus the revised
-   `100 + 100` service probe.
-3. Implement the provenance ledger as a separate versioned correctness change.
-4. Implement Stage C as shadow-only behavior profiling.
+2. Freeze the accepted manual replay evidence and write a versioned
+   implementation plan for chronological proportional provenance.
+3. Implement the pure provenance ledger as a separate versioned correctness
+   change, with no production routing change.
+4. Implement Stage C as shadow-only `100 + 100` behavior profiling, including
+   the accepted extreme-throughput feature `X`.
 5. Freeze a separate blind set, complete two reviews, and adjudicate it.
 6. Plan and implement disabled-by-default Stage D / `snapshot-closure-v3`.
 7. Run the full post-model knowledge/code conformance cleanup; factual
@@ -59,9 +60,9 @@ paths from owning automatic output for the same chat/address pair.
 | Correctness gate | Complete; four authority/temporal defects closed without historical recalculation | Preserve the gate while later stages add evidence or policy |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
-| Forensic query/provenance model | Direction approved; detailed design awaiting user review; not implemented | Freeze the spec, complete manual deterministic corpus replay and conservation/order review, then write a separate versioned implementation plan |
-| Stage C | `100 + 100` sampling rule approved; detailed amendment awaiting review; code absent | Manual corpus replay, then shadow implementation and frozen blind review |
-| Stage D | Design-only and blocked by C | Separate V3 plan, disabled default, replay and live canary |
+| Forensic query/provenance model | Detailed design approved; real-corpus manual replay complete; not implemented | Freeze raw fixtures and write a separate versioned implementation plan beginning with the pure integer ledger |
+| Stage C | Detailed `100 + 100` amendment approved after 21-wallet calibration; code absent | Freeze fixtures, implement shadow-only profile, then run a separate frozen blind review |
+| Stage D | Design-only; blocked by missing frozen authority/adverse evidence and blind review | After Stage C acceptance, write a separate V3 plan with disabled default, replay and live canary |
 | Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
@@ -177,7 +178,7 @@ Do not split large files merely to reduce line counts.
 
 ## Detailed Design
 
-The current approved designs and the two review drafts are in
+The current approved designs are in
 `docs/superpowers/specs/2026-07-28-correctness-stage-b-unified-latency-design.md`,
 `docs/superpowers/specs/2026-07-26-unified-service-boundary-and-latency-design.md`,
 `docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`,
@@ -186,5 +187,7 @@ and
 The completed correctness and Stage B work is split into
 `docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md` and
 `docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md`.
-The two 2026-07-29 review drafts intentionally have no implementation plans
-until their pre-code manual corpus gates pass.
+The 2026-07-29 manual gate and remaining authority gaps are recorded in
+`docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
+The two forensic designs are accepted but intentionally have no implementation
+plan in this change; production routing remains unchanged.

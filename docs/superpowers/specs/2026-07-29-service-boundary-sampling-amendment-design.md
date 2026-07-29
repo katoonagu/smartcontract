@@ -1,8 +1,8 @@
 # Service Boundary Sampling Amendment Design
 
-**Статус:** черновик на пользовательскую проверку; правило `100 + 100`,
-расширение до `500 + 100` и общая boundary-логика подтверждены, детальные
-контракты ниже требуют явного подтверждения
+**Статус:** утверждённый дизайн после ручного corpus replay; не реализован,
+не разрешает production boundary до frozen evidence, blind review и отдельного
+Stage D решения
 
 **Дата:** 2026-07-29
 
@@ -191,7 +191,7 @@ ExpandRecent =
   P_historical100 AND
   NOT P_recent100 AND
   C_recent100 AND
-  (H_recent100 OR R_recent100) AND
+  (H_recent100 OR R_recent100 OR X_recent100) AND
   exactlyOneMissing(B_recent100, G_recent100)
 ```
 
@@ -212,7 +212,7 @@ Expansion может уточнить только `B` и `G`. Temporal приз
 ```text
 P_recent_final =
   C_recent100 AND
-  (H_recent100 OR R_recent100) AND
+  (H_recent100 OR R_recent100 OR X_recent100) AND
   B_recent500 AND
   G_recent500
 ```
@@ -269,7 +269,7 @@ counterpartyRatio
 dominantCounterpartyShare
 medianDominantDirectionGapSeconds
 maxDominantDirectionEventsPerHour
-activeUtcHourCount
+activeUtcHourOfDayCount
 dominantExactAmountCount / share
 observedWindowDuration
 accountAge
@@ -288,7 +288,7 @@ Account age и provider total counters — только supporting context: он
 проверяемые семейства признаков. Для окна:
 
 \[
-P_w=C_w\land B_w\land G_w\land(H_w\lor R_w)
+P_w=C_w\land B_w\land G_w\land(H_w\lor R_w\lor X_w)
 \]
 
 где:
@@ -301,14 +301,23 @@ P_w=C_w\land B_w\land G_w\land(H_w\lor R_w)
 - `G` — geometry: fan-out/fan-in с долей доминирующего направления `>=0.70`
   и минимум `20` соответствующих контрагентов, либо many-to-many минимум с
   `10` senders и `10` recipients;
-- `H` — hour spread: события встречаются минимум в `12` различных UTC-часах;
+- `H` — hour spread: события встречаются минимум в `12` различных значениях
+  часа суток UTC (`0..23`), а не просто в двенадцати последовательных
+  календарных hour-buckets;
 - `R` — repetition: одна exact raw amount в доминирующем направлении
   повторяется минимум `10` раз и составляет минимум `10%` этого направления.
+- `X` — extreme machine throughput:
+  `dominantDirectionCount >= 80`, доля доминирующего направления `>=0.80`,
+  минимум `80` его уникальных контрагентов и дополнительно
+  `medianDominantDirectionGapSeconds <=15` либо
+  `maxDominantDirectionEventsPerHour >=80`.
 
 Это начальная детерминированная replay-policy, а не производственная
 калибровка и не процент уверенности. Она намеренно требует cadence, breadth и
-geometry одновременно; hour spread или repetition лишь подтверждают
-устойчивый операционный паттерн.
+geometry одновременно. `H/R` подтверждают растянутый либо повторяемый режим,
+а `X` закрывает отдельный случай, когда очевидная машинная очередь успевает
+обработать почти всё окно внутри одного UTC-часа. `X` классифицирует роль, а не
+AML-риск.
 
 Для shadow-классификации и для разрешения production boundary используются два
 разных качества:
@@ -780,6 +789,61 @@ expansion не требовался; `recentBaselineStart=2026-07-23T07:02:54Z`.
 локально наблюдавшийся путь `300 → 70/12/180/38` отдельно входит в cashflow
 corpus: sampling role и происхождение выбранных `180` — разные задачи.
 
+## Результат ручного replay 2026-07-29
+
+Сводный evidence register находится в
+`docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
+
+Первый replay не подтвердил исходную формулу
+`C AND B AND G AND (H OR R)` без изменений. У самых быстрых processing-узлов
+`100` событий помещаются в один час, а exact суммы не обязаны повторяться.
+Поэтому `…98cdn`, `…aEGqTr` и даже optional behavior-profile точного
+`Binance-Hot 10` давали false negative при одновременно сильных cadence,
+breadth и geometry.
+
+Добавленный baseline-признак `X` был пересчитан на всех `21` уникальных
+CSV-кейсах. Он сработал ровно на трёх ожидаемых machine controls — `…98cdn`,
+`…aEGqTr` и exact Binance `…qJJpBXh` — и ни на одном из остальных `18`.
+Это calibration evidence, а не blind validation, но оно устраняет конкретный
+подтверждённый false negative без снятия требований `C/B/G`.
+
+Ключевые результаты:
+
+| Case | Baseline result после `X` | Решение replay |
+|---|---|---|
+| `…W8SRL` | recent и historical проходят `C/B/G/H/R`; `X` не нужен | high behavior; authoritative action отсутствует |
+| `…98cdn` | оба live-окна проходят через `X`; в окнах были provider-risk rows | high behavior; adverse/anchor authority incomplete |
+| `…aEGqTr` | оба live-окна проходят через `X` | high behavior; adverse/anchor authority incomplete |
+| `…qJJpBXh` | `X` проходит, но current exact tag равен `Binance-Hot 10` | exact service должен обходить inferred sampler |
+| `…SH14eaf` | cadence `C=false` в обоих окнах | `non_service_profile`, продолжить traversal |
+| `…D7NzP` | cadence `C=false`; кроме того, это checked subject | `continue_full`; subject никогда не boundary |
+| `…VUSXVhd` | recent меньше `100`, historical пуст | `insufficient_data`, продолжить traversal |
+
+Профессиональный `…8Pet`, treasury `…NGMf`, burst `…MWZv`, poisoning-heavy
+`…fnme`, ordinary `…BSuW` и dense-history `…UZBM` также не стали high
+service. GasFree cases `…MnxP` и `…ZAZD` имеют current contract role и не
+могут пройти inferred-EOA boundary; их principal/fee семантика определяется
+structural parser, а не behavioral score.
+
+Ни один case корпуса не активировал ветку expansion `500 + 100`. Поэтому
+`13`-call path остаётся утверждённым budget-контрактом, но до Stage D требует
+отдельного frozen fixture, где historical проходит, а recent baseline не
+хватает ровно одного из `B/G`.
+
+Live-read `…W8SRL` занял около `5.8s` последовательной provider-работы на
+четыре history pages и account call. Это подтверждает порядок цены, но не
+обещает latency: ключи, account groups, cache и provider load меняют wall time.
+У `…98cdn` прежний broad attempt достигал `8 884` pages; при будущем полном
+boundary evidence fixed sampling потенциально подавляет примерно `8 880`
+обычных page calls. Для `…aEGqTr` аналогичная верхняя оценка — около `355`.
+Это avoided-work estimate, а не результат уже действующей оптимизации.
+
+Сырые bytes live-ответов этого ручного прохода в repository не заморожены.
+Хэши без исходных bytes и legacy page receipts другого request shape не
+являются replay fixture. Поэтому сейчас у inferred cases допустим только
+research profile с `estimatedWouldAction=continue_full`; production
+`wouldAction` остаётся `null`.
+
 ## Corpus до кода
 
 Calibration/replay набор обозначается по запоминаемой концовке:
@@ -869,7 +933,7 @@ one-hop evidence, но не запускает многодневное полн
 
 ## Разбиение будущей реализации
 
-После пользовательской проверки дизайна implementation plan делится на:
+После утверждения дизайна и этого ручного replay implementation plan делится на:
 
 1. кодирование уже вручную принятых frozen fixtures и baseline measurements;
 2. canonical fixed-page sampler и request identity v2;
@@ -897,7 +961,8 @@ one-hop evidence, но не запускает многодневное полн
 - Checked subject никогда не останавливается на собственной inferred role.
 - `…W8SRL` включён в calibration/replay corpus и исключён из blind set.
 
-Точный `ExpandRecent`, feature predicate, `EOAAtAnchor`, request/profile
-identity, five-trigger ceiling, typed red branches и adverse artifact в этом
-документе являются предложенной конкретизацией. Они становятся утверждёнными
-только после пользовательской проверки этой версии.
+Точный `ExpandRecent`, исправленный feature predicate с `X`, `EOAAtAnchor`,
+request/profile identity, five-trigger ceiling, typed red branches и adverse
+artifact являются утверждённым design-контрактом. Это не rollout approval:
+Stage C остаётся shadow-only, а Stage D требует frozen fixtures, blind review,
+complete adverse evidence, replay и отдельного production решения.

@@ -1,7 +1,7 @@
 # Chronological Proportional Balance Provenance Design
 
-**Статус:** черновик на пользовательскую проверку; утверждены направление и
-базовые правила, детальные контракты ниже требуют явного подтверждения
+**Статус:** утверждённый дизайн после ручного corpus replay; не реализован и
+не меняет production policy до отдельного implementation/rollout решения
 
 **Дата:** 2026-07-29
 
@@ -32,8 +32,9 @@ forensic-policy, а не утверждением, что в блокчейне 
 «монеты B» и «монеты C».
 
 Новая policy не переписывает старые отчёты, `Golden V2` или действующие legacy
-и Unified policy. Реализация получает новую версию и включается только после
-ручного corpus replay, тестов сохранения суммы и отдельного rollout-решения.
+и Unified policy. Ручной replay реального корпуса завершён 2026-07-29;
+реализация получает новую версию и включается только после frozen fixtures,
+тестов сохранения суммы и отдельного rollout-решения.
 
 ### Как это работает без формул
 
@@ -644,11 +645,10 @@ provider_or_snapshot_inconsistent
 
 ## Pre-code corpus replay
 
-До implementation plan модель считается только design. Сначала проводится
-ручной read-only replay существующими запросами, выгрузками и worksheet — без
-написания нового движка или runner. Для одного frozen canonical набора вручную
-сравниваются текущие legacy/Unified результаты и расчёт по формулам этого
-документа:
+До implementation plan модель считается только design. Ручной read-only replay
+проводится существующими запросами, выгрузками и worksheet — без написания
+нового движка или runner. Для canonical evidence вручную сравниваются текущие
+legacy/Unified результаты и расчёт по формулам этого документа:
 
 - source lots до и после каждого debit;
 - exact target coverage и отдельный source utilization;
@@ -658,7 +658,7 @@ provider_or_snapshot_inconsistent
 - оценку provider work без отправки пользовательского отчёта.
 
 Если для case нет authoritative `transactionIndex`/block witness, worksheet
-записывает `temporal_order_unresolved`, а не подставляет порядок. Только после
+записывает `temporal_order_unresolved`, а не подставляет порядок. После
 утверждения ручных результатов implementation plan может включить
 автоматический replay tool и regression fixtures.
 
@@ -676,6 +676,80 @@ provider_or_snapshot_inconsistent
 - неполная история и unknown opening lot;
 - реальные GasFree cases `…MnxP`, `…ZAZD`, `…VSZ9`, `…UZBM`;
 - drainer/Verify20 chains, где малый red funder нельзя потерять.
+
+## Результат ручного replay 2026-07-29
+
+Сводный evidence register находится в
+`docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
+
+Реальный корпус подтвердил основную семантику ledger и одновременно показал,
+почему текущие production-пути нельзя переименовать в эту модель без новой
+policy version.
+
+### `…W8SRL → …PacGy → …WqQPC`
+
+Canonical chain evidence показывает один вход `300 USDT` из `…W8SRL` в
+`…PacGy`, после которого последовательно произошли расходы `70`, `12`, `180`
+и `38 USDT`. Поэтому:
+
+- exact episode `…PacGy → …WqQPC` на `180 USDT` на 100% покрыт lot из
+  `…W8SRL`;
+- `60%` — это utilization входного lot `300`, а не coverage цели `180`;
+- после последнего расхода `38` исходный lot `300` полностью исчерпан;
+- текущий остаток `…PacGy` равен `82.7 USDT` и сформирован новым входом от
+  `…gsFCa`, а не старым входом от `…W8SRL`;
+- принадлежность нынешнего баланса `…WqQPC` к старому эпизоду нельзя заявить,
+  пока его собственная последующая история не проиграна тем же ledger.
+
+Exact `180 USDT` event имеет tx
+`676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca`,
+block `83711746`, timestamp `2026-06-18T17:44:12Z`. В локальном индексе он
+сохранён дважды под разными synthetic `event_index`; full-node receipt
+подтверждает один USDT log. Значит, canonical dedupe должен опираться на exact
+chain identity и происходить до ledger allocation.
+
+Баланс `82.7 USDT` подтверждён bracketed live-read вокруг одного solidified
+head `84888238`, а не параметризованным historical balance RPC. Такой witness
+годится для ручного текущего контроля, но не называется pinned snapshot.
+
+### GasFree accounting
+
+`…ZAZD` дал полностью замкнутый реальный пример. Его два structurally proven
+GasFree settlement расходуют principal плюс fees `2` и `1 USDT`; после
+integer-учёта остаток равен наблюдавшимся `538.044722 USDT`. Principal остаётся
+AML-путём, fee уменьшает inventory и не создаёт отдельную AML-ветку.
+
+Остальные GasFree controls сохраняют fail-closed различия:
+
+- `…MnxP`: один exact settlement (`4691` principal + `1.5` fee) доказан, но
+  локально реконструированный current balance отличается от live на
+  `10.699978 USDT`; current provenance остаётся unresolved;
+- `…VSZ9`: exact settlement (`2548` principal + `2` fee) доказан, но provider
+  history обрывается после `200` строк; opening scope не доказан;
+- `…UZBM`: локальная история stale и не согласуется с положительным live
+  balance; её нельзя использовать как current-balance truth.
+
+Current `accountType=2`/contract observation также не доказывает роль адреса в
+старом anchor. GasFree Account отделяется от обычного smart contract только
+structural settlement evidence: зарегистрированный controller, selector,
+успешная транзакция, official-USDT logs и balanced principal/fee rows.
+
+### Drainer-pattern control
+
+Реальная цепочка `…1ZDqkZ → …dwxxhs → …mmGJE` содержит подтверждённые ingress,
+approval и последующее списание `669 USDT`. Сохранение суммы выполняется:
+после входа `669.889034 USDT` и списания `669 USDT` остаток жертвы равен
+`0.889034 USDT`. Это самостоятельная red-ветка, которая обязана продолжаться
+или завершаться по frozen adverse matrix независимо от доли, top-k и порога
+`95%`. Пользовательский отчёт описывает найденный drainer-паттерн и не раскрывает
+внутреннее имя selector/signature.
+
+### Итог gate
+
+Core ledger semantics приняты для отдельного implementation plan. Production
+остаётся на текущих legacy/Unified алгоритмах. Перед интеграцией нужны frozen
+raw fixtures, authoritative order для mixed same-block cases, property tests,
+semantic comparator и disabled-by-default adapters.
 
 ## Минимальные проверки реализации
 
@@ -725,7 +799,7 @@ provider_or_snapshot_inconsistent
 
 ## Разбиение будущей реализации
 
-После пользовательской проверки этого дизайна implementation plan делится на
+После утверждения дизайна и ручного replay implementation plan делится на
 отдельные поставки:
 
 1. canonical order и history/checkpoint contract;
@@ -754,6 +828,6 @@ provider_or_snapshot_inconsistent
   unresolved, а не приблизительный ответ.
 
 Детали integer remainder, opening/residual lots, state/leaf closure, exact
-GasFree matrix, adverse receipt и artifact schema в этом документе являются
-предложенной конкретизацией. Они становятся утверждёнными только после
-пользовательской проверки этой версии.
+GasFree matrix, adverse receipt и artifact schema являются утверждённым
+design-контрактом. Это не rollout approval: до реализации и отдельного
+acceptance текущие production paths не меняются.

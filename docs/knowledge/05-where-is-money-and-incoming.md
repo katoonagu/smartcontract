@@ -76,9 +76,14 @@ inventory. Intermediate legacy tracing uses a third, newest-first
 spend-overhang bundle with an 80% default threshold and at most three funders.
 These are current implementations, not the approved target model.
 
-The proposed replacement is documented in
+The approved target replacement is documented in
 `docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`.
-It is a review draft and is not implemented.
+It is not implemented and does not describe current production behavior. The
+2026-07-29 manual corpus replay is recorded in
+`docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
+That replay proved why exact-episode coverage and current-balance origin must be
+separate: `180 USDT` sent from `…PacGy` was fully covered by an older `300 USDT`
+lot, while the later current balance `82.7 USDT` came from a different funder.
 
 Exact TRON movement and traced-coverage proof requires rich identity on every
 contributing on-chain edge: a transfer ID, an event index, or a provider plus
