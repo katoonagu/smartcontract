@@ -1,9 +1,5 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  extractGasFreeSettlement,
-  isGasFreeServiceFeeEdge
-} from "../../src/forensics/gasFreeSettlement";
 
 type Case = {
   readonly id: string;
@@ -299,9 +295,18 @@ describe("forensic model offline corpus v1", () => {
         confirmed: boolean;
         contractRet: string;
         revert: boolean;
+        status: number;
         contractData: { contract_address: string; data: string };
-        trc20TransferInfo: readonly { from_address: string; to_address: string; amount_str: string; contract_address: string }[];
+        trc20TransferInfo: readonly {
+          from_address: string;
+          to_address: string;
+          amount_str: string;
+          contract_address: string;
+          status: number;
+          tokenInfo: { tokenId: string; tokenAbbr: string; tokenType: string };
+        }[];
       };
+      settlement: { principalAmountRaw: string; feeAmountRaw: string };
       replayEdges: readonly {
         fromAddress: string;
         toAddress: string;
@@ -311,28 +316,34 @@ describe("forensic model offline corpus v1", () => {
       }[];
     };
     expect(gasFree.ledgerExecutionCase).toBe(false);
-    expect(gasFree.transactionInfo).toMatchObject({ confirmed: true, contractRet: "SUCCESS", revert: false });
-    expect(gasFree.transactionInfo.contractData.data).toMatch(/^6f21b898[0-9a-f]+$/u);
-    expect(gasFree.transactionInfo.trc20TransferInfo).toHaveLength(2);
-    expect(gasFree.replayEdges).toContainEqual(expect.objectContaining({
-      economicRole: "principal", economicProtocol: "tron_gasfree"
-    }));
-    expect(gasFree.replayEdges).toContainEqual(expect.objectContaining({
-      economicRole: "service_fee", economicProtocol: "tron_gasfree"
-    }));
-    const settlement = extractGasFreeSettlement(gasFree.transactionInfo);
-    expect(settlement).toMatchObject({
-      principalAmountRaw: "4691000000",
-      serviceFeeAmountRaw: "1500000",
-      evidenceStrength: "exact"
+    expect(gasFree.transactionInfo).toMatchObject({
+      confirmed: true,
+      contractRet: "SUCCESS",
+      revert: false,
+      status: 0
     });
-    expect(gasFree.replayEdges.map((edge) => isGasFreeServiceFeeEdge(edge))).toEqual([false, true]);
-    expect(settlement?.movements.map(({ fromAddress, toAddress, amountRaw, role }) => ({
-      fromAddress,
-      toAddress,
-      amountRaw,
-      economicRole: role
-    }))).toEqual(gasFree.replayEdges.map(({ economicProtocol: _protocol, ...edge }) => edge));
+    expect(gasFree.transactionInfo.contractData.data).toMatch(/^6f21b898[0-9a-f]+$/u);
+    expect(gasFree.transactionInfo.contractData.data).toHaveLength(840);
+    expect(gasFree.transactionInfo.trc20TransferInfo).toHaveLength(2);
+    expect(gasFree.replayEdges.map(({ economicRole }) => economicRole)).toEqual([
+      "principal",
+      "service_fee"
+    ]);
+    expect(gasFree.replayEdges.every(({ economicProtocol }) => economicProtocol === "tron_gasfree"))
+      .toBe(true);
+    expect(gasFree.transactionInfo.trc20TransferInfo.map((row) => ({
+      fromAddress: row.from_address,
+      toAddress: row.to_address,
+      amountRaw: row.amount_str
+    }))).toEqual(gasFree.replayEdges.map(({ economicProtocol: _protocol, economicRole: _role, ...edge }) => edge));
+    expect(gasFree.transactionInfo.trc20TransferInfo.every((row) =>
+      row.status === 0 &&
+      row.contract_address === row.tokenInfo.tokenId &&
+      row.tokenInfo.tokenAbbr === "USDT" &&
+      row.tokenInfo.tokenType === "trc20"
+    )).toBe(true);
+    expect(gasFree.replayEdges[0]?.amountRaw).toBe(gasFree.settlement.principalAmountRaw);
+    expect(gasFree.replayEdges[1]?.amountRaw).toBe(gasFree.settlement.feeAmountRaw);
 
     const methodOnly = corpus.adverseCases.find(({ id }) => id === "drainer-method-only") as unknown as {
       methodEvidence: { bytecodeFingerprint: string; methodMap: readonly unknown[] };
