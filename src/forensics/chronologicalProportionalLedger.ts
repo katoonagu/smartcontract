@@ -124,8 +124,10 @@ function sameEventPayload(left: LedgerEventV1, right: LedgerEventV1): boolean {
 
 function compareCanonicalOrder(left: LedgerEventV1, right: LedgerEventV1): number {
   if (left.blockNumber !== right.blockNumber) return left.blockNumber - right.blockNumber;
-  if (left.txHash === right.txHash) return (left.eventIndex ?? 0) - (right.eventIndex ?? 0);
-  return (left.transactionIndex ?? 0) - (right.transactionIndex ?? 0);
+  if (left.transactionIndex !== right.transactionIndex) {
+    return (left.transactionIndex ?? 0) - (right.transactionIndex ?? 0);
+  }
+  return (left.eventIndex ?? 0) - (right.eventIndex ?? 0);
 }
 
 function hasUnresolvedBlockOrder(events: readonly LedgerEventV1[]): number | null {
@@ -135,14 +137,10 @@ function hasUnresolvedBlockOrder(events: readonly LedgerEventV1[]): number | nul
     for (let otherIndex = index + 1; otherIndex < events.length; otherIndex += 1) {
       const right = events[otherIndex];
       if (!right || left.blockNumber !== right.blockNumber) continue;
-      if (left.txHash === right.txHash) {
-        if (left.eventIndex === right.eventIndex) return left.blockNumber;
-        continue;
-      }
       if (
         left.transactionIndex === null ||
         right.transactionIndex === null ||
-        left.transactionIndex === right.transactionIndex
+        (left.transactionIndex === right.transactionIndex && left.eventIndex === right.eventIndex)
       ) return left.blockNumber;
     }
   }

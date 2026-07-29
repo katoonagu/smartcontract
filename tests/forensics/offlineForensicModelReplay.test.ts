@@ -627,6 +627,31 @@ describe("chronological proportional ledger v1", () => {
     ])).toMatchObject({ state: "unresolved", reason: "order_unresolved", blockNumber: 10 });
   });
 
+  it("does not use a shared transaction hash to replace missing same-block transaction order", () => {
+    expect(canonicalizeChronologicalLedgerEventsV1([
+      ledgerEvent({
+        canonicalEventId: "same-tx:0",
+        txHash: "same-tx",
+        blockNumber: 10,
+        transactionIndex: null,
+        eventIndex: 0,
+        fromAddress: "a",
+        toAddress: subjectAddress,
+        amountRaw: 10n
+      }),
+      ledgerEvent({
+        canonicalEventId: "same-tx:1",
+        txHash: "same-tx",
+        blockNumber: 10,
+        transactionIndex: null,
+        eventIndex: 1,
+        fromAddress: subjectAddress,
+        toAddress: "b",
+        amountRaw: 8n
+      })
+    ])).toMatchObject({ state: "unresolved", reason: "order_unresolved", blockNumber: 10 });
+  });
+
   it("breaks equal largest-remainder ties by canonical lot ID", () => {
     expect(apportionRawLargestRemainderV1(1n, [lot("b", 1n), lot("a", 1n)]))
       .toEqual([
