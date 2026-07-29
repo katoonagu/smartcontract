@@ -1,8 +1,14 @@
 import "dotenv/config";
-import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { loadConfig } from "../src/config";
-import { createLegacyWhereIsMoneyExecution, type DeepForensicJobRunnerDeps } from "../src/forensics/deepForensicJob";
+import { fileURLToPath } from "node:url";
+import { loadConfig, type AppConfig } from "../src/config";
+import {
+  createLegacyWhereIsMoneyExecution,
+  type DeepForensicJobRunnerDeps,
+  type LegacyWhereIsMoneyExecution
+} from "../src/forensics/deepForensicJob";
 import { createEvmContinuationProvider } from "../src/forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "../src/forensics/evmExplorerClient";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson";
@@ -25,6 +31,7 @@ import {
   readReleaseWhereLatencyReplayFixture,
   readLegacyWhereSourceRevision,
   recordWhereIsMoneyDependencies,
+  projectWhereReplayAssertionRows,
   WHERE_LATENCY_REPLAY_FIXTURE_PATH
 } from "../src/forensics/whereLatencyReplay";
 import { deepForensicRuntimeOptions } from "../src/runtime/deepForensicRuntimeOptions";
@@ -37,12 +44,7 @@ import {
   listActiveAddressLabelAssertionsForRoute,
   listAddressLabels,
   listIndexedTronUsdtTransfersByHashes,
-  listIndexedTronUsdtTransfersForAddress,
-  markWaitingForensicJobsReadyAfterTargetedIndex,
-  queueTronAddressUsdtIndexState,
-  releaseForensicCheckJobToWaiting,
-  updateForensicCheckJobProgress,
-  upsertForensicJobWait
+  listIndexedTronUsdtTransfersForAddress
 } from "../src/storage/repositories";
 import type { ForensicCheckJob } from "../src/storage/repositories";
 import { TronscanClient } from "../src/tron/tronClient";
@@ -59,6 +61,101 @@ function argument(name: string): string | null {
 function requiredString(value: unknown, code: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(code);
   return value;
+}
+
+export function parseCaptureTimestamp(value: unknown, code: string): Date {
+  const parsed = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === "string" && value.length > 0
+      ? new Date(value)
+      : null;
+  if (!parsed || !Number.isFinite(parsed.getTime())) throw new Error(code);
+  return parsed;
+}
+
+export function assertExpectedReplayConfigSha256(
+  resolvedConfig: Record<string, unknown>,
+  expectedSha256: string | null
+): void {
+  if (expectedSha256 === null || expectedSha256.length === 0) {
+    throw new Error("where_latency_replay_expected_config_sha256_required");
+  }
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256)) {
+    throw new Error("where_latency_replay_expected_config_sha256_invalid");
+  }
+  const actual = createHash("sha256")
+    .update(canonicalizeArtifactJson(resolvedConfig))
+    .digest("hex");
+  if (actual !== expectedSha256) {
+    throw new Error("where_latency_replay_expected_config_sha256_mismatch");
+  }
+}
+
+export function createReadOnlyCaptureRuntimeDeps(
+  readDeps: DeepForensicJobRunnerDeps
+): DeepForensicJobRunnerDeps {
+  const {
+    updateForensicCheckJobProgress: _updateProgress,
+    releaseForensicCheckJobToWaiting: _releaseWaiting,
+    queueAddressUsdtHistory: _queueHistory,
+    upsertForensicJobWait: _upsertWait,
+    markWaitingForensicJobsReadyAfterTargetedIndex: _markReady,
+    ...safeDeps
+  } = readDeps;
+  return safeDeps;
+}
+
+export async function runCaptureExecution(
+  execution: Pick<LegacyWhereIsMoneyExecution, "run" | "dispose">,
+  checkerDeps: Parameters<LegacyWhereIsMoneyExecution["run"]>[0]
+): Promise<WhereIsMoneyReport> {
+  try {
+    return await execution.run(checkerDeps);
+  } finally {
+    await execution.dispose();
+  }
+}
+
+function configuredCaptureSecrets(config: AppConfig): string[] {
+  const values = [
+    config.botToken,
+    config.databaseUrl,
+    config.tronscanApiKey,
+    ...config.tronscanApiKeys,
+    ...config.tronscanApiKeyGroups.flatMap((group) => group.apiKeys),
+    config.tronFullNodeApiKey,
+    config.rangeApiKey,
+    config.evmExplorerApiKey,
+    config.alchemyApiKey,
+    config.llmApiKey,
+    config.adminDashboardToken
+  ];
+  return [...new Set(values.filter((value): value is string =>
+    typeof value === "string" && value.length > 0))];
+}
+
+export function assertCaptureValueContainsNoConfiguredSecrets(
+  value: unknown,
+  config: AppConfig
+): void {
+  const secrets = configuredCaptureSecrets(config);
+  const seen = new Set<object>();
+  const visit = (candidate: unknown): void => {
+    if (typeof candidate === "string") {
+      if (secrets.some((secret) => candidate.includes(secret))) {
+        throw new Error("where_latency_replay_configured_secret_detected");
+      }
+      return;
+    }
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) return;
+    seen.add(candidate);
+    if (Array.isArray(candidate)) {
+      for (const child of candidate) visit(child);
+      return;
+    }
+    for (const child of Object.values(candidate)) visit(child);
+  };
+  visit(value);
 }
 
 function recordField(value: unknown): JsonRecord {
@@ -97,6 +194,34 @@ async function writeReplayExclusive(path: string, bytes: string): Promise<void> 
   }
 }
 
+export type WhereLatencyReplayValidationV1 = {
+  schema: "where-latency-replay-validation-v1";
+  version: 1;
+  fixtureSchema: "where-latency-replay-v1";
+  fixtureVersion: 1;
+  fixtureFileSha256: string;
+  configProjectionSha256: string;
+  resolvedConfigHash: string;
+};
+
+export async function validateWhereLatencyReplayFixture(
+  path: string
+): Promise<WhereLatencyReplayValidationV1> {
+  const bytes = await readFile(resolve(path));
+  const replay = parseWhereLatencyReplayV1(bytes.toString("utf8"));
+  return {
+    schema: "where-latency-replay-validation-v1",
+    version: 1,
+    fixtureSchema: replay.schema,
+    fixtureVersion: replay.version,
+    fixtureFileSha256: createHash("sha256").update(bytes).digest("hex"),
+    configProjectionSha256: createHash("sha256")
+      .update(canonicalizeArtifactJson(replay.resolvedConfig))
+      .digest("hex"),
+    resolvedConfigHash: replay.resolvedConfigHash
+  };
+}
+
 const positional = process.argv.slice(2).filter((value) => !value.startsWith("--"));
 
 async function replay(): Promise<void> {
@@ -107,6 +232,15 @@ async function replay(): Promise<void> {
   process.stdout.write(canonicalWhereLatencyReplayCliOutput(analysis, releaseFixture) + "\n");
 }
 
+async function validate(): Promise<void> {
+  const fixture = argument("--fixture") ?? positional[1] ?? null;
+  if (!fixture) {
+    throw new Error("Usage: forensic:where-latency:capture -- validate --fixture <json-file>");
+  }
+  const result = await validateWhereLatencyReplayFixture(fixture);
+  process.stdout.write(`${canonicalizeArtifactJson(result)}\n`);
+}
+
 async function capture(): Promise<void> {
 const source = argument("--source") ?? positional[0] ?? null;
 const output = argument("--out") ?? positional[1] ?? null;
@@ -115,6 +249,7 @@ if (!source || !output) throw new Error("Usage: forensic:where-latency:capture -
 const sourceRevision = await readLegacyWhereSourceRevision(process.cwd());
 const config = loadConfig();
 const replayConfig = projectWhereReplayConfig(config);
+assertExpectedReplayConfigSha256(replayConfig, argument("--expected-config-sha256"));
 const db = createDb(config.databaseUrl);
 try {
   const selected = await db.query(
@@ -132,10 +267,10 @@ try {
   const savedReport = result.whereIsMoneyReport as WhereIsMoneyReport | undefined;
   if (!savedReport) throw new Error("where_latency_replay_completed_report_missing");
   const jobSource = requiredString(job.subject_address, "where_latency_replay_job_source_missing");
-  const windowStart = new Date(requiredString(job.window_start, "where_latency_replay_job_window_missing"));
-  const windowEnd = new Date(requiredString(job.window_end, "where_latency_replay_job_window_missing"));
-  const completedAt = new Date(requiredString(job.completed_at, "where_latency_replay_job_completed_at_missing"));
-  if (!Number.isFinite(windowStart.getTime()) || !Number.isFinite(windowEnd.getTime()) || !Number.isFinite(completedAt.getTime()) || windowStart >= windowEnd) {
+  const windowStart = parseCaptureTimestamp(job.window_start, "where_latency_replay_job_window_invalid");
+  const windowEnd = parseCaptureTimestamp(job.window_end, "where_latency_replay_job_window_invalid");
+  const completedAt = parseCaptureTimestamp(job.completed_at, "where_latency_replay_job_completed_at_missing");
+  if (windowStart >= windowEnd) {
     throw new Error("where_latency_replay_job_window_invalid");
   }
 
@@ -232,13 +367,11 @@ try {
     startedAt: null,
     completedAt
   };
-  const runtimeDeps: DeepForensicJobRunnerDeps = {
+  const runtimeDeps = createReadOnlyCaptureRuntimeDeps({
     tronClient,
     claimNextForensicCheckJob: async () => null,
     completeForensicCheckJob: async () => false,
     recordRiskEvaluation: async () => undefined,
-    updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
-    releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
     getLabelsForAddress: (address) => listAddressLabels(db, address),
     getAddressMetadata: (address) => getAddressMetadata(db, address, completedAt),
     getContractIntelligenceProfile: async (address) =>
@@ -258,27 +391,10 @@ try {
     }),
     getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
     getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
-    queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
-      ...input,
-      targetTimestamp: input.targetTimestamp ?? null,
-      requestKind: input.requestKind ?? "broad_targeted",
-      windowStartTimestamp: input.windowStartTimestamp ?? null,
-      windowEndTimestamp: input.windowEndTimestamp ?? null,
-      relatedHopTxHash: input.relatedHopTxHash ?? null,
-      candidateTxHash: input.candidateTxHash ?? null,
-      requestedByJobId: input.requestedByJobId ?? null,
-      priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "where_candidate_window" ? 240 : 10,
-      nextRunAt: completedAt,
-      budgetPages: input.budgetPages ?? null,
-      maxAttempts: input.maxAttempts ?? null,
-      allowRunningRequeue: input.allowRunningRequeue === true
-    }),
-    upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
-    markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
     crossChainDiscoveryProvider,
     crossChainContinuationProviders,
     evmEvidenceProvider
-  };
+  });
   const execution = createLegacyWhereIsMoneyExecution(runtimeDeps, runtimeJob, runtimeOptions, {
     now: () => completedAt.getTime()
   });
@@ -286,7 +402,7 @@ try {
   const { now: _now, onProgress: _onProgress, abortSignal: _abortSignal, ...runOptions } = execution.runInput;
   const frozenClockIso = completedAt.toISOString();
   const options = JSON.parse(JSON.stringify(runOptions)) as Record<string, unknown>;
-  const rerun = await execution.run(checkerDeps);
+  const rerun = await runCaptureExecution(execution, checkerDeps);
   const expectedStableFacts = projectStableWhereFacts(savedReport);
   if (canonicalizeArtifactJson(expectedStableFacts) !== canonicalizeArtifactJson(projectStableWhereFacts(rerun))) {
     throw new Error("where_latency_replay_stable_fact_mismatch");
@@ -304,7 +420,13 @@ try {
   if (indexedRows.length === 0 || routeHashes.some((txHash) => !indexedRows.some((row) => row.txHash === txHash))) {
     throw new Error("where_latency_replay_indexed_movement_missing");
   }
-  const assertions = await listActiveAddressLabelAssertionsForRoute(db, { chain: "tron", addresses: routeAddresses, txHashes: routeHashes });
+  const assertions = projectWhereReplayAssertionRows(
+    await listActiveAddressLabelAssertionsForRoute(db, {
+      chain: "tron",
+      addresses: routeAddresses,
+      txHashes: routeHashes
+    }) as unknown as Record<string, unknown>[]
+  );
   const rawTransactions = [];
   for (const txHash of routeHashes) {
     if (!observedTransactions.has(txHash)) {
@@ -341,20 +463,26 @@ try {
       routeCriticalTxHashes: routeHashes,
       rawTransactions,
       indexedMovementRows: indexedRows.map(indexedSnapshotRow),
-      assertionRows: assertions as unknown as Record<string, unknown>[],
+      assertionRows: assertions,
       knownHardTxHashes: frozenKnownHardTxHashes
     }),
     routeCriticalAddresses: routeAddresses,
     dependencies: capture.invocations,
     indexedMovements: [{ txHashes: routeHashes, rows: indexedRows.map(indexedSnapshotRow) }],
-    assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions as unknown as Record<string, unknown>[] }],
+    assertionQueries: [{ chain: "tron", addresses: routeAddresses, txHashes: routeHashes, rows: assertions }],
     rawTransactions, expectedStableFacts
   });
+  assertCaptureValueContainsNoConfiguredSecrets(complete.envelope, config);
   await writeReplayExclusive(output, complete.canonicalJson);
 } finally {
   await closeDb(db);
 }
 }
 
-if (positional[0] === "replay") await replay();
-else await capture();
+const isMain = process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isMain) {
+  if (positional[0] === "replay") await replay();
+  else if (positional[0] === "validate") await validate();
+  else await capture();
+}
