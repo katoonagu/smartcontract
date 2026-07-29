@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-28
+last_verified: 2026-07-29
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -161,20 +161,30 @@ scores, assertions, and delivery artifacts are not recalculated or rewritten.
 - Selective enrichment, immutable raw/full evidence, claim fencing, the Where
   slot pump, lifecycle diagnostics, strict replay reader, and isolated canary
   harness are code-complete and covered by deterministic tests.
+- The evidence-tooling hardening is merged through recorder commit `6bf24285`
+  and combined merge `8bbbbc00`. Its targeted 92-test suite, combined full
+  4,951-test suite, and typecheck passed.
 - Runtime default remains `FORENSIC_WHERE_WORKER_CONCURRENCY=1`. Value 2 is an
   isolated canary candidate, not an approved production setting.
 - The real legacy TXc fixture
   `tests/fixtures/forensics/txc-legacy-where-latency-v1.json` has not been
-  captured. The strict replay currently stops with
-  `where_latency_replay_fixture_missing`; this is the intended fail-closed
-  release result, not a passing replay.
+  captured. The local schema-037 database contains zero completed TXc legacy
+  Where jobs/reports. The exact recorder commit also stops first with
+  `where_latency_replay_behavior_source_mismatch`: its current behavior tree is
+  not the approved historical tree, while a direct historical backport lacks
+  the later `dispose` and replay-schema contracts. Baseline constants and
+  behavior-source files were not changed to force a pass.
+- The dedicated `tron_watch_plan3` PostgreSQL gate passed schema 037
+  verification, four migration tests, and 168 claim-generation, fairness,
+  immutable-evidence, and delivery tests without skips.
 - No accepted artifact exists under `outputs/where-latency-canary/` for the
   concurrency-two run. The separate `where-latency-deep-residual-v1` singleton
-  receipt is also absent. Both receipts are required before production Where
-  concurrency 2, along with the PostgreSQL race/fairness evidence. The measured
-  Deep latency value is not part of the isolated Where start-SLA pass/fail and
-  cannot authorize changing Deep concurrency; Deep stays at 1 and a high
-  residual opens a separate follow-up.
+  receipt is also absent. Repository and available worktree/ref audits found no
+  deployment-owned adapter/bridge, cycle-isolated composition, deployment
+  receipt builder, or attributable rollout observer, so no live canary was
+  attempted. The measured Deep latency value is not part of the isolated Where
+  start-SLA pass/fail and cannot authorize changing Deep concurrency; Deep
+  stays at 1 and a high residual opens a separate follow-up.
 
 ## Runtime Configuration And Schema
 

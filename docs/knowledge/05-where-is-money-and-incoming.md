@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-28
+last_verified: 2026-07-29
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -140,7 +140,10 @@ transition, so targeted-index waiting is not reported as runnable queue delay;
 jobs that never waited retain creation-to-claim timing.
 
 Stage B behavior is code-complete, while live rollout evidence is separate.
-Where remains at concurrency 1 until the real TXc replay and isolated
-concurrency-two receipt pass. Deep remains a singleton and its residual queue
-latency has not yet been measured; no Where test or synthetic runtime result
-may stand in for that measurement.
+The real PostgreSQL claim/fairness gate passed on schema 037, but the real TXc
+replay remains blocked by both the missing completed source job and an
+unresolved historical recorder identity mismatch. Where remains at concurrency
+1; the repository has no deployment-owned adapter/bridge or attributable
+observer with which to run an accepted concurrency-two canary. Deep remains a
+singleton and its residual queue latency has not been measured; no Where test
+or synthetic runtime result may stand in for that measurement.

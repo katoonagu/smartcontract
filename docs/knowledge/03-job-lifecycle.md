@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-28
+last_verified: 2026-07-29
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -361,12 +361,13 @@ groups. P1 boundary
 activation still waits for blind review/adjudication, and exact performance
 comparison waits for frozen TPCP/TFWG/TXc provider bundles.
 
-Stage B implementation is code-complete in this checkout, but release evidence
-is not complete. The required real legacy TXc replay fixture is absent, no
-accepted concurrency-two Where canary receipt exists, and the separate Deep
-singleton residual receipt has not been measured. That Deep receipt is required
-release evidence before production Where concurrency 2, but its latency value
-is not part of the isolated Where start-SLA pass/fail. It cannot authorize a
-Deep concurrency change: Deep remains 1, and a high residual opens a separate
-follow-up. These missing artifacts are operational blockers, not reasons to
-reinterpret deterministic tests as live evidence.
+Stage B runtime and evidence-client code are complete in this checkout, and the
+real PostgreSQL lifecycle gate now passes on the dedicated `tron_watch_plan3`
+database: schema 037 verification, four migration tests, and 168 claim,
+fairness, evidence, and delivery tests executed without skips. Release evidence
+is still not complete. The configured local database has no completed legacy
+TXc Where job, and the merged recorder commit is not on the approved historical
+behavior tree, so no real replay fixture or strict replay receipt exists. No
+deployment-owned adapter/bridge or attributable observer exists either; no
+Where canary or Deep singleton residual was run. Repository Where stays at 1,
+Deep stays at 1, and deterministic tests are not live rollout evidence.

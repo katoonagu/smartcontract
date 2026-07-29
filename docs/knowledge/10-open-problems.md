@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-27
+last_verified: 2026-07-29
 owner_area: docs
 code_refs:
   - scripts/captureWhereLatencyReplay.ts
@@ -27,6 +27,15 @@ code_refs:
   `tests/fixtures/forensics/txc-legacy-where-latency-v1.json`; the 2026-07-27
   final replay audit found it missing and stopped with
   `where_latency_replay_fixture_missing`, as required.
+- The repaired recorder path has a second fail-closed blocker. Recorder commit
+  `6bf24285` has behavior tree
+  `f9a294399150075f2f832fe681917fa1ceb1acbc75b5c82f473aa9bd6468a1c8`,
+  while the approved historical tree is
+  `b5ad8d43fbcfd693f8d998100f22070c0ef4dbbeeb228e5eeb0e722b3831fde2`.
+  The approved historical checkout does not expose the later execution
+  `dispose` and replay-schema contracts required by the repaired recorder.
+  Resolve this as a reviewed recorder-identity design; do not rewrite the
+  baseline hash or behavior files merely to obtain a fixture.
 - Exact barrier-versus-rolling hash comparison remains tied to one frozen
   provider snapshot. Separate live runs cannot substitute for it.
 
@@ -75,11 +84,11 @@ phase.
 - Deep remains one slot. Its required
   `where-latency-deep-residual-v1` measurement has not been produced, so Deep
   queue/provider residual latency is unmeasured rather than zero.
-- The 2026-07-27 local release gate had no `TEST_DATABASE_URL` or
-  `DATABASE_URL`. PostgreSQL-gated tests therefore skipped and `schema:verify`
-  could not connect. Deterministic coverage is code evidence only; real
-  claim-generation/fairness and schema verification remain required before the
-  canary.
+- The former PostgreSQL proof gap is closed locally: on 2026-07-29 the dedicated
+  `tron_watch_plan3` database verified schema 037, four migration tests passed,
+  and 168 claim-generation/fairness/evidence/delivery tests executed without
+  skips. This does not supply replay, deployment, canary, Deep, or rollout
+  evidence.
 
 ## Dense Traversal Performance
 

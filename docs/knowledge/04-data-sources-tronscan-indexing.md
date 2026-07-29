@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-28
+last_verified: 2026-07-29
 owner_area: tronscan
 code_refs:
   - src/index.ts
@@ -154,9 +154,12 @@ from the underlying movement evidence.
 
 The code paths and deterministic tests for this contract are complete. The
 real TXc provider/DB replay tape is not: the required release fixture at
-`tests/fixtures/forensics/txc-legacy-where-latency-v1.json` is absent, and the
-release replay fails closed with `where_latency_replay_fixture_missing`.
-Synthetic pages cannot replace that provider evidence.
+`tests/fixtures/forensics/txc-legacy-where-latency-v1.json` is absent. A
+read-only 2026-07-29 query found zero completed TXc legacy Where jobs/reports.
+The exact merged recorder also fails earlier with
+`where_latency_replay_behavior_source_mismatch`, because it is not based on the
+approved historical behavior tree. Synthetic pages or a cancelled TXc job
+cannot replace that provider evidence.
 
 Provider capacity snapshots expose only opaque independent group IDs, health
 (`healthy`, `cooldown`, or `circuit_open`), group concurrency, in-flight work,
@@ -272,8 +275,8 @@ fewer address-history page than V1, so merely seeding the dataset cannot satisfy
 the test. The fixture alone or the scheduler simulation is not proof of
 production traversal/hash equivalence.
 
-The runtime verifies exact schema 036 and its schema-032 through schema-035
-predecessors before canary selection. The adaptive runtime has no fixed
+The runtime verifies exact schema 037 and its schema-032 through schema-036
+predecessors before intake or worker startup. The adaptive runtime has no fixed
 four-slot ceiling: it can expand to the configured
 provider-worker ceiling while bounded chunks, durable buffer reservations,
 DB/memory guards, group health, and eligible demand constrain actual use.
