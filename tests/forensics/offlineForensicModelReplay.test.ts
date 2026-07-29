@@ -101,6 +101,25 @@ describe("forensic model offline corpus v1", () => {
         }
       }
     });
+    const receiptBinding = pacgy?.duplicateReceiptBinding as {
+      canonicalIdentity: unknown;
+      providerAliases: readonly {
+        provider: string;
+        transferId: string;
+        eventIndex: number;
+        boundCanonicalIdentity: unknown;
+      }[];
+    };
+    expect(receiptBinding.providerAliases).toHaveLength(2);
+    expect(new Set(receiptBinding.providerAliases.map((alias) =>
+      `${alias.provider}:${alias.transferId}:${alias.eventIndex}`
+    )).size).toBe(2);
+    for (const alias of receiptBinding.providerAliases) {
+      expect(alias.provider).not.toHaveLength(0);
+      expect(alias.transferId).not.toHaveLength(0);
+      expect(Number.isSafeInteger(alias.eventIndex)).toBe(true);
+      expect(alias.boundCanonicalIdentity).toEqual(receiptBinding.canonicalIdentity);
+    }
     expect(corpus.ledgerCases).toContainEqual(expect.objectContaining({
       id: "pacgy-synthetic-zero-opening-control",
       evidenceClass: "synthetic_edge_case",
@@ -147,5 +166,17 @@ describe("forensic model offline corpus v1", () => {
     ]));
     expect(corpus.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification"))
       .toMatchObject({ ledgerExecutionCase: false });
+
+    const collision = corpus.ledgerCases.find(({ id }) => id === "identity-collision-control") as unknown as {
+      expectedState: string;
+      events: readonly {
+        canonicalIdentity: unknown;
+        amountRaw: string;
+      }[];
+    };
+    expect(collision.expectedState).toBe("identity_collision");
+    expect(collision.events).toHaveLength(2);
+    expect(collision.events[0]?.canonicalIdentity).toEqual(collision.events[1]?.canonicalIdentity);
+    expect(collision.events[0]?.amountRaw).not.toBe(collision.events[1]?.amountRaw);
   });
 });

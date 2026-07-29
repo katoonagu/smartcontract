@@ -24,6 +24,34 @@
       "duplicateReceiptBinding": {
         "providerAliasCount": 2,
         "providerEventIndexIsCanonical": false,
+        "providerAliases": [
+          {
+            "provider": "tronscan",
+            "transferId": "tronscan:f6b8fb0fade1546d2fdb02d1944e2a36251440599f99ab2121705294fe6c57ff",
+            "eventIndex": 34519656,
+            "providerRowOrdinalInTx": 32,
+            "boundCanonicalIdentity": {
+              "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+              "officialUsdtLogOrdinal": 0,
+              "officialUsdtLogCount": 1,
+              "amountRaw": "180000000",
+              "authority": "full_node_receipt"
+            }
+          },
+          {
+            "provider": "tronscan",
+            "transferId": "tronscan:7a598b7a841999cee379876b0e7cb3f4950fdd8cf6184ee3fba337aef000645c",
+            "eventIndex": 245433617,
+            "providerRowOrdinalInTx": 1,
+            "boundCanonicalIdentity": {
+              "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+              "officialUsdtLogOrdinal": 0,
+              "officialUsdtLogCount": 1,
+              "amountRaw": "180000000",
+              "authority": "full_node_receipt"
+            }
+          }
+        ],
         "canonicalIdentity": {
           "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
           "officialUsdtLogOrdinal": 0,
@@ -92,10 +120,10 @@
       "id": "identity-collision-control",
       "evidenceClass": "synthetic_edge_case",
       "events": [
-        { "txHash": "synthetic-shared-tx", "logIndex": 0, "amountRaw": "5" },
-        { "txHash": "synthetic-shared-tx", "logIndex": 1, "amountRaw": "7" }
+        { "canonicalIdentity": { "txHash": "synthetic-shared-tx", "logIndex": 0 }, "amountRaw": "5" },
+        { "canonicalIdentity": { "txHash": "synthetic-shared-tx", "logIndex": 0 }, "amountRaw": "7" }
       ],
-      "expectedCanonicalEventCount": 2
+      "expectedState": "identity_collision"
     },
     {
       "id": "missing-order-control",
