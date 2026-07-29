@@ -225,7 +225,7 @@ describe("forensic model offline corpus v1", () => {
 
   it("freezes replayable W8SRL window feature inputs", () => {
     const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration") as unknown as {
-      windows: readonly (FeatureVector & { source: unknown })[];
+      windows: readonly (FeatureVector & { kind: "recent" | "historical"; source: unknown })[];
     };
     expect(w8srl.windows).toHaveLength(2);
     for (const window of w8srl.windows) {
@@ -235,6 +235,12 @@ describe("forensic model offline corpus v1", () => {
       });
       expectReplayableFeatureVector(window);
     }
+    const recent = w8srl.windows.find(({ kind }) => kind === "recent") as FeatureVector;
+    const historical = w8srl.windows.find(({ kind }) => kind === "historical") as FeatureVector;
+    const separationMilliseconds = Date.parse(recent.observedStartTimestamp) -
+      Date.parse(historical.observedEndTimestamp);
+    expect(separationMilliseconds).toBeGreaterThan(0);
+    expect(separationMilliseconds).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 * 1_000);
   });
 
   it("freezes the required arithmetic and adverse controls", () => {
@@ -272,21 +278,92 @@ describe("forensic model offline corpus v1", () => {
 
   it("freezes internally consistent adverse replay scenes", () => {
     const blacklist = corpus.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions") as unknown as {
-      principalTransfers: readonly { amountRaw: string; temporalClass: string; timestamp: string | null }[];
-      timelineEvents: readonly { eventKind: string; confirmed: boolean; successful: boolean }[];
+      tokenContract: string;
+      listedAddress: string;
+      timelineEvidence: {
+        verificationStatus: string;
+        historyComplete: boolean;
+        canonicalOrderVerified: boolean;
+        coverageStartTimestamp: string;
+        coverageEndTimestamp: string;
+      };
+      principalTransfers: readonly {
+        amountRaw: string;
+        expectedTemporalClass: string;
+        occurredAt: string | null;
+        tokenContract: string;
+        toAddress: string;
+        confirmed: boolean;
+        successful: boolean;
+      }[];
+      timelineEvents: readonly {
+        occurredAt: string;
+        eventKind: "added" | "removed";
+        subjectAddress: string;
+        tokenContract: string;
+        confirmed: boolean;
+        successful: boolean;
+      }[];
       partitions: Record<string, string>;
     };
     expect(blacklist.principalTransfers).toHaveLength(3);
     expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
       eventKind: "added", confirmed: true, successful: true
     }));
-    const partitionSum = (temporalClass: string) => blacklist.principalTransfers
-      .filter((row) => row.temporalClass === temporalClass)
+    expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
+      eventKind: "removed", confirmed: true, successful: true
+    }));
+    expect(blacklist.timelineEvidence).toMatchObject({
+      verificationStatus: "verified",
+      historyComplete: true,
+      canonicalOrderVerified: true
+    });
+    const coverageStart = Date.parse(blacklist.timelineEvidence.coverageStartTimestamp);
+    const coverageEnd = Date.parse(blacklist.timelineEvidence.coverageEndTimestamp);
+    const timeline = [...blacklist.timelineEvents]
+      .filter((event) =>
+        event.confirmed &&
+        event.successful &&
+        event.subjectAddress === blacklist.listedAddress &&
+        event.tokenContract === blacklist.tokenContract
+      )
+      .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+    const deriveTemporalClass = (transfer: typeof blacklist.principalTransfers[number]) => {
+      if (
+        transfer.occurredAt === null ||
+        blacklist.timelineEvidence.verificationStatus !== "verified" ||
+        !blacklist.timelineEvidence.historyComplete ||
+        !blacklist.timelineEvidence.canonicalOrderVerified
+      ) return "unknown_time";
+      const occurredAt = Date.parse(transfer.occurredAt);
+      if (occurredAt < coverageStart || occurredAt > coverageEnd) return "unknown_time";
+      let active = false;
+      for (const event of timeline) {
+        if (Date.parse(event.occurredAt) > occurredAt) break;
+        active = event.eventKind === "added";
+      }
+      return active ? "active_at_event" : "before_activation";
+    };
+    const classified = blacklist.principalTransfers.map((transfer) => ({
+      ...transfer,
+      derivedTemporalClass: deriveTemporalClass(transfer)
+    }));
+    expect(classified.map(({ derivedTemporalClass }) => derivedTemporalClass)).toEqual(
+      blacklist.principalTransfers.map(({ expectedTemporalClass }) => expectedTemporalClass)
+    );
+    expect(classified.every((row) =>
+      row.confirmed &&
+      row.successful &&
+      row.tokenContract === blacklist.tokenContract &&
+      row.toAddress === blacklist.listedAddress
+    )).toBe(true);
+    const partitionSum = (temporalClass: string) => classified
+      .filter((row) => row.derivedTemporalClass === temporalClass)
       .reduce((sum, row) => sum + BigInt(row.amountRaw), 0n).toString();
     expect(partitionSum("before_activation")).toBe(blacklist.partitions.beforeActivationAmountRaw);
     expect(partitionSum("active_at_event")).toBe(blacklist.partitions.activeAtEventAmountRaw);
     expect(partitionSum("unknown_time")).toBe(blacklist.partitions.unknownTimeAmountRaw);
-    expect(blacklist.principalTransfers.find(({ temporalClass }) => temporalClass === "unknown_time")?.timestamp)
+    expect(blacklist.principalTransfers.find(({ expectedTemporalClass }) => expectedTemporalClass === "unknown_time")?.occurredAt)
       .toBeNull();
 
     const gasFree = corpus.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification") as unknown as {
@@ -346,27 +423,47 @@ describe("forensic model offline corpus v1", () => {
     expect(gasFree.replayEdges[1]?.amountRaw).toBe(gasFree.settlement.feeAmountRaw);
 
     const methodOnly = corpus.adverseCases.find(({ id }) => id === "drainer-method-only") as unknown as {
-      methodEvidence: { bytecodeFingerprint: string; methodMap: readonly unknown[] };
+      observed: { methodId: string };
+      expectedExactDrainerAuthority: boolean;
+      methodEvidence: {
+        contractAddress: string;
+        bytecodeFingerprint: string;
+        methodMap: readonly { selector: string; signature: string }[];
+      };
       approvalCall: null;
       transferFromCall: null;
       movement: null;
     };
-    expect(methodOnly.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:/u);
-    expect(methodOnly.methodEvidence.methodMap).toHaveLength(1);
+    expect(methodOnly.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:sha256:[0-9a-f]{64}$/u);
+    expect(methodOnly.methodEvidence.methodMap).toEqual([{
+      selector: methodOnly.observed.methodId,
+      signature: "transferFrom(address,address,uint256)"
+    }]);
+    expect(methodOnly.expectedExactDrainerAuthority).toBe(false);
     expect(methodOnly.approvalCall).toBeNull();
     expect(methodOnly.transferFromCall).toBeNull();
     expect(methodOnly.movement).toBeNull();
 
     const complete = corpus.adverseCases.find(({ id }) => id === "drainer-complete-evidence") as unknown as {
-      methodEvidence: { bytecodeFingerprint: string; methodMap: readonly unknown[] };
-      approvalCall: { tokenContract: string; ownerAddress: string; spenderAddress: string; confirmed: boolean; successful: boolean };
-      transferFromCall: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+      methodEvidence: {
+        contractAddress: string;
+        bytecodeFingerprint: string;
+        methodMap: readonly { selector: string; signature: string }[];
+      };
+      approvalCall: { txHash: string; tokenContract: string; ownerAddress: string; spenderAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+      transferFromCall: { txHash: string; contractAddress: string; selector: string; tokenContract: string; fromAddress: string; toAddress: string; receiverAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
       movement: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
     };
-    expect(complete.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:/u);
-    expect(complete.methodEvidence.methodMap).toHaveLength(1);
+    expect(complete.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:sha256:[0-9a-f]{64}$/u);
+    expect(complete.methodEvidence.methodMap).toEqual([{
+      selector: complete.transferFromCall.selector,
+      signature: "transferFrom(address,address,uint256)"
+    }]);
     expect(complete.approvalCall).toMatchObject({ confirmed: true, successful: true });
     expect(complete.transferFromCall).toMatchObject({ confirmed: true, successful: true });
+    expect(complete.approvalCall.spenderAddress).toBe(complete.methodEvidence.contractAddress);
+    expect(complete.transferFromCall.contractAddress).toBe(complete.methodEvidence.contractAddress);
+    expect(complete.transferFromCall.receiverAddress).toBe(complete.movement.toAddress);
     expect(complete.movement).toEqual(expect.objectContaining({
       txHash: complete.transferFromCall.txHash,
       tokenContract: complete.transferFromCall.tokenContract,
@@ -378,6 +475,6 @@ describe("forensic model offline corpus v1", () => {
     }));
     expect(complete.approvalCall.tokenContract).toBe(complete.transferFromCall.tokenContract);
     expect(complete.approvalCall.ownerAddress).toBe(complete.transferFromCall.fromAddress);
-    expect(complete.approvalCall.spenderAddress).toBeDefined();
+    expect(BigInt(complete.approvalCall.amountRaw)).toBeGreaterThanOrEqual(BigInt(complete.transferFromCall.amountRaw));
   });
 });

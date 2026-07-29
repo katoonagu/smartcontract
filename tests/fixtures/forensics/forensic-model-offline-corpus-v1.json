@@ -984,52 +984,70 @@
       "expectedHardEvidenceAmountRaw": "100000",
       "expectedRule": "only_active_at_event_partition_is_authoritative",
       "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      "listedAddress": "synthetic-listed-counterparty",
+      "timelineEvidence": {
+        "verificationStatus": "verified",
+        "historyComplete": true,
+        "canonicalOrderVerified": true,
+        "coverageStartTimestamp": "2025-12-01T00:00:00.000Z",
+        "coverageEndTimestamp": "2026-02-01T00:00:00.000Z"
+      },
       "principalTransfers": [
         {
           "txHash": "synthetic-blacklist-before",
           "logIndex": 0,
-          "timestamp": "2026-01-01T00:00:00.000Z",
+          "occurredAt": "2026-01-01T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           "fromAddress": "synthetic-subject",
           "toAddress": "synthetic-listed-counterparty",
           "amountRaw": "900000",
           "confirmed": true,
           "successful": true,
-          "temporalClass": "before_activation"
+          "expectedTemporalClass": "before_activation"
         },
         {
           "txHash": "synthetic-blacklist-active",
           "logIndex": 0,
-          "timestamp": "2026-01-03T00:00:00.000Z",
+          "occurredAt": "2026-01-03T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           "fromAddress": "synthetic-subject",
           "toAddress": "synthetic-listed-counterparty",
           "amountRaw": "100000",
           "confirmed": true,
           "successful": true,
-          "temporalClass": "active_at_event"
+          "expectedTemporalClass": "active_at_event"
         },
         {
           "txHash": "synthetic-blacklist-unknown",
           "logIndex": 0,
-          "timestamp": null,
+          "occurredAt": null,
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           "fromAddress": "synthetic-subject",
           "toAddress": "synthetic-listed-counterparty",
           "amountRaw": "50000",
           "confirmed": true,
           "successful": true,
-          "temporalClass": "unknown_time"
+          "expectedTemporalClass": "unknown_time"
         }
       ],
       "timelineEvents": [
         {
           "txHash": "synthetic-blacklist-added",
           "logIndex": 0,
-          "timestamp": "2026-01-02T00:00:00.000Z",
+          "occurredAt": "2026-01-02T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           "subjectAddress": "synthetic-listed-counterparty",
           "eventKind": "added",
+          "confirmed": true,
+          "successful": true
+        },
+        {
+          "txHash": "synthetic-blacklist-removed",
+          "logIndex": 0,
+          "occurredAt": "2026-01-04T00:00:00.000Z",
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "subjectAddress": "synthetic-listed-counterparty",
+          "eventKind": "removed",
           "confirmed": true,
           "successful": true
         }
@@ -1115,7 +1133,7 @@
       "expectedExactDrainerAuthority": false,
       "methodEvidence": {
         "contractAddress": "synthetic-spender",
-        "bytecodeFingerprint": "synthetic:evm-selector-map-v1:23b872dd",
+        "bytecodeFingerprint": "synthetic:sha256:001f3940a5ec3d9edb0f0dcd6e0f3b25fef58a423d07a93f7ba66edc129e3c16",
         "methodMap": [
           {
             "selector": "23b872dd",
@@ -1146,7 +1164,7 @@
       "expectedExactDrainerAuthority": true,
       "methodEvidence": {
         "contractAddress": "synthetic-spender",
-        "bytecodeFingerprint": "synthetic:evm-selector-map-v1:23b872dd",
+        "bytecodeFingerprint": "synthetic:sha256:001f3940a5ec3d9edb0f0dcd6e0f3b25fef58a423d07a93f7ba66edc129e3c16",
         "methodMap": [
           {
             "selector": "23b872dd",
@@ -1167,6 +1185,7 @@
       "transferFromCall": {
         "txHash": "synthetic-drain-tx",
         "callIndex": 0,
+        "contractAddress": "synthetic-spender",
         "selector": "23b872dd",
         "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         "fromAddress": "synthetic-victim",
