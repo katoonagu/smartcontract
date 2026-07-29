@@ -19,6 +19,7 @@ code_refs:
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
   - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
+  - docs/superpowers/plans/2026-07-29-lean-forensic-model-validation.md
 ---
 
 # Current Roadmap
@@ -30,17 +31,20 @@ implementation plans do not override the status recorded here.
 
 1. Keep legacy Where at concurrency 1; reopen Stage B rollout only when genuine
    replay, deployment, and attributable observation evidence exists.
-2. Freeze the accepted manual replay evidence and write a versioned
-   implementation plan for chronological proportional provenance.
-3. Implement the pure provenance ledger as a separate versioned correctness
-   change, with no production routing change.
-4. Implement Stage C as shadow-only `100 + 100` behavior profiling, including
-   the accepted extreme-throughput feature `X`.
-5. Freeze a separate blind set, complete two reviews, and adjudicate it.
-6. Plan and implement disabled-by-default Stage D / `snapshot-closure-v3`.
-7. Run the full post-model knowledge/code conformance cleanup; factual
+2. Execute one lean offline validation: freeze the real fixtures, implement
+   canonical dedupe/order, a pure integer cashflow ledger, a pure `100 + 100`
+   service classifier, fixture-backed exact adverse reuse, one corpus runner,
+   and focused tests.
+3. Review the offline corpus result and decide whether the two models are good
+   enough to enter separate production implementation plans.
+4. If the service model passes, freeze a separate blind set, complete two
+   reviews, and adjudicate it.
+5. Keep Stage D, production routing, canary, rollout and `500 + 100` outside
+   the immediate plan. Reopen `500 + 100` only when a real ambiguous case
+   demonstrates the need; plan Stage D only after the offline and blind gates.
+6. Run the full post-model knowledge/code conformance cleanup; factual
    contradictions already proven are corrected immediately, not deferred.
-8. Build recipient wallet precheck before signing or broadcasting.
+7. Build recipient wallet precheck before signing or broadcasting.
 
 Unified TQr latency is a separate diagnostic track. It is not Stage B release
 evidence and does not change the order above.
@@ -60,9 +64,10 @@ paths from owning automatic output for the same chat/address pair.
 | Correctness gate | Complete; four authority/temporal defects closed without historical recalculation | Preserve the gate while later stages add evidence or policy |
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
-| Forensic query/provenance model | Detailed design approved; real-corpus manual replay complete; not implemented | Freeze raw fixtures and write a separate versioned implementation plan beginning with the pure integer ledger |
-| Stage C | Detailed `100 + 100` amendment approved after 21-wallet calibration; code absent | Freeze fixtures, implement shadow-only profile, then run a separate frozen blind review |
-| Stage D | Design-only; blocked by missing frozen authority/adverse evidence and blind review | After Stage C acceptance, write a separate V3 plan with disabled default, replay and live canary |
+| Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, red-branch and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
+| Forensic query/provenance model | Detailed design and real-corpus manual replay complete; lean offline implementation plan written; code absent | Implement canonical order/dedupe and the pure integer ledger on frozen fixtures |
+| Stage C | Detailed `100 + 100` amendment approved after 21-wallet calibration; code absent | Implement the pure shadow classifier in the same offline runner, with no boundary action or scoring |
+| Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
@@ -189,5 +194,7 @@ The completed correctness and Stage B work is split into
 `docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md`.
 The 2026-07-29 manual gate and remaining authority gaps are recorded in
 `docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
-The two forensic designs are accepted but intentionally have no implementation
-plan in this change; production routing remains unchanged.
+Their first implementation slice is intentionally limited by
+`docs/superpowers/plans/2026-07-29-lean-forensic-model-validation.md` to frozen
+offline fixtures, pure functions, exact evidence reuse and tests. Production
+routing remains unchanged; Stage D and `500 + 100` are not part of that plan.
