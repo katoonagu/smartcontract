@@ -17,6 +17,12 @@ import {
   type ServiceBehaviorRowV2,
   type ServiceWindowVectorV2
 } from "../../src/forensics/serviceBehaviorResearch.js";
+import {
+  evaluateExactDrainerSceneV1,
+  replayOfflineForensicModelCorpusV1,
+  type ExactDrainerSceneInputV1,
+  type OfflineCorpusV1
+} from "../../src/forensics/offlineForensicModelReplay.js";
 
 type Case = {
   readonly id: string;
@@ -1681,5 +1687,282 @@ describe("chronological proportional ledger v1", () => {
       expect(result.consumptionVectors.flatMap((item) => item.allocations)
         .every((item) => item.amountRaw >= 0n)).toBe(true);
     }
+  });
+});
+
+const completeFingerprintMethods = {
+  "5082dd12": "Verify20(address,address,address,uint256)",
+  "fc61dd23": "Verify10(address,uint256)",
+  "ea4418d9": "withdrawAllTrxTo(address)",
+  "f2fde38b": "transferOwnership(address)"
+};
+
+function exactDrainerScene(
+  overrides: Partial<ExactDrainerSceneInputV1> = {}
+): ExactDrainerSceneInputV1 {
+  const call = {
+    txHash: "scene-drain-tx",
+    selector: "5082dd12",
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    fromAddress: "scene-victim",
+    toAddress: "scene-receiver",
+    receiverAddress: "scene-receiver",
+    amountRaw: "669000000",
+    confirmed: true,
+    successful: true
+  };
+  return {
+    methodMap: completeFingerprintMethods,
+    topMethods: [],
+    serviceLabel: null,
+    relevantCall: call,
+    movement: {
+      txHash: call.txHash,
+      tokenContract: call.tokenContract,
+      fromAddress: call.fromAddress,
+      toAddress: call.toAddress,
+      amountRaw: call.amountRaw,
+      confirmed: true,
+      successful: true
+    },
+    ...overrides
+  };
+}
+
+function minimalReplayCorpus(
+  overrides: Partial<OfflineCorpusV1> = {}
+): OfflineCorpusV1 {
+  return {
+    schemaVersion: "forensic-model-offline-corpus-v1",
+    ledgerCases: [],
+    serviceCases: [],
+    adverseCases: [],
+    ...overrides
+  };
+}
+
+describe("offline forensic model replay v1", () => {
+  it("requires the full unblocked fingerprint and one exact successful movement", () => {
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene())).toEqual({
+      classification: "exact_drainer_red",
+      red: true,
+      reason: "exact_call_and_movement_confirmed"
+    });
+
+    const methodOnly = exactDrainerScene({ relevantCall: null, movement: null });
+    expect(evaluateExactDrainerSceneV1(methodOnly)).toMatchObject({
+      classification: "context_only",
+      red: false,
+      reason: "exact_call_missing"
+    });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, successful: false }
+    }))).toMatchObject({ red: false, reason: "exact_call_not_successful" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, confirmed: false }
+    }))).toMatchObject({ red: false, reason: "exact_call_not_confirmed" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      movement: { ...exactDrainerScene().movement!, amountRaw: "669000001" }
+    }))).toMatchObject({ red: false, reason: "movement_mismatch" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      serviceLabel: "trusted exact service"
+    }))).toMatchObject({ red: false, reason: "trusted_service_guard" });
+
+    expect(JSON.stringify(evaluateExactDrainerSceneV1(exactDrainerScene())))
+      .not.toMatch(/Verify20|transferFrom/u);
+  });
+
+  it("reuses event-time provider authority and keeps HTX role plus adverse semantics", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    const binance = result.adverseCases.find(({ id }) => id === "exact-binance-label");
+    const htx = result.adverseCases.find(({ id }) => id === "exact-htx-label");
+
+    expect(binance).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      kind: "service_label",
+      serviceRole: "cex:binance",
+      inferredClassifierBypassed: true,
+      adverse: false,
+      atValidityStart: "eligible",
+      beforeValidityStart: "label_not_valid_at_event"
+    });
+    expect(htx).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      kind: "service_label",
+      serviceRole: "cex:htx-huobi",
+      inferredClassifierBypassed: true,
+      adverse: true,
+      atValidityStart: "eligible",
+      beforeValidityStart: "label_not_valid_at_event"
+    });
+  });
+
+  it("keeps blacklist time partitions and GasFree principal separate from its fee", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    const blacklist = result.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions");
+    const gasFree = result.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification");
+
+    expect(blacklist).toMatchObject({
+      kind: "blacklist_timeline",
+      beforeEventAmountRaw: "900000",
+      activeAtEventAmountRaw: "100000",
+      unknownAmountRaw: "50000",
+      partitions: {
+        before_event: "900000",
+        active_at_event: "100000",
+        unknown: "50000"
+      }
+    });
+    expect(gasFree).toMatchObject({
+      kind: "gasfree_settlement",
+      settlementDetected: true,
+      ledgerExecuted: false,
+      principalAmountRaw: "4691000000",
+      serviceFeeAmountRaw: "1500000",
+      principalRole: "aml_money_path",
+      serviceFeeRole: "accounting_only_consumption",
+      principalFeatureEligible: true,
+      serviceFeeFeatureEligible: false,
+      principalCounterparties: [{
+        address: "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq",
+        direction: "outbound",
+        amountRaw: "4691000000"
+      }]
+    });
+  });
+
+  it("represents every broad direct counterparty in both directions and retains second-hop red", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "broad-synthetic",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [
+          { id: "in-a", txHash: "in-a", direction: "inbound", counterpartyAddress: "a", amountRaw: "7", occurredAt: "2026-01-01T00:00:00.000Z" },
+          { id: "out-a", txHash: "out-a", direction: "outbound", counterpartyAddress: "a", amountRaw: "5", occurredAt: "2026-01-01T00:00:01.000Z" },
+          { id: "in-b", txHash: "in-b", direction: "inbound", counterpartyAddress: "b", amountRaw: "3", occurredAt: "2026-01-01T00:00:02.000Z" },
+          { id: "out-b", txHash: "out-b", direction: "outbound", counterpartyAddress: "b", amountRaw: "2", occurredAt: "2026-01-01T00:00:03.000Z" }
+        ],
+        secondHopRedBranches: [{
+          branchId: "red-b-c",
+          directCounterpartyAddress: "b",
+          secondHopAddress: "c",
+          evidenceId: "exact-red-c",
+          amountRaw: "1"
+        }]
+      }]
+    }));
+
+    expect(result.broadScopeCases).toEqual([{
+      id: "broad-synthetic",
+      evidenceClass: "synthetic_edge_case",
+      shallowProbe: [
+        { address: "a", directions: ["inbound", "outbound"], amountRaw: "12" },
+        { address: "b", directions: ["inbound", "outbound"], amountRaw: "5" }
+      ],
+      secondHopRedBranches: [{
+        branchId: "red-b-c",
+        directCounterpartyAddress: "b",
+        secondHopAddress: "c",
+        evidenceId: "exact-red-c",
+        amountRaw: "1"
+      }]
+    }]);
+  });
+
+  it("retains a red contributor outside the ordinary 95 percent selection", () => {
+    const input = minimalReplayCorpus({
+      ledgerCases: [{
+        id: "red-below-95",
+        evidenceClass: "synthetic_edge_case",
+        replayInput: {
+          subjectAddress: "subject",
+          snapshotBlockNumber: 10,
+          snapshotBlockHash: "snapshot",
+          snapshotEvidenceRef: "synthetic",
+          historyCompleteness: "genesis_complete",
+          openingBalanceRaw: "0",
+          events: [
+            ["in-90", "funder-90", "90000000", 1],
+            ["in-5", "funder-5", "5000000", 2],
+            ["in-4", "funder-4", "4000000", 3],
+            ["in-red", "funder-red", "1000000", 4]
+          ].map(([eventId, sourceAddress, amountRaw, blockNumber]) => ({
+            canonicalEventId: null,
+            providerEventIds: [eventId],
+            txHash: eventId,
+            blockNumber,
+            transactionIndex: 0,
+            eventIndex: 0,
+            eventIndexAuthority: "receipt_log_index",
+            occurredAtMs: Number(blockNumber) * 1_000,
+            fromAddress: sourceAddress,
+            toAddress: "subject",
+            amountRaw
+          }))
+        },
+        query: {
+          purpose: "current_balance",
+          snapshotBalanceWitness: {
+            amountRaw: "100000000",
+            pinned: true,
+            independent: true,
+            subjectAddress: "subject",
+            snapshotBlockNumber: 10,
+            snapshotBlockHash: "snapshot",
+            evidenceRef: "synthetic-balance"
+          },
+          exactRedContributorLotIds: ["receipt:in-red:0"]
+        }
+      }]
+    });
+    const [replay] = replayOfflineForensicModelCorpusV1(input).ledgerCases;
+
+    expect(replay).toMatchObject({
+      state: "complete",
+      targetRaw: "100000000",
+      coveredRaw: "100000000"
+    });
+    expect(replay?.deepSelectedLotIds).toContain("receipt:in-red:0");
+  });
+
+  it("returns JSON-safe corpus facts without upgrading recorded evidence", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    expect(result.schemaVersion).toBe("offline-forensic-model-replay-v1");
+    expect(result.ledgerCases).toHaveLength(corpus.ledgerCases.length);
+    expect(result.serviceCases).toHaveLength(corpus.serviceCases.length);
+    expect(result.adverseCases).toHaveLength(corpus.adverseCases.length);
+    expect(result.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", replayAuthority: "recorded_vector" });
+    expect(result.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", state: "expectation_level" });
+    expect(result.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", state: "insufficient_data" });
+    expect(result.adverseCases.find(({ id }) => id === "drainer-method-only"))
+      .toMatchObject({ kind: "drainer_scene", red: false, reason: "fingerprint_incomplete" });
+    expect(result.adverseCases.find(({ id }) => id === "drainer-complete-evidence"))
+      .toMatchObject({ kind: "drainer_scene", red: false, reason: "fingerprint_incomplete" });
+    expect(result.dataGaps).toEqual(expect.arrayContaining([
+      { caseId: "pacgy-recorded-chronology", code: "history_incomplete" },
+      { caseId: "tqr-d7nzp-recorded-control", code: "recorded_partial_vector" },
+      { caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" },
+      { caseId: "drainer-complete-evidence", code: "verify20_fingerprint_incomplete" }
+    ]));
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(JSON.stringify(result)).not.toMatch(/\d+n\b/u);
+  });
+
+  it("rejects an unknown schema and non-canonical raw amount at the replay boundary", () => {
+    expect(() => replayOfflineForensicModelCorpusV1({
+      ...minimalReplayCorpus(),
+      schemaVersion: "wrong"
+    } as OfflineCorpusV1)).toThrow("offline_corpus_schema_invalid");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [{
+        id: "bad-amount",
+        evidenceClass: "synthetic_edge_case",
+        amountRaw: "01"
+      }]
+    }))).toThrow("offline_corpus_amount_raw_invalid");
   });
 });

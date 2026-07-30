@@ -1,0 +1,793 @@
+import {
+  runChronologicalProportionalLedgerV1,
+  selectLedgerProvenanceV1,
+  type LedgerEventV1,
+  type LedgerInputV1,
+  type LedgerQueryV1,
+  type SnapshotBalanceWitnessV1
+} from "./chronologicalProportionalLedger";
+import {
+  evaluateServiceWindowPredicateV2,
+  type CompleteServiceWindowVectorV2
+} from "./serviceBehaviorResearch";
+import {
+  groupDirectPrincipalCounterparties,
+  partitionPrincipalTransfersByBlacklistTimeline
+} from "./directHardEvidence";
+import {
+  extractGasFreeSettlement,
+  isGasFreeServiceFeeEdge
+} from "./gasFreeSettlement";
+import { detectVerify20Fingerprint } from "./verify20Fingerprint";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import {
+  buildFrozenLabelRecord,
+  resolveFrozenLabelAtEventV1
+} from "../unifiedCheck/labelCatalog";
+import { decideTronScanProviderServiceAssertion } from "../unifiedCheck/providerServiceBindings";
+import type { ForensicRouteEdge, UsdtBlacklistTimelineEvent } from "../types";
+
+export type OfflineEvidenceClassV1 =
+  | "exact_frozen_rows"
+  | "recorded_calibration_vector"
+  | "synthetic_edge_case";
+
+export type OfflineCaseV1 = {
+  readonly id: string;
+  readonly evidenceClass: OfflineEvidenceClassV1;
+  readonly [key: string]: unknown;
+};
+
+export type BroadScopeCaseV1 = {
+  readonly id: string;
+  readonly evidenceClass: OfflineEvidenceClassV1;
+  readonly subjectAddress: string;
+  readonly directEdges: readonly {
+    readonly id: string;
+    readonly txHash: string;
+    readonly direction: "inbound" | "outbound";
+    readonly counterpartyAddress: string;
+    readonly amountRaw: string;
+    readonly occurredAt: string;
+  }[];
+  readonly secondHopRedBranches: readonly {
+    readonly branchId: string;
+    readonly directCounterpartyAddress: string;
+    readonly secondHopAddress: string;
+    readonly evidenceId: string;
+    readonly amountRaw: string;
+  }[];
+};
+
+export type OfflineCorpusV1 = {
+  readonly schemaVersion: string;
+  readonly ledgerCases: readonly OfflineCaseV1[];
+  readonly serviceCases: readonly OfflineCaseV1[];
+  readonly adverseCases: readonly OfflineCaseV1[];
+  readonly broadScopeCases?: readonly BroadScopeCaseV1[];
+};
+
+export type ExactDrainerCallV1 = {
+  readonly txHash: string;
+  readonly selector: string;
+  readonly tokenContract: string;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  readonly receiverAddress: string;
+  readonly amountRaw: string;
+  readonly confirmed: boolean;
+  readonly successful: boolean;
+};
+
+export type ExactDrainerMovementV1 = {
+  readonly txHash: string;
+  readonly tokenContract: string;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  readonly amountRaw: string;
+  readonly confirmed: boolean;
+  readonly successful: boolean;
+};
+
+export type ExactDrainerSceneInputV1 = {
+  readonly methodMap: Readonly<Record<string, string>>;
+  readonly topMethods: readonly {
+    readonly methodId?: string | null;
+    readonly method?: string | null;
+    readonly signature?: string | null;
+  }[];
+  readonly serviceLabel?: string | null;
+  readonly relevantCall: ExactDrainerCallV1 | null;
+  readonly movement: ExactDrainerMovementV1 | null;
+};
+
+export type ExactDrainerSceneResultV1 = {
+  readonly classification: "exact_drainer_red" | "context_only";
+  readonly red: boolean;
+  readonly reason:
+    | "exact_call_and_movement_confirmed"
+    | "trusted_service_guard"
+    | "fingerprint_incomplete"
+    | "exact_call_missing"
+    | "exact_call_mismatch"
+    | "exact_call_not_confirmed"
+    | "exact_call_not_successful"
+    | "movement_missing"
+    | "movement_not_confirmed"
+    | "movement_not_successful"
+    | "movement_mismatch";
+};
+
+type ReplayCaseResultV1 = {
+  readonly id: string;
+  readonly evidenceClass: OfflineEvidenceClassV1;
+  readonly [key: string]: unknown;
+};
+
+export type OfflineReplayResultV1 = {
+  readonly schemaVersion: "offline-forensic-model-replay-v1";
+  readonly ledgerCases: readonly ReplayCaseResultV1[];
+  readonly serviceCases: readonly ReplayCaseResultV1[];
+  readonly adverseCases: readonly ReplayCaseResultV1[];
+  readonly broadScopeCases: readonly ReplayCaseResultV1[];
+  readonly dataGaps: readonly { readonly caseId: string; readonly code: string }[];
+};
+
+const AMOUNT_RAW = /^(0|[1-9]\d*)$/u;
+const EVIDENCE_CLASSES = new Set<OfflineEvidenceClassV1>([
+  "exact_frozen_rows",
+  "recorded_calibration_vector",
+  "synthetic_edge_case"
+]);
+
+function record(value: unknown, code = "offline_corpus_case_invalid"): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(code);
+  }
+  return value as Record<string, unknown>;
+}
+
+function string(value: unknown, code = "offline_corpus_case_invalid"): string {
+  if (typeof value !== "string" || value.length === 0) throw new TypeError(code);
+  return value;
+}
+
+function integer(value: unknown, code = "offline_corpus_case_invalid"): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
+}
+
+function parseAmountRaw(value: unknown): bigint {
+  if (typeof value !== "string" || !AMOUNT_RAW.test(value)) {
+    throw new TypeError("offline_corpus_amount_raw_invalid");
+  }
+  return BigInt(value);
+}
+
+function validateAmounts(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) validateAmounts(item);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (/amountRaw$/iu.test(key)) parseAmountRaw(child);
+    validateAmounts(child);
+  }
+}
+
+function evidenceClass(value: unknown): OfflineEvidenceClassV1 {
+  if (!EVIDENCE_CLASSES.has(value as OfflineEvidenceClassV1)) {
+    throw new TypeError("offline_corpus_evidence_class_invalid");
+  }
+  return value as OfflineEvidenceClassV1;
+}
+
+function validateCases(value: unknown): readonly OfflineCaseV1[] {
+  if (!Array.isArray(value)) throw new TypeError("offline_corpus_schema_invalid");
+  return value.map((item) => {
+    const source = record(item);
+    string(source.id);
+    evidenceClass(source.evidenceClass);
+    return source as OfflineCaseV1;
+  });
+}
+
+function resultBase(item: OfflineCaseV1): Pick<ReplayCaseResultV1, "id" | "evidenceClass"> {
+  return { id: item.id, evidenceClass: item.evidenceClass };
+}
+
+function toLedgerEvent(value: unknown): LedgerEventV1 {
+  const source = record(value);
+  const providerEventIds = source.providerEventIds;
+  if (!Array.isArray(providerEventIds) || providerEventIds.some((item) => typeof item !== "string")) {
+    throw new TypeError("offline_corpus_ledger_event_invalid");
+  }
+  const eventIndexAuthority = source.eventIndexAuthority;
+  if (eventIndexAuthority !== "receipt_log_index" && eventIndexAuthority !== "provider_synthetic") {
+    throw new TypeError("offline_corpus_ledger_event_invalid");
+  }
+  return {
+    canonicalEventId: source.canonicalEventId === null ? null : string(source.canonicalEventId),
+    providerEventIds,
+    txHash: string(source.txHash),
+    blockNumber: integer(source.blockNumber),
+    transactionIndex: source.transactionIndex === null ? null : integer(source.transactionIndex),
+    eventIndex: source.eventIndex === null ? null : integer(source.eventIndex),
+    eventIndexAuthority,
+    occurredAtMs: integer(source.occurredAtMs),
+    fromAddress: string(source.fromAddress),
+    toAddress: string(source.toAddress),
+    amountRaw: parseAmountRaw(source.amountRaw)
+  };
+}
+
+function toLedgerInput(value: unknown): LedgerInputV1 {
+  const source = record(value);
+  if (!Array.isArray(source.events)) throw new TypeError("offline_corpus_ledger_input_invalid");
+  const historyCompleteness = source.historyCompleteness;
+  if (historyCompleteness !== "genesis_complete" && historyCompleteness !== "partial") {
+    throw new TypeError("offline_corpus_ledger_input_invalid");
+  }
+  return {
+    subjectAddress: string(source.subjectAddress),
+    snapshotBlockNumber: integer(source.snapshotBlockNumber),
+    snapshotBlockHash: string(source.snapshotBlockHash),
+    snapshotEvidenceRef: string(source.snapshotEvidenceRef),
+    historyCompleteness,
+    openingBalanceRaw: parseAmountRaw(source.openingBalanceRaw),
+    events: source.events.map(toLedgerEvent)
+  };
+}
+
+function toSnapshotWitness(value: unknown): SnapshotBalanceWitnessV1 {
+  const source = record(value);
+  if (typeof source.pinned !== "boolean" || typeof source.independent !== "boolean") {
+    throw new TypeError("offline_corpus_balance_witness_invalid");
+  }
+  return {
+    amountRaw: parseAmountRaw(source.amountRaw),
+    pinned: source.pinned,
+    independent: source.independent,
+    subjectAddress: string(source.subjectAddress),
+    snapshotBlockNumber: integer(source.snapshotBlockNumber),
+    snapshotBlockHash: string(source.snapshotBlockHash),
+    evidenceRef: string(source.evidenceRef)
+  };
+}
+
+function replayLedgerCase(item: OfflineCaseV1): ReplayCaseResultV1 {
+  const source = item as Record<string, unknown>;
+  if (source.replayInput !== undefined) {
+    const ledger = runChronologicalProportionalLedgerV1(toLedgerInput(source.replayInput));
+    const querySource = record(source.query, "offline_corpus_ledger_query_invalid");
+    const purpose = querySource.purpose;
+    if (purpose !== "current_balance" && purpose !== "amount_only" && purpose !== "exact_episode") {
+      throw new TypeError("offline_corpus_ledger_query_invalid");
+    }
+    const redIds = querySource.exactRedContributorLotIds;
+    if (redIds !== undefined && (!Array.isArray(redIds) || redIds.some((id) => typeof id !== "string"))) {
+      throw new TypeError("offline_corpus_ledger_query_invalid");
+    }
+    const query: LedgerQueryV1 = {
+      ledger,
+      purpose,
+      requestedAmountRaw: querySource.requestedAmountRaw === undefined
+        ? undefined
+        : parseAmountRaw(querySource.requestedAmountRaw),
+      exactEventId: querySource.exactEventId === undefined
+        ? undefined
+        : string(querySource.exactEventId),
+      snapshotBalanceWitness: querySource.snapshotBalanceWitness === undefined
+        ? undefined
+        : toSnapshotWitness(querySource.snapshotBalanceWitness),
+      exactRedContributorLotIds: redIds as string[] | undefined
+    };
+    const selection = selectLedgerProvenanceV1(query);
+    return {
+      ...resultBase(item),
+      state: selection.state,
+      reason: selection.reason,
+      authoritative: ledger.authoritative,
+      targetRaw: selection.targetRaw.toString(),
+      coveredRaw: selection.coveredRaw.toString(),
+      allocations: selection.allocations.map((allocation) => ({
+        lotId: allocation.lotId,
+        sourceEventId: allocation.sourceEventId,
+        sourceAddress: allocation.sourceAddress,
+        amountRaw: allocation.amountRaw.toString(),
+        sourceOriginalRaw: allocation.sourceOriginalRaw.toString(),
+        sourceUtilizedRaw: allocation.sourceUtilizedRaw.toString()
+      })),
+      deepSelectedLotIds: selection.deepSelectedLotIds
+    };
+  }
+  if (item.id === "pacgy-recorded-chronology") {
+    return {
+      ...resultBase(item),
+      state: "unresolved",
+      reason: "history_incomplete",
+      authoritative: false
+    };
+  }
+  return {
+    ...resultBase(item),
+    state: "expectation_level",
+    reason: null,
+    authoritative: false
+  };
+}
+
+function recordedWindowVector(value: unknown): CompleteServiceWindowVectorV2 {
+  const source = record(value);
+  const largest = record(source.largestCounterparty);
+  const median = record(source.medianDominantDirectionGapSeconds);
+  const repeated = record(source.dominantExactAmount);
+  const dominantDirection = source.dominantDirection;
+  if (dominantDirection !== "incoming" && dominantDirection !== "outgoing") {
+    throw new TypeError("offline_corpus_service_vector_invalid");
+  }
+  return {
+    kind: "complete",
+    physicalRowCount: integer(source.physicalRowCount),
+    canonicalEventCount: integer(source.canonicalEventCount),
+    featureEligibleEventCount: integer(source.featureEligibleEventCount),
+    invalidPhysicalRowCount: 0,
+    collisionPhysicalRowCount: 0,
+    duplicatePhysicalRowCount: integer(source.physicalRowCount) - integer(source.canonicalEventCount),
+    poisoningOnlyEventCount: 0,
+    gasFreeFeeEventCount: 0,
+    gasFreePrincipalEventCount: 0,
+    incomingCount: integer(source.incomingCount),
+    outgoingCount: integer(source.outgoingCount),
+    uniqueSenders: integer(source.uniqueSenders),
+    uniqueRecipients: integer(source.uniqueRecipients),
+    uniqueCounterparties: integer(source.uniqueCounterparties),
+    largestCounterpartyCount: integer(largest.count),
+    largestCounterpartyShareDenominator: integer(largest.shareDenominator),
+    dominantDirection,
+    dominantDirectionCount: integer(source.dominantDirectionCount),
+    uniqueDominantCounterparties: integer(source.uniqueDominantCounterparties),
+    dominantShareDenominator: integer(source.dominantShareDenominator),
+    medianDominantDirectionGapSeconds: {
+      numerator: integer(median.numerator),
+      denominator: integer(median.denominator) === 2 ? 2 : 1
+    },
+    maxDominantDirectionEventsPerHour: integer(source.maxDominantDirectionEventsPerHour),
+    activeUtcHourOfDayCount: integer(source.activeUtcHourOfDayCount),
+    dominantExactAmountRaw: parseAmountRaw(repeated.amountRaw),
+    dominantExactAmountCount: integer(repeated.count),
+    dominantExactAmountShareDenominator: integer(repeated.shareDenominator),
+    observedStartSeconds: Date.parse(string(source.observedStartTimestamp)) / 1_000,
+    observedEndSeconds: Date.parse(string(source.observedEndTimestamp)) / 1_000,
+    observedWindowDurationSeconds: integer(source.observedWindowDurationSeconds),
+    orderAuthoritative: false
+  };
+}
+
+function passesRecordedPredicate(vector: CompleteServiceWindowVectorV2): boolean {
+  const predicate = evaluateServiceWindowPredicateV2(vector);
+  return predicate.C && predicate.B && predicate.G && (predicate.H || predicate.R || predicate.X);
+}
+
+function replayServiceCase(
+  item: OfflineCaseV1,
+  exactRoles: ReadonlyMap<string, string>
+): ReplayCaseResultV1 {
+  const source = item as Record<string, unknown>;
+  const address = typeof source.address === "string" ? source.address : null;
+  const exactRole = address === null ? null : exactRoles.get(address) ?? null;
+  if (exactRole !== null) {
+    return {
+      ...resultBase(item),
+      state: "exact_service_role",
+      serviceRole: exactRole,
+      inferredClassifierBypassed: true,
+      replayAuthority: "exact_frozen_rows"
+    };
+  }
+  if (Array.isArray(source.windows) && source.windows.length === 2) {
+    const vectors = source.windows.map(recordedWindowVector);
+    return {
+      ...resultBase(item),
+      state: passesRecordedPredicate(vectors[0]!) && passesRecordedPredicate(vectors[1]!)
+        ? "high_inferred_service"
+        : "non_service_profile",
+      replayAuthority: "recorded_vector",
+      authoritative: false
+    };
+  }
+  if (source.behaviorClassification === "insufficient_data") {
+    return {
+      ...resultBase(item),
+      state: "insufficient_data",
+      replayAuthority: "recorded_partial_vector",
+      authoritative: false
+    };
+  }
+  return {
+    ...resultBase(item),
+    state: "expectation_level",
+    replayAuthority: "recorded_vector",
+    authoritative: false
+  };
+}
+
+function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
+  const frozen = record((item as Record<string, unknown>).frozenRow);
+  const address = string(frozen.address);
+  const tag = string(frozen.label);
+  const validFrom = string(frozen.validFrom);
+  const frozenAt = validFrom;
+  const decision = decideTronScanProviderServiceAssertion({
+    frozenAt,
+    metadata: {
+      address,
+      source: "tronscan",
+      name: null,
+      tag,
+      verified: null,
+      rawJson: { address, tag },
+      fetchedAt: new Date(validFrom),
+      expiresAt: new Date(Date.parse(validFrom) + 1)
+    }
+  });
+  if (!decision.accepted) throw new TypeError(`offline_corpus_service_label_rejected:${decision.reason}`);
+  const label = buildFrozenLabelRecord({
+    address,
+    classifierHint: null,
+    exactRegistryBinding: null,
+    verifiedProviderBinding: {
+      catalogEntryId: decision.catalogEntryId,
+      authority: decision.authority,
+      sourcePayloadSha256: decision.source.sourcePayloadSha256,
+      validFrom: decision.validity.validFrom,
+      validTo: decision.validity.validTo
+    }
+  });
+  const atStart = resolveFrozenLabelAtEventV1({ label, eventTimestamp: validFrom });
+  const before = resolveFrozenLabelAtEventV1({
+    label,
+    eventTimestamp: new Date(Date.parse(validFrom) - 1).toISOString()
+  });
+  return {
+    ...resultBase(item),
+    kind: "service_label",
+    address,
+    serviceRole: decision.catalogEntryId,
+    inferredClassifierBypassed: true,
+    adverse: decision.catalogEntryId === "cex:htx-huobi",
+    atValidityStart: atStart.kind,
+    beforeValidityStart: before.kind
+  };
+}
+
+function routeEdge(input: {
+  id: string;
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  occurredAt: string;
+  economicProtocol?: "tron_gasfree";
+  economicRole?: "principal" | "service_fee";
+}): ForensicRouteEdge {
+  return {
+    id: input.id,
+    fromAddress: input.fromAddress,
+    toAddress: input.toAddress,
+    txHash: input.txHash,
+    amountRaw: parseAmountRaw(input.amountRaw).toString(),
+    timestamp: new Date(input.occurredAt),
+    method: "transfer",
+    edgeType: "normal_transfer",
+    economicProtocol: input.economicProtocol,
+    economicRole: input.economicRole
+  };
+}
+
+function validTimelineEvent(value: unknown, index: number): UsdtBlacklistTimelineEvent {
+  const source = record(value);
+  const kind = source.eventKind;
+  if (kind !== "added" && kind !== "removed") throw new TypeError("offline_corpus_blacklist_invalid");
+  return {
+    eventKind: kind,
+    occurredAt: string(source.occurredAt),
+    txHash: (index + 1).toString(16).padStart(64, "0"),
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    blockNumber: index + 1,
+    logIndex: integer(source.logIndex),
+    verification: "verified_contract_log"
+  };
+}
+
+function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
+  const source = item as Record<string, unknown>;
+  if (!Array.isArray(source.principalTransfers) || !Array.isArray(source.timelineEvents)) {
+    throw new TypeError("offline_corpus_blacklist_invalid");
+  }
+  const transfers = source.principalTransfers.map((value) => record(value));
+  const events = source.timelineEvents.map(validTimelineEvent)
+    .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+  const subjectAddress = string(transfers[0]?.fromAddress);
+  const edges = transfers.map((transfer, index) => routeEdge({
+    id: `${string(transfer.txHash)}:${integer(transfer.logIndex)}`,
+    txHash: string(transfer.txHash),
+    fromAddress: string(transfer.fromAddress),
+    toAddress: string(transfer.toAddress),
+    amountRaw: string(transfer.amountRaw),
+    occurredAt: typeof transfer.occurredAt === "string"
+      ? transfer.occurredAt
+      : new Date(index).toISOString()
+  }));
+  groupDirectPrincipalCounterparties({
+    subjectAddress,
+    edges,
+    directTransferCoverage: "complete"
+  });
+  const amounts = { before: 0n, active: 0n, unknown: 0n };
+  const firstRemoval = events.findIndex(({ eventKind }) => eventKind === "removed");
+  const activeLifecycle = firstRemoval === -1 ? events : events.slice(0, firstRemoval);
+  for (const transfer of transfers) {
+    const occurredAt = typeof transfer.occurredAt === "string" ? transfer.occurredAt : "";
+    const partition = partitionPrincipalTransfersByBlacklistTimeline({
+      principalTransfers: [{
+        txHash: string(transfer.txHash),
+        amountRaw: parseAmountRaw(transfer.amountRaw),
+        occurredAt
+      }],
+      timeline: {
+        // ponytail: this frozen case has no post-removal transfer; replay the
+        // event-time active prefix because the reused partitioner is current-active scoped.
+        events: occurredAt === "" ? events : activeLifecycle,
+        pagination: "complete",
+        failureReason: null
+      }
+    });
+    amounts.before += partition.before.amountRaw;
+    amounts.active += partition.active.amountRaw;
+    amounts.unknown += partition.unknown.amountRaw;
+  }
+  return {
+    ...resultBase(item),
+    kind: "blacklist_timeline",
+    beforeEventAmountRaw: amounts.before.toString(),
+    activeAtEventAmountRaw: amounts.active.toString(),
+    unknownAmountRaw: amounts.unknown.toString(),
+    partitions: {
+      before_event: amounts.before.toString(),
+      active_at_event: amounts.active.toString(),
+      unknown: amounts.unknown.toString()
+    }
+  };
+}
+
+function gasFreeResult(item: OfflineCaseV1): ReplayCaseResultV1 {
+  const source = item as Record<string, unknown>;
+  const settlement = extractGasFreeSettlement(source.transactionInfo);
+  if (!settlement || !Array.isArray(source.replayEdges)) {
+    throw new TypeError("offline_corpus_gasfree_invalid");
+  }
+  const edges = source.replayEdges.map((value, index) => {
+    const edge = record(value);
+    const economicRole = edge.economicRole;
+    if (economicRole !== "principal" && economicRole !== "service_fee") {
+      throw new TypeError("offline_corpus_gasfree_invalid");
+    }
+    return routeEdge({
+      id: `gasfree:${index}`,
+      txHash: `gasfree:${index}`,
+      fromAddress: string(edge.fromAddress),
+      toAddress: string(edge.toAddress),
+      amountRaw: string(edge.amountRaw),
+      occurredAt: new Date(index).toISOString(),
+      economicProtocol: "tron_gasfree",
+      economicRole
+    });
+  });
+  const groups = groupDirectPrincipalCounterparties({
+    subjectAddress: settlement.accountAddress,
+    edges,
+    directTransferCoverage: "complete"
+  });
+  return {
+    ...resultBase(item),
+    kind: "gasfree_settlement",
+    settlementDetected: true,
+    ledgerExecuted: false,
+    principalAmountRaw: settlement.principalAmountRaw,
+    serviceFeeAmountRaw: settlement.serviceFeeAmountRaw,
+    principalRole: "aml_money_path",
+    serviceFeeRole: "accounting_only_consumption",
+    principalFeatureEligible: !isGasFreeServiceFeeEdge(edges[0]!),
+    serviceFeeFeatureEligible: !isGasFreeServiceFeeEdge(edges[1]!),
+    principalCounterparties: groups.map((group) => ({
+      address: group.address,
+      direction: group.direction,
+      amountRaw: group.principalAmountRaw.toString()
+    }))
+  };
+}
+
+function drainerInput(item: OfflineCaseV1): ExactDrainerSceneInputV1 {
+  const source = item as Record<string, unknown>;
+  const methodEvidence = record(source.methodEvidence);
+  if (!Array.isArray(methodEvidence.methodMap)) throw new TypeError("offline_corpus_drainer_invalid");
+  const methodMap = Object.fromEntries(methodEvidence.methodMap.map((value) => {
+    const method = record(value);
+    return [string(method.selector), string(method.signature)];
+  }));
+  const call = source.transferFromCall === null ? null : record(source.transferFromCall);
+  const movement = source.movement === null ? null : record(source.movement);
+  return {
+    methodMap,
+    topMethods: [],
+    serviceLabel: null,
+    relevantCall: call === null ? null : {
+      txHash: string(call.txHash),
+      selector: string(call.selector),
+      tokenContract: string(call.tokenContract),
+      fromAddress: string(call.fromAddress),
+      toAddress: string(call.toAddress),
+      receiverAddress: string(call.receiverAddress),
+      amountRaw: string(call.amountRaw),
+      confirmed: call.confirmed === true,
+      successful: call.successful === true
+    },
+    movement: movement === null ? null : {
+      txHash: string(movement.txHash),
+      tokenContract: string(movement.tokenContract),
+      fromAddress: string(movement.fromAddress),
+      toAddress: string(movement.toAddress),
+      amountRaw: string(movement.amountRaw),
+      confirmed: movement.confirmed === true,
+      successful: movement.successful === true
+    }
+  };
+}
+
+function replayAdverseCase(item: OfflineCaseV1): ReplayCaseResultV1 {
+  if (item.id === "exact-binance-label" || item.id === "exact-htx-label") {
+    return providerLabelResult(item);
+  }
+  if (item.id === "event-time-blacklist-partitions") return blacklistResult(item);
+  if (item.id === "gasfree-principal-fee-classification") return gasFreeResult(item);
+  if (item.id.startsWith("drainer-")) {
+    return { ...resultBase(item), kind: "drainer_scene", ...evaluateExactDrainerSceneV1(drainerInput(item)) };
+  }
+  return { ...resultBase(item), kind: "context" };
+}
+
+function replayBroadScopeCase(item: BroadScopeCaseV1): ReplayCaseResultV1 {
+  const edges = item.directEdges.map((edge) => routeEdge({
+    id: edge.id,
+    txHash: edge.txHash,
+    fromAddress: edge.direction === "inbound" ? edge.counterpartyAddress : item.subjectAddress,
+    toAddress: edge.direction === "inbound" ? item.subjectAddress : edge.counterpartyAddress,
+    amountRaw: edge.amountRaw,
+    occurredAt: edge.occurredAt
+  }));
+  const groups = groupDirectPrincipalCounterparties({
+    subjectAddress: item.subjectAddress,
+    edges,
+    directTransferCoverage: "complete"
+  });
+  const byAddress = new Map<string, { amountRaw: bigint; directions: Set<"inbound" | "outbound"> }>();
+  for (const group of groups) {
+    const current = byAddress.get(group.address) ?? { amountRaw: 0n, directions: new Set() };
+    current.amountRaw += group.principalAmountRaw;
+    current.directions.add(group.direction);
+    byAddress.set(group.address, current);
+  }
+  return {
+    id: item.id,
+    evidenceClass: item.evidenceClass,
+    shallowProbe: [...byAddress]
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([address, value]) => ({
+        address,
+        directions: [...value.directions].sort(),
+        amountRaw: value.amountRaw.toString()
+      })),
+    secondHopRedBranches: item.secondHopRedBranches.map((branch) => ({
+      ...branch,
+      amountRaw: parseAmountRaw(branch.amountRaw).toString()
+    }))
+  };
+}
+
+export function evaluateExactDrainerSceneV1(
+  input: ExactDrainerSceneInputV1
+): ExactDrainerSceneResultV1 {
+  const context = (reason: Exclude<ExactDrainerSceneResultV1["reason"], "exact_call_and_movement_confirmed">): ExactDrainerSceneResultV1 => ({
+    classification: "context_only",
+    red: false,
+    reason
+  });
+  const fingerprint = detectVerify20Fingerprint({
+    methodMap: { ...input.methodMap },
+    topMethods: input.topMethods.map((method) => ({
+      methodId: method.methodId ?? "",
+      method: method.method ?? undefined,
+      signature: method.signature ?? null,
+      count: 0,
+      ratio: null
+    })),
+    serviceLabel: input.serviceLabel
+  });
+  if (fingerprint.blockedByTrustedService) return context("trusted_service_guard");
+  if (!fingerprint.matched) return context("fingerprint_incomplete");
+  const call = input.relevantCall;
+  if (!call) return context("exact_call_missing");
+  parseAmountRaw(call.amountRaw);
+  if (call.selector.replace(/^0x/iu, "").toLowerCase() !== "5082dd12") {
+    return context("exact_call_mismatch");
+  }
+  if (!call.confirmed) return context("exact_call_not_confirmed");
+  if (!call.successful) return context("exact_call_not_successful");
+  const movement = input.movement;
+  if (!movement) return context("movement_missing");
+  parseAmountRaw(movement.amountRaw);
+  if (!movement.confirmed) return context("movement_not_confirmed");
+  if (!movement.successful) return context("movement_not_successful");
+  if (
+    movement.txHash !== call.txHash ||
+    movement.tokenContract !== call.tokenContract ||
+    movement.fromAddress !== call.fromAddress ||
+    movement.toAddress !== call.toAddress ||
+    movement.toAddress !== call.receiverAddress ||
+    movement.amountRaw !== call.amountRaw
+  ) return context("movement_mismatch");
+  return {
+    classification: "exact_drainer_red",
+    red: true,
+    reason: "exact_call_and_movement_confirmed"
+  };
+}
+
+export function replayOfflineForensicModelCorpusV1(
+  corpus: OfflineCorpusV1
+): OfflineReplayResultV1 {
+  const source = record(corpus, "offline_corpus_schema_invalid");
+  if (source.schemaVersion !== "forensic-model-offline-corpus-v1") {
+    throw new TypeError("offline_corpus_schema_invalid");
+  }
+  const ledgerCases = validateCases(source.ledgerCases);
+  const serviceCases = validateCases(source.serviceCases);
+  const adverseCases = validateCases(source.adverseCases);
+  const broadScopeCases = source.broadScopeCases === undefined
+    ? []
+    : validateCases(source.broadScopeCases) as readonly BroadScopeCaseV1[];
+  validateAmounts(source);
+
+  const adverseResults = adverseCases.map(replayAdverseCase);
+  const exactRoles = new Map(adverseResults.flatMap((item) =>
+    item.kind === "service_label" && typeof item.address === "string" && typeof item.serviceRole === "string"
+      ? [[item.address, item.serviceRole] as const]
+      : []
+  ));
+  const dataGaps: { caseId: string; code: string }[] = [];
+  if (ledgerCases.some(({ id }) => id === "pacgy-recorded-chronology")) {
+    dataGaps.push({ caseId: "pacgy-recorded-chronology", code: "history_incomplete" });
+  }
+  if (serviceCases.some(({ id }) => id === "tqr-d7nzp-recorded-control")) {
+    dataGaps.push({ caseId: "tqr-d7nzp-recorded-control", code: "recorded_partial_vector" });
+  }
+  if (serviceCases.some(({ id }) => id === "txc-vusxvhd-recorded-control")) {
+    dataGaps.push({ caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" });
+  }
+  if (adverseCases.some(({ id }) => id === "drainer-complete-evidence")) {
+    const result = adverseResults.find(({ id }) => id === "drainer-complete-evidence");
+    if (result?.red !== true) {
+      dataGaps.push({ caseId: "drainer-complete-evidence", code: "verify20_fingerprint_incomplete" });
+    }
+  }
+  return {
+    schemaVersion: "offline-forensic-model-replay-v1",
+    ledgerCases: ledgerCases.map(replayLedgerCase),
+    serviceCases: serviceCases.map((item) => replayServiceCase(item, exactRoles)),
+    adverseCases: adverseResults,
+    broadScopeCases: broadScopeCases.map(replayBroadScopeCase),
+    dataGaps
+  };
+}
