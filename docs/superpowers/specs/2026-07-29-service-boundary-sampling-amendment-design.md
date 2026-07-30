@@ -10,6 +10,11 @@ Stage D решения
 
 ## Результат
 
+Уточнение для checked-subject режима и выбора cashflow-запросов находится в
+`2026-07-30-subject-service-and-cashflow-query-amendment-design.md`. Этот
+документ продолжает описывать только intermediate service boundary; он не
+разрешает ограничивать историю checked subject.
+
 Для каждого неразмеченного сервисоподобного промежуточного EOA проверяются два
 непересекающихся окна ровно по две физические страницы TronScan:
 
@@ -60,7 +65,8 @@ flowchart LR
     W -->|"Профиль ясен"| P["One-hop adverse-probe"]
     E --> P
     P -->|"Проверка полна, красного нет"| S["Остановить обычный fan-out"]
-    P -->|"Есть exact красный путь"| R["Остановить обычный fan-out и углубить красную ветку"]
+    P -->|"Exact adverse endpoint"| T["Terminal red; историю endpoint не раскрывать"]
+    P -->|"Exact-bound lead без endpoint"| R["Подавить обычный fan-out; продолжить только bound path"]
     P -->|"Данных не хватило"| C["Продолжить обычную трассировку"]
 ```
 
@@ -107,7 +113,9 @@ flowchart LR
 - `role = inferred_service`;
 - подтверждённая красная связь;
 - остановка обычного fan-out;
-- углубление только точной красной ветки.
+- terminal red для exact adverse endpoint без раскрытия его истории;
+- продолжение только exact-bound пути, когда доказан pattern/lead, но сам
+  adverse endpoint ещё не установлен.
 
 Точный known service не нуждается в поведенческом доказательстве роли. Его
 terminal semantics по-прежнему определяет действующая versioned exact-boundary
@@ -467,11 +475,14 @@ EstimatedAdverseComplete =
 
 if NOT EstimatedBoundaryCandidate OR NOT EstimatedAdverseComplete:
   estimatedWouldAction = continue_full
-else if ExactHardRedPaths is empty:
+else if ExactBoundContinuationPaths is empty:
   estimatedWouldAction = stop_ordinary
 else:
   estimatedWouldAction = stop_ordinary_expand_adverse
 ```
+
+`ExactBoundContinuationPaths` содержит только non-terminal leads. Exact
+adverse endpoints остаются terminal red facts и не открывают свою историю.
 
 Stage C не делает запросов, чтобы заполнить пропуски: отсутствующий existing
 adverse outcome означает incomplete и поэтому `continue_full`. Даже
@@ -502,14 +513,25 @@ canonical `100 + 100` или `500 + 100`. Полная история каждо
 управляет дорогим exploratory deepening, но не удаляет точный blacklist,
 sanctions, tracked-dangerous или подтверждённый drainer-pattern.
 
-Каждый proven hard-red создаёт investigative continuation независимо от суммы,
-top-k или materiality. Единственное исключение — exact versioned
-poisoning/dust: оно сохраняется как evidence, но не создаёт ложную денежную
-ветку. Materiality может менять только приоритет выполнения.
+Disposition каждого proven hard-red определяет frozen
+`provenance-adverse-terminal-matrix-v1`, зафиксированная в chronological
+cashflow design; автоматического continuation по самому red-факту нет:
+
+| Authority | Disposition |
+|---|---|
+| Exact event-time blacklist, sanctions или restricted-service endpoint; exact HTX/restricted exchange; tracked drainer/collector; другой exact confirmed harmful endpoint | `terminal_red`: сохранить красный факт и не загружать историю endpoint |
+| Approval/Verify/transferFrom, proxy или drainer pattern без exact endpoint identity, но с exact next address/event binding | `continue_exact_path`: продолжить только связанный путь |
+| Exact terminal и отдельный вопрос о связи с selected amount | `cashflow_relevance_only`: проверить только уже известные intermediate events; историю adverse endpoint не открывать |
+| Missing authority, event binding или exact continuation binding | `unresolved`; не выдавать ни terminal shortcut, ни произвольное продолжение |
+
+Exact versioned poisoning/dust сохраняется как evidence, но не создаёт ложную
+денежную ветку. Materiality меняет только приоритет; она не меняет disposition.
 
 Одна exact confirmed Verify20-сцена с полным fingerprint и связанным USDT
 movement является самостоятельным `proven` red signal. Method name без exact
-selector/event/finality/movement binding им не является.
+selector/event/finality/movement binding им не является. Сама сцена без exact
+identity вредоносного endpoint остаётся lead и разрешает только её exact-bound
+continuation.
 
 Внутренний evidence artifact может хранить exact selector/signature. Customer
 copy не раскрывает название приватного паттерна и сообщает понятный факт о
@@ -586,16 +608,16 @@ authoritative `wouldAction`); Stage D после отдельного rollout м
 
 | Action | Условие | Traversal |
 |---|---|---|
-| `continue_full` | Не service, insufficient/ambiguous либо обязательный probe incomplete | Обычное раскрытие; найденные red branches получают приоритет |
-| `stop_ordinary` | High service, probe complete, hard adverse не найден | Не раскрывать тысячи обычных соседей |
-| `stop_ordinary_expand_adverse` | High service, probe complete, есть exact red paths | Обычный fan-out подавить, углубить только exact bound red branches |
+| `continue_full` | Не service, insufficient/ambiguous либо обязательный probe incomplete | Продолжить обычный неразрешённый scope; exact terminal endpoints не открывать, exact-bound leads выполнять только по связанному пути |
+| `stop_ordinary` | High service, probe complete, exact-bound non-terminal leads отсутствуют | Не раскрывать тысячи обычных соседей; exact terminal red facts при наличии сохранить |
+| `stop_ordinary_expand_adverse` | High service, probe complete, есть exact-bound non-terminal leads | Обычный fan-out подавить, продолжить только exact bound paths |
 
 Тотальная формула не позволяет ошибочно остановиться по одному behavior result:
 
 ```text
 if role == subject OR NOT BoundaryEligible:
   action = continue_full
-else if ExactHardRedPaths is empty:
+else if ExactBoundContinuationPaths is empty:
   action = stop_ordinary
 else:
   action = stop_ordinary_expand_adverse
@@ -607,21 +629,23 @@ else:
 сам адрес выглядит как Binance-подобный processing wallet.
 
 При `stop_ordinary_expand_adverse` сервисная роль не отменяет риск. Artifact
-сохраняет exact continuation event IDs; scheduler не может заменить их
-произвольными «похожими» соседями.
+сохраняет exact continuation address/event IDs только для non-terminal lead;
+scheduler не может заменить их произвольными «похожими» соседями. Exact
+terminal endpoint сохраняет красный факт, но не получает continuation IDs.
 
 Денежная provenance-ветка и историческое исследование риска имеют разные
 контракты.
 
 `provenance` создаётся обычным versioned cashflow state только когда
 `2026-07-29-chronological-proportional-balance-provenance-design.md` точным
-ledger связывает red event с selected amount. State хранит ненулевой
-`allocatedAmountRaw`, exact event/order и входит в closure. Terminal residual
-service state равен `stateInputRaw - sum(redProvenanceChildRaw)`. Красный
-sample event, не относящийся к выбранной сумме, не может увеличить provenance
-coverage.
+ledger связывает уже известный intermediate event с selected amount. State
+хранит ненулевой `allocatedAmountRaw`, exact event/order и входит в closure.
+Если путь уже пришёл в exact adverse endpoint, cashflow может ответить только
+о релевантности этих известных intermediate events: история endpoint не
+загружается. Красный sample event, не относящийся к selected amount, не может
+увеличить provenance coverage.
 
-Остальные exact red paths идут в отдельный bounded sidecar
+Только exact-bound non-terminal leads идут в отдельный bounded sidecar
 `service-risk-investigation-v1`, а не в текущий `TraversalStateV1`:
 
 ```text
@@ -644,7 +668,8 @@ countsTowardProvenanceClosure = false
 Sidecar не имеет fictitious `allocatedAmountRaw`, не входит в денежный
 denominator и не владеет завершением provenance job. Его evidence участвует в
 risk result и объяснении отчёта. При `stop_ordinary_expand_adverse` он раскрывает
-только exact bound risk-context paths в пределах frozen policy budget.
+только exact-bound lead paths в пределах frozen policy budget. Exact terminal
+endpoint sidecar не получает.
 
 `investigationId` — content hash от schema/policy version, snapshot, parent
 service state, exact red evidence, direction и next anchor. Этот ключ является
@@ -669,10 +694,11 @@ builder присоединяет sidecar только по `resultEvidenceHash`;
 finalization ждёт `reportReady`, хотя provenance denominator уже закрыт.
 
 При `continue_full` отдельный sidecar для того же события не создаётся:
-доказанная красная связь становится priority hint внутри обычной трассировки,
-что исключает двойное раскрытие одного пути. Если red path доказан, но другие
+exact-bound lead становится priority hint внутри обычной трассировки, что
+исключает двойное раскрытие одного пути. Если lead доказан, но другие
 обязательные probe checks unresolved, ordinary fan-out не подавляется, итог
-остаётся `continue_full`, а red path обрабатывается первой.
+остаётся `continue_full`, а bound path обрабатывается первым. Exact terminal
+endpoint остаётся terminal и в этом случае.
 
 ## Stage C и Stage D
 
@@ -872,7 +898,8 @@ one-hop evidence, но не запускает многодневное полн
 - physical/canonical counts и dedupe;
 - one-hop adverse inventory;
 - сколько обычных neighbor histories/pages было бы подавлено;
-- какие exact red branches сохранились бы;
+- какие exact adverse endpoints стали бы terminal и какие exact-bound leads
+  продолжились бы;
 - wall-time estimate при одной и четырёх реально независимых provider-группах.
 
 Ни один replay не отправляет Telegram и не меняет production state.
@@ -908,20 +935,24 @@ one-hop evidence, но не запускает многодневное полн
 - TQr/TXc и human controls не получают high inferred service.
 - Subject всегда `continue_full`.
 - Complete-clean probe даёт `stop_ordinary`.
-- Complete-red probe даёт `stop_ordinary_expand_adverse` только с exact bound
-  continuation IDs.
+- Complete probe с exact terminal red сохраняет red fact без endpoint history;
+  `stop_ordinary_expand_adverse` разрешён только для exact-bound non-terminal
+  lead с continuation address/event IDs.
 - Любой behavior-high result без полного `BoundaryEligible` остаётся
   `continue_full`.
 - Любой обязательный `unresolved` даёт `continue_full`.
-- Proven red вместе с любым другим unresolved также даёт `continue_full`.
+- Proven red вместе с любым другим unresolved также даёт `continue_full` для
+  неразрешённого scope, но exact terminal endpoint не переоткрывается.
 - Малый hard-red edge не удаляется materiality filter.
 - Более `250` unique counterparties либо завершаются несколькими bounded
   batches, либо необработанный остаток даёт `unresolved`; первые `250` не могут
   дать clean result.
-- Risk-context sidecar не меняет provenance denominator/closure; ledger-bound
-  red child сохраняет state conservation.
-- При `continue_full` одно red event не создаёт одновременно обычную и sidecar
-  ветку; используется только traversal priority.
+- Risk-context sidecar не меняет provenance denominator/closure; cashflow
+  relevance exact terminal использует только known intermediate events и
+  сохраняет terminal allocation без endpoint-history child.
+- При `continue_full` один exact-bound lead не создаёт одновременно обычную и
+  sidecar ветку; используется только traversal priority. Exact terminal event
+  не создаёт ни одну из них.
 - Sidecar restart по content identity не создаёт duplicate investigation;
   `provenanceClosed` без terminal sidecars ещё не даёт `reportReady`.
 - Timestamp ties у route anchor без exact order запрещают boundary.
@@ -955,14 +986,15 @@ one-hop evidence, но не запускает многодневное полн
 - Базовый cold upper bound — `5`, расширенный — `13` TronScan requests до
   adverse-probe; cache/exhaustion могут уменьшить network calls.
 - Проверяется только один шаг вокруг sampled intermediate, в обе стороны.
-- Complete clean service подавляет обычный fan-out; complete red service
-  подавляет обычный fan-out, но углубляет exact red branch.
+- Complete clean service подавляет обычный fan-out; exact adverse endpoint
+  остаётся terminal red, а только exact-bound non-terminal lead продолжает
+  связанный путь.
 - Incomplete evidence не разрешает inferred boundary.
 - Checked subject никогда не останавливается на собственной inferred role.
 - `…W8SRL` включён в calibration/replay corpus и исключён из blind set.
 
 Точный `ExpandRecent`, исправленный feature predicate с `X`, `EOAAtAnchor`,
-request/profile identity, five-trigger ceiling, typed red branches и adverse
+request/profile identity, five-trigger ceiling, typed red dispositions и adverse
 artifact являются утверждённым design-контрактом. Это не rollout approval:
 Stage C остаётся shadow-only, а Stage D требует frozen fixtures, blind review,
 complete adverse evidence, replay и отдельного production решения.

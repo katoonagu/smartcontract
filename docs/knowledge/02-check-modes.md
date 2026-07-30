@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-30
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -64,17 +64,34 @@ checked address A
   -> shallow check of every direct counterparty B
   -> one broad second hop B -> C
   -> deep cashflow provenance for the selected money
-  -> deep continuation of every exact red branch
+  -> terminal exact adverse endpoints; continue only exact-bound nonterminal leads
 ```
 
 | Question | Target rule |
 |---|---|
-| What is checked on subject `A`? | Exhaust its canonical, snapshot-bounded direct USDT history in both directions and evaluate exact labels, restrictions, tracked-dangerous links, blacklist state at event time, and contract/approval/drainer evidence. If the history cannot be exhausted, the run is incomplete. The checked subject is never an inferred service boundary. |
-| What is checked on every direct neighbor `B`? | Run a shallow, bidirectional adverse and role probe for every unique direct counterparty. Exact service identity may terminate ordinary fan-out according to policy, but it never erases a red fact; for example, an exact HTX role may be both a boundary and an adverse result. |
-| When is the second hop inspected? | For every non-terminal `B`, inspect its anchor-bounded direct relationships to `C` once. Record exact red `C` branches, but do not automatically open the complete history of every `C`. Before downloading a very large unlabeled `B`, the service research probe may profile two frozen physical windows: `100 recent + 100 historical`. |
-| Which branches continue deeply? | Beyond the broad second hop, continue the contributors needed to explain `95%` of the known selected money and every exact red or exact continuation branch. The `95%` threshold limits expensive ordinary expansion only; it cannot drop a red branch. |
-| Where does cashflow apply? | The chronological proportional ledger answers current-balance, amount-only, and exact-episode provenance on `A`, then repeats backward for each selected contributor (`A <- B <- C <- D`). It is independent of the broad two-hop screen. |
+| What is checked on subject `A`? | Exhaust its canonical, snapshot-bounded direct USDT history in both directions and evaluate exact labels, restrictions, tracked-dangerous links, blacklist state at event time, and contract/approval/drainer evidence. If the history cannot be exhausted, the run is incomplete. The checked subject is never an inferred service boundary. A future bounded subject mode is a separate unapproved policy below. |
+| What is checked on every direct neighbor `B`? | Run a shallow, bidirectional adverse and role probe for every unique direct counterparty. Exact event-time blacklist/sanctions/restricted endpoint, exact HTX/restricted exchange, tracked drainer/collector or another exact harmful endpoint is terminal red and its history is not opened. A pattern/proxy/Verify20/approval/transferFrom lead without exact endpoint continues only through its exact-bound path. |
+| When is the second hop inspected? | For every non-terminal `B`, inspect its anchor-bounded direct relationships to `C` once. Preserve terminal red `C` facts and exact-bound nonterminal leads, but do not automatically open the complete history of every `C`. Before downloading a very large unlabeled `B`, the service research probe may profile two frozen physical windows: `100 recent + 100 historical`. |
+| Which branches continue deeply? | Beyond the broad second hop, continue the contributors needed to explain `95%` of the known selected money plus every exact-bound nonterminal adverse lead. Exact adverse endpoints are terminal facts, not mandatory history expansion. Missing authority or binding remains unresolved. |
+| Where does cashflow apply? | The chronological proportional ledger answers current-balance, amount-only, and exact-episode provenance on `A`, then repeats backward for each selected contributor (`A <- B <- C <- D`). For selected-amount relevance at an exact terminal, it may inspect only already-known intermediate events and never opens the adverse endpoint history. It is independent of the broad two-hop screen. |
 | Where does service boundary apply? | Only to an intermediate address, never to the checked subject. The first implementation computes the `100 + 100` profile offline and shadow-only. Actual fan-out suppression remains deferred Stage D. An ambiguous or incomplete profile follows ordinary traversal; `500 + 100` is deferred until a real ambiguous case justifies it. |
+
+## Bounded Subject-Service And Query-Selector Gap
+
+Current Unified production seeds traversal from every direct subject event and
+loads history for every non-terminal frontier address. The TronScan
+`rangeTotal=10000` sentinel is neither a subject-event cap nor full-history
+proof; provider-cap exhaustion now fails closed instead of becoming account
+creation.
+
+A future bounded subject-service mode must be selected before full subject
+history, keep the subject non-terminal, suppress ordinary neighbor tasks, and
+retain exact terminal reds, exact-bound leads, selected cashflow and explicit
+bounded/incomplete coverage. `SUBJECT_EVENT_CAP` is unapproved. The shared
+production selector for `current_balance`, completed exact episode and
+triggered relevance is also absent; both gaps remain blocked on explicit
+policy and frozen fixtures. Details are in
+`docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md`.
 
 Fast does not own this contract. Legacy Fast already performs a limited
 two-hop search, while current Unified Fast only reports whether direct USDT

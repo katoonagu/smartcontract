@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-30
 owner_area: tronscan
 code_refs:
   - src/index.ts
@@ -13,6 +13,7 @@ code_refs:
   - src/forensics/localTronUsdtIndex.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/unifiedCheck/directHistory.ts
+  - src/unifiedCheck/providerHistoryCompletion.ts
   - src/unifiedCheck/productionDirectHistory.ts
   - src/unifiedCheck/fairScheduler.ts
   - src/unifiedCheck/traversal.ts
@@ -60,12 +61,17 @@ claim is lost.
 Every Unified run pins one confirmed snapshot block number, hash, and
 timestamp. Direct USDT history pages until authoritative provider exhaustion or
 account creation. Overlaps are canonically deduplicated, post-snapshot events
-are excluded, and persisted cursors make restart deterministic.
+are excluded, and persisted cursors make restart deterministic. Provider
+completion now distinguishes `range_exhausted` from
+`provider_range_capped`: only `range_exhausted` can become
+`reachedAccountCreation`; a capped window fails closed before that claim.
 
 TronScan reports `rangeTotal=10000` as a capped sentinel rather than an exact
 count. An underfilled pinned page therefore closes that capped window at any
 offset; it is not treated as inconsistent merely because its next offset is
-below the sentinel.
+below the sentinel. Closing the provider window does not prove full history and
+does not authorize a product cap. Neither `10 000` rows nor `200` pages is an
+approved `SUBJECT_EVENT_CAP`.
 
 If TronScan omits an event index, pagination identity combines the transaction
 hash with canonical event content. Distinct USDT events in one transaction

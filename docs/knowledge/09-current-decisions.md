@@ -1,12 +1,14 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-30
 owner_area: docs
 code_refs:
   - src/index.ts
   - src/storage/schemaMigrations.ts
   - src/runtime/startupSchemaGate.ts
   - src/unifiedCheck
+  - src/unifiedCheck/providerHistoryCompletion.ts
+  - src/forensics/adversePathDisposition.ts
   - src/risk/scoringSignalMatrixV4.ts
   - src/risk/scoreAnchorV3.ts
   - migrations/033_unified_wallet_check.sql
@@ -19,6 +21,7 @@ code_refs:
   - scripts/captureUnifiedWslMemory.ps1
   - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
+  - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
 ---
 
 # Current Decisions
@@ -49,6 +52,9 @@ code_refs:
 - Every run binds one confirmed snapshot.
 - Direct history exhausts snapshot-bounded pages; traversal terminates through
   exhaustion or evidence-backed boundaries, never a product coverage target.
+  TronScan `provider_range_capped` is not account creation: only ordinary
+  `range_exhausted` can set that fact, while the capped provider window fails
+  closed.
 - Dense graphs remain finite through canonical deduplication, equivalent-state
   merging, and closure certificates.
 - Address history is content-addressed once per snapshot/address and reused by
@@ -154,6 +160,14 @@ code_refs:
 - Local sanctions evaluation is `active | inactive | unknown`. Only an active,
   consistently registry-bound local path with evidence overlap authorizes a
   local hard fact; typed cross-chain sanctions retain separate authority.
+- Frozen adverse disposition is not “continue every hard red.” Exact
+  event-time blacklist/sanctions/restricted endpoints, exact HTX/restricted
+  exchange, tracked drainer/collector and another exact confirmed harmful
+  endpoint are terminal red without endpoint-history expansion. A
+  pattern/proxy/Verify20/approval/transferFrom lead without exact endpoint may
+  continue only through its exact-bound address/events. Selected-amount
+  relevance uses cashflow over already-known intermediate events; missing
+  authority or binding remains unresolved.
 
 These decisions apply to newly composed results. Historical persisted reports,
 scores, assertions, and delivery artifacts are not recalculated or rewritten.
@@ -302,8 +316,9 @@ separate implementation and acceptance.
   accounting-only consumption.
 - Selection, recursion, branch share, and coverage carry the same
   `usedAmountRaw`. Every funder receives a short adverse probe. Deep recursion
-  covers at least 95% of the target plus every proven-red contributor,
-  regardless of share or top-k. The model represents a probe-complete,
+  covers at least 95% of the target plus every exact-bound nonterminal adverse
+  lead, regardless of share or top-k. Exact adverse source endpoints are
+  terminal red facts and are not opened. The model represents a probe-complete,
   non-red ordinary remainder of at most 5% as an explicit
   `screened_nonmaterial_tail`; it is not identified origin or a clean source.
   Missing order, history, reconciliation, or adverse evidence remains
@@ -334,9 +349,11 @@ separate implementation and acceptance.
   live physical pages already exist. It changes no frontier, score, report, or
   delivery. Stage D may suppress ordinary expansion after a complete probe: a
   clean high-service intermediate stops ordinary fan-out; a high-service
-  intermediate with exact adverse evidence stops ordinary fan-out but deepens
-  only the bound red branches. Incomplete evidence continues normal traversal.
-  The checked subject is never an inferred boundary.
+  intermediate with exact adverse evidence stops ordinary fan-out, preserves
+  exact terminal red endpoints, and continues only exact-bound nonterminal
+  leads. Incomplete evidence continues unresolved ordinary scope without
+  reopening exact terminal endpoints. The checked subject is never an inferred
+  boundary.
 - `TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL` (`…W8SRL`) is a positive
   calibration/replay case, not a blind case and not yet a production boundary.
 - The `…W8SRL → …PacGy → …WqQPC` replay separates target coverage from source
@@ -348,6 +365,30 @@ separate implementation and acceptance.
 - Manual live reads were not stored as raw fixture bytes. Stage D remains
   blocked on frozen evidence, `EOAAtAnchor`, a complete adverse receipt, a blind
   set, two reviews, adjudication, and a separate rollout decision.
+
+## Subject-Service And Cashflow Selector — Design Only
+
+- Current Unified traversal starts from every direct subject event and loads
+  history for every non-terminal frontier address. A future bounded
+  subject-service mode must be selected before full subject history, keep the
+  subject non-terminal, suppress ordinary neighbor tasks, and report explicit
+  bounded/incomplete coverage. `SUBJECT_EVENT_CAP` is not approved; the
+  TronScan `10 000` sentinel and `200` pages are provider mechanics, not policy.
+- `…W8SRL` is recorded calibration without frozen exact-page/anchor authority.
+  `…D7NzP` remains the negative checked-subject control.
+- Legacy Where uses its `<1000 USDT` recent-flow approximation; depending on
+  observed activity it selects one latest meaningful outgoing or only a
+  five-principal-event slice. Incoming starts from one concrete deposit. These
+  are separate paths, not a shared production Cashflow Query Selector.
+- The missing selector must distinguish `current_balance`, completed exact
+  episode, and triggered relevance. A proposed `10 USDT / 0.1%` trigger is not
+  policy because its recent window, gross-turnover denominator, materiality,
+  episode coverage, and maximum ordinary episodes are unfrozen. Real
+  `…dwxxhs` remains recorded/unresolved until a canonical tape exists.
+
+The detailed correction is
+`docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md`.
+It authorizes no production routing, scoring, Stage D or rollout.
 
 ## Telegram And Admin
 
