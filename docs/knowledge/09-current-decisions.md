@@ -160,14 +160,18 @@ code_refs:
 - Local sanctions evaluation is `active | inactive | unknown`. Only an active,
   consistently registry-bound local path with evidence overlap authorizes a
   local hard fact; typed cross-chain sanctions retain separate authority.
-- Frozen adverse disposition is not “continue every hard red.” Exact
-  event-time blacklist/sanctions/restricted endpoints, exact HTX/restricted
-  exchange, tracked drainer/collector and another exact confirmed harmful
-  endpoint are terminal red without endpoint-history expansion. A
-  pattern/proxy/Verify20/approval/transferFrom lead without exact endpoint may
-  continue only through its exact-bound address/events. Selected-amount
-  relevance uses cashflow over already-known intermediate events; missing
-  authority or binding remains unresolved.
+- Frozen adverse disposition preserves exact terminals without opening their
+  history. This includes exact event-time blacklist/sanctions/restricted
+  endpoints, exact HTX/restricted exchange, tracked drainer/collector, another
+  exact confirmed harmful endpoint, and a confirmed Verify20 scene with full
+  fingerprint plus final successful matching USDT transfer and exact
+  selector/event/finality/movement binding. Only an exact-bound nonterminal
+  approval/transferFrom/proxy/drainer/Verify-like lead may continue through its
+  bound address/events. Method-only evidence, missing binding and unknown
+  authority remain unresolved.
+  Selected-amount relevance uses only already-known intermediate events. The
+  single normative matrix is in the 2026-07-30 subject-service and cashflow
+  query amendment.
 
 These decisions apply to newly composed results. Historical persisted reports,
 scores, assertions, and delivery artifacts are not recalculated or rewritten.
@@ -298,8 +302,9 @@ scores, assertions, and delivery artifacts are not recalculated or rewritten.
 ## Approved Forensic Model — Not Yet Production
 
 The chronological ledger, exact rounding, opening/residual, artifact, probe,
-closure, 95%-plus-red expansion and `100 + 100` sampling contracts are approved
-after the 2026-07-29 manual corpus replay. They remain design-only.
+closure, `95%` known-allocation deep selection, exact-bound nonterminal lead
+continuation and `100 + 100` sampling contracts are approved after the
+2026-07-29 manual corpus replay. They remain design-only.
 Current legacy Where, Unified completion, `snapshot-closure-v1/v2`, matrix-v4,
 locked Golden artifacts, and historical reports remain unchanged until
 separate implementation and acceptance.
@@ -356,10 +361,12 @@ separate implementation and acceptance.
   boundary.
 - `TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL` (`…W8SRL`) is a positive
   calibration/replay case, not a blind case and not yet a production boundary.
-- The `…W8SRL → …PacGy → …WqQPC` replay separates target coverage from source
-  utilization: the exact `180 USDT` episode is 100% covered by the `300 USDT`
-  lot and uses 60% of that lot. After later spending exhausted the lot, the
-  current `…PacGy` balance `82.7 USDT` came from `…gsFCa`.
+- The recorded `…W8SRL → …PacGy → …WqQPC` chronology and its separate
+  synthetic zero-opening control check only ledger arithmetic: `180/180`
+  target coverage and `180/300` source-lot utilization. They are not exact real
+  attribution. Real `…PacGy` remains unresolved without complete canonical
+  history and an independent pinned balance witness; the observed `82.7 USDT`
+  balance and proposed `…gsFCa` origin remain diagnostic only.
 - No available case activated the `500 + 100` expansion trigger. A dedicated
   frozen ambiguous fixture is required before that branch is replay-proven.
 - Manual live reads were not stored as raw fixture bytes. Stage D remains
@@ -384,7 +391,9 @@ separate implementation and acceptance.
   episode, and triggered relevance. A proposed `10 USDT / 0.1%` trigger is not
   policy because its recent window, gross-turnover denominator, materiality,
   episode coverage, and maximum ordinary episodes are unfrozen. Real
-  `…dwxxhs` remains recorded/unresolved until a canonical tape exists.
+  `…dwxxhs` remains recorded/unresolved: observed ingress, approval and `669`
+  debit are not canonical exact proof without a frozen tape carrying identity,
+  order, opening and amount authority.
 
 The detailed correction is
 `docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md`.

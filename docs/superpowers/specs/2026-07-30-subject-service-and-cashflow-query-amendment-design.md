@@ -48,18 +48,22 @@ event или adverse relevance question.
 
 ## Frozen adverse disposition
 
-`provenance-adverse-terminal-matrix-v1` применяется до решения о расширении:
+Этот раздел — единственная нормативная таблица
+`provenance-adverse-terminal-matrix-v1` для связанных дизайнов. Матрица
+применяется до решения о расширении:
 
-| Evidence | Disposition |
+| Evidence и обязательная binding authority | Disposition |
 |---|---|
-| Exact event-time blacklist, sanctions или restricted-service endpoint; exact HTX/restricted exchange; tracked drainer/collector; другой exact confirmed harmful endpoint | `terminal_red`; сохранить red fact, не загружать endpoint history |
-| Approval/Verify/transferFrom, proxy или drainer pattern без exact endpoint, но с exact continuation address/event binding | `continue_exact_path`; открыть только bound path |
-| Exact terminal и вопрос о selected-amount relevance | `cashflow_relevance_only`; использовать только уже известные intermediate events, не endpoint history |
-| Missing authority, event binding или continuation binding | `unresolved` |
+| Exact event-time blacklist, sanctions или restricted-service endpoint; exact HTX или exact restricted exchange; tracked drainer/collector; другой exact confirmed harmful endpoint | `terminal_red`; сохранить red fact, не загружать endpoint history |
+| Confirmed Verify20 scene: полный fingerprint и final successful matching USDT transfer с exact selector, event, finality и movement binding | `terminal_red`; это самостоятельный exact adverse terminal |
+| Exact terminal и selected-amount relevance с complete relevance binding и непустыми `knownIntermediateEventIds` | `cashflow_relevance_only`; использовать только эти уже известные intermediate events, не endpoint history |
+| Exact-bound nonterminal approval/transferFrom, proxy, drainer или Verify-like lead с continuation address и непустыми `boundEventIds` | `continue_exact_path`; открыть только bound path |
+| Verify20 method name без полного fingerprint либо без selector/event/finality/movement binding; любой missing binding, включая exact continuation; любой unknown authority class | `unresolved`; не выдавать terminal shortcut или произвольное продолжение |
 
-Таким образом, «каждый hard-red продолжается» неверно. Доля и materiality не
-могут удалить red fact, но и не дают права открыть историю exact terminal
-endpoint.
+Exact adverse terminals сохраняются как terminals. Обязательное deep
+continuation создают только exact-bound nonterminal leads. Доля и materiality
+не могут удалить red fact, а unknown authority остаётся fail-closed unresolved
+и не даёт права открыть историю endpoint.
 
 ## Future Bounded Subject-Service Mode
 
@@ -89,8 +93,12 @@ endpoint.
 граница `200 pages × 50 rows` не являются кандидатами по умолчанию.
 
 `…W8SRL` остаётся recorded calibration vector: raw provider pages и exact
-anchor authority не заморожены. `…D7NzP` остаётся negative checked-subject
-control: subject non-terminal независимо от похожести на service.
+anchor authority не заморожены. Последовательность `300 → 70/12/180/38`
+проверяет ledger arithmetic только как recorded chronology и отдельный
+synthetic zero-opening control; она не доказывает real attribution. Реальный
+`…PacGy` остаётся unresolved без complete canonical history и independent
+pinned balance witness. `…D7NzP` остаётся negative checked-subject control:
+subject non-terminal независимо от похожести на service.
 
 ## Cashflow Query Selector
 
@@ -112,9 +120,9 @@ materiality, обязательная episode coverage и maximum ordinary episo
 описывать как current policy.
 
 Реальный `…1ZDqkZ → …dwxxhs → …mmGJE` остаётся recorded adverse calibration.
-Ingress/approval/drain observation не заменяет canonical event tape с order,
-identity, opening и amount authority; до такого tape cashflow query для
-`…dwxxhs` остаётся unresolved.
+Recorded ingress/approval/`669` observations не являются canonical exact
+proof и не заменяют frozen event tape с identity, order, opening и amount
+authority; до такого tape cashflow query для `…dwxxhs` остаётся unresolved.
 
 ## Gate и non-goals
 

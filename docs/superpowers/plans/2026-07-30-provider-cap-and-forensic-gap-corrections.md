@@ -165,33 +165,72 @@ git commit -m "fix: distinguish tronscan range cap from history exhaustion"
 
 - [ ] **Step 1: Write failing table tests**
 
-The wished-for API is:
+The wished-for API is a discriminated union matching the evidence purpose:
 
 ```ts
-decideAdversePathDispositionV1({
-  authorityClass,
-  endpointIdentity: "exact" | "lead" | "missing",
-  eventBindingComplete: boolean,
-  selectedAmountRelevanceRequested: boolean,
-  continuationEventIds: string[],
-  policyVersion: "provenance-adverse-terminal-matrix-v1"
-});
+type AdversePathDispositionInputV1 =
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      purpose: "safety";
+      evidenceKind: "exact_adverse_endpoint";
+      authorityClass: ExactAdverseEndpointAuthorityClassV1;
+      endpointBindingComplete: boolean;
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      purpose: "selected_amount_relevance";
+      evidenceKind: "exact_adverse_endpoint";
+      authorityClass: ExactAdverseEndpointAuthorityClassV1;
+      endpointBindingComplete: boolean;
+      relevanceBindingComplete: boolean;
+      knownIntermediateEventIds: readonly string[];
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      purpose: "path_continuation";
+      evidenceKind: "exact_bound_lead";
+      authorityClass: ExactBoundLeadAuthorityClassV1;
+      leadBindingComplete: boolean;
+      continuationAddress: string;
+      boundEventIds: readonly string[];
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      purpose: "safety";
+      evidenceKind: "unconfirmed_hint";
+      authorityClass: UnconfirmedAdverseHintClassV1;
+    };
 ```
+
+The closed exact-endpoint set covers event-time blacklist, sanctions and
+restricted endpoints, exact HTX, exact restricted exchange, tracked
+drainer/collector, another confirmed harmful endpoint, and
+`confirmed_verify20_usdt_scene`. The closed exact-lead set covers confirmed
+approval, transferFrom, proxy, drainer-pattern and Verify-like leads. The hint
+set contains `verify20_method_name_only` and `unconfirmed_pattern`.
 
 Expected outcomes:
 
 ```text
 event_time_restricted_endpoint + exact + bound -> terminal_red
 tracked_drainer_endpoint + exact + bound -> terminal_red
-restricted_exchange_endpoint + exact + bound -> terminal_red
-approval_or_verify_pattern + lead + bound continuation -> continue_exact_path
-any class + missing binding -> unresolved
-exact terminal + amount relevance requested -> cashflow_relevance_only
+exact_htx_endpoint + exact + bound -> terminal_red
+exact_restricted_exchange_endpoint + exact + bound -> terminal_red
+confirmed_verify20_usdt_scene + full fingerprint/final successful matching
+  USDT selector/event/finality/movement binding -> terminal_red
+exact-bound approval/transferFrom/proxy/drainer/Verify-like lead
+  + continuationAddress + boundEventIds -> continue_exact_path
+exact terminal + complete amount relevance + knownIntermediateEventIds
+  -> cashflow_relevance_only
+verify20_method_name_only or unconfirmed pattern -> unresolved
+missing binding or unknown authority class -> unresolved
 ```
 
 Assert that `continue_exact_path` returns only sorted/deduplicated exact
-continuation event IDs, terminal outcomes return none, and unknown authority
-classes fail closed to `unresolved`.
+`boundEventIds`, `cashflow_relevance_only` returns only sorted/deduplicated
+`knownIntermediateEventIds`, terminal outcomes return no path fields, sparse or
+invalid identifier arrays are rejected, and unknown authority classes fail
+closed to `unresolved`.
 
 - [ ] **Step 2: Run RED**
 
@@ -205,19 +244,34 @@ Expected: FAIL because the module does not exist.
 
 - [ ] **Step 3: Implement the pure matrix**
 
-Use a closed union for the approved authority classes and return:
+Use a closed union for the approved authority classes and return a
+discriminated union:
 
 ```ts
-type AdversePathDispositionV1 = {
-  policyVersion: "provenance-adverse-terminal-matrix-v1";
-  disposition:
-    | "terminal_red"
-    | "continue_exact_path"
-    | "cashflow_relevance_only"
-    | "unresolved";
-  continuationEventIds: readonly string[];
-  reason: string;
-};
+type AdversePathDispositionV1 =
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      disposition: "terminal_red";
+      reason: "exact_adverse_endpoint";
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      disposition: "continue_exact_path";
+      reason: "exact_bound_adverse_lead";
+      continuationAddress: string;
+      boundEventIds: readonly string[];
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      disposition: "cashflow_relevance_only";
+      reason: "selected_amount_relevance_for_exact_terminal";
+      knownIntermediateEventIds: readonly string[];
+    }
+  | {
+      policyVersion: "provenance-adverse-terminal-matrix-v1";
+      disposition: "unresolved";
+      reason: AdversePathDispositionUnresolvedReasonV1;
+    };
 ```
 
 The function must not import traversal, repositories, config, scoring, bot, or
@@ -229,7 +283,7 @@ not invent authority.
 Run:
 
 ```powershell
-npm.cmd test -- tests/forensics/adversePathDisposition.test.ts tests/forensics/offlineForensicModelReplay.test.ts tests/forensics/chronologicalProportionalLedger.test.ts
+npm.cmd test -- tests/forensics/adversePathDisposition.test.ts tests/forensics/offlineForensicModelReplay.test.ts
 npm.cmd run typecheck
 ```
 
@@ -247,6 +301,7 @@ git commit -m "feat: add offline adverse path disposition"
 **Files:**
 
 - Create: `docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md`
+- Modify: `docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`
 - Modify: `docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md`
 - Modify: `docs/knowledge/02-check-modes.md`
 - Modify: `docs/knowledge/04-data-sources-tronscan-indexing.md`
@@ -255,17 +310,24 @@ git commit -m "feat: add offline adverse path disposition"
 
 - [ ] **Step 1: Correct red-branch language**
 
-Replace “every proven hard-red continues” with the frozen distinction:
+Keep one normative matrix in the 2026-07-30 amendment and link the service,
+cashflow and knowledge docs to it. Freeze these distinctions:
 
 ```text
 exact event-time adverse endpoint -> terminal red fact
-pattern/proxy/lead without exact endpoint -> continue only exact bound path
+full Verify20 fingerprint + final successful matching USDT movement
+  + exact selector/event/finality/movement binding -> terminal red fact
+exact-bound nonterminal approval/transferFrom/proxy/drainer/Verify-like lead
+  -> continue only exact bound path
 amount relevance question -> cashflow inside known intermediate events;
                               never expand the adverse endpoint itself
-missing binding/authority -> unresolved
+method-name-only, missing binding (including continuation binding), or unknown
+  authority class -> unresolved
 ```
 
-Align the service spec, cashflow spec, knowledge 02, and knowledge 09.
+Exact terminals are preserved; only exact-bound nonterminal leads create
+mandatory deep continuation. Align the service spec, chronological cashflow
+spec, knowledge 02, and knowledge 09 without duplicating the normative table.
 
 - [ ] **Step 2: Record current subject-service behavior and the bounded design**
 
@@ -294,7 +356,12 @@ Document:
 - the proposed `10 USDT / 0.1%` rule is not approved because recent window,
   gross-turnover denominator, materiality, episode coverage, and ordinary
   episode bound are not frozen;
-- real `…dwxxhs` must remain recorded/unresolved until a canonical tape exists.
+- recorded `…W8SRL → …PacGy` `180/300` chronology checks arithmetic only, with
+  a separate synthetic zero-opening control; real `…PacGy` remains unresolved
+  without complete canonical history and an independent pinned balance witness;
+- real `…dwxxhs` must remain recorded/unresolved: ingress, approval and `669`
+  debit observations are not canonical exact proof until a frozen tape binds
+  identity, order, opening and amount authority.
 
 - [ ] **Step 4: Update roadmap and commit**
 
@@ -319,7 +386,7 @@ Commit only Task 3 docs.
 - [ ] **Step 1: Run focused and authority regressions**
 
 ```powershell
-npm.cmd test -- tests/tron/tronClient.test.ts tests/unified-check/providerHistoryCompletion.test.ts tests/unified-check/directHistory.test.ts tests/unified-check/productionDirectHistory.test.ts tests/unified-check/productionAddressHistory.test.ts tests/forensics/adversePathDisposition.test.ts tests/forensics/offlineForensicModelReplay.test.ts tests/forensics/chronologicalProportionalLedger.test.ts tests/forensics/recentFlowProvenanceSelection.test.ts tests/forensics/moneyOriginTrace.test.ts tests/unified-check/productionBoundary.test.ts tests/unified-check/traversal.test.ts
+npm.cmd test -- tests/tron/tronClient.test.ts tests/unified-check/providerHistoryCompletion.test.ts tests/unified-check/directHistory.test.ts tests/unified-check/productionDirectHistory.test.ts tests/unified-check/productionAddressHistory.test.ts tests/forensics/adversePathDisposition.test.ts tests/forensics/offlineForensicModelReplay.test.ts tests/forensics/recentFlowProvenanceSelection.test.ts tests/forensics/moneyOriginTrace.test.ts tests/unified-check/productionBoundary.test.ts tests/unified-check/traversal.test.ts
 npm.cmd run typecheck
 ```
 

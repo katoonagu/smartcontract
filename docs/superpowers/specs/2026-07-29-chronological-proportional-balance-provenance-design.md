@@ -376,13 +376,12 @@ ledger, поэтому совпадение сумм не используетс
    known allocation выбирается минимальный funder prefix по exact integer
    условию
    `100 * (ExactTerminalRaw + DeepSelectedRaw) >= 95 * KnownRaw`.
-6. Любой proven-red funder и все его **non-terminal** contributing episodes
-   раскрываются независимо от доли, top-k и позиции. Исключение только одно:
-   versioned terminal matrix уже доказывает сам adverse source endpoint для
-   конкретного episode (например, exact event-time
-   blacklist/restricted-service/drainer boundary). Тогда этот episode остаётся
-   `exact_adverse_source_terminal`; proxy, mule, approval/Verify pattern и любой
-   нетерминальный red path остаются mandatory continuation.
+6. Каждый exact-bound nonterminal approval/transferFrom, proxy, drainer или
+   Verify-like lead раскрывается по связанному адресу и событиям независимо от
+   доли, top-k и позиции. Exact adverse endpoint остаётся
+   `exact_adverse_source_terminal`; unconfirmed hint, unknown authority или
+   missing continuation binding остаётся `unresolved`, а не создаёт
+   произвольную deep-ветку.
 7. Probe-complete, non-red остаток не более `5%` от `KnownRaw` сохраняется
    episode-за-episode как terminal `screened_nonmaterial_tail`.
 
@@ -406,7 +405,7 @@ raw amount, hash завершённого non-red adverse receipt и policy vers
 - не доказывает происхождение за непосредственным funder.
 
 Если adverse-probe вернул `unresolved`, упал или не охватил обязательный
-сигнал, `screened_nonmaterial_tail` запрещён. Ветка остаётся mandatory либо
+сигнал, `screened_nonmaterial_tail` запрещён. Ветка остаётся unresolved, а
 итог provenance становится incomplete.
 
 `provenance-funder-adverse-probe-v1` — отдельный query-scoped receipt. Он может
@@ -418,24 +417,21 @@ direction, event ID/time/order, amount, authority и каждый required gate 
 outcome `proven | not_found | not_applicable | unresolved`. Current status
 адреса нельзя применять задним числом ко всем его episodes.
 
-Решение «этот proven-red endpoint уже terminal или путь надо продолжить»
-принимает отдельная frozen `provenance-adverse-terminal-matrix-v1`. Artifact и
-receipt обязаны хранить её `version` и content hash. Начальная матрица:
+Решение о terminal, exact-bound continuation, selected-amount relevance или
+unresolved принимает frozen `provenance-adverse-terminal-matrix-v1`. Её
+единственная нормативная таблица находится в
+[`2026-07-30-subject-service-and-cashflow-query-amendment-design.md`](./2026-07-30-subject-service-and-cashflow-query-amendment-design.md#frozen-adverse-disposition).
+Ledger отображает `terminal_red` в `exact_adverse_source_terminal` для
+amount-conservation. Artifact и receipt обязаны хранить version и content hash
+матрицы.
 
-| Exact authority class | Disposition |
-|---|---|
-| Event-time-active blacklist/sanctions/restricted-service endpoint | `exact_adverse_source_terminal` |
-| Exact known drainer/collector address из versioned tracked registry | `exact_adverse_source_terminal` |
-| Exact HTX/restricted exchange identity | `exact_adverse_source_terminal` с красным product result |
-| Approval/Verify/transferFrom/drainer pattern без exact endpoint identity | `mandatory_continuation` к связанному receiver/caller/collector |
-| Mule/transit behavior, provider-risk hint или indirect association | `mandatory_continuation` либо `unresolved`, но не terminal shortcut |
-| Неизвестный новый authority class | fail-closed `mandatory_continuation` |
-
-Terminal применяется только к exact event-time evidence самого source endpoint.
-Совпадение label сегодня, один behavior score или красный сосед не разрешают
-остановить provenance. Изменение матрицы создаёт новую immutable version; один
-и тот же receipt не может получить другое traversal-решение без нового policy
-artifact.
+Terminal применяется только к exact event-time evidence самого source endpoint
+или к confirmed Verify20 scene с полным fingerprint, final successful matching
+USDT transfer и exact selector/event/finality/movement binding. Method name,
+один behavior score, красный сосед и unknown authority остаются unresolved.
+Изменение матрицы создаёт новую immutable version;
+один и тот же receipt не может получить другое traversal-решение без нового
+policy artifact.
 
 Для каждого state выполняется локальная сверка:
 
@@ -463,10 +459,13 @@ QueryTargetRaw=\sum TerminalLeafRaw
 Семантических `top-3` и `beamWidth`-отсечений больше нет. `250` адресов может
 быть размером технического batch, но не лимитом, удаляющим оставшиеся ветки.
 
-Пример: `90 + 5 + 4 + 1(red) = 100`. Deep prefix покрывает `95`, красный funder
-`1` добавляется обязательно, а `4` остаётся явным
-`screened_nonmaterial_tail`. Если `90` уже является exact terminal, deep нужен
-ещё минимум для `5` known units, а не повторное раскрытие этих `90`.
+Пример: `90 + 5 + 4 + 1 = 100`. Deep prefix покрывает `95`, а `4` и `1`
+могут остаться явными `screened_nonmaterial_tail` только после complete non-red
+probe. Если `1` является exact-bound nonterminal lead, он раскрывается
+обязательно; если exact terminal, он сохраняется без endpoint expansion; если
+binding отсутствует, он остаётся unresolved. Если `90` уже является exact
+terminal, deep нужен ещё минимум для `5` known units, а не повторное раскрытие
+этих `90`.
 
 ## Self-transfer и exact ownership
 
@@ -675,7 +674,8 @@ legacy/Unified результаты и расчёт по формулам это
 - exact и похожий, но неподтверждённый GasFree fee;
 - неполная история и unknown opening lot;
 - реальные GasFree cases `…MnxP`, `…ZAZD`, `…VSZ9`, `…UZBM`;
-- drainer/Verify20 chains, где малый red funder нельзя потерять.
+- drainer/Verify20 cases, разделяющие confirmed exact terminal,
+  exact-bound nonterminal lead и method-only unresolved.
 
 ## Результат ручного replay 2026-07-29
 
@@ -688,29 +688,19 @@ policy version.
 
 ### `…W8SRL → …PacGy → …WqQPC`
 
-Canonical chain evidence показывает один вход `300 USDT` из `…W8SRL` в
-`…PacGy`, после которого последовательно произошли расходы `70`, `12`, `180`
-и `38 USDT`. Поэтому:
+Recorded chronology содержит вход `300 USDT` и последовательность расходов
+`70`, `12`, `180` и `38 USDT`. При отдельно заданных synthetic assumptions
+zero opening и complete order этот vector проверяет только ledger arithmetic:
+цель `180` имеет coverage `180/180`, а utilization исходного lot равен
+`180/300 = 60%`. Это не exact real attribution для `…PacGy`.
 
-- exact episode `…PacGy → …WqQPC` на `180 USDT` на 100% покрыт lot из
-  `…W8SRL`;
-- `60%` — это utilization входного lot `300`, а не coverage цели `180`;
-- после последнего расхода `38` исходный lot `300` полностью исчерпан;
-- текущий остаток `…PacGy` равен `82.7 USDT` и сформирован новым входом от
-  `…gsFCa`, а не старым входом от `…W8SRL`;
-- принадлежность нынешнего баланса `…WqQPC` к старому эпизоду нельзя заявить,
-  пока его собственная последующая история не проиграна тем же ledger.
-
-Exact `180 USDT` event имеет tx
-`676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca`,
-block `83711746`, timestamp `2026-06-18T17:44:12Z`. В локальном индексе он
-сохранён дважды под разными synthetic `event_index`; full-node receipt
-подтверждает один USDT log. Значит, canonical dedupe должен опираться на exact
-chain identity и происходить до ledger allocation.
-
-Баланс `82.7 USDT` подтверждён bracketed live-read вокруг одного solidified
-head `84888238`, а не параметризованным historical balance RPC. Такой witness
-годится для ручного текущего контроля, но не называется pinned snapshot.
+Реальная `…PacGy` chronology остаётся unresolved, пока frozen corpus не
+содержит complete canonical history и independent pinned balance witness.
+Записанные tx/block/timestamp, дубли provider row под synthetic `event_index`
+и единичное receipt-наблюдение полезны для dedupe-контроля, но без frozen raw
+tape не становятся exact chain authority. Bracketed live-read `82.7 USDT`
+также остаётся diagnostic non-pinned observation; он не доказывает ни current
+balance provenance, ни attribution к `…gsFCa`.
 
 ### GasFree accounting
 
@@ -736,13 +726,12 @@ structural settlement evidence: зарегистрированный controller,
 
 ### Drainer-pattern control
 
-Реальная цепочка `…1ZDqkZ → …dwxxhs → …mmGJE` содержит подтверждённые ingress,
-approval и последующее списание `669 USDT`. Сохранение суммы выполняется:
-после входа `669.889034 USDT` и списания `669 USDT` остаток жертвы равен
-`0.889034 USDT`. Это самостоятельная red-ветка, которая обязана продолжаться
-или завершаться по frozen adverse matrix независимо от доли, top-k и порога
-`95%`. Пользовательский отчёт описывает найденный drainer-паттерн и не раскрывает
-внутреннее имя selector/signature.
+Реальная цепочка `…1ZDqkZ → …dwxxhs → …mmGJE` — recorded adverse calibration.
+Наблюдения ingress, approval и списания `669 USDT` не являются canonical exact
+proof. Пока нет frozen tape с event identity, order, opening и amount
+authority, cashflow `…dwxxhs` и его terminal/continuation disposition остаются
+unresolved. Пользовательский отчёт может описывать только подтверждённый
+уровень evidence и не раскрывает внутреннее имя selector/signature.
 
 ### Итог gate
 
@@ -785,8 +774,9 @@ semantic comparator и disabled-by-default adapters.
 - Incomplete adverse-probe запрещает `screened_nonmaterial_tail`.
 - `95%` проверяются integer inequality; exact terminal episode не попадает
   одновременно в funder prefix.
-- Exact adverse source endpoint становится terminal, а proxy/pattern red path
-  остаётся mandatory continuation по frozen matrix.
+- Exact adverse source endpoint становится terminal. Только exact-bound
+  nonterminal proxy/pattern lead продолжает связанный path; missing binding
+  остаётся unresolved.
 - Version/hash adverse terminal matrix входят в artifact и изменение матрицы
   требует новой policy identity.
 - Любая нелокализованная order/economic/ownership ambiguity переносит весь
@@ -818,8 +808,10 @@ semantic comparator и disabled-by-default adapters.
 - Источник текущего баланса определяется после учёта всех последующих расходов.
 - `amount_only` и exact transaction episode — разные запросы.
 - Все hops используют одну модель и один `usedAmountRaw`.
-- Все funder-ы проходят adverse-probe; deep раскрывает минимум `95%` плюс все
-  proven-red ветки.
+- Все funder-ы проходят adverse-probe; deep раскрывает требуемый `95%` known
+  allocation и отдельно только exact-bound nonterminal adverse leads. Exact
+  adverse terminals сохраняются без endpoint expansion, missing binding
+  остаётся unresolved.
 - Exact self-transfer не меняет cashflow.
 - Разные адреса связываются только exact ownership evidence.
 - Exact GasFree fee уменьшает остаток, но не создаёт AML-ветку; principal

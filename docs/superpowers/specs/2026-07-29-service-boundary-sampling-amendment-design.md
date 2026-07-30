@@ -254,8 +254,8 @@ Physical budget считается до dedupe. Canonical count считаетс
 Canonical risk/poisoning rows сохраняются в sample и adverse inventory. Для
 всех positive features `C/B/G/H/R` используется отдельный
 `featureEligibleEventCount`, из которого exact poisoning, provider-risk rows и
-технический GasFree fee исключены вместе с их counterparties; hard-red событие
-не исчезает и не делает service role автоматически human-like.
+технический GasFree fee исключены вместе с их counterparties; exact adverse
+fact не исчезает и не делает service role автоматически human-like.
 
 Страница не добирается ради завершения timestamp group: fixed-row sample может
 закончиться внутри группы с одинаковым timestamp, и это само по себе не делает
@@ -513,25 +513,23 @@ canonical `100 + 100` или `500 + 100`. Полная история каждо
 управляет дорогим exploratory deepening, но не удаляет точный blacklist,
 sanctions, tracked-dangerous или подтверждённый drainer-pattern.
 
-Disposition каждого proven hard-red определяет frozen
-`provenance-adverse-terminal-matrix-v1`, зафиксированная в chronological
-cashflow design; автоматического continuation по самому red-факту нет:
-
-| Authority | Disposition |
-|---|---|
-| Exact event-time blacklist, sanctions или restricted-service endpoint; exact HTX/restricted exchange; tracked drainer/collector; другой exact confirmed harmful endpoint | `terminal_red`: сохранить красный факт и не загружать историю endpoint |
-| Approval/Verify/transferFrom, proxy или drainer pattern без exact endpoint identity, но с exact next address/event binding | `continue_exact_path`: продолжить только связанный путь |
-| Exact terminal и отдельный вопрос о связи с selected amount | `cashflow_relevance_only`: проверить только уже известные intermediate events; историю adverse endpoint не открывать |
-| Missing authority, event binding или exact continuation binding | `unresolved`; не выдавать ни terminal shortcut, ни произвольное продолжение |
+Disposition определяет frozen `provenance-adverse-terminal-matrix-v1`.
+Единственная нормативная таблица находится в
+[`2026-07-30-subject-service-and-cashflow-query-amendment-design.md`](./2026-07-30-subject-service-and-cashflow-query-amendment-design.md#frozen-adverse-disposition);
+этот service design её не переопределяет. Exact adverse endpoints terminal,
+а deep continuation разрешён только для exact-bound nonterminal leads.
+Method-only, missing binding и unknown authority остаются unresolved.
+Selected-amount relevance для exact terminal использует
+только уже известные intermediate events и не открывает endpoint history.
 
 Exact versioned poisoning/dust сохраняется как evidence, но не создаёт ложную
 денежную ветку. Materiality меняет только приоритет; она не меняет disposition.
 
-Одна exact confirmed Verify20-сцена с полным fingerprint и связанным USDT
-movement является самостоятельным `proven` red signal. Method name без exact
-selector/event/finality/movement binding им не является. Сама сцена без exact
-identity вредоносного endpoint остаётся lead и разрешает только её exact-bound
-continuation.
+Одна confirmed Verify20 scene с полным fingerprint и final successful matching
+USDT transfer при exact selector/event/finality/movement binding является
+самостоятельным `terminal_red`. Method name или сцена без любой из этих
+bindings остаётся `unresolved`. Отдельный Verify-like lead продолжает путь
+только когда nonterminal lead exact-bound к continuation address/events.
 
 Внутренний evidence artifact может хранить exact selector/signature. Customer
 copy не раскрывает название приватного паттерна и сообщает понятный факт о
@@ -586,7 +584,7 @@ applicabilityReason
 authority
 sourceRequestHash
 outcome = proven | not_found | not_applicable | unresolved
-continuationEventIds
+continuationAddress
 ```
 
 `not_found` допустим только после завершённого authoritative запроса. Timeout,
@@ -653,8 +651,8 @@ schemaVersion / riskInvestigationPolicyVersion
 investigationId / parentServiceStateId
 snapshotHash / snapshotBlock
 parentAnchorEventId / parentAnchorOrder
-boundRedEvidenceId / continuationEventIds
-direction / address
+boundLeadEvidenceId / continuationAddress / boundEventIds
+direction
 nextAnchorEventId / nextAnchorOrder
 depth / maxDepth / remainingRequestBudget
 visitedEvidenceIds
@@ -879,7 +877,8 @@ Calibration/replay набор обозначается по запоминаем
 - `…SH14eaf` — пограничный service-like;
 - `…D7NzP` — TQr graph-expansion case; subject никогда не boundary;
 - `…VUSXVhd` — TXc small-latency/non-service control;
-- `…5mmGJE` и связанные Verify/drainer paths — selective red expansion;
+- `…5mmGJE` и связанные Verify/drainer paths — terminal exact adverse
+  endpoints и exact-bound nonterminal lead paths;
 - `…MnxP`, `…ZAZD`, `…VSZ9`, `…UZBM` — GasFree/contract controls;
 - обычные professional, treasury, burst и dust/poisoning-heavy wallets.
 
@@ -941,9 +940,9 @@ one-hop evidence, но не запускает многодневное полн
 - Любой behavior-high result без полного `BoundaryEligible` остаётся
   `continue_full`.
 - Любой обязательный `unresolved` даёт `continue_full`.
-- Proven red вместе с любым другим unresolved также даёт `continue_full` для
-  неразрешённого scope, но exact terminal endpoint не переоткрывается.
-- Малый hard-red edge не удаляется materiality filter.
+- Exact terminal red вместе с отдельным unresolved даёт `continue_full` только
+  для неразрешённого scope; terminal endpoint не переоткрывается.
+- Малый exact adverse fact не удаляется materiality filter.
 - Более `250` unique counterparties либо завершаются несколькими bounded
   batches, либо необработанный остаток даёт `unresolved`; первые `250` не могут
   дать clean result.
