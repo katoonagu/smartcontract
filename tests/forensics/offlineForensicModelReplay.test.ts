@@ -412,6 +412,7 @@ describe("forensic model offline corpus v1", () => {
 
   it("freezes internally consistent adverse replay scenes", () => {
     const blacklist = corpus.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions") as unknown as {
+      subjectAddress: string;
       tokenContract: string;
       listedAddress: string;
       timelineEvidence: {
@@ -426,6 +427,7 @@ describe("forensic model offline corpus v1", () => {
         expectedTemporalClass: string;
         occurredAt: string | null;
         tokenContract: string;
+        fromAddress: string;
         toAddress: string;
         confirmed: boolean;
         successful: boolean;
@@ -440,6 +442,15 @@ describe("forensic model offline corpus v1", () => {
       }[];
       partitions: Record<string, string>;
     };
+    const hasExactSubjectSide = (transfers: typeof blacklist.principalTransfers) =>
+      transfers.every((transfer) =>
+        Number(transfer.fromAddress === blacklist.subjectAddress) +
+          Number(transfer.toAddress === blacklist.subjectAddress) === 1
+      );
+    expect(blacklist.subjectAddress).toBe("synthetic-subject");
+    expect(blacklist.subjectAddress).not.toBe(blacklist.listedAddress);
+    expect(hasExactSubjectSide(blacklist.principalTransfers)).toBe(true);
+    expect(hasExactSubjectSide([...blacklist.principalTransfers].reverse())).toBe(true);
     expect(blacklist.principalTransfers).toHaveLength(3);
     expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
       eventKind: "added", confirmed: true, successful: true

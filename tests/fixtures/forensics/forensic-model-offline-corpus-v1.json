@@ -1048,6 +1048,7 @@
     {
       "id": "event-time-blacklist-partitions",
       "evidenceClass": "synthetic_edge_case",
+      "subjectAddress": "synthetic-subject",
       "partitions": {
         "beforeActivationAmountRaw": "900000",
         "activeAtEventAmountRaw": "100000",
