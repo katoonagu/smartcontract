@@ -1787,12 +1787,28 @@ describe("offline forensic model replay v1", () => {
     expect(evaluateExactDrainerSceneV1(exactDrainerScene({
       movement: { ...exactDrainerScene().movement!, amountRaw: "669000001" }
     }))).toMatchObject({ red: false, reason: "movement_mismatch" });
+    const otherToken = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj";
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, tokenContract: otherToken },
+      movement: { ...exactDrainerScene().movement!, tokenContract: otherToken }
+    }))).toMatchObject({ red: false, reason: "token_not_official_usdt" });
     expect(evaluateExactDrainerSceneV1(exactDrainerScene({
       serviceLabel: "trusted exact service"
     }))).toMatchObject({ red: false, reason: "trusted_service_guard" });
 
     expect(JSON.stringify(evaluateExactDrainerSceneV1(exactDrainerScene())))
       .not.toMatch(/Verify20|transferFrom/u);
+  });
+
+  it("validates raw amounts before fingerprint and trusted-service early returns", () => {
+    expect(() => evaluateExactDrainerSceneV1(exactDrainerScene({
+      methodMap: {},
+      relevantCall: { ...exactDrainerScene().relevantCall!, amountRaw: "01" }
+    }))).toThrow("offline_corpus_amount_raw_invalid");
+    expect(() => evaluateExactDrainerSceneV1(exactDrainerScene({
+      serviceLabel: "trusted exact service",
+      movement: { ...exactDrainerScene().movement!, amountRaw: "01" }
+    }))).toThrow("offline_corpus_amount_raw_invalid");
   });
 
   it("reuses event-time provider authority and keeps HTX role plus adverse semantics", () => {
@@ -1851,6 +1867,45 @@ describe("offline forensic model replay v1", () => {
         direction: "outbound",
         amountRaw: "4691000000"
       }]
+    });
+  });
+
+  it("partitions grouped same-transaction timestamp conflicts as unknown once", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        principalTransfers: [
+          {
+            txHash: "same-tx",
+            logIndex: 0,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            fromAddress: "subject",
+            toAddress: "listed",
+            amountRaw: "40"
+          },
+          {
+            txHash: "same-tx",
+            logIndex: 1,
+            occurredAt: "2026-01-03T00:00:00.000Z",
+            fromAddress: "subject",
+            toAddress: "listed",
+            amountRaw: "60"
+          }
+        ],
+        timelineEvents: [{
+          eventKind: "added",
+          occurredAt: "2026-01-02T00:00:00.000Z",
+          logIndex: 0
+        }]
+      }]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "100",
+      partitions: { before_event: "0", active_at_event: "0", unknown: "100" }
     });
   });
 

@@ -115,6 +115,7 @@ export type ExactDrainerSceneResultV1 = {
     | "movement_missing"
     | "movement_not_confirmed"
     | "movement_not_successful"
+    | "token_not_official_usdt"
     | "movement_mismatch";
 };
 
@@ -520,7 +521,7 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       ? transfer.occurredAt
       : new Date(index).toISOString()
   }));
-  groupDirectPrincipalCounterparties({
+  const groups = groupDirectPrincipalCounterparties({
     subjectAddress,
     edges,
     directTransferCoverage: "complete"
@@ -528,18 +529,29 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   const amounts = { before: 0n, active: 0n, unknown: 0n };
   const firstRemoval = events.findIndex(({ eventKind }) => eventKind === "removed");
   const activeLifecycle = firstRemoval === -1 ? events : events.slice(0, firstRemoval);
+  const timesByTransfer = new Map<string, string[]>();
   for (const transfer of transfers) {
-    const occurredAt = typeof transfer.occurredAt === "string" ? transfer.occurredAt : "";
+    const key = `${string(transfer.txHash)}|${string(transfer.amountRaw)}`;
+    const times = timesByTransfer.get(key) ?? [];
+    times.push(typeof transfer.occurredAt === "string" ? transfer.occurredAt : "");
+    timesByTransfer.set(key, times);
+  }
+  const consumedTimes = new Map<string, number>();
+  for (const group of groups) {
     const partition = partitionPrincipalTransfersByBlacklistTimeline({
-      principalTransfers: [{
-        txHash: string(transfer.txHash),
-        amountRaw: parseAmountRaw(transfer.amountRaw),
-        occurredAt
-      }],
+      principalTransfers: group.principalTransfers.map((transfer) => {
+        const key = `${transfer.txHash}|${transfer.amountRaw}`;
+        const index = consumedTimes.get(key) ?? 0;
+        consumedTimes.set(key, index + 1);
+        return {
+          ...transfer,
+          occurredAt: timesByTransfer.get(key)?.[index] ?? ""
+        };
+      }),
       timeline: {
-        // ponytail: this frozen case has no post-removal transfer; replay the
-        // event-time active prefix because the reused partitioner is current-active scoped.
-        events: occurredAt === "" ? events : activeLifecycle,
+        // ponytail: corpus cases contain no post-removal transfer; the reused
+        // partitioner is current-active scoped, so replay the active prefix.
+        events: activeLifecycle,
         pagination: "complete",
         failureReason: null
       }
@@ -704,6 +716,8 @@ export function evaluateExactDrainerSceneV1(
     red: false,
     reason
   });
+  if (input.relevantCall !== null) parseAmountRaw(input.relevantCall.amountRaw);
+  if (input.movement !== null) parseAmountRaw(input.movement.amountRaw);
   const fingerprint = detectVerify20Fingerprint({
     methodMap: { ...input.methodMap },
     topMethods: input.topMethods.map((method) => ({
@@ -719,7 +733,9 @@ export function evaluateExactDrainerSceneV1(
   if (!fingerprint.matched) return context("fingerprint_incomplete");
   const call = input.relevantCall;
   if (!call) return context("exact_call_missing");
-  parseAmountRaw(call.amountRaw);
+  if (call.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) {
+    return context("token_not_official_usdt");
+  }
   if (call.selector.replace(/^0x/iu, "").toLowerCase() !== "5082dd12") {
     return context("exact_call_mismatch");
   }
@@ -727,7 +743,9 @@ export function evaluateExactDrainerSceneV1(
   if (!call.successful) return context("exact_call_not_successful");
   const movement = input.movement;
   if (!movement) return context("movement_missing");
-  parseAmountRaw(movement.amountRaw);
+  if (movement.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) {
+    return context("token_not_official_usdt");
+  }
   if (!movement.confirmed) return context("movement_not_confirmed");
   if (!movement.successful) return context("movement_not_successful");
   if (
@@ -775,12 +793,6 @@ export function replayOfflineForensicModelCorpusV1(
   }
   if (serviceCases.some(({ id }) => id === "txc-vusxvhd-recorded-control")) {
     dataGaps.push({ caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" });
-  }
-  if (adverseCases.some(({ id }) => id === "drainer-complete-evidence")) {
-    const result = adverseResults.find(({ id }) => id === "drainer-complete-evidence");
-    if (result?.red !== true) {
-      dataGaps.push({ caseId: "drainer-complete-evidence", code: "verify20_fingerprint_incomplete" });
-    }
   }
   return {
     schemaVersion: "offline-forensic-model-replay-v1",
