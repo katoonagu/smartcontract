@@ -399,8 +399,8 @@ npm.cmd test
 - [ ] **Step 3: Audit scope**
 
 ```powershell
-git diff --check HEAD~3..HEAD
-git diff --name-only HEAD~3..HEAD
+git diff --check c959e5f9..HEAD
+git diff --name-only c959e5f9..HEAD
 rg -n "adversePathDisposition|providerHistoryCompletion" src/index.ts src/unifiedCheck src/forensics
 ```
 
