@@ -65,12 +65,48 @@ paths from owning automatic output for the same chat/address pair.
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, red-branch and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
-| Forensic query/provenance model | Detailed design and real-corpus manual replay complete; lean offline implementation plan written; code absent | Implement canonical order/dedupe and the pure integer ledger on frozen fixtures |
-| Stage C | Detailed `100 + 100` amendment approved after 21-wallet calibration; code absent | Implement the pure shadow classifier in the same offline runner, with no boundary action or scoring |
+| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 10 of 37 cases matched and 27 remained expectation-level rather than replayed | Add honest replay inputs/expectations for the 27 gaps, then rerun the offline gate; do not plan production integration from this result |
+| Stage C | Pure `100 + 100` shadow classifier exists offline; the positive W8SRL result is recorded-vector evidence, D7NzP is sparse predicate-only evidence, and VUSXVhd remains insufficient | Complete the offline evidence gate and a separate blind set before any boundary-action proposal |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
+
+## Lean Offline Model Gate — 2026-07-30
+
+The deterministic read-only runner measured 37 cases: 7 ledger, 24 service,
+6 adverse and no broad-scope cases. Ten cases matched their frozen
+expectations. The gate failed with exit code 1 because 27 cases still returned
+`expectation_level`; they are reported as
+`frozen_expectation_not_replayed`, not converted into passes. Four honest data
+gaps remain in the output. Two runs produced identical 11,792-byte stdout
+(`sha256:107f5570710f9f0a10e9db91e05159be521a6630888c0eda94bf443b645cc851`)
+and empty stderr.
+
+Evidence limits remain explicit:
+
+- recorded calibration vectors are not exact frozen-row/provider-page replay;
+- the D7NzP control is sparse predicate-only evidence and is not a complete
+  service-window replay;
+- VUSXVhd remains `insufficient_data` because its recent window is short and
+  its historical baseline is empty;
+- the real PacGy chronology remains `history_incomplete`; the synthetic
+  zero-opening arithmetic control cannot promote it;
+- normalized locked provider rows retain the design-only limitation
+  `raw_provider_assertion_not_replayed`.
+
+Verification on this tree passed:
+
+- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts`: 148 tests;
+- the Task 4 eight-file forensic/authority gate: 367 tests;
+- `npm run typecheck`;
+- `npm test -- tests/forensics/tronAddressAllTimeIndex.test.ts tests/unified-check/directHistory.test.ts tests/golden-v2/attribution.test.ts`: 33 tests;
+- `npm test`: 5,099 passed and 157 skipped across 288 passed and 27 skipped
+  test files.
+
+This is no production activation. Stage D remains deferred and not approved;
+production routing, scoring, traversal, configuration and delivery are
+unchanged.
 
 ## Correctness Gate
 

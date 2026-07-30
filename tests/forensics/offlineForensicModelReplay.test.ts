@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   apportionRawLargestRemainderV1,
@@ -22,7 +33,8 @@ import {
   evaluateExactDrainerSceneV1,
   replayOfflineForensicModelCorpusV1,
   type ExactDrainerSceneInputV1,
-  type OfflineCorpusV1
+  type OfflineCorpusV1,
+  type OfflineReplayResultV1
 } from "../../src/forensics/offlineForensicModelReplay.js";
 import { detectVerify20Fingerprint } from "../../src/forensics/verify20Fingerprint.js";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
@@ -3207,5 +3219,195 @@ describe("offline forensic model replay v1", () => {
         amountRaw: "01"
       }]
     }))).toThrow("offline_corpus_amount_raw_invalid");
+  });
+});
+
+describe("read-only forensic corpus CLI", () => {
+  const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+  const cliPath = join(repositoryRoot, "scripts/replayForensicModelCorpus.ts");
+  const fixturePath = fileURLToPath(fixtureUrl);
+  const runCli = (args: readonly string[] = [], cwd = repositoryRoot) => spawnSync(
+    process.execPath,
+    ["--import", "tsx", cliPath, ...args],
+    { cwd, encoding: "utf8" }
+  );
+
+  it("prints one deterministic canonical report for the default and explicit fixture", () => {
+    const first = runCli();
+    const second = runCli(["--fixture", fixturePath]);
+
+    expect(first.status).toBe(1);
+    expect(first.stderr).toBe("");
+    expect(first.stdout.endsWith("\n")).toBe(true);
+    expect(first.stdout.endsWith("\n\n")).toBe(false);
+    expect(second).toMatchObject({ status: first.status, stdout: first.stdout, stderr: "" });
+
+    const report = JSON.parse(first.stdout) as {
+      schemaVersion: string;
+      matched: boolean;
+      result: OfflineReplayResultV1;
+      expectationMismatches: readonly { caseId: string; code: string }[];
+      limitations: readonly string[];
+    };
+    expect(report.schemaVersion).toBe("offline-forensic-model-corpus-run-v1");
+    expect(report.matched).toBe(false);
+    expect(report.expectationMismatches).toContainEqual({
+      caseId: "pacgy-synthetic-zero-opening-control",
+      code: "frozen_expectation_not_replayed"
+    });
+    expect(report.limitations).toContain("raw_provider_assertion_not_replayed");
+    expect(report.result.ledgerCases.map(({ id }) => id)).toEqual(
+      [...report.result.ledgerCases.map(({ id }) => id)].sort()
+    );
+    expect(report.result.serviceCases.map(({ id }) => id)).toEqual(
+      [...report.result.serviceCases.map(({ id }) => id)].sort()
+    );
+    expect(report.result.adverseCases.map(({ id }) => id)).toEqual(
+      [...report.result.adverseCases.map(({ id }) => id)].sort()
+    );
+    for (const item of [
+      ...report.result.ledgerCases,
+      ...report.result.serviceCases,
+      ...report.result.adverseCases,
+      ...report.result.broadScopeCases
+    ]) {
+      expect(item.evidenceClass).toMatch(/^(exact_frozen_rows|recorded_calibration_vector|synthetic_edge_case)$/u);
+    }
+    expect(JSON.stringify(report)).not.toMatch(/\d+n\b/u);
+  });
+
+  it.each([
+    ["missing fixture path", ["--fixture"]],
+    ["unknown flag", ["--unknown"]],
+    ["repeated fixture flag", ["--fixture", fixturePath, "--fixture", fixturePath]],
+    ["extra argument", ["--fixture", fixturePath, "extra"]]
+  ])("rejects %s without writing stdout", (_name, args) => {
+    const result = runCli(args);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(/^Error: /u);
+  });
+
+  it("rejects an unknown fixture schema on stderr only", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-schema-"));
+    const badFixture = join(directory, "bad-schema.json");
+    try {
+      await writeFile(badFixture, JSON.stringify({ schemaVersion: "future" }), "utf8");
+      const result = runCli(["--fixture", badFixture]);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("offline_corpus_schema_invalid");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("exits nonzero and reports an explicit frozen-expectation mismatch", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-mismatch-"));
+    const mismatchFixture = join(directory, "mismatch.json");
+    try {
+      const mismatch = structuredClone(corpus) as unknown as {
+        ledgerCases: Array<Record<string, unknown>>;
+      };
+      mismatch.ledgerCases[0]!.expectedAuthoritativeState = "complete";
+      await writeFile(mismatchFixture, JSON.stringify(mismatch), "utf8");
+
+      const result = runCli(["--fixture", mismatchFixture]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        matched: false,
+        expectationMismatches: expect.arrayContaining([{
+          caseId: "pacgy-recorded-chronology",
+          code: "frozen_expectation_mismatch"
+        }])
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass a replayed case that has no frozen expectation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-no-expectation-"));
+    const missingFixture = join(directory, "missing-expectation.json");
+    try {
+      const missing = structuredClone(corpus) as unknown as {
+        ledgerCases: Array<Record<string, unknown>>;
+      };
+      delete missing.ledgerCases[0]!.expectedAuthoritativeState;
+      await writeFile(missingFixture, JSON.stringify(missing), "utf8");
+
+      const result = runCli(["--fixture", missingFixture]);
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        expectationMismatches: expect.arrayContaining([{
+          caseId: "pacgy-recorded-chronology",
+          code: "frozen_expectation_missing"
+        }])
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("is byte-identical across runs and writes nothing in its working directory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-read-only-"));
+    try {
+      const before = await readdir(directory);
+      const first = runCli([], directory);
+      const second = runCli([], directory);
+      expect(first.stdout).toBe(second.stdout);
+      expect(first.stderr).toBe(second.stderr);
+      expect(first.status).toBe(second.status);
+      expect(await readdir(directory)).toEqual(before);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the complete runtime import graph outside production boundaries", async () => {
+    const visited = new Set<string>();
+    const imports = /(?:^|\n)\s*import\s+(?!type\b)(?:[\s\S]*?\sfrom\s+)?["']([^"']+)["']/gu;
+    const candidates = (specifier: string, owner: string) => {
+      const base = resolve(dirname(owner), specifier);
+      return [base, `${base}.ts`, `${base}.js`, join(base, "index.ts")];
+    };
+    const visit = async (path: string): Promise<void> => {
+      const normalized = resolve(path);
+      if (visited.has(normalized)) return;
+      visited.add(normalized);
+      const source = await readFile(normalized, "utf8");
+      for (const match of source.matchAll(imports)) {
+        const specifier = match[1]!;
+        if (!specifier.startsWith(".")) continue;
+        let dependency: string | null = null;
+        for (const candidate of candidates(specifier.replace(/\.js$/u, ""), normalized)) {
+          try {
+            await readFile(candidate, "utf8");
+            dependency = candidate;
+            break;
+          } catch {
+            // Try the next normal TypeScript resolution candidate.
+          }
+        }
+        expect(dependency, `unresolved runtime import ${specifier} from ${normalized}`).not.toBeNull();
+        await visit(dependency!);
+      }
+    };
+
+    await visit(cliPath);
+    const relativeGraph = [...visited].map((path) =>
+      path.slice(repositoryRoot.length).replaceAll("\\", "/")
+    );
+    expect(relativeGraph).toContain("scripts/replayForensicModelCorpus.ts");
+    expect(relativeGraph).toContain("src/forensics/offlineForensicModelReplay.ts");
+    expect(relativeGraph).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/(?:^|\/)config\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)tronClient\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)(?:repositories|.*Repository)\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)(?:jobs?|bot|telegram|admin)(?:\/|\.)/iu),
+      expect.stringMatching(/contractDrivenEvidence|approvalDrainProvenance|route.*scor/iu),
+      expect.stringMatching(/src\/unifiedCheck\/(?:productionRuntime|productionTraversal|productionCompletion)\.ts$/iu)
+    ]));
   });
 });
