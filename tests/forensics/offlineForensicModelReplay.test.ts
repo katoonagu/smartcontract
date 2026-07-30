@@ -1909,6 +1909,54 @@ describe("offline forensic model replay v1", () => {
     });
   });
 
+  it("restores grouped blacklist times by counterparty and direction identity", () => {
+    const activeAt = "2026-01-03T00:00:00.000Z";
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        principalTransfers: [
+          {
+            txHash: "shared-tx",
+            logIndex: 0,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            fromAddress: "subject",
+            toAddress: "counterparty-b",
+            amountRaw: "10"
+          },
+          {
+            txHash: "shared-tx",
+            logIndex: 1,
+            occurredAt: activeAt,
+            fromAddress: "subject",
+            toAddress: "counterparty-b",
+            amountRaw: "10"
+          },
+          ...[2, 3, 4].map((logIndex) => ({
+            txHash: "shared-tx",
+            logIndex,
+            occurredAt: activeAt,
+            fromAddress: "counterparty-a",
+            toAddress: "subject",
+            amountRaw: "10"
+          }))
+        ],
+        timelineEvents: [{
+          eventKind: "added",
+          occurredAt: "2026-01-02T00:00:00.000Z",
+          logIndex: 0
+        }]
+      }]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "30",
+      unknownAmountRaw: "20",
+      partitions: { before_event: "0", active_at_event: "30", unknown: "20" }
+    });
+  });
+
   it("represents every broad direct counterparty in both directions and retains second-hop red", () => {
     const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       broadScopeCases: [{

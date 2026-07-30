@@ -510,7 +510,7 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   const transfers = source.principalTransfers.map((value) => record(value));
   const events = source.timelineEvents.map(validTimelineEvent)
     .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
-  const subjectAddress = string(transfers[0]?.fromAddress);
+  const subjectAddress = string(transfers[0]?.fromAddress).trim();
   const edges = transfers.map((transfer, index) => routeEdge({
     id: `${string(transfer.txHash)}:${integer(transfer.logIndex)}`,
     txHash: string(transfer.txHash),
@@ -531,7 +531,16 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   const activeLifecycle = firstRemoval === -1 ? events : events.slice(0, firstRemoval);
   const timesByTransfer = new Map<string, string[]>();
   for (const transfer of transfers) {
-    const key = `${string(transfer.txHash)}|${string(transfer.amountRaw)}`;
+    const fromAddress = string(transfer.fromAddress).trim();
+    const toAddress = string(transfer.toAddress).trim();
+    const direction = toAddress === subjectAddress ? "inbound" : "outbound";
+    const counterparty = direction === "inbound" ? fromAddress : toAddress;
+    const key = [
+      string(transfer.txHash).trim().toLowerCase(),
+      direction,
+      counterparty,
+      string(transfer.amountRaw)
+    ].join("|");
     const times = timesByTransfer.get(key) ?? [];
     times.push(typeof transfer.occurredAt === "string" ? transfer.occurredAt : "");
     timesByTransfer.set(key, times);
@@ -540,13 +549,19 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   for (const group of groups) {
     const partition = partitionPrincipalTransfersByBlacklistTimeline({
       principalTransfers: group.principalTransfers.map((transfer) => {
-        const key = `${transfer.txHash}|${transfer.amountRaw}`;
+        const key = [
+          transfer.txHash.trim().toLowerCase(),
+          group.direction,
+          group.address.trim(),
+          transfer.amountRaw.toString()
+        ].join("|");
         const index = consumedTimes.get(key) ?? 0;
+        const occurredAt = timesByTransfer.get(key)?.[index];
+        if (occurredAt === undefined) {
+          throw new TypeError("offline_corpus_blacklist_identity_invalid");
+        }
         consumedTimes.set(key, index + 1);
-        return {
-          ...transfer,
-          occurredAt: timesByTransfer.get(key)?.[index] ?? ""
-        };
+        return { ...transfer, occurredAt };
       }),
       timeline: {
         // ponytail: corpus cases contain no post-removal transfer; the reused
