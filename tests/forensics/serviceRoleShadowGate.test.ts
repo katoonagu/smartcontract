@@ -13,6 +13,16 @@ const reconstructionFixture = JSON.parse(readFileSync(
   new URL("../fixtures/forensics/service-role-shadow-reconstruction-v1.json", import.meta.url), "utf8"
 ));
 
+function collectIdentityStrings(value: unknown, key = ""): string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => collectIdentityStrings(item, key));
+  if (value === null || typeof value !== "object") {
+    return typeof value === "string" && /(address|id)$/iu.test(key) ? [value] : [];
+  }
+  return Object.entries(value).flatMap(([childKey, child]) =>
+    collectIdentityStrings(child, childKey)
+  );
+}
+
 describe("Stage C service-role shadow admission gate", () => {
   it("freezes accepted manifest/page bytes and authoritative role entries", () => {
     const pages = reconstructionFixture.acceptedHistory.pages;
@@ -40,6 +50,28 @@ describe("Stage C service-role shadow admission gate", () => {
     ));
   });
 
+  it("keeps the synthetic reconstruction identity outside calibration and blind cases", () => {
+    const protectedIdentities = new Set(collectIdentityStrings({
+      serviceCases: corpus.serviceCases,
+      adverseCases: corpus.adverseCases,
+      blindCases: corpus.blindCases ?? []
+    }));
+
+    expect(reconstructionFixture).toMatchObject({
+      evidenceClass: "synthetic_edge_case",
+      fixtureIdentity: "synthetic-offline-accepted-history-control-v1",
+      evidenceLimitations: expect.arrayContaining([
+        "synthetic_offline_fixture_not_real_db_history",
+        "synthetic_addresses_not_calibration_or_blind"
+      ])
+    });
+    for (const identity of [
+      reconstructionFixture.caseId,
+      reconstructionFixture.subjectAddress,
+      reconstructionFixture.state.address
+    ]) expect(protectedIdentities).not.toContain(identity);
+  });
+
   it("emits the exact typed receipt with honest evidence limitations", () => {
     const receipt = replayServiceRoleShadowGateV1({ corpus, reconstructedFixture: reconstructionFixture });
 
@@ -48,6 +80,10 @@ describe("Stage C service-role shadow admission gate", () => {
       service: { numerator: 24, denominator: 24 },
       adverse: { numerator: 6, denominator: 6 },
       reconstructedAcceptedHistories: 1,
+      reconstructionEvidenceLimitations: [
+        "synthetic_addresses_not_calibration_or_blind",
+        "synthetic_offline_fixture_not_real_db_history"
+      ],
       mismatches: []
     });
     expect(receipt.cases).toHaveLength(30);

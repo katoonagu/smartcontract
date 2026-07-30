@@ -38,11 +38,16 @@ export type ServiceRoleShadowGateReceiptV1 = {
   adverse: { numerator: number; denominator: 6 };
   cases: readonly StageCCaseResultV1[];
   reconstructedAcceptedHistories: number;
+  reconstructionEvidenceLimitations: readonly string[];
   mismatches: readonly string[];
 };
 
 const SHA256 = /^[0-9a-f]{64}$/u;
-const RECONSTRUCTION_CASE_ID = "reconstructed-accepted-history-v1";
+const RECONSTRUCTION_CASE_ID = "synthetic-accepted-history-reconstruction-v1";
+const SYNTHETIC_RECONSTRUCTION_LIMITATIONS = [
+  "synthetic_addresses_not_calibration_or_blind",
+  "synthetic_offline_fixture_not_real_db_history"
+] as const;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -118,6 +123,11 @@ function reconstruct(fixture: unknown): { matched: boolean; mismatch: string | n
     if (!source || !stateSource || !accepted || !manifestRef || !manifest || !roleRef || !roleArtifact ||
       source.schemaVersion !== "service-role-shadow-reconstruction-v1" ||
       source.caseId !== RECONSTRUCTION_CASE_ID || source.expectedStatus !== "high_inferred_service" ||
+      source.fixtureIdentity !== "synthetic-offline-accepted-history-control-v1" ||
+      source.evidenceClass !== "synthetic_edge_case" ||
+      !Array.isArray(source.evidenceLimitations) ||
+      fingerprintCanonicalArtifact(source.evidenceLimitations) !==
+        fingerprintCanonicalArtifact(SYNTHETIC_RECONSTRUCTION_LIMITATIONS) ||
       typeof source.runId !== "string" || typeof source.snapshotHash !== "string" ||
       !SHA256.test(source.snapshotHash) || typeof source.subjectAddress !== "string" ||
       typeof manifestRef.sha256 !== "string" || !SHA256.test(manifestRef.sha256) ||
@@ -272,6 +282,7 @@ export function replayServiceRoleShadowGateV1(input: {
     adverse: { numerator: adverseCases.filter(({ matched }) => matched).length, denominator: 6 },
     cases: [...cases].sort((left, right) => left.id.localeCompare(right.id)),
     reconstructedAcceptedHistories: reconstruction.matched ? 1 : 0,
+    reconstructionEvidenceLimitations: SYNTHETIC_RECONSTRUCTION_LIMITATIONS,
     mismatches
   };
 }
