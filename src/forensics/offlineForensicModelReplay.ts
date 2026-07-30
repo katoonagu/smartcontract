@@ -1,11 +1,4 @@
-import {
-  runChronologicalProportionalLedgerV1,
-  selectLedgerProvenanceV1,
-  type LedgerEventV1,
-  type LedgerInputV1,
-  type LedgerQueryV1,
-  type SnapshotBalanceWitnessV1
-} from "./chronologicalProportionalLedger";
+import { replayChronologicalLedgerCorpusV1 } from "./chronologicalLedgerCorpusReplay";
 import {
   classifyServiceBehavior100Plus100V2,
   evaluateServiceWindowPredicateV2,
@@ -248,132 +241,6 @@ function validateCases(value: unknown): readonly OfflineCaseV1[] {
 
 function resultBase(item: OfflineCaseV1): Pick<ReplayCaseResultV1, "id" | "evidenceClass"> {
   return { id: item.id, evidenceClass: item.evidenceClass };
-}
-
-function toLedgerEvent(value: unknown): LedgerEventV1 {
-  const source = record(value);
-  const providerEventIds = source.providerEventIds;
-  if (!Array.isArray(providerEventIds) || providerEventIds.some((item) => typeof item !== "string")) {
-    throw new TypeError("offline_corpus_ledger_event_invalid");
-  }
-  const eventIndexAuthority = source.eventIndexAuthority;
-  if (eventIndexAuthority !== "receipt_log_index" && eventIndexAuthority !== "provider_synthetic") {
-    throw new TypeError("offline_corpus_ledger_event_invalid");
-  }
-  return {
-    canonicalEventId: source.canonicalEventId === null ? null : string(source.canonicalEventId),
-    providerEventIds,
-    txHash: string(source.txHash),
-    blockNumber: integer(source.blockNumber),
-    transactionIndex: source.transactionIndex === null ? null : integer(source.transactionIndex),
-    eventIndex: source.eventIndex === null ? null : integer(source.eventIndex),
-    eventIndexAuthority,
-    occurredAtMs: integer(source.occurredAtMs),
-    fromAddress: string(source.fromAddress),
-    toAddress: string(source.toAddress),
-    amountRaw: parseAmountRaw(source.amountRaw)
-  };
-}
-
-function toLedgerInput(value: unknown): LedgerInputV1 {
-  const source = record(value);
-  if (!Array.isArray(source.events)) throw new TypeError("offline_corpus_ledger_input_invalid");
-  const historyCompleteness = source.historyCompleteness;
-  if (historyCompleteness !== "genesis_complete" && historyCompleteness !== "partial") {
-    throw new TypeError("offline_corpus_ledger_input_invalid");
-  }
-  return {
-    subjectAddress: string(source.subjectAddress),
-    snapshotBlockNumber: integer(source.snapshotBlockNumber),
-    snapshotBlockHash: string(source.snapshotBlockHash),
-    snapshotEvidenceRef: string(source.snapshotEvidenceRef),
-    historyCompleteness,
-    openingBalanceRaw: parseAmountRaw(source.openingBalanceRaw),
-    events: source.events.map(toLedgerEvent)
-  };
-}
-
-function toSnapshotWitness(value: unknown): SnapshotBalanceWitnessV1 {
-  const source = record(value);
-  if (typeof source.pinned !== "boolean" || typeof source.independent !== "boolean") {
-    throw new TypeError("offline_corpus_balance_witness_invalid");
-  }
-  return {
-    amountRaw: parseAmountRaw(source.amountRaw),
-    pinned: source.pinned,
-    independent: source.independent,
-    subjectAddress: string(source.subjectAddress),
-    snapshotBlockNumber: integer(source.snapshotBlockNumber),
-    snapshotBlockHash: string(source.snapshotBlockHash),
-    evidenceRef: string(source.evidenceRef)
-  };
-}
-
-function replayLedgerCase(item: OfflineCaseV1): ReplayCaseResultV1 {
-  const source = item as Record<string, unknown>;
-  if (source.replayInput !== undefined) {
-    const ledger = runChronologicalProportionalLedgerV1(toLedgerInput(source.replayInput));
-    const querySource = record(source.query, "offline_corpus_ledger_query_invalid");
-    const purpose = querySource.purpose;
-    if (purpose !== "current_balance" && purpose !== "amount_only" && purpose !== "exact_episode") {
-      throw new TypeError("offline_corpus_ledger_query_invalid");
-    }
-    const redIds = querySource.exactRedContributorLotIds;
-    if (redIds !== undefined && (!Array.isArray(redIds) || redIds.some((id) => typeof id !== "string"))) {
-      throw new TypeError("offline_corpus_ledger_query_invalid");
-    }
-    const query: LedgerQueryV1 = {
-      ledger,
-      purpose,
-      requestedAmountRaw: querySource.requestedAmountRaw === undefined
-        ? undefined
-        : parseAmountRaw(querySource.requestedAmountRaw),
-      exactEventId: querySource.exactEventId === undefined
-        ? undefined
-        : string(querySource.exactEventId),
-      snapshotBalanceWitness: querySource.snapshotBalanceWitness === undefined
-        ? undefined
-        : toSnapshotWitness(querySource.snapshotBalanceWitness),
-      exactRedContributorLotIds: redIds as string[] | undefined
-    };
-    const selection = selectLedgerProvenanceV1(query);
-    return {
-      ...resultBase(item),
-      state: selection.state,
-      reason: selection.reason,
-      authoritative: ledger.authoritative,
-      targetRaw: selection.targetRaw.toString(),
-      coveredRaw: selection.coveredRaw.toString(),
-      allocations: selection.allocations.map((allocation) => ({
-        lotId: allocation.lotId,
-        sourceEventId: allocation.sourceEventId,
-        sourceAddress: allocation.sourceAddress,
-        amountRaw: allocation.amountRaw.toString(),
-        sourceOriginalRaw: allocation.sourceOriginalRaw.toString(),
-        sourceUtilizedRaw: allocation.sourceUtilizedRaw.toString()
-      })),
-      deepSelectedLotIds: selection.deepSelectedLotIds
-    };
-  }
-  const history = source.historyCompleteness;
-  if (history !== null && typeof history === "object" && !Array.isArray(history)) {
-    const completeness = history as Record<string, unknown>;
-    if (completeness.providerExhaustionProven !== true ||
-      completeness.zeroOpeningWitnessProven !== true) {
-    return {
-      ...resultBase(item),
-      state: "unresolved",
-      reason: "history_incomplete",
-      authoritative: false
-    };
-    }
-  }
-  return {
-    ...resultBase(item),
-    state: "expectation_level",
-    reason: null,
-    authoritative: false
-  };
 }
 
 function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceWindowVectorV2 {
@@ -1286,13 +1153,22 @@ export function replayOfflineForensicModelCorpusV1(
     );
     exactLabels.set(address, labels);
   }
-  const ledgerResults = ledgerCases.map(replayLedgerCase);
+  const evidenceClasses = new Map(ledgerCases.map(({ id, evidenceClass }) => [id, evidenceClass]));
+  const ledgerResults = replayChronologicalLedgerCorpusV1({ ledgerCases }).caseResults.map(
+    ({ caseId, actual }): ReplayCaseResultV1 => ({
+      id: caseId,
+      evidenceClass: evidenceClasses.get(caseId) as OfflineEvidenceClassV1,
+      ...actual
+    })
+  );
   const serviceResults = serviceCases.map((item) => replayServiceCase(item, exactLabels));
   const gapKeys = new Set<string>();
   const addGap = (caseId: string, code: string) => gapKeys.add(`${caseId}\u0000${code}`);
   for (const result of [...ledgerResults, ...serviceResults, ...adverseResults]) {
     if (typeof result.dataGapCode === "string") addGap(result.id, result.dataGapCode);
-    if (result.reason === "history_incomplete") addGap(result.id, "history_incomplete");
+    if (result.reason === "history_incomplete_before_anchor") {
+      addGap(result.id, "history_incomplete");
+    }
     if (result.exactRoleResolution === "anchor_missing") {
       addGap(result.id, "exact_service_role_anchor_missing");
     }

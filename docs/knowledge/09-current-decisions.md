@@ -367,6 +367,17 @@ separate implementation and acceptance.
   attribution. Real `…PacGy` remains unresolved without complete canonical
   history and an independent pinned balance witness; the observed `82.7 USDT`
   balance and proposed `…gsFCa` origin remain diagnostic only.
+- The accepted non-synthetic canonical-tape convention is JSON-safe: raw
+  amounts are unsigned decimal strings, parsing starts from `unknown`, and
+  bigint conversion happens only after validation. `artifactSha256` is the
+  lowercase `fingerprintCanonicalArtifact(body)`, not a wrapper or file-byte
+  hash; reviewed source/tape file hashes and commit bindings remain separate.
+- The accepted seven-case shadow ledger does not close missing authority. Real
+  `…PacGy` remains `unresolved` with
+  `history_incomplete_before_anchor` and `authoritative: false`; its synthetic
+  zero-opening calibration remains separate. This acceptance authorizes no
+  production runtime, configuration, storage, job, selector, scoring,
+  traversal, delivery, or activation change.
 - No available case activated the `500 + 100` expansion trigger. A dedicated
   frozen ambiguous fixture is required before that branch is replay-proven.
 - Manual live reads were not stored as raw fixture bytes. Stage D remains

@@ -1,0 +1,6 @@
+decision: approved
+corpus_commit: ecfa4bc8738ade065d4c5ff3bbdd1855d14898ad
+foundation_commit: d80a7e0100665c9d46a13d1b6da26bd48b2c6898
+adjudication_commit: 2bb2c8b39186f67ff8d5048dee95d211efcfb86c
+approver: workspace-user-standing-approval
+approved_at: 2026-07-30

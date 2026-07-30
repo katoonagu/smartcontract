@@ -2,9 +2,11 @@ import { readFile } from "node:fs/promises";
 import { canonicalizeArtifactJson } from "../src/forensics/canonicalJson.js";
 import {
   replayOfflineForensicModelCorpusV1,
+  type OfflineEvidenceClassV1,
   type OfflineCorpusV1,
   type OfflineReplayResultV1
 } from "../src/forensics/offlineForensicModelReplay.js";
+import { replayChronologicalLedgerCorpusV1 } from "../src/forensics/chronologicalLedgerCorpusReplay.js";
 
 type Case = OfflineCorpusV1["ledgerCases"][number];
 type CaseResult = OfflineReplayResultV1["ledgerCases"][number];
@@ -23,12 +25,37 @@ const DEFAULT_FIXTURE = new URL(
   import.meta.url
 );
 
-function fixtureArgument(args: readonly string[]): string | URL {
-  if (args.length === 0) return DEFAULT_FIXTURE;
-  if (args.length !== 2 || args[0] !== "--fixture" || args[1] === "") {
-    throw new TypeError("usage: replayForensicModelCorpus [--fixture <path>]");
+type ReplayGroup = "all" | "ledger";
+
+function cliArguments(args: readonly string[]): {
+  readonly fixture: string | URL;
+  readonly group: ReplayGroup;
+} {
+  let fixture: string | URL = DEFAULT_FIXTURE;
+  let group: ReplayGroup = "all";
+  let fixtureSeen = false;
+  let groupSeen = false;
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (flag === "--group") {
+      if (groupSeen || (value !== "all" && value !== "ledger")) {
+        throw new TypeError("forensic_replay_group_invalid");
+      }
+      group = value;
+      groupSeen = true;
+      continue;
+    }
+    if (flag === "--fixture" && !fixtureSeen && typeof value === "string" && value !== "") {
+      fixture = value;
+      fixtureSeen = true;
+      continue;
+    }
+    throw new TypeError(
+      "usage: replayForensicModelCorpus [--group all|ledger] [--fixture <path>]"
+    );
   }
-  return args[1]!;
+  return { fixture, group };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -251,12 +278,16 @@ function compareExpectations(
     ...corpus.adverseCases.map((source) => ({ kind: "adverse" as const, source })),
     ...(corpus.broadScopeCases ?? []).map((source) => ({ kind: "broad_scope" as const, source }))
   ].map((item) => [item.source.id, item] as const));
+  const ledgerMismatches = replayChronologicalLedgerCorpusV1({
+    ledgerCases: corpus.ledgerCases
+  }).mismatches;
   return [
-    ...result.ledgerCases,
-    ...result.serviceCases,
+    ...ledgerMismatches,
+    ...[
+      ...result.serviceCases,
     ...result.adverseCases,
     ...result.broadScopeCases
-  ].flatMap((actual): Mismatch[] => {
+    ].flatMap((actual): Mismatch[] => {
     const item = sources.get(actual.id);
     if (item === undefined) return [{ caseId: actual.id, code: "frozen_expectation_missing" }];
     const comparison = compareCaseExpectation(item.kind, item.source, actual);
@@ -268,11 +299,44 @@ function compareExpectations(
           : comparison === "not_replayed" ? "frozen_expectation_not_replayed"
             : "frozen_expectation_mismatch"
     }];
-  }).sort((left, right) =>
+    })
+  ].sort((left, right) =>
     left.caseId < right.caseId ? -1
       : left.caseId > right.caseId ? 1
         : left.code < right.code ? -1 : left.code > right.code ? 1 : 0
   );
+}
+
+function replayLedgerOnly(corpus: OfflineCorpusV1): {
+  readonly result: OfflineReplayResultV1;
+  readonly expectationMismatches: readonly Mismatch[];
+} {
+  if (corpus.schemaVersion !== "forensic-model-offline-corpus-v1") {
+    throw new TypeError("offline_corpus_schema_invalid");
+  }
+  const replay = replayChronologicalLedgerCorpusV1({ ledgerCases: corpus.ledgerCases });
+  const evidenceClasses = new Map(corpus.ledgerCases.map(({ id, evidenceClass }) => [
+    id,
+    evidenceClass
+  ]));
+  const ledgerCases = replay.caseResults.map(({ caseId, actual }) => ({
+    id: caseId,
+    evidenceClass: evidenceClasses.get(caseId) as OfflineEvidenceClassV1,
+    ...actual
+  }));
+  return {
+    result: {
+      schemaVersion: "offline-forensic-model-replay-v1",
+      ledgerCases,
+      serviceCases: [],
+      adverseCases: [],
+      broadScopeCases: [],
+      dataGaps: ledgerCases.flatMap(({ id, reason }) => reason === "history_incomplete_before_anchor"
+        ? [{ caseId: id, code: "history_incomplete" }]
+        : [])
+    },
+    expectationMismatches: replay.mismatches
+  };
 }
 
 const SEMANTIC_ID_KEYS = [
@@ -324,10 +388,16 @@ function sortResult(result: OfflineReplayResultV1): OfflineReplayResultV1 {
 }
 
 async function main(): Promise<void> {
-  const fixture = fixtureArgument(process.argv.slice(2));
+  const { fixture, group } = cliArguments(process.argv.slice(2));
   const corpus = JSON.parse(await readFile(fixture, "utf8")) as OfflineCorpusV1;
-  const result = sortResult(replayOfflineForensicModelCorpusV1(corpus));
-  const expectationMismatches = compareExpectations(corpus, result);
+  const replay = group === "ledger"
+    ? replayLedgerOnly(corpus)
+    : (() => {
+        const result = replayOfflineForensicModelCorpusV1(corpus);
+        return { result, expectationMismatches: compareExpectations(corpus, result) };
+      })();
+  const result = sortResult(replay.result);
+  const expectationMismatches = replay.expectationMismatches;
   const limitations = [
     ...new Set(result.adverseCases.flatMap((item) =>
       item.providerAssertionReplay === "raw_provider_assertion_not_replayed"
