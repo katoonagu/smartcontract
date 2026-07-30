@@ -102,6 +102,7 @@ export type LedgerSelectionReasonV1 =
   | "balance_witness_binding_mismatch"
   | "snapshot_balance_mismatch"
   | "requested_amount_missing"
+  | "requested_amount_not_positive"
   | "requested_amount_exceeds_balance"
   | "exact_event_missing"
   | "requested_amount_exceeds_episode";
@@ -503,8 +504,13 @@ export function selectLedgerProvenanceV1(input: LedgerQueryV1): LedgerSelectionV
         deepSelectedLotIds: []
       };
     }
-    if (input.purpose === "amount_only" && input.requestedAmountRaw === undefined) {
-      return unresolvedSelection("requested_amount_missing");
+    if (input.purpose === "amount_only") {
+      if (input.requestedAmountRaw === undefined) {
+        return unresolvedSelection("requested_amount_missing");
+      }
+      if (input.requestedAmountRaw <= 0n) {
+        return unresolvedSelection("requested_amount_not_positive");
+      }
     }
     targetRaw = input.purpose === "current_balance"
       ? input.ledger.remainingRaw
