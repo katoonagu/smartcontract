@@ -65,7 +65,7 @@ paths from owning automatic output for the same chat/address pair.
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, red-branch and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
-| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 8 of 37 cases matched and 29 remained expectation-level rather than replayed | Add honest replay inputs/expectations for the 29 gaps, then rerun the offline gate; do not plan production integration from this result |
+| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 8 of 37 cases matched and 29 frozen expectations remained unreplayed; 27 results were `expectation_level`, while PacGy was unresolved and the blacklist result retained unreplayed nested expectations | Add honest replay inputs/expectations for the 29 gaps, then rerun the offline gate; do not plan production integration from this result |
 | Stage C | Pure `100 + 100` shadow classifier exists offline; the positive W8SRL result is recorded-vector evidence, D7NzP is sparse predicate-only evidence, and VUSXVhd remains insufficient | Complete the offline evidence gate and a separate blind set before any boundary-action proposal |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
@@ -76,13 +76,14 @@ paths from owning automatic output for the same chat/address pair.
 
 The deterministic read-only runner measured 37 cases: 7 ledger, 24 service,
 6 adverse and no broad-scope cases. Eight cases matched their frozen
-expectations. The gate failed with exit code 1 because 29 cases still returned
-`expectation_level`; they are reported as
-`frozen_expectation_not_replayed`, not converted into passes. Four honest data
-gaps remain in the output. The nested real PacGy current-balance expectation
-and the blacklist case's per-transfer temporal expectations are explicitly
-inventoried but remain unreplayed. Two runs produced identical 11,958-byte
-stdout
+expectations. The gate failed with exit code 1 and reported 29
+`frozen_expectation_not_replayed` mismatches, not converted into passes. Of
+those, 27 replay results have `state: expectation_level`. The other two are the
+real PacGy result, which is `state: unresolved` with
+`reason: history_incomplete` and retains an unreplayed nested current-balance
+expectation, and the blacklist timeline result, whose nested per-transfer
+temporal expectations remain unreplayed. Four honest data gaps remain in the
+output. Two runs produced identical 11,958-byte stdout
 (`sha256:6ddce2ac4814f5cd9a6f5e38359662c63c706004feea7f31af4b133323adb109`)
 and empty stderr.
 
@@ -107,16 +108,65 @@ Verification on this tree passed:
 - `npm test -- tests/forensics/tronAddressAllTimeIndex.test.ts tests/unified-check/directHistory.test.ts tests/golden-v2/attribution.test.ts`: 33 tests;
 - `npm test`: 5,106 passed and 157 skipped across 288 passed and 27 skipped
   test files;
-- two Node `spawnSync` runs captured each CLI stdout `Buffer` with
-  `writeFileSync`, then compared the buffers and their SHA-256 digests: no
-  differences; both CLI exits were 1 because the offline gate remained failed,
-  while raw stdout was byte-identical at the size and hash recorded above and
-  both stderr buffers were empty;
 - the runner's runtime import graph was traversed with the TypeScript compiler
   AST, including runtime re-exports, import-equals and literal dynamic imports,
   while excluding type-only edges; all local runtime edges resolved and the
   graph excluded production paths;
 - `git diff --check`.
+
+The exact PowerShell capture below is runnable from the repository root.
+`Start-Process -PassThru` records the expected nonzero CLI exits without
+turning exit code 1 into a script abort. Base64 encoding is used only to compare
+the two raw byte arrays exactly; the files themselves are not decoded or
+line-normalized before the comparison or hash calculation.
+
+```powershell
+$replayTemp = Join-Path ([IO.Path]::GetTempPath()) ("forensic-replay-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $replayTemp | Out-Null
+$stdout1 = Join-Path $replayTemp "stdout-1.json"
+$stdout2 = Join-Path $replayTemp "stdout-2.json"
+$stderr1 = Join-Path $replayTemp "stderr-1.txt"
+$stderr2 = Join-Path $replayTemp "stderr-2.txt"
+$nodePath = (Get-Command node).Source
+$replayArgs = @("--import", "tsx", "scripts/replayForensicModelCorpus.ts")
+$run1 = Start-Process -FilePath $nodePath -ArgumentList $replayArgs -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout1 -RedirectStandardError $stderr1
+$run2 = Start-Process -FilePath $nodePath -ArgumentList $replayArgs -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout2 -RedirectStandardError $stderr2
+$report = Get-Content -Raw -Encoding UTF8 $stdout1 | ConvertFrom-Json
+$caseResults = @($report.result.ledgerCases) + @($report.result.serviceCases) + @($report.result.adverseCases) + @($report.result.broadScopeCases)
+$joined = foreach ($mismatch in $report.expectationMismatches) {
+  $case = $caseResults | Where-Object id -eq $mismatch.caseId | Select-Object -First 1
+  [pscustomobject]@{ CaseId = $mismatch.caseId; Code = $mismatch.code; ResultState = $case.state; Reason = $case.reason }
+}
+[pscustomobject]@{
+  TempDirectory = $replayTemp
+  Exit1 = $run1.ExitCode
+  Exit2 = $run2.ExitCode
+  ByteIdentical = [Convert]::ToBase64String([IO.File]::ReadAllBytes($stdout1)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($stdout2))
+  Stdout1Bytes = (Get-Item -LiteralPath $stdout1).Length
+  Stdout2Bytes = (Get-Item -LiteralPath $stdout2).Length
+  Stdout1Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdout1).Hash.ToLowerInvariant()
+  Stdout2Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdout2).Hash.ToLowerInvariant()
+  Stderr1Bytes = (Get-Item -LiteralPath $stderr1).Length
+  Stderr2Bytes = (Get-Item -LiteralPath $stderr2).Length
+  FrozenExpectationNotReplayed = @($joined | Where-Object Code -eq "frozen_expectation_not_replayed").Count
+  ExpectationLevelResults = @($joined | Where-Object ResultState -eq "expectation_level").Count
+  OtherUnreplayedResults = @($joined | Where-Object ResultState -ne "expectation_level").Count
+  Matched = $caseResults.Count - $joined.Count
+  DataGaps = @($report.result.dataGaps).Count
+} | Format-List
+$joined | Where-Object ResultState -ne "expectation_level" | Format-Table CaseId, ResultState, Reason -AutoSize
+```
+
+Expected stable output, apart from the unique temporary-directory name:
+`Exit1: 1`, `Exit2: 1`, `ByteIdentical: True`, both stdout lengths
+`11958`, both stdout SHA-256 values
+`6ddce2ac4814f5cd9a6f5e38359662c63c706004feea7f31af4b133323adb109`,
+both stderr lengths `0`, `FrozenExpectationNotReplayed: 29`,
+`ExpectationLevelResults: 27`, `OtherUnreplayedResults: 2`, `Matched: 8`
+and `DataGaps: 4`. The final table contains
+`pacgy-recorded-chronology` with `unresolved` / `history_incomplete` and
+`event-time-blacklist-partitions` with no `state` or `reason` field in that
+typed result.
 
 This is no production activation. Stage D remains deferred and not approved;
 production routing, scoring, traversal, configuration and delivery are
