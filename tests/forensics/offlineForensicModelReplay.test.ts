@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -24,6 +25,7 @@ import {
   type OfflineCorpusV1
 } from "../../src/forensics/offlineForensicModelReplay.js";
 import { detectVerify20Fingerprint } from "../../src/forensics/verify20Fingerprint.js";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import * as directHardEvidence from "../../src/forensics/directHardEvidence.js";
 
 type Case = {
@@ -168,6 +170,97 @@ describe("forensic model offline corpus v1", () => {
       expect(typeof amount).toBe("string");
       expect(amount).toMatch(/^(0|[1-9]\d*)$/u);
     }
+  });
+
+  it("binds exact service labels to the locked normalized evidence bundle", () => {
+    const evidenceRef =
+      "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json";
+    const normalizedFields = [
+      "address",
+      "authority",
+      "category",
+      "label",
+      "validFrom",
+      "validTo"
+    ].sort();
+    const exactLabels = [
+      { id: "exact-binance-label", address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh" },
+      { id: "exact-htx-label", address: "TFTWNgDBkQ5wQoP8RXpRznnHvAVV8x5jLu" }
+    ].map((binding) => ({
+      binding,
+      exactLabel: corpus.adverseCases.find((candidate) =>
+        candidate.id === binding.id
+      ) as unknown as {
+        id: string;
+        rawEvidenceRef: string;
+        rawEvidenceArtifactSha256: string;
+        labelDatasetSha256: string;
+        frozenRowSha256: string;
+        frozenRowHashConvention: string;
+        frozenRow: {
+          address: string;
+          label: string;
+          authority: string;
+          category: string;
+          validFrom: string | null;
+          validTo: string | null;
+        };
+      }
+    }));
+
+    expect(exactLabels.every(({ exactLabel }) => Boolean(exactLabel))).toBe(true);
+    expect(new Set(exactLabels.map(({ exactLabel }) => exactLabel.rawEvidenceRef))).toEqual(
+      new Set([evidenceRef])
+    );
+    const repositoryRootUrl = new URL("../../../", fixtureUrl);
+    for (const { binding, exactLabel } of exactLabels) {
+      expect(exactLabel.id).toBe(binding.id);
+      expect(exactLabel.frozenRow.address).toBe(binding.address);
+      expect(exactLabel.rawEvidenceRef).toBe(evidenceRef);
+      expect(exactLabel.frozenRowHashConvention).toBe(
+        "sha256(canonicalizeArtifactJson(frozenRow))"
+      );
+      expect(Object.keys(exactLabel.frozenRow).sort()).toEqual(normalizedFields);
+
+      const artifactBytes = readFileSync(new URL(exactLabel.rawEvidenceRef, repositoryRootUrl));
+      const artifactSha256 = createHash("sha256").update(artifactBytes).digest("hex");
+      expect(exactLabel.rawEvidenceArtifactSha256).toBe(artifactSha256);
+
+      const bundle = JSON.parse(artifactBytes.toString("utf8")) as {
+        version: string;
+        snapshot: { labelDatasetSha256: string };
+        labels: readonly {
+          address: string;
+          label: string;
+          authority: string;
+          category: string;
+          validFrom: string | null;
+          validTo: string | null;
+          evidenceRefs: readonly string[];
+        }[];
+      };
+      expect(bundle.version).toBe("neutral-evidence-bundle-v2");
+      expect(exactLabel.labelDatasetSha256).toBe(bundle.snapshot.labelDatasetSha256);
+      const sourceRow = bundle.labels.find(({ address }) =>
+        address === exactLabel.frozenRow.address
+      );
+      expect(sourceRow).toBeDefined();
+      const normalizedRow = {
+        address: sourceRow!.address,
+        label: sourceRow!.label,
+        authority: sourceRow!.authority,
+        category: sourceRow!.category,
+        validFrom: sourceRow!.validFrom,
+        validTo: sourceRow!.validTo
+      };
+      expect(exactLabel.frozenRow).toEqual(normalizedRow);
+      expect(exactLabel.frozenRowSha256).toBe(
+        fingerprintCanonicalArtifact(normalizedRow)
+      );
+    }
+    expect(new Set(exactLabels.map(({ exactLabel }) =>
+      exactLabel.rawEvidenceArtifactSha256
+    )).size).toBe(1);
   });
 
   it("keeps real observations distinct from authoritative replay", () => {

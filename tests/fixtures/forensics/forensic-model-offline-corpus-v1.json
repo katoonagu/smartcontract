@@ -1021,6 +1021,10 @@
       "id": "exact-binance-label",
       "evidenceClass": "exact_frozen_rows",
       "rawEvidenceRef": "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json",
+      "rawEvidenceArtifactSha256": "eba27f37c5bd8ad7e97623c26fbf4e6d7717a26041af4aca2c2edfd7c11cff8b",
+      "labelDatasetSha256": "45ad3d1a1174ded21f53f9f8c354188f4d0e02311422cfd14fe9b56555232ac1",
+      "frozenRowHashConvention": "sha256(canonicalizeArtifactJson(frozenRow))",
+      "frozenRowSha256": "fc6c930e3926a6fb9235007cfd4bc66b13c8ba172849f76fc2b0262cdaad14e0",
       "frozenRow": {
         "address": "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
         "label": "Binance-Hot 10",
@@ -1035,6 +1039,10 @@
       "id": "exact-htx-label",
       "evidenceClass": "exact_frozen_rows",
       "rawEvidenceRef": "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json",
+      "rawEvidenceArtifactSha256": "eba27f37c5bd8ad7e97623c26fbf4e6d7717a26041af4aca2c2edfd7c11cff8b",
+      "labelDatasetSha256": "45ad3d1a1174ded21f53f9f8c354188f4d0e02311422cfd14fe9b56555232ac1",
+      "frozenRowHashConvention": "sha256(canonicalizeArtifactJson(frozenRow))",
+      "frozenRowSha256": "4b921abb32284509f8572b42e80c42e9e8b41232013d79c4c212a068837253c8",
       "frozenRow": {
         "address": "TFTWNgDBkQ5wQoP8RXpRznnHvAVV8x5jLu",
         "label": "HTX 4",
