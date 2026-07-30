@@ -341,6 +341,43 @@ export function transactionProviderFinalityWitnessSha256(input: {
   });
 }
 
+export function buildTransactionProviderEvidenceV1(input: {
+  identity: TransactionProviderEvidenceIdentityV1;
+  payload: unknown;
+  fetchedAt: string;
+  movement: TransactionProviderMovementWitnessV1 | null;
+}): TronTransactionProviderEvidenceV1 {
+  const identity = normalizeIdentity(input.identity);
+  const payload = record(input.payload);
+  const status = payload ? endpointFinalityStatus(identity, payload) : null;
+  if (status !== "confirmed_success") {
+    throw new TypeError("transaction_provider_evidence_not_permanent");
+  }
+  const evidence: TronTransactionProviderEvidenceV1 = {
+    version: identity.version,
+    chain: identity.chain,
+    txHash: identity.txHash,
+    provider: identity.provider,
+    endpoint: identity.endpoint,
+    providerSchemaVersion: identity.providerSchemaVersion,
+    fetchedAt: isoTimestamp(input.fetchedAt),
+    finality: {
+      status,
+      witnessKind: "tronscan_transaction_info",
+      witnessSha256: transactionProviderFinalityWitnessSha256({
+        identity,
+        status,
+        payload: input.payload,
+        movement: input.movement
+      }),
+      movement: input.movement
+    },
+    payloadSha256: fingerprintCanonicalArtifact(input.payload),
+    payload: input.payload
+  };
+  return validatePermanentEvidence(evidence);
+}
+
 function resultStatus(result: string): TronTransactionProviderEvidenceV1["finality"]["status"] {
   if (result === "SUCCESS") return "confirmed_success";
   if (result.includes("REVERT")) return "confirmed_reverted";

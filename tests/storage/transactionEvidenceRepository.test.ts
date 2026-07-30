@@ -4,6 +4,7 @@ import pg from "pg";
 import { TronWeb } from "tronweb";
 import type { Db } from "../../src/storage/db";
 import {
+  buildTransactionProviderEvidenceV1,
   getTransactionProviderEvidence,
   saveTransactionEnrichmentDecisionEvidence,
   saveTransactionProviderEvidence,
@@ -159,6 +160,17 @@ function fullEvidence(input: {
   };
 }
 
+function expectNotPermanent(build: () => unknown): void {
+  let error: unknown;
+  try {
+    build();
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBeInstanceOf(TypeError);
+  expect(error).toMatchObject({ message: "transaction_provider_evidence_not_permanent" });
+}
+
 type StoredRow = {
   id: string;
   source: string;
@@ -204,6 +216,61 @@ function memoryDb(initial: StoredRow[] = []): {
 }
 
 describe("transaction evidence repository", () => {
+  it("builds normalized permanent transaction-info evidence from a successful payload", () => {
+    const identity: TransactionProviderEvidenceIdentityV1 = {
+      version: "tron-transaction-provider-evidence-v1",
+      chain: "tron",
+      txHash: HASH_A.toUpperCase(),
+      provider: "tronscan",
+      endpoint: "transaction-info",
+      providerSchemaVersion: 1
+    };
+    const payload = { hash: HASH_A.toUpperCase(), confirmed: true, contractRet: "SUCCESS" };
+    const fetchedAt = "2026-07-26T12:00:00.000Z";
+
+    expect(buildTransactionProviderEvidenceV1({
+      identity,
+      payload,
+      fetchedAt,
+      movement: null
+    })).toEqual({
+      ...identity,
+      txHash: HASH_A,
+      fetchedAt,
+      finality: {
+        status: "confirmed_success",
+        witnessKind: "tronscan_transaction_info",
+        witnessSha256: "c242054db0e7337ff499e0c53835df89e247ff07f301dd09748709610553a8a2",
+        movement: null
+      },
+      payloadSha256: "4866faaed0a223cbbc4816b22d1f0dce3cbe5848b757b9f0560685a7760c4e69",
+      payload
+    });
+  });
+
+  it.each([
+    ["a payload hash that does not match the identity", { hash: HASH_B, confirmed: true, contractRet: "SUCCESS" }, "2026-07-26T12:00:00.000Z"],
+    ["an unconfirmed payload", { hash: HASH_A, confirmed: false, contractRet: "SUCCESS" }, "2026-07-26T12:00:00.000Z"],
+    ["a failed payload", { hash: HASH_A, confirmed: true, contractRet: "FAILED" }, "2026-07-26T12:00:00.000Z"],
+    ["an ambiguous-finality payload", { hash: HASH_A, confirmed: true }, "2026-07-26T12:00:00.000Z"],
+    ["a payload marked as an error", { hash: HASH_A, confirmed: true, contractRet: "SUCCESS", error: "timeout" }, "2026-07-26T12:00:00.000Z"],
+    ["a non-canonical timestamp", { hash: HASH_A, confirmed: true, contractRet: "SUCCESS" }, "2026-07-26T12:00:00Z"]
+  ])("rejects %s", (_label, payload, fetchedAt) => {
+    expectNotPermanent(() => buildTransactionProviderEvidenceV1({
+      identity: {
+        version: "tron-transaction-provider-evidence-v1",
+        chain: "tron",
+        txHash: HASH_A,
+        provider: "tronscan",
+        endpoint: "transaction-info",
+        providerSchemaVersion: 1
+      },
+      payload,
+      fetchedAt,
+      movement: null
+    }));
+  });
+
   it("derives restart-stable IDs and separates raw from transaction-info identities", () => {
     const identity = rawIdentity();
     expect(transactionProviderEvidenceId(identity)).toBe(transactionProviderEvidenceId({ ...identity }));
