@@ -1,6 +1,8 @@
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type { DirectHistoryPage } from "./directHistory";
 
+const DECIMAL_CURSOR = /^(0|[1-9][0-9]*)$/u;
+
 type CachedPinnedPageProjection = {
   readonly cursor: string | null;
   readonly provider: unknown;
@@ -13,6 +15,11 @@ type CachedPinnedPageProjection = {
 export function providerHistoryPage(
   input: CachedPinnedPageProjection
 ): DirectHistoryPage {
+  const start = input.cursor === null
+    ? 0
+    : typeof input.cursor === "string" && DECIMAL_CURSOR.test(input.cursor)
+      ? Number(input.cursor)
+      : Number.NaN;
   if (
     input.provider !== "tronscan" &&
     input.provider !== "trongrid_fallback"
@@ -24,11 +31,15 @@ export function providerHistoryPage(
     typeof input.nextOffset !== "number" ||
     !Number.isSafeInteger(input.nextOffset) ||
     input.nextOffset < 0 ||
+    !Number.isSafeInteger(start) ||
+    start < 0 ||
+    input.nextOffset !== start + input.transfers.length ||
     (
       input.completionReason !== "more" &&
       input.completionReason !== "range_exhausted" &&
       input.completionReason !== "provider_range_capped"
     ) ||
+    (input.completionReason === "more" && input.nextOffset <= start) ||
     input.metadataConsistent !== true
   ) {
     throw new Error("unified_direct_history_cached_page_invalid");

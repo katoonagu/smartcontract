@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { providerHistoryPage } from "../../src/unifiedCheck/providerHistoryCompletion";
 
+const transfers = Array.from({ length: 50 }, (_, index) => ({
+  transaction_id: `placeholder-${index}`
+}));
+
 const cachedProjection = {
   cursor: "50",
   provider: "tronscan",
-  transfers: [],
+  transfers,
   nextOffset: 100,
   completionReason: "more",
   metadataConsistent: true
@@ -48,6 +52,41 @@ describe("providerHistoryPage", () => {
 
     expect(() => providerHistoryPage(oldCachedProjection))
       .toThrow("unified_direct_history_cached_page_invalid");
+  });
+
+  it.each([
+    ["forward", 101],
+    ["backward", 99]
+  ])("fails closed for an impossible %s cursor jump", (_direction, nextOffset) => {
+    expect(() => providerHistoryPage({
+      ...cachedProjection,
+      nextOffset
+    })).toThrow("unified_direct_history_cached_page_invalid");
+  });
+
+  it("fails closed when a page marked more makes zero cursor progress", () => {
+    expect(() => providerHistoryPage({
+      ...cachedProjection,
+      transfers: [],
+      nextOffset: 50
+    })).toThrow("unified_direct_history_cached_page_invalid");
+  });
+
+  it.each(["-1", "050", "5e1", "1.5"])(
+    "fails closed for non-canonical cursor %s",
+    (cursor) => {
+      expect(() => providerHistoryPage({
+        ...cachedProjection,
+        cursor
+      })).toThrow("unified_direct_history_cached_page_invalid");
+    }
+  );
+
+  it("fails closed for a non-string cursor", () => {
+    expect(() => providerHistoryPage({
+      ...cachedProjection,
+      cursor: 50 as unknown as string
+    })).toThrow("unified_direct_history_cached_page_invalid");
   });
 
   it.each([
