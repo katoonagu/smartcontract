@@ -1985,13 +1985,15 @@ describe("offline forensic model replay v1", () => {
 
     expect(blacklist).toMatchObject({
       kind: "blacklist_timeline",
-      beforeEventAmountRaw: "0",
-      activeAtEventAmountRaw: "0",
-      unknownAmountRaw: "1050000",
+      beforeEventAmountRaw: "900000",
+      beforeActivationAmountRaw: "900000",
+      activeAtEventAmountRaw: "100000",
+      unknownAmountRaw: "50000",
+      hardEvidenceAmountRaw: "100000",
       partitions: {
-        before_event: "0",
-        active_at_event: "0",
-        unknown: "1050000"
+        before_event: "900000",
+        active_at_event: "100000",
+        unknown: "50000"
       }
     });
     expect(gasFree).toMatchObject({
@@ -2397,19 +2399,89 @@ describe("offline forensic model replay v1", () => {
       .toThrow("offline_corpus_blacklist_timeline_invalid");
   });
 
-  it("does not classify post-removal transfers as active", () => {
+  it("preserves historical before and active partitions while keeping removal-time transfers unknown", () => {
     const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       adverseCases: [{
         id: "event-time-blacklist-partitions",
         evidenceClass: "synthetic_edge_case",
         subjectAddress: "subject",
         listedAddress: "listed",
-        principalTransfers: [blacklistTransfer({ occurredAt: "2026-01-04T00:00:00.000Z", amountRaw: "9" })],
+        principalTransfers: [
+          blacklistTransfer({
+            txHash: canonicalHash("1"),
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            amountRaw: "1"
+          }),
+          blacklistTransfer({
+            txHash: canonicalHash("2"),
+            occurredAt: "2026-01-02T00:00:00.000Z",
+            amountRaw: "2"
+          }),
+          blacklistTransfer({
+            txHash: canonicalHash("3"),
+            occurredAt: "2026-01-03T00:00:00.000Z",
+            amountRaw: "3"
+          })
+        ],
         timelineEvents: [
           blacklistEvent(),
           blacklistEvent({
             eventKind: "removed",
             txHash: canonicalHash("f"),
+            occurredAt: "2026-01-03T00:00:00.000Z"
+          })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      beforeEventAmountRaw: "1",
+      activeAtEventAmountRaw: "2",
+      unknownAmountRaw: "3",
+      hardEvidenceAmountRaw: "2"
+    });
+  });
+
+  it("fails repeated blacklist lifecycles closed without promoting transfers", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer({ amountRaw: "9" })],
+        timelineEvents: [
+          blacklistEvent(),
+          blacklistEvent({ txHash: canonicalHash("f"), occurredAt: "2026-01-02T01:00:00.000Z" })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "9",
+      hardEvidenceAmountRaw: "0"
+    });
+  });
+
+  it("fails a canonically non-ordered blacklist lifecycle closed", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer({
+          occurredAt: "2026-01-02T12:00:00.000Z",
+          amountRaw: "9"
+        })],
+        timelineEvents: [
+          blacklistEvent({ blockNumber: 20 }),
+          blacklistEvent({
+            eventKind: "removed",
+            txHash: canonicalHash("f"),
+            blockNumber: 10,
             occurredAt: "2026-01-03T00:00:00.000Z"
           })
         ]

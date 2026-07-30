@@ -727,16 +727,59 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       unmatchedCounterpartyAmountRaw += group.principalAmountRaw;
       continue;
     }
+    const selected = transfers
+      .filter((transfer) => transfer.direction === group.direction && transfer.counterparty === normalizedListed)
+      .map((transfer) => ({
+        txHash: transfer.txHash,
+        amountRaw: BigInt(transfer.amountRaw),
+        occurredAt: transfer.occurredAt
+      }));
+    const addition = events[0];
+    const removal = events[1];
+    const blockOrderValid = addition !== undefined && removal !== undefined &&
+      addition.blockNumber !== null && removal.blockNumber !== null
+      ? addition.blockNumber < removal.blockNumber || addition.blockNumber === removal.blockNumber && (
+        addition.transactionIndex !== undefined && removal.transactionIndex !== undefined
+          ? addition.transactionIndex < removal.transactionIndex ||
+            addition.transactionIndex === removal.transactionIndex && addition.logIndex! < removal.logIndex!
+          : addition.txHash === removal.txHash && addition.logIndex! < removal.logIndex!
+      )
+      : true;
+    const supportedLifecycle = events.length >= 1 && events.length <= 2 &&
+      addition?.eventKind === "added" &&
+      (removal === undefined || removal.eventKind === "removed" &&
+        Date.parse(addition.occurredAt) < Date.parse(removal.occurredAt) && blockOrderValid);
+    if (!supportedLifecycle) {
+      amounts.unknown += selected.reduce((sum, transfer) => sum + transfer.amountRaw, 0n);
+      continue;
+    }
+    const byTxHash = new Map<string, typeof selected>();
+    for (const transfer of selected) {
+      const sameTransaction = byTxHash.get(transfer.txHash) ?? [];
+      sameTransaction.push(transfer);
+      byTxHash.set(transfer.txHash, sameTransaction);
+    }
+    const helperTransfers: typeof selected = [];
+    for (const sameTransaction of byTxHash.values()) {
+      const timestamps = new Set(sameTransaction.map(({ occurredAt }) => occurredAt));
+      const occurredAt = timestamps.size === 1 ? sameTransaction[0]!.occurredAt : "";
+      const occurredAtMs = Date.parse(occurredAt);
+      const transactionAmountRaw = sameTransaction.reduce((sum, transfer) => sum + transfer.amountRaw, 0n);
+      if (!Number.isFinite(occurredAtMs) ||
+        removal !== undefined && occurredAtMs >= Date.parse(removal.occurredAt)) {
+        amounts.unknown += transactionAmountRaw;
+      } else if (occurredAtMs === Date.parse(addition.occurredAt)) {
+        amounts.active += transactionAmountRaw;
+      } else {
+        helperTransfers.push(...sameTransaction);
+      }
+    }
     const partition = partitionPrincipalTransfersByBlacklistTimeline({
-      principalTransfers: transfers
-        .filter((transfer) => transfer.direction === group.direction && transfer.counterparty === normalizedListed)
-        .map((transfer) => ({
-          txHash: transfer.txHash,
-          amountRaw: BigInt(transfer.amountRaw),
-          occurredAt: transfer.occurredAt
-        })),
+      principalTransfers: helperTransfers,
       timeline: {
-        events,
+        // ponytail: the shared helper is current-active scoped; explicit
+        // segmentation above removes post-removal and ambiguous transactions.
+        events: [addition],
         pagination: "complete",
         failureReason: null
       }
@@ -749,8 +792,10 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     ...resultBase(item),
     kind: "blacklist_timeline",
     beforeEventAmountRaw: amounts.before.toString(),
+    beforeActivationAmountRaw: amounts.before.toString(),
     activeAtEventAmountRaw: amounts.active.toString(),
     unknownAmountRaw: amounts.unknown.toString(),
+    hardEvidenceAmountRaw: amounts.active.toString(),
     unmatchedCounterpartyAmountRaw: unmatchedCounterpartyAmountRaw.toString(),
     timelineEvents: events,
     partitions: {
