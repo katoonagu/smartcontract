@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-30
 owner_area: docs
 code_refs:
   - src/index.ts

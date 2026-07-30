@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   mkdtemp,
   readFile,
@@ -10,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -3226,10 +3227,11 @@ describe("offline forensic model replay v1", () => {
 describe("read-only forensic corpus CLI", () => {
   const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
   const cliPath = join(repositoryRoot, "scripts/replayForensicModelCorpus.ts");
+  const tsxImport = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
   const fixturePath = fileURLToPath(fixtureUrl);
   const runCli = (args: readonly string[] = [], cwd = repositoryRoot) => spawnSync(
     process.execPath,
-    ["--import", "tsx", cliPath, ...args],
+    ["--import", tsxImport, cliPath, ...args],
     { cwd, encoding: "utf8" }
   );
   const runMutatedCorpus = async (
@@ -3545,9 +3547,14 @@ describe("read-only forensic corpus CLI", () => {
       const before = await readdir(directory);
       const first = runCli([], directory);
       const second = runCli([], directory);
+      expect(first.status).toBe(1);
+      expect(first.stderr).toBe("");
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        schemaVersion: "offline-forensic-model-corpus-run-v1",
+        matched: false
+      });
       expect(first.stdout).toBe(second.stdout);
-      expect(first.stderr).toBe(second.stderr);
-      expect(first.status).toBe(second.status);
+      expect(second).toMatchObject({ status: 1, stderr: "" });
       expect(await readdir(directory)).toEqual(before);
     } finally {
       await rm(directory, { recursive: true, force: true });
