@@ -36,8 +36,9 @@ implementation plans do not override the status recorded here.
    replay, deployment, and attributable observation evidence exists.
 2. Preserve the implemented provider-cap correctness patch. Keep the new
    adverse-path disposition pure/offline and unwired.
-3. Replace expectation-only cases with frozen canonical tapes and rerun the
-   failed lean offline gate before planning either model for production.
+3. Keep the accepted 7/7 cashflow ledger slice shadow-only; replace the
+   remaining expectation-only cases with frozen canonical tapes before
+   planning either model for production.
 4. Freeze explicit subject-selection and cashflow-query policy plus fixtures;
    no bounded subject-service mode or shared selector is approved yet.
 5. If the service model passes, freeze a separate blind set, complete two
@@ -72,17 +73,33 @@ paths from owning automatic output for the same chat/address pair.
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, adverse-disposition and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; `SUBJECT_EVENT_CAP` is unapproved | Freeze explicit selection/cap policy and canonical positive/negative fixtures before an implementation plan |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze `current_balance`, completed exact episode and triggered-relevance rules, including window/denominator/materiality/coverage/episode bounds |
-| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 8 of 37 cases matched and 29 frozen expectations remained unreplayed; 27 results were `expectation_level`, while PacGy was unresolved and the blacklist result retained unreplayed nested expectations | Add honest replay inputs/expectations for the 29 gaps, then rerun the offline gate; do not plan production integration from this result |
+| Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7; the current broader runner matches 15/37 and still leaves 22 service/adverse expectations unreplayed. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate | Require accepted production sampling, upstream authority acquisition, and safe legacy-neutral immutable storage before any production plan |
 | Stage C | Pure `100 + 100` shadow classifier exists offline; the positive W8SRL result is recorded-vector evidence, D7NzP is sparse predicate-only evidence, and VUSXVhd remains insufficient | Complete the offline evidence gate and a separate blind set before any boundary-action proposal |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
 
-## Lean Offline Model Gate — 2026-07-30
+## Cashflow Shadow Foundation — 2026-07-30
 
-The deterministic read-only runner measured 37 cases: 7 ledger, 24 service,
-6 adverse and no broad-scope cases. Eight cases matched their frozen
+The independently adjudicated ledger group executes exactly 7/7 frozen cases.
+The accepted non-synthetic PacGy tape is parsed and consumed, but produces
+`unresolved` / `history_incomplete_before_anchor` with
+`authoritative: false`. The separate synthetic zero-opening control remains a
+calibration result and cannot promote the real tape. This foundation is
+offline-only and authorizes no production runtime or integration.
+
+The remaining blockers are:
+
+- accepted production sampling;
+- upstream authority acquisition that supplies canonical tapes or typed
+  unavailable envelopes without deriving them from reports;
+- safe legacy-neutral immutable storage for unreferenced artifacts.
+
+## Lean Offline Model Gate Baseline — 2026-07-30
+
+The pre-foundation deterministic read-only runner measured 37 cases: 7 ledger,
+24 service, 6 adverse and no broad-scope cases. Eight cases matched their frozen
 expectations. The gate failed with exit code 1 and reported 29
 `frozen_expectation_not_replayed` mismatches, not converted into passes. Of
 those, 27 replay results have `state: expectation_level`. The other two are the
