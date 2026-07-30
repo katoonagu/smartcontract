@@ -16,6 +16,7 @@ type ExpectationStatus =
   | "missing"
   | "not_replayed"
   | "unsupported";
+type ExpectedProperty = { readonly path: string; readonly value: unknown };
 
 const DEFAULT_FIXTURE = new URL(
   "../tests/fixtures/forensics/forensic-model-offline-corpus-v1.json",
@@ -36,8 +37,20 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function expectedFieldNames(source: Record<string, unknown>): readonly string[] {
-  return Object.keys(source).filter((key) => key.startsWith("expected")).sort();
+function expectedProperties(value: unknown, path = ""): readonly ExpectedProperty[] {
+  if (Array.isArray(value)) {
+    const itemPath = `${path}[]`;
+    return value.flatMap((item) => expectedProperties(item, itemPath));
+  }
+  if (value === null || typeof value !== "object") return [];
+  return Object.keys(value).sort().flatMap((key) => {
+    const child = (value as Record<string, unknown>)[key];
+    const childPath = path === "" ? key : `${path}.${key}`;
+    return [
+      ...(key.startsWith("expected") ? [{ path: childPath, value: child }] : []),
+      ...expectedProperties(child, childPath)
+    ];
+  });
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -53,13 +66,13 @@ function compareLedgerExpectations(
   source: Record<string, unknown>,
   result: Record<string, unknown>
 ): ExpectationStatus {
-  const fields = expectedFieldNames(source);
-  if (fields.length === 0) return "missing";
+  const properties = expectedProperties(source);
+  if (properties.length === 0) return "missing";
   let matched = true;
   let replayed = true;
-  for (const field of fields) {
-    const value = source[field];
-    switch (field) {
+  for (const property of properties) {
+    const value = property.value;
+    switch (property.path) {
       case "expectedAuthoritativeState":
         if (value !== "history_incomplete" && value !== "complete") return "unsupported";
         matched &&= value === result.state || value === result.reason;
@@ -109,19 +122,25 @@ function compareLedgerExpectations(
         if (value !== "debit_over_inventory") return "unsupported";
         matched &&= value === result.reason;
         break;
+      case "currentBalanceObservation.expectedState":
+        if (value !== "unresolved") return "unsupported";
+        replayed = false;
+        break;
       default:
         return "unsupported";
     }
   }
-  if (!replayed || result.state === "expectation_level") return "not_replayed";
-  return matched ? "matched" : "mismatch";
+  if (result.state === "expectation_level") return "not_replayed";
+  if (!matched) return "mismatch";
+  if (!replayed) return "not_replayed";
+  return "matched";
 }
 
 function compareServiceExpectations(
   source: Record<string, unknown>,
   result: Record<string, unknown>
 ): ExpectationStatus {
-  if (expectedFieldNames(source).length > 0) return "unsupported";
+  if (expectedProperties(source).length > 0) return "unsupported";
   const observed = record(source.observedVector);
   const hasRecordedPredicate = observed.recordedPredicate !== undefined ||
     (Array.isArray(source.windows) && source.windows.some((window) =>
@@ -147,12 +166,13 @@ function compareAdverseExpectations(
   source: Record<string, unknown>,
   result: Record<string, unknown>
 ): ExpectationStatus {
-  const fields = expectedFieldNames(source);
-  if (fields.length === 0) return "missing";
+  const properties = expectedProperties(source);
+  if (properties.length === 0) return "missing";
   let matched = true;
-  for (const field of fields) {
-    const value = source[field];
-    switch (field) {
+  let replayed = true;
+  for (const property of properties) {
+    const value = property.value;
+    switch (property.path) {
       case "expectedClassification":
         if (value !== "exact_service_label" && value !== "exact_service_label_not_backdated") {
           return "unsupported";
@@ -195,11 +215,16 @@ function compareAdverseExpectations(
         if (typeof value !== "boolean") return "unsupported";
         matched &&= value === result.red;
         break;
+      case "principalTransfers[].expectedTemporalClass":
+        if (value !== "before_activation" && value !== "active_at_event" &&
+          value !== "unknown_time") return "unsupported";
+        replayed = false;
+        break;
       default:
         return "unsupported";
     }
   }
-  if (result.state === "expectation_level") return "not_replayed";
+  if (!replayed || result.state === "expectation_level") return "not_replayed";
   return matched ? "matched" : "mismatch";
 }
 
@@ -213,7 +238,7 @@ function compareCaseExpectation(
   if (kind === "ledger") return compareLedgerExpectations(expected, result);
   if (kind === "service") return compareServiceExpectations(expected, result);
   if (kind === "adverse") return compareAdverseExpectations(expected, result);
-  return expectedFieldNames(expected).length === 0 ? "missing" : "unsupported";
+  return expectedProperties(expected).length === 0 ? "missing" : "unsupported";
 }
 
 function compareExpectations(
@@ -250,21 +275,52 @@ function compareExpectations(
   );
 }
 
+const SEMANTIC_ID_KEYS = [
+  "id",
+  "caseId",
+  "branchId",
+  "continuationId",
+  "lotId",
+  "allocationId",
+  "consumptionId",
+  "providerAliasId",
+  "providerEventId",
+  "eventId",
+  "transferId"
+] as const;
+
+function sortSemanticArrays(value: unknown, parentKey = ""): unknown {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => sortSemanticArrays(item));
+    if (/Ids$/u.test(parentKey) && items.every((item) => typeof item === "string")) {
+      return [...items].sort();
+    }
+    const records = items.map(record);
+    const idKey = SEMANTIC_ID_KEYS.find((key) =>
+      records.length > 0 && records.every((item) =>
+        typeof item[key] === "string" || typeof item[key] === "number"
+      )
+    );
+    if (idKey === undefined) return items;
+    return [...items].sort((left, right) => {
+      const leftRecord = record(left);
+      const rightRecord = record(right);
+      const leftId = String(leftRecord[idKey]);
+      const rightId = String(rightRecord[idKey]);
+      if (leftId !== rightId) return leftId < rightId ? -1 : 1;
+      const leftJson = canonicalizeArtifactJson(left);
+      const rightJson = canonicalizeArtifactJson(right);
+      return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+    });
+  }
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) =>
+    [key, sortSemanticArrays(child, key)]
+  ));
+}
+
 function sortResult(result: OfflineReplayResultV1): OfflineReplayResultV1 {
-  const byId = <T extends { readonly id: string }>(items: readonly T[]) =>
-    [...items].sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-  return {
-    ...result,
-    ledgerCases: byId(result.ledgerCases),
-    serviceCases: byId(result.serviceCases),
-    adverseCases: byId(result.adverseCases),
-    broadScopeCases: byId(result.broadScopeCases),
-    dataGaps: [...result.dataGaps].sort((left, right) =>
-      left.caseId < right.caseId ? -1
-        : left.caseId > right.caseId ? 1
-          : left.code < right.code ? -1 : left.code > right.code ? 1 : 0
-    )
-  };
+  return sortSemanticArrays(result) as OfflineReplayResultV1;
 }
 
 async function main(): Promise<void> {

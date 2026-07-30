@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import {
   apportionRawLargestRemainderV1,
@@ -3269,6 +3270,11 @@ describe("read-only forensic corpus CLI", () => {
       caseId: "pacgy-synthetic-zero-opening-control",
       code: "frozen_expectation_not_replayed"
     });
+    expect(report.expectationMismatches).toEqual(expect.arrayContaining([
+      { caseId: "pacgy-recorded-chronology", code: "frozen_expectation_not_replayed" },
+      { caseId: "event-time-blacklist-partitions", code: "frozen_expectation_not_replayed" }
+    ]));
+    expect(report.expectationMismatches).toHaveLength(29);
     expect(report.limitations).toContain("raw_provider_assertion_not_replayed");
     expect(report.result.ledgerCases.map(({ id }) => id)).toEqual(
       [...report.result.ledgerCases.map(({ id }) => id)].sort()
@@ -3349,6 +3355,8 @@ describe("read-only forensic corpus CLI", () => {
         ledgerCases: Array<Record<string, unknown>>;
       };
       delete missing.ledgerCases[0]!.expectedAuthoritativeState;
+      delete (missing.ledgerCases[0]!.currentBalanceObservation as Record<string, unknown>)
+        .expectedState;
       await writeFile(missingFixture, JSON.stringify(missing), "utf8");
 
       const result = runCli(["--fixture", missingFixture]);
@@ -3431,6 +3439,106 @@ describe("read-only forensic corpus CLI", () => {
     });
   });
 
+  it("fails closed on a nested current-balance expectation mutation", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.ledgerCases as Array<Record<string, unknown>>;
+      const item = cases.find(({ id }) => id === "pacgy-recorded-chronology")!;
+      (item.currentBalanceObservation as Record<string, unknown>).expectedState = "future_state";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "pacgy-recorded-chronology",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("fails closed on a nested transfer temporal expectation mutation", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      const item = cases.find(({ id }) => id === "event-time-blacklist-partitions")!;
+      const transfers = item.principalTransfers as Array<Record<string, unknown>>;
+      transfers[0]!.expectedTemporalClass = "future_temporal_class";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "event-time-blacklist-partitions",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("canonicalizes nested semantic branch arrays by their declared IDs", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-branch-order-"));
+    const firstPath = join(directory, "first.json");
+    const secondPath = join(directory, "second.json");
+    try {
+      const makeCorpus = (reverse: boolean) => {
+        const value = structuredClone(corpus) as unknown as Record<string, unknown>;
+        const branches = [
+          {
+            branchId: "branch-b",
+            directCounterpartyAddress: "counterparty-b",
+            secondHopAddress: "red-b",
+            evidenceId: "evidence-b",
+            amountRaw: "2"
+          },
+          {
+            branchId: "branch-a",
+            directCounterpartyAddress: "counterparty-a",
+            secondHopAddress: "red-a",
+            evidenceId: "evidence-a",
+            amountRaw: "1"
+          }
+        ];
+        value.broadScopeCases = [{
+          id: "branch-order-control",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          directEdges: [
+            {
+              id: "direct-a",
+              txHash: "direct-a",
+              direction: "outbound",
+              counterpartyAddress: "counterparty-a",
+              amountRaw: "1",
+              occurredAt: "2026-01-01T00:00:00.000Z"
+            },
+            {
+              id: "direct-b",
+              txHash: "direct-b",
+              direction: "outbound",
+              counterpartyAddress: "counterparty-b",
+              amountRaw: "2",
+              occurredAt: "2026-01-01T00:00:01.000Z"
+            }
+          ],
+          secondHopRedBranches: reverse ? [...branches].reverse() : branches
+        }];
+        return value;
+      };
+      await writeFile(firstPath, JSON.stringify(makeCorpus(false)), "utf8");
+      await writeFile(secondPath, JSON.stringify(makeCorpus(true)), "utf8");
+
+      const first = runCli(["--fixture", firstPath]);
+      const second = runCli(["--fixture", secondPath]);
+      expect(first.status).toBe(1);
+      expect(second.status).toBe(1);
+      expect(second.stdout).toBe(first.stdout);
+      const report = JSON.parse(first.stdout) as { result: OfflineReplayResultV1 };
+      expect(report.result.broadScopeCases[0]?.secondHopRedBranches).toEqual([
+        expect.objectContaining({ branchId: "branch-a" }),
+        expect.objectContaining({ branchId: "branch-b" })
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("is byte-identical across runs and writes nothing in its working directory", async () => {
     const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-read-only-"));
     try {
@@ -3448,18 +3556,68 @@ describe("read-only forensic corpus CLI", () => {
 
   it("keeps the complete runtime import graph outside production boundaries", async () => {
     const visited = new Set<string>();
-    const imports = /(?:^|\n)\s*import\s+(?!type\b)(?:[\s\S]*?\sfrom\s+)?["']([^"']+)["']/gu;
+    const runtimeSpecifiers = (path: string, source: string): readonly string[] => {
+      const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const specifiers: string[] = [];
+      const add = (node: ts.Expression | undefined) => {
+        if (node !== undefined && ts.isStringLiteralLike(node)) specifiers.push(node.text);
+      };
+      const walk = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node)) {
+          const clause = node.importClause;
+          const named = clause?.namedBindings;
+          const hasRuntimeBinding = clause === undefined || clause.name !== undefined ||
+            (named !== undefined && (
+              ts.isNamespaceImport(named) || named.elements.some((element) => !element.isTypeOnly)
+            ));
+          if (clause?.isTypeOnly !== true && hasRuntimeBinding) add(node.moduleSpecifier);
+        } else if (ts.isExportDeclaration(node)) {
+          const clause = node.exportClause;
+          const hasRuntimeBinding = clause === undefined || ts.isNamespaceExport(clause) ||
+            clause.elements.some((element) => !element.isTypeOnly);
+          if (!node.isTypeOnly && hasRuntimeBinding) add(node.moduleSpecifier);
+        } else if (ts.isImportEqualsDeclaration(node)) {
+          if (!node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
+            add(node.moduleReference.expression);
+          }
+        } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+          add(node.arguments[0]);
+        }
+        ts.forEachChild(node, walk);
+      };
+      walk(file);
+      return specifiers;
+    };
+    expect(runtimeSpecifiers("proof.ts", `
+      import type { A } from "./type-only";
+      import { type B, value } from "./mixed";
+      import { type C } from "./specifier-type-only";
+      import "./side-effect";
+      export type { D } from "./export-type-only";
+      export { type E, runtime } from "./re-export";
+      export * from "./export-star";
+      export * as namespace from "./namespace-export";
+      import equal = require("./import-equals");
+      void import("./dynamic");
+    `)).toEqual([
+      "./mixed",
+      "./side-effect",
+      "./re-export",
+      "./export-star",
+      "./namespace-export",
+      "./import-equals",
+      "./dynamic"
+    ]);
     const candidates = (specifier: string, owner: string) => {
       const base = resolve(dirname(owner), specifier);
-      return [base, `${base}.ts`, `${base}.js`, join(base, "index.ts")];
+      return [base, `${base}.ts`, `${base}.js`, join(base, "index.ts"), join(base, "index.js")];
     };
     const visit = async (path: string): Promise<void> => {
       const normalized = resolve(path);
       if (visited.has(normalized)) return;
       visited.add(normalized);
       const source = await readFile(normalized, "utf8");
-      for (const match of source.matchAll(imports)) {
-        const specifier = match[1]!;
+      for (const specifier of runtimeSpecifiers(normalized, source)) {
         if (!specifier.startsWith(".")) continue;
         let dependency: string | null = null;
         for (const candidate of candidates(specifier.replace(/\.js$/u, ""), normalized)) {

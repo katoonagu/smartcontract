@@ -65,7 +65,7 @@ paths from owning automatic output for the same chat/address pair.
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, red-branch and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
-| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 10 of 37 cases matched and 27 remained expectation-level rather than replayed | Add honest replay inputs/expectations for the 27 gaps, then rerun the offline gate; do not plan production integration from this result |
+| Forensic query/provenance model | Lean offline code and deterministic runner exist, but the 2026-07-30 corpus gate failed: 8 of 37 cases matched and 29 remained expectation-level rather than replayed | Add honest replay inputs/expectations for the 29 gaps, then rerun the offline gate; do not plan production integration from this result |
 | Stage C | Pure `100 + 100` shadow classifier exists offline; the positive W8SRL result is recorded-vector evidence, D7NzP is sparse predicate-only evidence, and VUSXVhd remains insufficient | Complete the offline evidence gate and a separate blind set before any boundary-action proposal |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Confirmed Where/provenance/status contradictions corrected in this pass; full repository-wide pass deferred until model status stabilizes | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
@@ -75,12 +75,15 @@ paths from owning automatic output for the same chat/address pair.
 ## Lean Offline Model Gate — 2026-07-30
 
 The deterministic read-only runner measured 37 cases: 7 ledger, 24 service,
-6 adverse and no broad-scope cases. Ten cases matched their frozen
-expectations. The gate failed with exit code 1 because 27 cases still returned
+6 adverse and no broad-scope cases. Eight cases matched their frozen
+expectations. The gate failed with exit code 1 because 29 cases still returned
 `expectation_level`; they are reported as
 `frozen_expectation_not_replayed`, not converted into passes. Four honest data
-gaps remain in the output. Two runs produced identical 11,792-byte stdout
-(`sha256:107f5570710f9f0a10e9db91e05159be521a6630888c0eda94bf443b645cc851`)
+gaps remain in the output. The nested real PacGy current-balance expectation
+and the blacklist case's per-transfer temporal expectations are explicitly
+inventoried but remain unreplayed. Two runs produced identical 11,958-byte
+stdout
+(`sha256:6ddce2ac4814f5cd9a6f5e38359662c63c706004feea7f31af4b133323adb109`)
 and empty stderr.
 
 Evidence limits remain explicit:
@@ -97,16 +100,22 @@ Evidence limits remain explicit:
 
 Verification on this tree passed:
 
-- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts`: 152 tests;
+- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts`: 155 tests;
 - `npm run typecheck`;
 - `npm test -- tests/forensics/offlineForensicModelReplay.test.ts tests/forensics/directHardEvidence.test.ts tests/forensics/contractDrivenEvidence.test.ts tests/forensics/approvalDrainProvenance.test.ts tests/forensics/verify20Fingerprint.test.ts tests/forensics/gasFreeSettlement.test.ts tests/unified-check/labelCatalog.test.ts tests/unified-check/providerServiceBindings.test.ts`:
-  371 tests across the full eight-file authority gate;
+  374 tests across the full eight-file authority gate;
 - `npm test -- tests/forensics/tronAddressAllTimeIndex.test.ts tests/unified-check/directHistory.test.ts tests/golden-v2/attribution.test.ts`: 33 tests;
-- `npm test`: 5,103 passed and 157 skipped across 288 passed and 27 skipped
+- `npm test`: 5,106 passed and 157 skipped across 288 passed and 27 skipped
   test files;
-- `node --import tsx scripts/replayForensicModelCorpus.ts > $env:TEMP\forensic-replay-1.json`;
-- `node --import tsx scripts/replayForensicModelCorpus.ts > $env:TEMP\forensic-replay-2.json`;
-- `Compare-Object (Get-Content -Raw $env:TEMP\forensic-replay-1.json) (Get-Content -Raw $env:TEMP\forensic-replay-2.json)`: no differences; both CLI exits were 1 because the offline gate remained failed, while raw stdout capture was byte-identical at the size and hash recorded above;
+- two Node `spawnSync` runs captured each CLI stdout `Buffer` with
+  `writeFileSync`, then compared the buffers and their SHA-256 digests: no
+  differences; both CLI exits were 1 because the offline gate remained failed,
+  while raw stdout was byte-identical at the size and hash recorded above and
+  both stderr buffers were empty;
+- the runner's runtime import graph was traversed with the TypeScript compiler
+  AST, including runtime re-exports, import-equals and literal dynamic imports,
+  while excluding type-only edges; all local runtime edges resolved and the
+  graph excluded production paths;
 - `git diff --check`.
 
 This is no production activation. Stage D remains deferred and not approved;
