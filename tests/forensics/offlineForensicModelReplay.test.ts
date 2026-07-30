@@ -2399,7 +2399,7 @@ describe("offline forensic model replay v1", () => {
       .toThrow("offline_corpus_blacklist_timeline_invalid");
   });
 
-  it("preserves historical before and active partitions while keeping removal-time transfers unknown", () => {
+  it("keeps wall-clock ties at blacklist addition and removal unresolved", () => {
     const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       adverseCases: [{
         id: "event-time-blacklist-partitions",
@@ -2436,9 +2436,9 @@ describe("offline forensic model replay v1", () => {
 
     expect(result).toMatchObject({
       beforeEventAmountRaw: "1",
-      activeAtEventAmountRaw: "2",
-      unknownAmountRaw: "3",
-      hardEvidenceAmountRaw: "2"
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "5",
+      hardEvidenceAmountRaw: "0"
     });
   });
 

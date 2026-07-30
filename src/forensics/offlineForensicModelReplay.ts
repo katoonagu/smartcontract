@@ -768,8 +768,6 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       if (!Number.isFinite(occurredAtMs) ||
         removal !== undefined && occurredAtMs >= Date.parse(removal.occurredAt)) {
         amounts.unknown += transactionAmountRaw;
-      } else if (occurredAtMs === Date.parse(addition.occurredAt)) {
-        amounts.active += transactionAmountRaw;
       } else {
         helperTransfers.push(...sameTransaction);
       }
