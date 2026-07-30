@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "service-role-shadow-reconstruction-v1",
+  "caseId": "reconstructed-accepted-history-v1",
+  "expectedStatus": "high_inferred_service",
+  "sourceSha256": "0d95d5ba93b9e5a74a0390f3b06126864fdde3a61bde61eeb10181e0b3d0d7d6",
+  "eventSpec": {
+    "anchorSeconds": 1720000000,
+    "recentRows": 100,
+    "historicalRows": 100,
+    "role": "ordinary",
+    "authority": "existing_hash_bound_economic_role_v1"
+  }
+}
