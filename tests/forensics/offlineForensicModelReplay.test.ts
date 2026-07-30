@@ -266,7 +266,7 @@ describe("forensic model offline corpus v1", () => {
       rawProviderPagesFrozen: false,
       authoritativeWouldAction: null,
       behaviorClassification: "non_service_profile",
-      researchAction: "continue_full",
+      estimatedWouldAction: "continue_full",
       recordedPartialVector: {
         cadencePredicate: false,
         checkedSubject: true,
@@ -287,7 +287,7 @@ describe("forensic model offline corpus v1", () => {
       rawProviderPagesFrozen: false,
       authoritativeWouldAction: null,
       behaviorClassification: "insufficient_data",
-      researchAction: "continue_full",
+      estimatedWouldAction: "continue_full",
       recordedPartialVector: {
         recentObservedRowCount: 73,
         historicalBaselineState: "empty"
@@ -300,11 +300,26 @@ describe("forensic model offline corpus v1", () => {
     });
 
     for (const control of [tqr, txc]) {
+      expect(control?.sourceRef).toBe(
+        "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29"
+      );
+      expect(control?.researchAction).toBeUndefined();
       expect(control?.rawEvidenceRef).toBeUndefined();
       expect(control?.limitations).toEqual(expect.arrayContaining([
         "raw_provider_rows_not_persisted",
         "full_feature_vector_not_recorded"
       ]));
+      for (const forbiddenField of [
+        "windows",
+        "observedVector",
+        "rawFeaturesRecent",
+        "rawFeaturesHistorical",
+        "rawRows",
+        "frozenRow",
+        "frozenRows"
+      ]) {
+        expect(control).not.toHaveProperty(forbiddenField);
+      }
       expect(control?.source).toMatchObject({
         refs: [
           {

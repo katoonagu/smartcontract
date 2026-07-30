@@ -946,11 +946,12 @@
     {
       "id": "tqr-d7nzp-recorded-control",
       "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29",
       "address": "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
       "rawProviderPagesFrozen": false,
       "authoritativeWouldAction": null,
       "behaviorClassification": "non_service_profile",
-      "researchAction": "continue_full",
+      "estimatedWouldAction": "continue_full",
       "recordedPartialVector": {
         "cadencePredicate": false,
         "checkedSubject": true,
@@ -982,11 +983,12 @@
     {
       "id": "txc-vusxvhd-recorded-control",
       "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29",
       "address": "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
       "rawProviderPagesFrozen": false,
       "authoritativeWouldAction": null,
       "behaviorClassification": "insufficient_data",
-      "researchAction": "continue_full",
+      "estimatedWouldAction": "continue_full",
       "recordedPartialVector": {
         "recentObservedRowCount": 73,
         "historicalBaselineState": "empty"
