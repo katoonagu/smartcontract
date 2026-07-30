@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS as USDT } from "../../src/parser/transactionParser";
 import {
+  classifyGasFreeSettlementDispositionV1,
   extractGasFreeEdgeContext,
   extractGasFreeSettlement,
   gasFreeMovementForEdge,
@@ -318,5 +319,39 @@ describe("extractGasFreeSettlement", () => {
     expect(isGasFreeServiceFeeEdge({ economicProtocol: "tron_gasfree", economicRole: "service_fee" })).toBe(true);
     expect(isGasFreeServiceFeeEdge({ economicProtocol: "tron_gasfree", economicRole: "principal" })).toBe(false);
     expect(isGasFreeServiceFeeEdge({})).toBe(false);
+  });
+});
+
+describe("classifyGasFreeSettlementDispositionV1", () => {
+  it("preserves an exact registered GasFree settlement", () => {
+    expect(classifyGasFreeSettlementDispositionV1(transaction([
+      row(RECEIVER, "97000000"),
+      row(OTHER_FEE, "3000000")
+    ]))).toMatchObject({
+      kind: "exact_settlement",
+      settlement: { principalAmountRaw: "97000000", serviceFeeAmountRaw: "3000000" }
+    });
+  });
+
+  it("proves non-GasFree only from a complete successful payload with an unregistered controller or selector", () => {
+    expect(classifyGasFreeSettlementDispositionV1({
+      ...transaction([row(RECEIVER, "97000000")]),
+      contractData: { contract_address: ACCOUNT, data: permitData(97_000_000n, 0n) }
+    })).toEqual({ kind: "not_gasfree_v1", reason: "controller_not_registered" });
+
+    const differentSelector = `a9059cbb${permitData(97_000_000n, 0n).slice(8)}`;
+    expect(classifyGasFreeSettlementDispositionV1({
+      ...transaction([row(RECEIVER, "97000000")]),
+      contractData: { contract_address: CONTROLLER, data: differentSelector }
+    })).toEqual({ kind: "not_gasfree_v1", reason: "selector_not_registered" });
+  });
+
+  it("keeps malformed or incomplete registered-controller payloads unresolved", () => {
+    expect(classifyGasFreeSettlementDispositionV1({
+      ...transaction([row(RECEIVER, "97000000")]),
+      contractData: { contract_address: CONTROLLER, data: "6f21b898" }
+    })).toEqual({ kind: "unresolved", reason: "registered_payload_ambiguous" });
+    expect(classifyGasFreeSettlementDispositionV1({ confirmed: true }))
+      .toEqual({ kind: "unresolved", reason: "payload_invalid" });
   });
 });

@@ -25,6 +25,11 @@ export type GasFreeSettlement = {
   evidenceCodes: string[];
 };
 
+export type GasFreeSettlementDispositionV1 =
+  | { kind: "exact_settlement"; settlement: GasFreeSettlement }
+  | { kind: "not_gasfree_v1"; reason: "controller_not_registered" | "selector_not_registered" }
+  | { kind: "unresolved"; reason: "payload_invalid" | "registered_payload_ambiguous" };
+
 const CONTROLLERS = new Map([
   ["tffamqlzybalalb4uxha9rbe7pxhuajf3u", {
     version: "permit_transfer_v1" as const,
@@ -276,6 +281,43 @@ export function extractGasFreeSettlement(transactionInfo: unknown): GasFreeSettl
       "gasfree_value_and_fee_balanced"
     ]
   };
+}
+
+export function classifyGasFreeSettlementDispositionV1(
+  transactionInfo: unknown
+): GasFreeSettlementDispositionV1 {
+  const settlement = extractGasFreeSettlement(transactionInfo);
+  if (settlement) return { kind: "exact_settlement", settlement };
+
+  const transaction = record(transactionInfo);
+  if (
+    !transaction ||
+    transaction.confirmed !== true ||
+    (transaction.revert !== undefined && transaction.revert !== null && transaction.revert !== false) ||
+    !hasSuccessfulResult(transaction) ||
+    !hasSuccessfulStatus(transaction)
+  ) {
+    return { kind: "unresolved", reason: "payload_invalid" };
+  }
+  const contractData = record(transaction.contractData) ?? record(transaction.contract_data);
+  const controllerAddress = normalizedAddress(text(contractData, "contract_address", "contractAddress"));
+  if (!contractData || !controllerAddress) return { kind: "unresolved", reason: "payload_invalid" };
+
+  const controller = CONTROLLERS.get(controllerAddress.toLowerCase());
+  const rawData = text(contractData, "data");
+  const data = rawData?.replace(/^0x/i, "") ?? "";
+  const expectedDataLength = 8 + 64 * 9 + 64 + Math.ceil(65 / 32) * 32 * 2;
+  const completeCallData = data.length >= 8 && (data.length - 8) % 64 === 0 && /^[0-9a-fA-F]+$/.test(data);
+  if (!controller) return completeCallData
+    ? { kind: "not_gasfree_v1", reason: "controller_not_registered" }
+    : { kind: "unresolved", reason: "payload_invalid" };
+  if (data.length !== expectedDataLength || !/^[0-9a-fA-F]+$/.test(data)) {
+    return { kind: "unresolved", reason: "registered_payload_ambiguous" };
+  }
+  if (!controller.selectors.has(data.slice(0, 8).toLowerCase())) {
+    return { kind: "not_gasfree_v1", reason: "selector_not_registered" };
+  }
+  return { kind: "unresolved", reason: "registered_payload_ambiguous" };
 }
 
 export function gasFreeMovementForEdge(
