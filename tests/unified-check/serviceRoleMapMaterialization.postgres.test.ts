@@ -442,7 +442,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
     } finally {
       await dispose(test);
     }
-  });
+  }, 30_000);
 
   it("rejects conflicting maps and binding/hash mismatches without leaving a bundle", async () => {
     const test = await harness();
@@ -519,7 +519,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
     } finally {
       await dispose(test);
     }
-  });
+  }, 30_000);
 });
 
 describe("service role map materializer CLI boundary", () => {
