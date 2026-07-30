@@ -336,13 +336,18 @@ function replayLedgerCase(item: OfflineCaseV1): ReplayCaseResultV1 {
       deepSelectedLotIds: selection.deepSelectedLotIds
     };
   }
-  if (item.id === "pacgy-recorded-chronology") {
+  const history = source.historyCompleteness;
+  if (history !== null && typeof history === "object" && !Array.isArray(history)) {
+    const completeness = history as Record<string, unknown>;
+    if (completeness.providerExhaustionProven !== true ||
+      completeness.zeroOpeningWitnessProven !== true) {
     return {
       ...resultBase(item),
       state: "unresolved",
       reason: "history_incomplete",
       authoritative: false
     };
+    }
   }
   return {
     ...resultBase(item),
@@ -399,22 +404,22 @@ function recordedWindowVector(value: unknown): CompleteServiceWindowVectorV2 {
   };
 }
 
-function passesRecordedPredicate(vector: CompleteServiceWindowVectorV2): boolean {
-  const predicate = evaluateServiceWindowPredicateV2(vector);
-  return predicate.C && predicate.B && predicate.G && (predicate.H || predicate.R || predicate.X);
-}
-
-function validateRecordedPredicate(value: unknown): void {
+function validateRecordedPredicate(
+  value: unknown,
+  vector: CompleteServiceWindowVectorV2
+): boolean {
   const source = record(value, "offline_corpus_service_vector_invalid");
-  if (source.recordedPredicate === undefined) return;
+  const computed = evaluateServiceWindowPredicateV2(vector);
+  const computedP = computed.C && computed.B && computed.G && (computed.H || computed.R || computed.X);
+  if (source.recordedPredicate === undefined) return computedP;
   const recorded = record(source.recordedPredicate, "offline_corpus_service_vector_invalid");
-  for (const key of ["C", "B", "G", "H", "R", "X", "P"] as const) {
-    if (typeof recorded[key] !== "boolean") {
+  for (const key of ["C", "B", "G", "H", "R", "X"] as const) {
+    if (typeof recorded[key] !== "boolean" || recorded[key] !== computed[key]) {
       throw new TypeError("offline_corpus_service_vector_invalid");
     }
   }
-  const expectedP = recorded.C && recorded.B && recorded.G && (recorded.H || recorded.R || recorded.X);
-  if (recorded.P !== expectedP) throw new TypeError("offline_corpus_service_vector_invalid");
+  if (recorded.P !== computedP) throw new TypeError("offline_corpus_service_vector_invalid");
+  return computedP;
 }
 
 function serviceAnchorTimestamp(source: Record<string, unknown>): string | null {
@@ -438,53 +443,72 @@ function serviceAnchorTimestamp(source: Record<string, unknown>): string | null 
 
 function replayServiceCase(
   item: OfflineCaseV1,
-  exactLabels: ReadonlyMap<string, FrozenLabelRecordV1>
+  exactLabels: ReadonlyMap<string, readonly FrozenLabelRecordV1[]>
 ): ReplayCaseResultV1 {
   const source = item as Record<string, unknown>;
   if (source.windows !== undefined && (!Array.isArray(source.windows) || source.windows.length !== 2)) {
     throw new TypeError("offline_corpus_service_vector_invalid");
   }
+  const windowPredicates = Array.isArray(source.windows)
+    ? source.windows.map((window) => {
+      const vector = recordedWindowVector(window);
+      return validateRecordedPredicate(window, vector);
+    })
+    : null;
+  if (source.observedVector !== undefined) {
+    const observed = record(source.observedVector, "offline_corpus_service_vector_invalid");
+    if (observed.recordedPredicate !== undefined) {
+      const vector = recordedWindowVector(observed);
+      validateRecordedPredicate(observed, vector);
+    }
+  }
   const address = typeof source.address === "string" ? source.address : null;
-  const exactLabel = address === null ? null : exactLabels.get(address.trim().toLowerCase()) ?? null;
+  const labels = address === null ? [] : exactLabels.get(address.trim().toLowerCase()) ?? [];
   const anchorTimestamp = serviceAnchorTimestamp(source);
-  const exactResolution = exactLabel === null || anchorTimestamp === null || source.exactRoleConflict === true
-    ? null
-    : resolveFrozenLabelAtEventV1({ label: exactLabel, eventTimestamp: anchorTimestamp });
-  if (exactResolution?.kind === "eligible") {
+  const eligibleLabels = anchorTimestamp === null
+    ? []
+    : labels.filter((label) => resolveFrozenLabelAtEventV1({ label, eventTimestamp: anchorTimestamp }).kind === "eligible");
+  const exactRoles = new Set(eligibleLabels.map(({ catalogEntryId }) => catalogEntryId));
+  if (exactRoles.size > 1) {
+    return {
+      ...resultBase(item),
+      state: "role_conflict",
+      exactRoleResolution: "role_conflict",
+      inferredClassifierBypassed: false,
+      replayAuthority: "exact_frozen_rows",
+      authoritative: false
+    };
+  }
+  if (exactRoles.size === 1) {
     return {
       ...resultBase(item),
       state: "exact_service_role",
-      serviceRole: exactLabel!.catalogEntryId,
+      serviceRole: [...exactRoles][0],
       inferredClassifierBypassed: true,
       replayAuthority: "exact_frozen_rows"
     };
   }
-  const exactRoleResolution = exactLabel === null
+  const exactRoleResolution = labels.length === 0
     ? null
-    : source.exactRoleConflict === true
-      ? "role_conflict"
-      : anchorTimestamp === null
+    : anchorTimestamp === null
         ? "anchor_missing"
-        : exactResolution?.kind ?? "label_not_valid_at_event";
-  if (Array.isArray(source.windows) && source.windows.length === 2) {
-    const vectors = source.windows.map(recordedWindowVector);
-    source.windows.forEach(validateRecordedPredicate);
+        : "label_not_valid_at_event";
+  const evidenceGap = item.evidenceClass === "recorded_calibration_vector" && source.rawProviderPagesFrozen === false
+    ? source.behaviorClassification === "insufficient_data"
+      ? "insufficient_service_windows"
+      : "recorded_partial_vector"
+    : null;
+  if (windowPredicates !== null) {
     return {
       ...resultBase(item),
-      state: passesRecordedPredicate(vectors[0]!) && passesRecordedPredicate(vectors[1]!)
+      state: windowPredicates.every(Boolean)
         ? "high_inferred_service"
         : "non_service_profile",
       replayAuthority: "recorded_vector",
       authoritative: false,
-      exactRoleResolution
+      exactRoleResolution,
+      dataGapCode: evidenceGap
     };
-  }
-  if (source.observedVector !== undefined) {
-    const observed = record(source.observedVector, "offline_corpus_service_vector_invalid");
-    if (observed.recordedPredicate !== undefined) {
-      recordedWindowVector(observed);
-      validateRecordedPredicate(observed);
-    }
   }
   if (source.behaviorClassification === "insufficient_data") {
     return {
@@ -492,7 +516,8 @@ function replayServiceCase(
       state: "insufficient_data",
       replayAuthority: "recorded_partial_vector",
       authoritative: false,
-      exactRoleResolution
+      exactRoleResolution,
+      dataGapCode: evidenceGap
     };
   }
   return {
@@ -500,12 +525,35 @@ function replayServiceCase(
     state: "expectation_level",
     replayAuthority: "recorded_vector",
     authoritative: false,
-    exactRoleResolution
+    exactRoleResolution,
+    dataGapCode: evidenceGap
   };
 }
 
 function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
-  const frozen = record((item as Record<string, unknown>).frozenRow);
+  const source = item as Record<string, unknown>;
+  const frozenValue = source.frozenRow;
+  const frozen = frozenValue !== null && typeof frozenValue === "object" && !Array.isArray(frozenValue)
+    ? frozenValue as Record<string, unknown>
+    : null;
+  const validFromValue = frozen?.validFrom;
+  const exactAuthority = item.evidenceClass === "exact_frozen_rows" &&
+    typeof source.rawEvidenceRef === "string" && source.rawEvidenceRef.trim() !== "" &&
+    frozen !== null && frozen.authority === "tronscan-metadata" &&
+    frozen.category === "service_metadata" && frozen.validTo === null &&
+    typeof frozen.address === "string" && frozen.address.trim() !== "" &&
+    typeof frozen.label === "string" && frozen.label.trim() !== "" &&
+    typeof validFromValue === "string" && Number.isFinite(Date.parse(validFromValue)) &&
+    new Date(validFromValue).toISOString() === validFromValue;
+  if (!exactAuthority) {
+    return {
+      ...resultBase(item),
+      kind: "service_label",
+      authoritative: false,
+      inferredClassifierBypassed: false,
+      dataGapCode: "provider_label_authority_missing"
+    };
+  }
   const address = string(frozen.address);
   const tag = string(frozen.label);
   const validFrom = string(frozen.validFrom);
@@ -544,6 +592,7 @@ function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   return {
     ...resultBase(item),
     kind: "service_label",
+    authoritative: true,
     address,
     serviceRole: decision.catalogEntryId,
     inferredClassifierBypassed: true,
@@ -886,10 +935,20 @@ function drainerInput(item: OfflineCaseV1): ExactDrainerSceneInputV1 {
   const source = item as Record<string, unknown>;
   const methodEvidence = record(source.methodEvidence);
   if (!Array.isArray(methodEvidence.methodMap)) throw new TypeError("offline_corpus_drainer_invalid");
-  const methodMap = Object.fromEntries(methodEvidence.methodMap.map((value) => {
+  const methodMap: Record<string, string> = {};
+  for (const value of methodEvidence.methodMap) {
     const method = record(value);
-    return [string(method.selector), string(method.signature)];
-  }));
+    const selector = string(method.selector).trim().replace(/^0x/iu, "").toLowerCase();
+    const signature = string(method.signature).trim();
+    if (!/^[0-9a-f]{8}$/u.test(selector) || signature === "") {
+      throw new TypeError("offline_corpus_drainer_invalid");
+    }
+    const previous = methodMap[selector];
+    if (previous !== undefined && previous !== signature) {
+      throw new TypeError("offline_corpus_drainer_method_map_conflict");
+    }
+    methodMap[selector] = signature;
+  }
   const call = source.transferFromCall === null ? null : record(source.transferFromCall);
   const movement = source.movement === null ? null : record(source.movement);
   return {
@@ -1033,7 +1092,7 @@ export function evaluateExactDrainerSceneV1(
   if (callContractAddress === "" || callContractAddress !== call.contractAddress) {
     return context("spender_contract_invalid");
   }
-  if (methodContractAddress.toLowerCase() !== callContractAddress.toLowerCase()) {
+  if (methodContractAddress !== callContractAddress) {
     return context("spender_contract_mismatch");
   }
   if (call.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) {
@@ -1084,34 +1143,44 @@ export function replayOfflineForensicModelCorpusV1(
   validateAmounts(source);
 
   const adverseResults = adverseCases.map(replayAdverseCase);
-  const exactLabels = new Map(adverseResults.flatMap((item) =>
-    item.kind === "service_label" && typeof item.address === "string" &&
-      item.frozenLabel !== null && typeof item.frozenLabel === "object"
-      ? [[item.address.trim().toLowerCase(), item.frozenLabel as FrozenLabelRecordV1] as const]
-      : []
-  ));
-  const dataGaps: { caseId: string; code: string }[] = [];
+  const exactLabels = new Map<string, FrozenLabelRecordV1[]>();
+  for (const item of adverseResults) {
+    if (item.authoritative !== true || item.kind !== "service_label" ||
+      typeof item.address !== "string" || item.frozenLabel === null ||
+      typeof item.frozenLabel !== "object") continue;
+    const address = item.address.trim().toLowerCase();
+    const labels = exactLabels.get(address) ?? [];
+    labels.push(item.frozenLabel as FrozenLabelRecordV1);
+    labels.sort((left, right) =>
+      left.catalogEntryId.localeCompare(right.catalogEntryId) ||
+      (left.validFrom ?? "").localeCompare(right.validFrom ?? "") ||
+      left.sourcePayloadSha256.localeCompare(right.sourcePayloadSha256)
+    );
+    exactLabels.set(address, labels);
+  }
+  const ledgerResults = ledgerCases.map(replayLedgerCase);
   const serviceResults = serviceCases.map((item) => replayServiceCase(item, exactLabels));
-  for (const result of serviceResults) {
+  const gapKeys = new Set<string>();
+  const addGap = (caseId: string, code: string) => gapKeys.add(`${caseId}\u0000${code}`);
+  for (const result of [...ledgerResults, ...serviceResults, ...adverseResults]) {
+    if (typeof result.dataGapCode === "string") addGap(result.id, result.dataGapCode);
+    if (result.reason === "history_incomplete") addGap(result.id, "history_incomplete");
     if (result.exactRoleResolution === "anchor_missing") {
-      dataGaps.push({ caseId: result.id, code: "exact_service_role_anchor_missing" });
+      addGap(result.id, "exact_service_role_anchor_missing");
     }
     if (result.exactRoleResolution === "role_conflict") {
-      dataGaps.push({ caseId: result.id, code: "exact_service_role_conflict" });
+      addGap(result.id, "exact_service_role_conflict");
     }
   }
-  if (ledgerCases.some(({ id }) => id === "pacgy-recorded-chronology")) {
-    dataGaps.push({ caseId: "pacgy-recorded-chronology", code: "history_incomplete" });
-  }
-  if (serviceCases.some(({ id }) => id === "tqr-d7nzp-recorded-control")) {
-    dataGaps.push({ caseId: "tqr-d7nzp-recorded-control", code: "recorded_partial_vector" });
-  }
-  if (serviceCases.some(({ id }) => id === "txc-vusxvhd-recorded-control")) {
-    dataGaps.push({ caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" });
-  }
+  const dataGaps = [...gapKeys]
+    .sort()
+    .map((key) => {
+      const [caseId, code] = key.split("\u0000");
+      return { caseId: caseId!, code: code! };
+    });
   return {
     schemaVersion: "offline-forensic-model-replay-v1",
-    ledgerCases: ledgerCases.map(replayLedgerCase),
+    ledgerCases: ledgerResults,
     serviceCases: serviceResults,
     adverseCases: adverseResults,
     broadScopeCases: broadScopeCases.map(replayBroadScopeCase),

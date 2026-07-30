@@ -2515,12 +2515,19 @@ describe("offline forensic model replay v1", () => {
     expect(evaluateExactDrainerSceneV1(exactDrainerScene({
       relevantCall: { ...exactDrainerScene().relevantCall!, contractAddress: "other-spender" }
     }))).toMatchObject({ red: false, reason: "spender_contract_mismatch" });
+    const tronAddress = "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh";
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      methodContractAddress: tronAddress,
+      relevantCall: {
+        ...exactDrainerScene().relevantCall!,
+        contractAddress: `t${tronAddress.slice(1)}`
+      }
+    }))).toMatchObject({ red: false, reason: "spender_contract_mismatch" });
   });
 
   it.each([
     ["label created later", { observedVector: { observedEndTimestamp: "2026-07-19T00:00:00.000Z" } }],
-    ["missing anchor", {}],
-    ["role conflict", { observedVector: { observedEndTimestamp: "2026-07-26T00:00:00.000Z" }, exactRoleConflict: true }]
+    ["missing anchor", {}]
   ])("does not bypass service inference for %s", (_name, serviceFields) => {
     const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
     const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
@@ -2534,6 +2541,90 @@ describe("offline forensic model replay v1", () => {
     })).serviceCases[0];
 
     expect(result).not.toMatchObject({ state: "exact_service_role" });
+  });
+
+  it("derives exact-role conflicts independent of row order and ignores an unproved flag", () => {
+    const binance = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!) as Record<string, unknown>;
+    const htx = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-htx-label")!) as Record<string, unknown>;
+    const address = ((binance.frozenRow as Record<string, unknown>).address as string);
+    (htx.frozenRow as Record<string, unknown>).address = address;
+    const service = {
+      id: "derived-role-conflict",
+      evidenceClass: "recorded_calibration_vector" as const,
+      address,
+      anchorTimestamp: "2026-07-26T00:00:00.000Z",
+      exactRoleConflict: false
+    };
+    const replay = (adverseCases: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        serviceCases: [service],
+        adverseCases: adverseCases as unknown as OfflineCorpusV1["adverseCases"]
+      }));
+    const forward = replay([binance, htx]);
+    const reverse = replay([htx, binance]);
+
+    expect(forward.serviceCases[0]).toMatchObject({
+      state: "role_conflict",
+      exactRoleResolution: "role_conflict",
+      inferredClassifierBypassed: false
+    });
+    expect(reverse.serviceCases).toEqual(forward.serviceCases);
+    expect(reverse.dataGaps).toEqual(forward.dataGaps);
+
+    const oneRole = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{ ...service, id: "unproved-role-conflict", exactRoleConflict: true }],
+      adverseCases: [binance as OfflineCorpusV1["adverseCases"][number]]
+    }));
+    expect(oneRole.serviceCases[0]).toMatchObject({ state: "exact_service_role" });
+  });
+
+  it.each([
+    ["synthetic evidence", (item: Record<string, unknown>) => { item.evidenceClass = "synthetic_edge_case"; }],
+    ["missing raw ref", (item: Record<string, unknown>) => { delete item.rawEvidenceRef; }],
+    ["wrong authority", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).authority = "claimed";
+    }],
+    ["wrong category", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).category = "unknown";
+    }],
+    ["invalid validity", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).validTo = "2026-07-20T08:05:34.930Z";
+    }]
+  ])("does not manufacture exact provider authority from %s", (_name, mutate) => {
+    const label = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!) as Record<string, unknown>;
+    mutate(label);
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "provider-authority-consumer",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
+        anchorTimestamp: "2026-07-26T00:00:00.000Z"
+      }],
+      adverseCases: [label as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({ authoritative: false });
+    expect(result.serviceCases[0]).not.toMatchObject({ state: "exact_service_role" });
+    expect(result.dataGaps).toContainEqual({
+      caseId: "exact-binance-label",
+      code: "provider_label_authority_missing"
+    });
+  });
+
+  it("rejects conflicting normalized method selectors independent of row order", () => {
+    const scene = structuredClone(corpus.adverseCases
+      .find(({ id }) => id === "drainer-complete-evidence")!) as Record<string, unknown>;
+    const methods = (scene.methodEvidence as Record<string, unknown>).methodMap as Record<string, unknown>[];
+    methods.push({ selector: "0X5082DD12", signature: "evil(address)" });
+    const replay = () => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [scene as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(replay).toThrow("offline_corpus_drainer_method_map_conflict");
+    methods.reverse();
+    expect(replay).toThrow("offline_corpus_drainer_method_map_conflict");
+    methods[0] = { selector: "5082dd1", signature: "evil(address)" };
+    expect(replay).toThrow("offline_corpus_drainer_invalid");
   });
 
   it("rejects duplicate IDs, unknown adverse IDs, and unbound broad red branches", () => {
@@ -2566,10 +2657,24 @@ describe("offline forensic model replay v1", () => {
       .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
     const firstWindow = (serviceCase.windows as Record<string, unknown>[])[0]!;
     const predicate = firstWindow.recordedPredicate as Record<string, boolean>;
-    predicate.P = !predicate.P;
+    predicate.C = !predicate.C;
+    predicate.P = predicate.C && predicate.B && predicate.G &&
+      (predicate.H || predicate.R || predicate.X);
 
     expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+    const exactService = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "csv-JJpBXh")!) as Record<string, unknown>;
+    const exactPredicate = (exactService.observedVector as Record<string, unknown>)
+      .recordedPredicate as Record<string, boolean>;
+    exactPredicate.B = !exactPredicate.B;
+    exactPredicate.P = exactPredicate.C && exactPredicate.B && exactPredicate.G &&
+      (exactPredicate.H || exactPredicate.R || exactPredicate.X);
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [exactService as OfflineCorpusV1["serviceCases"][number]],
+      adverseCases: [corpus.adverseCases.find(({ id }) => id === "exact-binance-label") as
+        OfflineCorpusV1["adverseCases"][number]]
     }))).toThrow("offline_corpus_service_vector_invalid");
     expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       serviceCases: [{
@@ -2595,6 +2700,34 @@ describe("offline forensic model replay v1", () => {
       caseId: "missing-service-anchor",
       code: "exact_service_role_anchor_missing"
     });
+  });
+
+  it("derives data gaps from replay evidence instead of case IDs", () => {
+    const completeLedger = {
+      id: "pacgy-recorded-chronology",
+      evidenceClass: "synthetic_edge_case" as const,
+      replayInput: {
+        subjectAddress: "subject",
+        snapshotBlockNumber: 1,
+        snapshotBlockHash: "snapshot",
+        snapshotEvidenceRef: "synthetic",
+        historyCompleteness: "genesis_complete",
+        openingBalanceRaw: "0",
+        events: []
+      },
+      query: { purpose: "amount_only", requestedAmountRaw: "0" }
+    };
+    const completeService = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    completeService.id = "tqr-d7nzp-recorded-control";
+    completeService.evidenceClass = "exact_frozen_rows";
+    completeService.rawProviderPagesFrozen = true;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [completeLedger as OfflineCorpusV1["ledgerCases"][number]],
+      serviceCases: [completeService as OfflineCorpusV1["serviceCases"][number]]
+    }));
+
+    expect(result.dataGaps).toEqual([]);
   });
 
   it("projects declared second-hop fields and remains JSON-safe with unknown bigint input", () => {
