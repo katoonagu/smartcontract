@@ -62,7 +62,7 @@ function fixture() {
     allocatedAmountRaw: "1",
     sourceEventIds: ["source-z", canonicalTronUsdtEventKey(recent[0]!)]
   });
-  const anchor = { timestamp: recent[0]!.blockTimestamp.toISOString(), sourceEventIds: ["source-z", canonicalTronUsdtEventKey(recent[0]!)] };
+  const anchor = recent[0]!.blockTimestamp.toISOString();
   const acceptedHistory = {
     manifestKey: "manifest-1",
     manifestSha256: HASH,
@@ -124,7 +124,7 @@ function completeFixture(transform = (events: IndexedTronUsdtTransfer[]) => even
   const sourceEventIds = ["source-z", canonicalTronUsdtEventKey(events[0]!)];
   const manifest = buildServiceRoleExactEvidenceCaptureManifestV1(base.input({
     states: base.input().states.map((state) => ({ ...state, sourceEventIds })),
-    anchor: { timestamp: events[0]!.blockTimestamp.toISOString(), sourceEventIds },
+    anchor: events[0]!.blockTimestamp.toISOString(),
     acceptedHistory: { ...base.input().acceptedHistory, events }
   }));
   const payloadFor = (item: IndexedTronUsdtTransfer, riskTransaction = false) => ({
@@ -674,6 +674,21 @@ describe("service role exact evidence capture", () => {
     expect(output.sha256).toBe(fingerprintCanonicalArtifact(output.artifact));
   });
 
+  it("binds only the lexical primary state's source events when equivalent states have distinct sources", () => {
+    const { input, states } = fixture();
+    const anchorEventId = canonicalTronUsdtEventKey(input().acceptedHistory.events[0]!);
+    const distinct = states.map((state, index) => ({ ...state, sourceEventIds: [anchorEventId, `source-${index}`] }));
+    const primary = [...distinct].sort((left, right) => traversalStateId(left).localeCompare(traversalStateId(right)))[0]!;
+    const output = buildServiceRoleExactEvidenceCaptureManifestV1({
+      ...input(),
+      states: distinct,
+      anchor: distinct[0]!.anchorTimestamp
+    });
+
+    expect(output.artifact.traversal.primaryStateId).toBe(traversalStateId(primary));
+    expect(output.artifact.traversal.sourceEventIds).toEqual([...primary.sourceEventIds].sort());
+  });
+
   it("emits only the permanent manifest schema and passes structural evaluation", () => {
     const { input, events } = fixture();
     const manifest = buildServiceRoleExactEvidenceCaptureManifestV1(input());
@@ -719,9 +734,9 @@ describe("service role exact evidence capture", () => {
     })],
     ["sample mismatch", (input: ReturnType<ReturnType<typeof fixture>["input"]>) => ({
       ...input,
-      states: [{ ...input.states[0]!, anchorTimestamp: new Date(Date.parse(input.anchor.timestamp) - 1_000).toISOString() }, ...input.states.slice(1)]
+      states: [{ ...input.states[0]!, anchorTimestamp: new Date(Date.parse(input.anchor) - 1_000).toISOString() }, ...input.states.slice(1)]
     })],
-    ["wrong anchor", (input: ReturnType<ReturnType<typeof fixture>["input"]>) => ({ ...input, anchor: { ...input.anchor, timestamp: "2024-01-01T00:00:00.000Z" } })],
+    ["wrong anchor", (input: ReturnType<ReturnType<typeof fixture>["input"]>) => ({ ...input, anchor: "2024-01-01T00:00:00.000Z" })],
     ["self direction", (input: ReturnType<ReturnType<typeof fixture>["input"]>) => ({
       ...input, acceptedHistory: { ...input.acceptedHistory, events: input.acceptedHistory.events.map((item, index) => index === 0 ? { ...item, fromAddress: PROFILED } : item) }
     })],

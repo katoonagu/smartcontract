@@ -432,7 +432,11 @@ async function loadTraversalStates(db: ServiceRoleMaterializationQueryable, inpu
   return [...new Map(states.map((state) => [traversalStateId(state), state])).values()];
 }
 
-async function loadSource(db: ServiceRoleMaterializationQueryable, command: ServiceRoleMaterializationCommand, lock: boolean) {
+export async function loadServiceRoleMaterializationSource(
+  db: ServiceRoleMaterializationQueryable,
+  command: Pick<ServiceRoleMaterializationCommand, "runId" | "manifestSha256" | "anchor">,
+  lock: boolean
+) {
   const accepted = await db.query(
     `select r.subject_address,r.analysis_manifest_sha256,
             analysis.kind analysis_kind,analysis.schema_version analysis_schema_version,
@@ -569,6 +573,10 @@ async function loadSource(db: ServiceRoleMaterializationQueryable, command: Serv
   };
 }
 
+export type ServiceRoleMaterializationSource = Awaited<
+  ReturnType<typeof loadServiceRoleMaterializationSource>
+>;
+
 async function loadBoundDisposition<T>(db: ServiceRoleMaterializationQueryable, input: {
   sha256: string;
   runId: string;
@@ -587,7 +595,7 @@ async function loadBoundDisposition<T>(db: ServiceRoleMaterializationQueryable, 
 }
 
 async function buildMaterialization(db: ServiceRoleMaterializationQueryable, command: ServiceRoleMaterializationCommand, lock: boolean): Promise<Materialization> {
-  const source = await loadSource(db, command, lock);
+  const source = await loadServiceRoleMaterializationSource(db, command, lock);
   const shadowInputs = source.states.map((state) => ({
     mode: "service-role-shadow-100-plus-100-v1" as const,
     runId: source.runId,

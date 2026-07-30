@@ -165,7 +165,7 @@ type Input = {
   snapshotHash: string;
   subjectAddress: string;
   states: readonly TraversalStateV1[];
-  anchor: { timestamp: string; sourceEventIds: readonly string[] };
+  anchor: string;
   acceptedHistory: {
     manifestKey: string;
     manifestSha256: string;
@@ -183,10 +183,6 @@ function sortedUnique(values: readonly string[], code: string): string[] {
   const sorted = [...values].sort();
   if (new Set(sorted).size !== sorted.length) fail(code);
   return sorted;
-}
-
-function sameValues(left: readonly string[], right: readonly string[]): boolean {
-  return fingerprintCanonicalArtifact([...left].sort()) === fingerprintCanonicalArtifact([...right].sort());
 }
 
 function eventBody(event: IndexedTronUsdtTransfer): Record<string, unknown> {
@@ -236,8 +232,7 @@ export function buildServiceRoleExactEvidenceCaptureManifestV1(input: Input): {
     !exactAddress(input.subjectAddress)) fail("binding_invalid");
   const pages = sortedUnique(input.acceptedHistory.pageArtifactHashes, "page_hashes_invalid");
   if (pages.length === 0 || !pages.every((hash) => HASH.test(hash))) fail("page_hashes_invalid");
-  const anchorSourceEventIds = sortedUnique(input.anchor.sourceEventIds, "anchor_invalid");
-  if (input.anchor.timestamp.length === 0) fail("anchor_invalid");
+  if (input.anchor.length === 0) fail("anchor_invalid");
 
   const eventsById = new Map<string, { event: IndexedTronUsdtTransfer; bodySha256: string }>();
   for (const event of input.acceptedHistory.events) {
@@ -253,7 +248,7 @@ export function buildServiceRoleExactEvidenceCaptureManifestV1(input: Input): {
   const profiledAddress = input.states[0]!.address;
   if (!exactAddress(profiledAddress) || profiledAddress === input.subjectAddress) fail("binding_invalid");
   if (input.states.some((state) => state.address !== profiledAddress ||
-    state.anchorTimestamp !== input.anchor.timestamp || !sameValues(state.sourceEventIds, anchorSourceEventIds))) {
+    state.anchorTimestamp !== input.anchor)) {
     fail("state_anchor_or_profile_invalid");
   }
   const shadows = input.states.map((state) => shadow(input, state));
@@ -307,7 +302,7 @@ export function buildServiceRoleExactEvidenceCaptureManifestV1(input: Input): {
     traversal: {
       primaryStateId,
       equivalentStateIds,
-      anchor: input.anchor.timestamp,
+      anchor: input.anchor,
       sourceEventIds: sortedUnique(primary.sourceEventIds, "source_event_ids_invalid")
     },
     sample: { recentCanonicalEventIds: recent, historicalCanonicalEventIds: historical },
