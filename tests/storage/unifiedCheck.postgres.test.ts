@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
-import { fingerprintCanonicalJson } from "../../src/forensics/canonicalJson";
+import {
+  fingerprintCanonicalArtifact,
+  fingerprintCanonicalJson
+} from "../../src/forensics/canonicalJson";
 import {
   claimUnifiedTask,
   checkpointUnifiedTask,
@@ -89,6 +92,66 @@ postgresDescribe("Unified Check repository", () => {
         schemaVersion: "1",
         artifact
       });
+      const shadow = {
+        schemaVersion: "service-role-shadow-profile-v1",
+        policyVersion: "service-role-shadow-100-plus-100-v1",
+        runId,
+        snapshotHash: "b".repeat(64),
+        subjectAddress: "TSubject",
+        profiledAddress: "TProfiled",
+        traversalStateId: "c".repeat(64),
+        anchor: {
+          timestamp: "2026-07-30T00:00:00.000Z",
+          sourceEventIds: ["event-1"]
+        },
+        source: {
+          evidenceClass: "accepted_history_reconstruction",
+          manifestKey: "manifest-1",
+          manifestSha256: "d".repeat(64),
+          acceptedPageArtifactHashes: ["e".repeat(64)],
+          eventRoleMapSha256: null,
+          physicalPageRequestHashes: [],
+          boundaryPageAuthority: false
+        },
+        sampledCanonicalEventIds: { recent: [], historical: [] },
+        result: {
+          status: "insufficient_data",
+          insufficientReason: "role_map_missing",
+          classifier: null
+        },
+        productionEffect: false
+      } as const;
+      const shadowSha256 = fingerprintCanonicalArtifact(shadow);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await insertUnifiedArtifact(scoped, {
+          sha256: shadowSha256,
+          createdByRunId: runId,
+          kind: "service_role_shadow_profile",
+          schemaVersion: "1",
+          artifact: shadow
+        });
+      }
+      const storedShadow = await client.query(
+        `select sha256, created_by_run_id, kind, schema_version, artifact_json
+           from unified_check_artifacts
+          where sha256 = $1`,
+        [shadowSha256]
+      );
+      expect(storedShadow.rows).toEqual([{
+        sha256: shadowSha256,
+        created_by_run_id: runId,
+        kind: "service_role_shadow_profile",
+        schema_version: "1",
+        artifact_json: shadow
+      }]);
+      await expect(client.query(
+        "update unified_check_artifacts set kind = 'mutated' where sha256 = $1",
+        [shadowSha256]
+      )).rejects.toThrow("unified_immutable_artifact_mutation");
+      await expect(client.query(
+        "delete from unified_check_artifacts where sha256 = $1",
+        [shadowSha256]
+      )).rejects.toThrow("unified_immutable_artifact_mutation");
       await createUnifiedTasks(scoped, {
         runId,
         tasks: [
@@ -211,6 +274,12 @@ postgresDescribe("Unified Check repository", () => {
         attemptId: "attempt-a",
         artifactSha256: fingerprintCanonicalJson(artifact)
       });
+      expect(Number((await client.query(
+        `select count(*)::int as count
+           from unified_check_attempts
+          where artifact_sha256 = $1`,
+        [shadowSha256]
+      )).rows[0]!.count)).toBe(0);
       const completedTask = (
         await client.query(
           `select status, accepted_attempt_id, checkpoint_json

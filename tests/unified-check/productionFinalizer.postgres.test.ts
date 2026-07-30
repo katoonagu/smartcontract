@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../../src/forensics/canonicalJson";
 import {
   canonicalTronUsdtEventKey
 } from "../../src/forensics/tronAddressAllTimeIndex";
@@ -24,8 +27,9 @@ import {
 import type {
   UnifiedTraversalArtifactV1
 } from "../../src/unifiedCheck/productionTraversal";
-import type {
-  UnifiedTransactionalQueryable
+import {
+  insertUnifiedArtifact,
+  type UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository";
 import {
   buildUnifiedBranchInput
@@ -42,27 +46,13 @@ const postgresDescribe = connectionString ? describe : describe.skip;
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
 
-postgresDescribe("Unified production finalizer", () => {
-  it.each([
-    {
-      name: "commits one dossier after valid historical v1 input",
-      mutateManifest: null
-    },
-    {
-      name: "rejects a hash-consistent structurally invalid manifest",
-      mutateManifest: (manifest: AnalysisManifestV1) => ({
-        ...manifest,
-        unexpectedPersistedField: true
-      })
-    },
-    {
-      name: "rejects a hash-consistent snapshot-binding-invalid manifest",
-      mutateManifest: (manifest: AnalysisManifestV1) => ({
-        ...manifest,
-        snapshotHash: "f".repeat(64)
-      })
-    }
-  ])("$name", async ({ mutateManifest }) => {
+type ManifestMutation = ((manifest: AnalysisManifestV1) => unknown) | null;
+
+async function runFinalizerScenario(input: {
+  includeShadowArtifact: boolean;
+  mutateManifest: ManifestMutation;
+}) {
+    const { mutateManifest } = input;
     const pool = new pg.Pool({ connectionString, max: 1 });
     const client = await pool.connect();
     const schema = `unifiedfinal_${randomUUID().replaceAll("-", "")}`;
@@ -397,6 +387,45 @@ postgresDescribe("Unified production finalizer", () => {
         );
       }
 
+      if (input.includeShadowArtifact) {
+        const shadow = {
+          schemaVersion: "service-role-shadow-profile-v1",
+          policyVersion: "service-role-shadow-100-plus-100-v1",
+          runId: "run-1",
+          snapshotHash,
+          subjectAddress: SUBJECT,
+          profiledAddress: SOURCE,
+          traversalStateId: traversalStateId(traversalState),
+          anchor: {
+            timestamp: traversalState.anchorTimestamp,
+            sourceEventIds: traversalState.sourceEventIds
+          },
+          source: {
+            evidenceClass: "accepted_history_reconstruction",
+            manifestKey: "standalone-shadow-manifest",
+            manifestSha256: "8".repeat(64),
+            acceptedPageArtifactHashes: ["9".repeat(64)],
+            eventRoleMapSha256: null,
+            physicalPageRequestHashes: [],
+            boundaryPageAuthority: false
+          },
+          sampledCanonicalEventIds: { recent: [], historical: [] },
+          result: {
+            status: "insufficient_data",
+            insufficientReason: "role_map_missing",
+            classifier: null
+          },
+          productionEffect: false
+        } as const;
+        await insertUnifiedArtifact(db, {
+          sha256: fingerprintCanonicalArtifact(shadow),
+          createdByRunId: "run-1",
+          kind: "service_role_shadow_profile",
+          schemaVersion: "1",
+          artifact: shadow
+        });
+      }
+
       if (mutateManifest !== null) {
         const invalidManifest = mutateManifest(manifest);
         const invalidManifestHash = fingerprintCanonicalArtifact(
@@ -446,7 +475,7 @@ postgresDescribe("Unified production finalizer", () => {
         expect(Number((await query(
           "select count(*)::int as count from unified_check_deliveries"
         )).rows[0]!.count)).toBe(0);
-        return;
+        return null;
       }
 
       await expect(runUnifiedProductionFinalizationCycle({
@@ -472,10 +501,87 @@ postgresDescribe("Unified production finalizer", () => {
         request_id: "request-1",
         status: "PENDING"
       });
+      const artifactRows = (await query(
+        `select sha256, kind, schema_version, artifact_json
+           from unified_check_artifacts
+          where created_by_run_id = 'run-1'
+            and kind in (
+              'traversal_result','unified_wallet_report',
+              'presentation_envelope','delivery_intent'
+            )
+          order by kind, sha256`
+      )).rows;
+      const artifactBindings = (kind: string) => artifactRows
+        .filter((row) => row.kind === kind)
+        .map((row) => ({
+          sha256: String(row.sha256),
+          schemaVersion: String(row.schema_version),
+          canonicalBytes: canonicalizeArtifactJson(row.artifact_json)
+        }));
+      return {
+        traversalArtifact: artifactBindings("traversal_result"),
+        runBindings: {
+          finalScore: Number(run.final_score),
+          finalDecision: String(run.final_decision),
+          evidenceBundleSha256: String(run.evidence_bundle_sha256),
+          traversalClosureSha256: String(run.traversal_closure_sha256),
+          scoringBundleSha256: String(run.scoring_bundle_sha256),
+          reportSha256: String(run.report_sha256)
+        },
+        reportArtifact: artifactBindings("unified_wallet_report"),
+        presentationEnvelopes: artifactBindings("presentation_envelope"),
+        deliveryIntents: artifactBindings("delivery_intent"),
+        deliveryBindings: deliveries.map((delivery) => ({
+          id: String(delivery.id),
+          requestId: String(delivery.request_id),
+          presentationSha256: String(delivery.presentation_sha256),
+          status: String(delivery.status)
+        }))
+      };
     } finally {
       await client.query(`drop schema if exists "${schema}" cascade`);
       client.release();
       await pool.end();
     }
+}
+
+postgresDescribe("Unified production finalizer", () => {
+  it.each([
+    {
+      name: "commits one dossier after valid historical v1 input",
+      mutateManifest: null
+    },
+    {
+      name: "rejects a hash-consistent structurally invalid manifest",
+      mutateManifest: (manifest: AnalysisManifestV1) => ({
+        ...manifest,
+        unexpectedPersistedField: true
+      })
+    },
+    {
+      name: "rejects a hash-consistent snapshot-binding-invalid manifest",
+      mutateManifest: (manifest: AnalysisManifestV1) => ({
+        ...manifest,
+        snapshotHash: "f".repeat(64)
+      })
+    }
+  ])("$name", async ({ mutateManifest }) => {
+    await runFinalizerScenario({
+      includeShadowArtifact: false,
+      mutateManifest
+    });
+  });
+
+  it("leaves authoritative bytes and bindings unchanged with a standalone shadow artifact", async () => {
+    const withoutShadow = await runFinalizerScenario({
+      includeShadowArtifact: false,
+      mutateManifest: null
+    });
+    const withShadow = await runFinalizerScenario({
+      includeShadowArtifact: true,
+      mutateManifest: null
+    });
+
+    expect(withShadow).toEqual(withoutShadow);
   });
 });
