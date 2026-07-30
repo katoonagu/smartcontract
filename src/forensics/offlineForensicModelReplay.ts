@@ -431,7 +431,9 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
     dominantShareDenominator === featureEligibleEventCount &&
     (dominantDirectionCount === 0 || maxDominantDirectionEventsPerHour >= 1) &&
     maxDominantDirectionEventsPerHour <= dominantDirectionCount &&
+    (featureEligibleEventCount === 0 || activeUtcHourOfDayCount >= 1) &&
     activeUtcHourOfDayCount <= 24 && activeUtcHourOfDayCount <= featureEligibleEventCount &&
+    (dominantDirectionCount === 0 || dominantExactAmountCount >= 1) &&
     dominantExactAmountCount <= dominantDirectionCount &&
     dominantExactAmountShareDenominator === dominantDirectionCount &&
     observedStartSeconds <= observedEndSeconds &&

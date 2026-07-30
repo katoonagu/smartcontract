@@ -2982,6 +2982,16 @@ describe("offline forensic model replay v1", () => {
     ["largest counterparty", "historical", 1, "largestCounterparty"],
     ["dominant hourly bucket", "recent", 0, "maxDominantDirectionEventsPerHour"],
     ["dominant hourly bucket", "historical", 1, "maxDominantDirectionEventsPerHour"],
+    ["active UTC hour", "recent", 0, "activeUtcHourOfDayCount"],
+    ["active UTC hour", "historical", 1, "activeUtcHourOfDayCount"],
+    ["unique sender", "recent", 0, "uniqueSenders"],
+    ["unique sender", "historical", 1, "uniqueSenders"],
+    ["unique recipient", "recent", 0, "uniqueRecipients"],
+    ["unique recipient", "historical", 1, "uniqueRecipients"],
+    ["unique counterparty", "recent", 0, "uniqueCounterparties"],
+    ["unique counterparty", "historical", 1, "uniqueCounterparties"],
+    ["unique dominant counterparty", "recent", 0, "uniqueDominantCounterparties"],
+    ["unique dominant counterparty", "historical", 1, "uniqueDominantCounterparties"],
     ["dominant repeated amount", "recent", 0, "dominantExactAmount"],
     ["dominant repeated amount", "historical", 1, "dominantExactAmount"]
   ] as const)("rejects a zero %s count in the %s window", (_name, _kind, windowIndex, field) => {
@@ -2993,8 +3003,9 @@ describe("offline forensic model replay v1", () => {
     } else if (field === "dominantExactAmount") {
       (window.dominantExactAmount as Record<string, unknown>).count = 0;
     } else {
-      window.maxDominantDirectionEventsPerHour = 0;
+      window[field] = 0;
     }
+    window.recordedPredicate = recomputePredicate(window as FeatureVector);
 
     expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
       serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
