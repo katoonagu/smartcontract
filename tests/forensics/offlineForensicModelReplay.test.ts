@@ -423,6 +423,8 @@ describe("forensic model offline corpus v1", () => {
         coverageEndTimestamp: string;
       };
       principalTransfers: readonly {
+        txHash: string;
+        logIndex: number;
         amountRaw: string;
         expectedTemporalClass: string;
         occurredAt: string | null;
@@ -433,6 +435,8 @@ describe("forensic model offline corpus v1", () => {
         successful: boolean;
       }[];
       timelineEvents: readonly {
+        txHash: string;
+        logIndex: number;
         occurredAt: string;
         eventKind: "added" | "removed";
         subjectAddress: string;
@@ -452,6 +456,99 @@ describe("forensic model offline corpus v1", () => {
     expect(hasExactSubjectSide(blacklist.principalTransfers)).toBe(true);
     expect(hasExactSubjectSide([...blacklist.principalTransfers].reverse())).toBe(true);
     expect(blacklist.principalTransfers).toHaveLength(3);
+    const blacklistEvidenceRows = [
+      ...blacklist.principalTransfers,
+      ...blacklist.timelineEvents
+    ];
+    expect(blacklistEvidenceRows).toHaveLength(5);
+    for (const row of blacklistEvidenceRows) {
+      expect(row.txHash).toMatch(/^[0-9a-f]{64}$/u);
+      expect(row.logIndex).toBe(0);
+    }
+    expect(new Set(blacklistEvidenceRows.map(({ txHash, logIndex }) => `${txHash}:${logIndex}`)).size)
+      .toBe(5);
+    expect(blacklist.principalTransfers.map(({
+      occurredAt,
+      tokenContract,
+      fromAddress,
+      toAddress,
+      amountRaw,
+      confirmed,
+      successful,
+      expectedTemporalClass
+    }) => ({
+      occurredAt,
+      tokenContract,
+      fromAddress,
+      toAddress,
+      amountRaw,
+      confirmed,
+      successful,
+      expectedTemporalClass
+    }))).toEqual([
+      {
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "900000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "before_activation"
+      },
+      {
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "100000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "active_at_event"
+      },
+      {
+        occurredAt: null,
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "50000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "unknown_time"
+      }
+    ]);
+    expect(blacklist.timelineEvents.map(({
+      occurredAt,
+      tokenContract,
+      subjectAddress,
+      eventKind,
+      confirmed,
+      successful
+    }) => ({
+      occurredAt,
+      tokenContract,
+      subjectAddress,
+      eventKind,
+      confirmed,
+      successful
+    }))).toEqual([
+      {
+        occurredAt: "2026-01-02T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        subjectAddress: "synthetic-listed-counterparty",
+        eventKind: "added",
+        confirmed: true,
+        successful: true
+      },
+      {
+        occurredAt: "2026-01-04T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        subjectAddress: "synthetic-listed-counterparty",
+        eventKind: "removed",
+        confirmed: true,
+        successful: true
+      }
+    ]);
     expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
       eventKind: "added", confirmed: true, successful: true
     }));

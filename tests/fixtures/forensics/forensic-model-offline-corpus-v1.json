@@ -1067,7 +1067,7 @@
       },
       "principalTransfers": [
         {
-          "txHash": "synthetic-blacklist-before",
+          "txHash": "fbe9626109019b19279d716454ee66e4137185e7c66ffd6d8e26cbdb196149ed",
           "logIndex": 0,
           "occurredAt": "2026-01-01T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -1079,7 +1079,7 @@
           "expectedTemporalClass": "before_activation"
         },
         {
-          "txHash": "synthetic-blacklist-active",
+          "txHash": "cf2295cce663661c6dc67ab82620c248de4ea0482239f0603a646dcbaf4b2516",
           "logIndex": 0,
           "occurredAt": "2026-01-03T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -1091,7 +1091,7 @@
           "expectedTemporalClass": "active_at_event"
         },
         {
-          "txHash": "synthetic-blacklist-unknown",
+          "txHash": "77e6502080d8e9b3928f47c2bcec3041ab68080ff7e66bd4dc0f83b68074b4d4",
           "logIndex": 0,
           "occurredAt": null,
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -1105,7 +1105,7 @@
       ],
       "timelineEvents": [
         {
-          "txHash": "synthetic-blacklist-added",
+          "txHash": "9dff00e0cc4dde4d843cc8bf6e4e1c6271386c6a17fc2ed34863b219bdd8c850",
           "logIndex": 0,
           "occurredAt": "2026-01-02T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -1115,7 +1115,7 @@
           "successful": true
         },
         {
-          "txHash": "synthetic-blacklist-removed",
+          "txHash": "dd0f84115674719e4f268e7d87cac475f5b22875aa5b91c277bb8c41d101b63b",
           "logIndex": 0,
           "occurredAt": "2026-01-04T00:00:00.000Z",
           "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
