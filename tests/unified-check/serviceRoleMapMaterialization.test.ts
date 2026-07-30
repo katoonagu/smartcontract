@@ -116,7 +116,16 @@ function poisoning(
     addressHistoryManifestSha256: MANIFEST_HASH,
     canonicalEventId,
     coverage: "complete",
-    disposition
+    disposition,
+    reason: "complete_no_match",
+    comparison: {
+      windowStart: "2024-01-01T00:00:00.000Z",
+      windowEnd: "2024-01-01T00:00:00.000Z",
+      pageArtifactHashes: [],
+      canonicalComparisonEventIds: [],
+      comparisonInventorySha256: fingerprintCanonicalArtifact([]),
+      orderAuthority: "strictly_earlier_timestamp"
+    }
   };
   return { sha256: fingerprintCanonicalArtifact(artifact), artifact };
 }
@@ -131,7 +140,12 @@ function providerRisk(
     snapshotHash: SNAPSHOT_HASH,
     addressHistoryManifestSha256: MANIFEST_HASH,
     canonicalEventId,
-    disposition
+    disposition,
+    policyVersion: "tronscan-risk-transaction-boolean-v1",
+    transactionInfoEvidenceId: "tron-transaction-provider-evidence-v1:test",
+    transactionInfoPayloadSha256: "a".repeat(64),
+    riskTransaction: false,
+    binding: "transaction_level_negative"
   };
   return { sha256: fingerprintCanonicalArtifact(artifact), artifact };
 }
@@ -355,6 +369,33 @@ describe("service role map materialization", () => {
       }, ...localEvidence.slice(1)]
     }));
     expect(invalidHash.map).toBeNull();
+  });
+
+  it("requires every permanent poisoning and provider-risk disposition field", () => {
+    const { input, localEvidence } = fixture();
+    const first = localEvidence[0]!;
+    const malformed = [
+      {
+        ...first,
+        poisoning: (() => {
+          const { reason: _reason, ...artifact } = first.poisoning.artifact;
+          return { sha256: fingerprintCanonicalArtifact(artifact), artifact: artifact as unknown as ServiceRolePoisoningDispositionV1 };
+        })()
+      },
+      {
+        ...first,
+        providerRisk: (() => {
+          const { binding: _binding, ...artifact } = first.providerRisk.artifact;
+          return { sha256: fingerprintCanonicalArtifact(artifact), artifact: artifact as unknown as ServiceRoleProviderRiskDispositionV1 };
+        })()
+      }
+    ];
+
+    for (const evidence of malformed) {
+      const result = materializeServiceRoleEventMapV1(input({ localEvidence: [evidence, ...localEvidence.slice(1)] }));
+      expect(result.map).toBeNull();
+      expect(result.coverage.fullyAuthorizedEventCount).toBe(199);
+    }
   });
 
   it("does not treat a registered-controller parser failure as non-GasFree", () => {

@@ -374,7 +374,16 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
       addressHistoryManifestSha256: manifestSha256,
       canonicalEventId,
       coverage: "complete",
-      disposition: "not_poisoning"
+      disposition: "not_poisoning",
+      reason: "complete_no_match",
+      comparison: {
+        windowStart: "2024-01-01T00:00:00.000Z",
+        windowEnd: "2024-01-01T00:00:00.000Z",
+        pageArtifactHashes: [],
+        canonicalComparisonEventIds: [],
+        comparisonInventorySha256: fingerprintCanonicalArtifact([]),
+        orderAuthority: "strictly_earlier_timestamp"
+      }
     };
     const providerRiskArtifact: ServiceRoleProviderRiskDispositionV1 = {
       schemaVersion: "service-role-provider-risk-disposition-v1",
@@ -382,7 +391,12 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
       snapshotHash,
       addressHistoryManifestSha256: manifestSha256,
       canonicalEventId,
-      disposition: "not_provider_risk"
+      transactionInfoEvidenceId: "tron-transaction-provider-evidence-v1:test",
+      transactionInfoPayloadSha256: "a".repeat(64),
+      riskTransaction: false,
+      binding: "transaction_level_negative",
+      disposition: "not_provider_risk",
+      policyVersion: "tronscan-risk-transaction-boolean-v1"
     };
     const poisoningEvidenceSha256 = fingerprintCanonicalArtifact(poisoningArtifact);
     const providerRiskEvidenceSha256 = fingerprintCanonicalArtifact(providerRiskArtifact);
@@ -663,7 +677,16 @@ async function seedFixtureEvidenceEntry(
     addressHistoryManifestSha256: fixture.manifestSha256,
     canonicalEventId,
     coverage: "complete",
-    disposition: "not_poisoning"
+    disposition: "not_poisoning",
+    reason: "complete_no_match",
+    comparison: {
+      windowStart: "2024-01-01T00:00:00.000Z",
+      windowEnd: "2024-01-01T00:00:00.000Z",
+      pageArtifactHashes: [],
+      canonicalComparisonEventIds: [],
+      comparisonInventorySha256: fingerprintCanonicalArtifact([]),
+      orderAuthority: "strictly_earlier_timestamp"
+    }
   };
   const providerRiskArtifact: ServiceRoleProviderRiskDispositionV1 = {
     schemaVersion: "service-role-provider-risk-disposition-v1",
@@ -671,7 +694,12 @@ async function seedFixtureEvidenceEntry(
     snapshotHash: fixture.snapshotHash,
     addressHistoryManifestSha256: fixture.manifestSha256,
     canonicalEventId,
-    disposition: "not_provider_risk"
+    transactionInfoEvidenceId: "tron-transaction-provider-evidence-v1:test",
+    transactionInfoPayloadSha256: "a".repeat(64),
+    riskTransaction: false,
+    binding: "transaction_level_negative",
+    disposition: "not_provider_risk",
+    policyVersion: "tronscan-risk-transaction-boolean-v1"
   };
   const poisoningEvidenceSha256 = fingerprintCanonicalArtifact(poisoningArtifact);
   const providerRiskEvidenceSha256 = fingerprintCanonicalArtifact(providerRiskArtifact);

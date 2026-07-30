@@ -17,31 +17,20 @@ import {
   type ServiceRoleShadowMode
 } from "./serviceRoleShadow";
 import type { TraversalStateV1 } from "./traversal";
+import type {
+  ServiceRolePoisoningDispositionV1,
+  ServiceRoleProviderRiskDispositionV1
+} from "./serviceRoleExactEvidenceCapture";
+
+export type {
+  ServiceRolePoisoningDispositionV1,
+  ServiceRoleProviderRiskDispositionV1
+} from "./serviceRoleExactEvidenceCapture";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const ROLES: readonly ServiceRoleShadowEventRoleV1[] = [
   "ordinary", "poisoning_only", "gasfree_fee", "gasfree_principal", "provider_risk"
 ];
-
-export type ServiceRolePoisoningDispositionV1 = {
-  schemaVersion: "service-role-poisoning-disposition-v1";
-  policyVersion: "address-poisoning-v1";
-  runId: string;
-  snapshotHash: string;
-  addressHistoryManifestSha256: string;
-  canonicalEventId: string;
-  coverage: "complete";
-  disposition: "not_poisoning" | "poisoning_only";
-};
-
-export type ServiceRoleProviderRiskDispositionV1 = {
-  schemaVersion: "service-role-provider-risk-disposition-v1";
-  runId: string;
-  snapshotHash: string;
-  addressHistoryManifestSha256: string;
-  canonicalEventId: string;
-  disposition: "not_provider_risk" | "provider_risk";
-};
 
 type BoundArtifact<T> = { sha256: string; artifact: T };
 type LocalEvidence = {
@@ -95,6 +84,38 @@ export type ServiceRoleEventEvidenceBundleV1 = {
   }[];
 };
 
+function canonicalTimestamp(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+
+function sortedStrings(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") &&
+    fingerprintCanonicalArtifact([...value].sort()) === fingerprintCanonicalArtifact(value);
+}
+
+function validPoisoningDisposition(artifact: ServiceRolePoisoningDispositionV1): boolean {
+  const comparison = artifact.comparison;
+  return artifact.schemaVersion === "service-role-poisoning-disposition-v1" &&
+    artifact.policyVersion === "address-poisoning-v1" && artifact.coverage === "complete" &&
+    ["not_poisoning", "poisoning_only"].includes(artifact.disposition) &&
+    ["not_incoming_to_profiled_address", "complete_no_match", "prior_relationship", "candidate"].includes(artifact.reason) &&
+    canonicalTimestamp(comparison.windowStart) && canonicalTimestamp(comparison.windowEnd) &&
+    sortedStrings(comparison.pageArtifactHashes) && comparison.pageArtifactHashes.every((hash) => HASH.test(hash)) &&
+    sortedStrings(comparison.canonicalComparisonEventIds) && HASH.test(comparison.comparisonInventorySha256) &&
+    comparison.comparisonInventorySha256 === fingerprintCanonicalArtifact(comparison.canonicalComparisonEventIds) &&
+    ["not_applicable", "strictly_earlier_timestamp"].includes(comparison.orderAuthority);
+}
+
+function validProviderRiskDisposition(artifact: ServiceRoleProviderRiskDispositionV1): boolean {
+  return artifact.schemaVersion === "service-role-provider-risk-disposition-v1" &&
+    artifact.policyVersion === "tronscan-risk-transaction-boolean-v1" &&
+    typeof artifact.transactionInfoEvidenceId === "string" && artifact.transactionInfoEvidenceId.length > 0 &&
+    HASH.test(artifact.transactionInfoPayloadSha256) && typeof artifact.riskTransaction === "boolean" &&
+    ["transaction_level_negative", "sole_official_usdt_movement"].includes(artifact.binding) &&
+    ["not_provider_risk", "provider_risk"].includes(artifact.disposition);
+}
+
 function validBoundDisposition<T extends ServiceRolePoisoningDispositionV1 | ServiceRoleProviderRiskDispositionV1>(
   value: BoundArtifact<T> | null,
   binding: { runId: string; snapshotHash: string; manifestSha256: string; canonicalEventId: string },
@@ -108,12 +129,8 @@ function validBoundDisposition<T extends ServiceRolePoisoningDispositionV1 | Ser
     artifact.canonicalEventId !== binding.canonicalEventId
   ) return false;
   return kind === "poisoning"
-    ? artifact.schemaVersion === "service-role-poisoning-disposition-v1" &&
-      "policyVersion" in artifact && artifact.policyVersion === "address-poisoning-v1" &&
-      "coverage" in artifact && artifact.coverage === "complete" &&
-      ["not_poisoning", "poisoning_only"].includes(artifact.disposition)
-    : artifact.schemaVersion === "service-role-provider-risk-disposition-v1" &&
-      ["not_provider_risk", "provider_risk"].includes(artifact.disposition);
+    ? validPoisoningDisposition(artifact as ServiceRolePoisoningDispositionV1)
+    : validProviderRiskDisposition(artifact as ServiceRoleProviderRiskDispositionV1);
 }
 
 function validTransactionEvidence(
