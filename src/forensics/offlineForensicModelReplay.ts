@@ -7,9 +7,12 @@ import {
   type SnapshotBalanceWitnessV1
 } from "./chronologicalProportionalLedger";
 import {
+  classifyServiceBehavior100Plus100V2,
   evaluateServiceWindowPredicateV2,
-  type CompleteServiceWindowVectorV2
+  type CompleteServiceWindowVectorV2,
+  type ServiceWindowVectorV2
 } from "./serviceBehaviorResearch";
+import { fingerprintCanonicalArtifact } from "./canonicalJson";
 import {
   groupDirectPrincipalCounterparties,
   partitionPrincipalTransfersByBlacklistTimeline
@@ -25,7 +28,7 @@ import {
   resolveFrozenLabelAtEventV1,
   type FrozenLabelRecordV1
 } from "../unifiedCheck/labelCatalog";
-import { decideTronScanProviderServiceAssertion } from "../unifiedCheck/providerServiceBindings";
+import { matchTronScanCexTagV1 } from "../unifiedCheck/providerServiceBindings";
 import type { ForensicRouteEdge, UsdtBlacklistTimelineEvent } from "../types";
 
 export type OfflineEvidenceClassV1 =
@@ -146,6 +149,22 @@ const EVIDENCE_CLASSES = new Set<OfflineEvidenceClassV1>([
   "recorded_calibration_vector",
   "synthetic_edge_case"
 ]);
+const LOCKED_LABEL_EVIDENCE_V1 = {
+  rawEvidenceRef:
+    "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json",
+  rawEvidenceArtifactSha256: "eba27f37c5bd8ad7e97623c26fbf4e6d7717a26041af4aca2c2edfd7c11cff8b",
+  labelDatasetSha256: "45ad3d1a1174ded21f53f9f8c354188f4d0e02311422cfd14fe9b56555232ac1",
+  rows: {
+    "exact-binance-label": {
+      frozenRowSha256: "fc6c930e3926a6fb9235007cfd4bc66b13c8ba172849f76fc2b0262cdaad14e0",
+      catalogEntryId: "cex:binance"
+    },
+    "exact-htx-label": {
+      frozenRowSha256: "4b921abb32284509f8572b42e80c42e9e8b41232013d79c4c212a068837253c8",
+      catalogEntryId: "cex:htx-huobi"
+    }
+  }
+} as const;
 
 function record(value: unknown, code = "offline_corpus_case_invalid"): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -357,50 +376,100 @@ function replayLedgerCase(item: OfflineCaseV1): ReplayCaseResultV1 {
   };
 }
 
-function recordedWindowVector(value: unknown): CompleteServiceWindowVectorV2 {
-  const source = record(value);
-  const largest = record(source.largestCounterparty);
-  const median = record(source.medianDominantDirectionGapSeconds);
-  const repeated = record(source.dominantExactAmount);
+function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceWindowVectorV2 {
+  const code = "offline_corpus_service_vector_invalid";
+  const source = record(value, code);
+  const largest = record(source.largestCounterparty, code);
+  const median = record(source.medianDominantDirectionGapSeconds, code);
+  const repeated = record(source.dominantExactAmount, code);
   const dominantDirection = source.dominantDirection;
   if (dominantDirection !== "incoming" && dominantDirection !== "outgoing") {
-    throw new TypeError("offline_corpus_service_vector_invalid");
+    throw new TypeError(code);
   }
+  const count = (candidate: unknown) => nonnegativeInteger(candidate, code);
+  const physicalRowCount = count(source.physicalRowCount);
+  const canonicalEventCount = count(source.canonicalEventCount);
+  const featureEligibleEventCount = count(source.featureEligibleEventCount);
+  const incomingCount = count(source.incomingCount);
+  const outgoingCount = count(source.outgoingCount);
+  const uniqueSenders = count(source.uniqueSenders);
+  const uniqueRecipients = count(source.uniqueRecipients);
+  const uniqueCounterparties = count(source.uniqueCounterparties);
+  const largestCounterpartyCount = count(largest.count);
+  const largestCounterpartyShareDenominator = count(largest.shareDenominator);
+  const dominantDirectionCount = count(source.dominantDirectionCount);
+  const uniqueDominantCounterparties = count(source.uniqueDominantCounterparties);
+  const dominantShareDenominator = count(source.dominantShareDenominator);
+  const medianNumerator = count(median.numerator);
+  const medianDenominator = integer(median.denominator, code);
+  if (medianDenominator !== 1 && medianDenominator !== 2) throw new TypeError(code);
+  const maxDominantDirectionEventsPerHour = count(source.maxDominantDirectionEventsPerHour);
+  const activeUtcHourOfDayCount = count(source.activeUtcHourOfDayCount);
+  const dominantExactAmountCount = count(repeated.count);
+  const dominantExactAmountShareDenominator = count(repeated.shareDenominator);
+  const observedStartTimestamp = canonicalTimestamp(source.observedStartTimestamp, code);
+  const observedEndTimestamp = canonicalTimestamp(source.observedEndTimestamp, code);
+  const observedStartSeconds = Date.parse(observedStartTimestamp) / 1_000;
+  const observedEndSeconds = Date.parse(observedEndTimestamp) / 1_000;
+  const observedWindowDurationSeconds = count(source.observedWindowDurationSeconds);
+  const coherent = physicalRowCount >= minimumRows && canonicalEventCount >= minimumRows &&
+    physicalRowCount >= canonicalEventCount &&
+    featureEligibleEventCount <= canonicalEventCount &&
+    incomingCount + outgoingCount === featureEligibleEventCount &&
+    uniqueSenders <= incomingCount && uniqueRecipients <= outgoingCount &&
+    uniqueCounterparties <= featureEligibleEventCount &&
+    uniqueCounterparties >= Math.max(uniqueSenders, uniqueRecipients) &&
+    uniqueCounterparties <= uniqueSenders + uniqueRecipients &&
+    largestCounterpartyCount <= featureEligibleEventCount &&
+    largestCounterpartyShareDenominator === featureEligibleEventCount &&
+    (dominantDirection === "incoming" ? incomingCount > outgoingCount : outgoingCount > incomingCount) &&
+    dominantDirectionCount === Math.max(incomingCount, outgoingCount) &&
+    uniqueDominantCounterparties === (
+      dominantDirection === "incoming" ? uniqueSenders : uniqueRecipients
+    ) &&
+    dominantShareDenominator === featureEligibleEventCount &&
+    maxDominantDirectionEventsPerHour <= dominantDirectionCount &&
+    activeUtcHourOfDayCount <= 24 && activeUtcHourOfDayCount <= featureEligibleEventCount &&
+    dominantExactAmountCount <= dominantDirectionCount &&
+    dominantExactAmountShareDenominator === dominantDirectionCount &&
+    observedStartSeconds <= observedEndSeconds &&
+    observedEndSeconds - observedStartSeconds === observedWindowDurationSeconds;
+  if (!coherent) throw new TypeError(code);
   return {
     kind: "complete",
-    physicalRowCount: integer(source.physicalRowCount),
-    canonicalEventCount: integer(source.canonicalEventCount),
-    featureEligibleEventCount: integer(source.featureEligibleEventCount),
+    physicalRowCount,
+    canonicalEventCount,
+    featureEligibleEventCount,
     invalidPhysicalRowCount: 0,
     collisionPhysicalRowCount: 0,
-    duplicatePhysicalRowCount: integer(source.physicalRowCount) - integer(source.canonicalEventCount),
+    duplicatePhysicalRowCount: physicalRowCount - canonicalEventCount,
     poisoningOnlyEventCount: 0,
     gasFreeFeeEventCount: 0,
     gasFreePrincipalEventCount: 0,
-    incomingCount: integer(source.incomingCount),
-    outgoingCount: integer(source.outgoingCount),
-    uniqueSenders: integer(source.uniqueSenders),
-    uniqueRecipients: integer(source.uniqueRecipients),
-    uniqueCounterparties: integer(source.uniqueCounterparties),
-    largestCounterpartyCount: integer(largest.count),
-    largestCounterpartyShareDenominator: integer(largest.shareDenominator),
+    incomingCount,
+    outgoingCount,
+    uniqueSenders,
+    uniqueRecipients,
+    uniqueCounterparties,
+    largestCounterpartyCount,
+    largestCounterpartyShareDenominator,
     dominantDirection,
-    dominantDirectionCount: integer(source.dominantDirectionCount),
-    uniqueDominantCounterparties: integer(source.uniqueDominantCounterparties),
-    dominantShareDenominator: integer(source.dominantShareDenominator),
+    dominantDirectionCount,
+    uniqueDominantCounterparties,
+    dominantShareDenominator,
     medianDominantDirectionGapSeconds: {
-      numerator: integer(median.numerator),
-      denominator: integer(median.denominator) === 2 ? 2 : 1
+      numerator: medianNumerator,
+      denominator: medianDenominator
     },
-    maxDominantDirectionEventsPerHour: integer(source.maxDominantDirectionEventsPerHour),
-    activeUtcHourOfDayCount: integer(source.activeUtcHourOfDayCount),
+    maxDominantDirectionEventsPerHour,
+    activeUtcHourOfDayCount,
     dominantExactAmountRaw: parseAmountRaw(repeated.amountRaw),
-    dominantExactAmountCount: integer(repeated.count),
-    dominantExactAmountShareDenominator: integer(repeated.shareDenominator),
-    observedStartSeconds: Date.parse(string(source.observedStartTimestamp)) / 1_000,
-    observedEndSeconds: Date.parse(string(source.observedEndTimestamp)) / 1_000,
-    observedWindowDurationSeconds: integer(source.observedWindowDurationSeconds),
-    orderAuthoritative: false
+    dominantExactAmountCount,
+    dominantExactAmountShareDenominator,
+    observedStartSeconds,
+    observedEndSeconds,
+    observedWindowDurationSeconds,
+    orderAuthoritative: true
   };
 }
 
@@ -449,12 +518,26 @@ function replayServiceCase(
   if (source.windows !== undefined && (!Array.isArray(source.windows) || source.windows.length !== 2)) {
     throw new TypeError("offline_corpus_service_vector_invalid");
   }
-  const windowPredicates = Array.isArray(source.windows)
-    ? source.windows.map((window) => {
-      const vector = recordedWindowVector(window);
-      return validateRecordedPredicate(window, vector);
-    })
-    : null;
+  let windowVectors: { recent: ServiceWindowVectorV2; historical: ServiceWindowVectorV2 } | null = null;
+  if (Array.isArray(source.windows)) {
+    const vectors = new Map<string, ServiceWindowVectorV2>();
+    for (const window of source.windows) {
+      const windowSource = record(window, "offline_corpus_service_vector_invalid");
+      if (windowSource.kind !== "recent" && windowSource.kind !== "historical" ||
+        vectors.has(windowSource.kind)) {
+        throw new TypeError("offline_corpus_service_vector_invalid");
+      }
+      const vector = recordedWindowVector(window, 100);
+      validateRecordedPredicate(window, vector);
+      vectors.set(windowSource.kind, vector);
+    }
+    const recent = vectors.get("recent");
+    const historical = vectors.get("historical");
+    if (recent === undefined || historical === undefined) {
+      throw new TypeError("offline_corpus_service_vector_invalid");
+    }
+    windowVectors = { recent, historical };
+  }
   if (source.observedVector !== undefined) {
     const observed = record(source.observedVector, "offline_corpus_service_vector_invalid");
     if (observed.recordedPredicate !== undefined) {
@@ -469,6 +552,12 @@ function replayServiceCase(
     ? []
     : labels.filter((label) => resolveFrozenLabelAtEventV1({ label, eventTimestamp: anchorTimestamp }).kind === "eligible");
   const exactRoles = new Set(eligibleLabels.map(({ catalogEntryId }) => catalogEntryId));
+  const behavior = windowVectors === null
+    ? null
+    : classifyServiceBehavior100Plus100V2({
+      ...windowVectors,
+      exactRoleConflict: exactRoles.size > 1
+    });
   if (exactRoles.size > 1) {
     return {
       ...resultBase(item),
@@ -498,12 +587,10 @@ function replayServiceCase(
       ? "insufficient_service_windows"
       : "recorded_partial_vector"
     : null;
-  if (windowPredicates !== null) {
+  if (behavior !== null) {
     return {
       ...resultBase(item),
-      state: windowPredicates.every(Boolean)
-        ? "high_inferred_service"
-        : "non_service_profile",
+      state: behavior.status,
       replayAuthority: "recorded_vector",
       authoritative: false,
       exactRoleResolution,
@@ -532,13 +619,32 @@ function replayServiceCase(
 
 function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   const source = item as Record<string, unknown>;
+  const manifestBinding = LOCKED_LABEL_EVIDENCE_V1.rows[
+    item.id as keyof typeof LOCKED_LABEL_EVIDENCE_V1.rows
+  ];
   const frozenValue = source.frozenRow;
   const frozen = frozenValue !== null && typeof frozenValue === "object" && !Array.isArray(frozenValue)
     ? frozenValue as Record<string, unknown>
     : null;
   const validFromValue = frozen?.validFrom;
+  let computedFrozenRowSha256: string | null = null;
+  try {
+    computedFrozenRowSha256 = frozen === null ? null : fingerprintCanonicalArtifact(frozen);
+  } catch {
+    computedFrozenRowSha256 = null;
+  }
+  const catalogEntryId = typeof frozen?.label === "string"
+    ? matchTronScanCexTagV1(frozen.label)
+    : null;
   const exactAuthority = item.evidenceClass === "exact_frozen_rows" &&
-    typeof source.rawEvidenceRef === "string" && source.rawEvidenceRef.trim() !== "" &&
+    manifestBinding !== undefined &&
+    source.rawEvidenceRef === LOCKED_LABEL_EVIDENCE_V1.rawEvidenceRef &&
+    source.rawEvidenceArtifactSha256 === LOCKED_LABEL_EVIDENCE_V1.rawEvidenceArtifactSha256 &&
+    source.labelDatasetSha256 === LOCKED_LABEL_EVIDENCE_V1.labelDatasetSha256 &&
+    source.frozenRowHashConvention === "sha256(canonicalizeArtifactJson(frozenRow))" &&
+    source.frozenRowSha256 === manifestBinding.frozenRowSha256 &&
+    computedFrozenRowSha256 === manifestBinding.frozenRowSha256 &&
+    catalogEntryId === manifestBinding.catalogEntryId &&
     frozen !== null && frozen.authority === "tronscan-metadata" &&
     frozen.category === "service_metadata" && frozen.validTo === null &&
     typeof frozen.address === "string" && frozen.address.trim() !== "" &&
@@ -552,37 +658,22 @@ function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       kind: "service_label",
       authoritative: false,
       inferredClassifierBypassed: false,
+      providerAssertionReplay: "raw_provider_assertion_not_replayed",
       dataGapCode: "provider_label_authority_missing"
     };
   }
   const address = string(frozen.address);
-  const tag = string(frozen.label);
   const validFrom = string(frozen.validFrom);
-  const frozenAt = validFrom;
-  const decision = decideTronScanProviderServiceAssertion({
-    frozenAt,
-    metadata: {
-      address,
-      source: "tronscan",
-      name: null,
-      tag,
-      verified: null,
-      rawJson: { address, tag },
-      fetchedAt: new Date(validFrom),
-      expiresAt: new Date(Date.parse(validFrom) + 1)
-    }
-  });
-  if (!decision.accepted) throw new TypeError(`offline_corpus_service_label_rejected:${decision.reason}`);
   const label = buildFrozenLabelRecord({
     address,
     classifierHint: null,
     exactRegistryBinding: null,
     verifiedProviderBinding: {
-      catalogEntryId: decision.catalogEntryId,
-      authority: decision.authority,
-      sourcePayloadSha256: decision.source.sourcePayloadSha256,
-      validFrom: decision.validity.validFrom,
-      validTo: decision.validity.validTo
+      catalogEntryId: catalogEntryId!,
+      authority: "tronscan_verified_metadata",
+      sourcePayloadSha256: string(source.labelDatasetSha256),
+      validFrom,
+      validTo: null
     }
   });
   const atStart = resolveFrozenLabelAtEventV1({ label, eventTimestamp: validFrom });
@@ -594,10 +685,11 @@ function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     ...resultBase(item),
     kind: "service_label",
     authoritative: true,
+    providerAssertionReplay: "raw_provider_assertion_not_replayed",
     address,
-    serviceRole: decision.catalogEntryId,
+    serviceRole: catalogEntryId,
     inferredClassifierBypassed: true,
-    adverse: decision.catalogEntryId === "cex:htx-huobi",
+    adverse: catalogEntryId === "cex:htx-huobi",
     frozenLabel: label,
     atValidityStart: atStart.kind,
     beforeValidityStart: before.kind
