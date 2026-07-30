@@ -942,6 +942,76 @@
         "confirmedRowCount": 272,
         "unconfirmedRowCount": 0
       }
+    },
+    {
+      "id": "tqr-d7nzp-recorded-control",
+      "evidenceClass": "recorded_calibration_vector",
+      "address": "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      "rawProviderPagesFrozen": false,
+      "authoritativeWouldAction": null,
+      "behaviorClassification": "non_service_profile",
+      "researchAction": "continue_full",
+      "recordedPartialVector": {
+        "cadencePredicate": false,
+        "checkedSubject": true,
+        "currentHtxTaggedCounterpartiesObserved": true,
+        "eventTimeLabelAuthorityProven": false
+      },
+      "source": {
+        "kind": "manual_corpus_replay_summary",
+        "capturedDate": "2026-07-29",
+        "runtimeInput": false,
+        "refs": [
+          {
+            "file": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            "line": 97
+          },
+          {
+            "file": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            "line": 819
+          }
+        ]
+      },
+      "limitations": [
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded",
+        "event_time_htx_authority_unproven",
+        "checked_subject_cannot_be_inferred_boundary"
+      ]
+    },
+    {
+      "id": "txc-vusxvhd-recorded-control",
+      "evidenceClass": "recorded_calibration_vector",
+      "address": "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      "rawProviderPagesFrozen": false,
+      "authoritativeWouldAction": null,
+      "behaviorClassification": "insufficient_data",
+      "researchAction": "continue_full",
+      "recordedPartialVector": {
+        "recentObservedRowCount": 73,
+        "historicalBaselineState": "empty"
+      },
+      "source": {
+        "kind": "manual_corpus_replay_summary",
+        "capturedDate": "2026-07-29",
+        "runtimeInput": false,
+        "refs": [
+          {
+            "file": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            "line": 98
+          },
+          {
+            "file": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            "line": 820
+          }
+        ]
+      },
+      "limitations": [
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded",
+        "recent_window_below_100_rows",
+        "historical_baseline_empty"
+      ]
     }
   ],
   "adverseCases": [

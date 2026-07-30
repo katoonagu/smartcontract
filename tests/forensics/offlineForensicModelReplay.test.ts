@@ -232,6 +232,94 @@ describe("forensic model offline corpus v1", () => {
     }
   });
 
+  it("includes the named TQr and TXc service controls without promoting sparse records", () => {
+    expect(corpus.serviceCases).toHaveLength(24);
+    expect(corpus.serviceCases.slice(0, 22).map(({ id }) => id)).toEqual([
+      "w8srl-two-window-calibration",
+      "csv-SqPaM9",
+      "csv-hQBSuW",
+      "csv-owfnme",
+      "csv-cKQz2J",
+      "csv-eXDwoq",
+      "csv-m7MWZv",
+      "csv-JJpBXh",
+      "csv-H14eaf",
+      "csv-EMCMLc",
+      "csv-DbNGMf",
+      "csv-Yw8Pet",
+      "csv-A94s8d",
+      "csv-Fa5pk8",
+      "csv-aEGqTr",
+      "csv-Riiwed",
+      "csv-q98cdn",
+      "csv-k1Hjbo",
+      "csv-r7RZVx",
+      "csv-axRTDo",
+      "csv-oqZ4dZ",
+      "csv-ujBwhV"
+    ]);
+
+    const tqr = corpus.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control");
+    expect(tqr).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      address: "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      rawProviderPagesFrozen: false,
+      authoritativeWouldAction: null,
+      behaviorClassification: "non_service_profile",
+      researchAction: "continue_full",
+      recordedPartialVector: {
+        cadencePredicate: false,
+        checkedSubject: true,
+        currentHtxTaggedCounterpartiesObserved: true,
+        eventTimeLabelAuthorityProven: false
+      },
+      source: {
+        kind: "manual_corpus_replay_summary",
+        capturedDate: "2026-07-29",
+        runtimeInput: false
+      }
+    });
+
+    const txc = corpus.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control");
+    expect(txc).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      rawProviderPagesFrozen: false,
+      authoritativeWouldAction: null,
+      behaviorClassification: "insufficient_data",
+      researchAction: "continue_full",
+      recordedPartialVector: {
+        recentObservedRowCount: 73,
+        historicalBaselineState: "empty"
+      },
+      source: {
+        kind: "manual_corpus_replay_summary",
+        capturedDate: "2026-07-29",
+        runtimeInput: false
+      }
+    });
+
+    for (const control of [tqr, txc]) {
+      expect(control?.rawEvidenceRef).toBeUndefined();
+      expect(control?.limitations).toEqual(expect.arrayContaining([
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded"
+      ]));
+      expect(control?.source).toMatchObject({
+        refs: [
+          {
+            file: "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            line: expect.any(Number)
+          },
+          {
+            file: "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            line: expect.any(Number)
+          }
+        ]
+      });
+    }
+  });
+
   it("freezes replayable W8SRL window feature inputs", () => {
     const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration") as unknown as {
       windows: readonly (FeatureVector & { kind: "recent" | "historical"; source: unknown })[];
