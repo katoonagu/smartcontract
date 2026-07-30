@@ -22,7 +22,8 @@ import { detectVerify20Fingerprint } from "./verify20Fingerprint";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import {
   buildFrozenLabelRecord,
-  resolveFrozenLabelAtEventV1
+  resolveFrozenLabelAtEventV1,
+  type FrozenLabelRecordV1
 } from "../unifiedCheck/labelCatalog";
 import { decideTronScanProviderServiceAssertion } from "../unifiedCheck/providerServiceBindings";
 import type { ForensicRouteEdge, UsdtBlacklistTimelineEvent } from "../types";
@@ -69,6 +70,7 @@ export type OfflineCorpusV1 = {
 
 export type ExactDrainerCallV1 = {
   readonly txHash: string;
+  readonly contractAddress: string;
   readonly selector: string;
   readonly tokenContract: string;
   readonly fromAddress: string;
@@ -90,6 +92,7 @@ export type ExactDrainerMovementV1 = {
 };
 
 export type ExactDrainerSceneInputV1 = {
+  readonly methodContractAddress: string;
   readonly methodMap: Readonly<Record<string, string>>;
   readonly topMethods: readonly {
     readonly methodId?: string | null;
@@ -116,6 +119,8 @@ export type ExactDrainerSceneResultV1 = {
     | "movement_not_confirmed"
     | "movement_not_successful"
     | "token_not_official_usdt"
+    | "spender_contract_invalid"
+    | "spender_contract_mismatch"
     | "movement_mismatch";
 };
 
@@ -135,6 +140,7 @@ export type OfflineReplayResultV1 = {
 };
 
 const AMOUNT_RAW = /^(0|[1-9]\d*)$/u;
+const TX_HASH = /^[0-9a-f]{64}$/iu;
 const EVIDENCE_CLASSES = new Set<OfflineEvidenceClassV1>([
   "exact_frozen_rows",
   "recorded_calibration_vector",
@@ -156,6 +162,32 @@ function string(value: unknown, code = "offline_corpus_case_invalid"): string {
 function integer(value: unknown, code = "offline_corpus_case_invalid"): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new TypeError(code);
   return value;
+}
+
+function nonnegativeInteger(value: unknown, code: string): number {
+  const result = integer(value, code);
+  if (result < 0) throw new TypeError(code);
+  return result;
+}
+
+function canonicalTxHash(value: unknown, code: string): string {
+  const result = string(value, code).trim();
+  if (!TX_HASH.test(result)) throw new TypeError(code);
+  return result.toLowerCase();
+}
+
+function canonicalTimestamp(value: unknown, code: string): string {
+  const result = string(value, code);
+  if (!Number.isFinite(Date.parse(result)) || new Date(result).toISOString() !== result) {
+    throw new TypeError(code);
+  }
+  return result;
+}
+
+function normalizedIdentity(value: unknown, code: string): string {
+  const result = string(value, code).trim();
+  if (result === "" || result !== value) throw new TypeError(code);
+  return result.toLowerCase();
 }
 
 function parseAmountRaw(value: unknown): bigint {
@@ -188,7 +220,8 @@ function validateCases(value: unknown): readonly OfflineCaseV1[] {
   if (!Array.isArray(value)) throw new TypeError("offline_corpus_schema_invalid");
   return value.map((item) => {
     const source = record(item);
-    string(source.id);
+    const id = string(source.id);
+    if (id.trim() !== id) throw new TypeError("offline_corpus_case_invalid");
     evidenceClass(source.evidenceClass);
     return source as OfflineCaseV1;
   });
@@ -371,46 +404,103 @@ function passesRecordedPredicate(vector: CompleteServiceWindowVectorV2): boolean
   return predicate.C && predicate.B && predicate.G && (predicate.H || predicate.R || predicate.X);
 }
 
+function validateRecordedPredicate(value: unknown): void {
+  const source = record(value, "offline_corpus_service_vector_invalid");
+  if (source.recordedPredicate === undefined) return;
+  const recorded = record(source.recordedPredicate, "offline_corpus_service_vector_invalid");
+  for (const key of ["C", "B", "G", "H", "R", "X", "P"] as const) {
+    if (typeof recorded[key] !== "boolean") {
+      throw new TypeError("offline_corpus_service_vector_invalid");
+    }
+  }
+  const expectedP = recorded.C && recorded.B && recorded.G && (recorded.H || recorded.R || recorded.X);
+  if (recorded.P !== expectedP) throw new TypeError("offline_corpus_service_vector_invalid");
+}
+
+function serviceAnchorTimestamp(source: Record<string, unknown>): string | null {
+  if (typeof source.anchorTimestamp === "string") {
+    return canonicalTimestamp(source.anchorTimestamp, "offline_corpus_service_anchor_invalid");
+  }
+  if (source.observedVector !== undefined) {
+    const observed = record(source.observedVector, "offline_corpus_service_vector_invalid");
+    if (typeof observed.observedEndTimestamp === "string") {
+      return canonicalTimestamp(observed.observedEndTimestamp, "offline_corpus_service_anchor_invalid");
+    }
+  }
+  if (Array.isArray(source.windows) && source.windows.length === 2) {
+    const ends = source.windows.map((window) =>
+      canonicalTimestamp(record(window).observedEndTimestamp, "offline_corpus_service_anchor_invalid")
+    );
+    return ends.sort().at(-1) ?? null;
+  }
+  return null;
+}
+
 function replayServiceCase(
   item: OfflineCaseV1,
-  exactRoles: ReadonlyMap<string, string>
+  exactLabels: ReadonlyMap<string, FrozenLabelRecordV1>
 ): ReplayCaseResultV1 {
   const source = item as Record<string, unknown>;
+  if (source.windows !== undefined && (!Array.isArray(source.windows) || source.windows.length !== 2)) {
+    throw new TypeError("offline_corpus_service_vector_invalid");
+  }
   const address = typeof source.address === "string" ? source.address : null;
-  const exactRole = address === null ? null : exactRoles.get(address) ?? null;
-  if (exactRole !== null) {
+  const exactLabel = address === null ? null : exactLabels.get(address.trim().toLowerCase()) ?? null;
+  const anchorTimestamp = serviceAnchorTimestamp(source);
+  const exactResolution = exactLabel === null || anchorTimestamp === null || source.exactRoleConflict === true
+    ? null
+    : resolveFrozenLabelAtEventV1({ label: exactLabel, eventTimestamp: anchorTimestamp });
+  if (exactResolution?.kind === "eligible") {
     return {
       ...resultBase(item),
       state: "exact_service_role",
-      serviceRole: exactRole,
+      serviceRole: exactLabel!.catalogEntryId,
       inferredClassifierBypassed: true,
       replayAuthority: "exact_frozen_rows"
     };
   }
+  const exactRoleResolution = exactLabel === null
+    ? null
+    : source.exactRoleConflict === true
+      ? "role_conflict"
+      : anchorTimestamp === null
+        ? "anchor_missing"
+        : exactResolution?.kind ?? "label_not_valid_at_event";
   if (Array.isArray(source.windows) && source.windows.length === 2) {
     const vectors = source.windows.map(recordedWindowVector);
+    source.windows.forEach(validateRecordedPredicate);
     return {
       ...resultBase(item),
       state: passesRecordedPredicate(vectors[0]!) && passesRecordedPredicate(vectors[1]!)
         ? "high_inferred_service"
         : "non_service_profile",
       replayAuthority: "recorded_vector",
-      authoritative: false
+      authoritative: false,
+      exactRoleResolution
     };
+  }
+  if (source.observedVector !== undefined) {
+    const observed = record(source.observedVector, "offline_corpus_service_vector_invalid");
+    if (observed.recordedPredicate !== undefined) {
+      recordedWindowVector(observed);
+      validateRecordedPredicate(observed);
+    }
   }
   if (source.behaviorClassification === "insufficient_data") {
     return {
       ...resultBase(item),
       state: "insufficient_data",
       replayAuthority: "recorded_partial_vector",
-      authoritative: false
+      authoritative: false,
+      exactRoleResolution
     };
   }
   return {
     ...resultBase(item),
     state: "expectation_level",
     replayAuthority: "recorded_vector",
-    authoritative: false
+    authoritative: false,
+    exactRoleResolution
   };
 }
 
@@ -458,6 +548,7 @@ function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     serviceRole: decision.catalogEntryId,
     inferredClassifierBypassed: true,
     adverse: decision.catalogEntryId === "cex:htx-huobi",
+    frozenLabel: label,
     atValidityStart: atStart.kind,
     beforeValidityStart: before.kind
   };
@@ -487,27 +578,61 @@ function routeEdge(input: {
   };
 }
 
-function validTimelineEvent(value: unknown, index: number): UsdtBlacklistTimelineEvent {
-  const source = record(value);
+type ValidatedTimelineEvent = UsdtBlacklistTimelineEvent & {
+  readonly subjectAddress: string;
+  readonly confirmed: true;
+  readonly successful: true;
+  readonly transactionIndex?: number;
+};
+
+function validTimelineEvent(value: unknown, listedAddress: string): ValidatedTimelineEvent {
+  const code = "offline_corpus_blacklist_timeline_invalid";
+  const source = record(value, code);
   const kind = source.eventKind;
-  if (kind !== "added" && kind !== "removed") throw new TypeError("offline_corpus_blacklist_invalid");
+  if (kind !== "added" && kind !== "removed" ||
+    source.tokenContract !== TRON_USDT_CONTRACT_ADDRESS ||
+    normalizedIdentity(source.subjectAddress, code) !== listedAddress ||
+    source.confirmed !== true || source.successful !== true) {
+    throw new TypeError(code);
+  }
+  const blockNumber = source.blockNumber === undefined || source.blockNumber === null
+    ? null
+    : nonnegativeInteger(source.blockNumber, code);
+  const transactionIndex = source.transactionIndex === undefined
+    ? undefined
+    : nonnegativeInteger(source.transactionIndex, code);
   return {
     eventKind: kind,
-    occurredAt: string(source.occurredAt),
-    txHash: (index + 1).toString(16).padStart(64, "0"),
+    occurredAt: canonicalTimestamp(source.occurredAt, code),
+    txHash: canonicalTxHash(source.txHash, code),
     tokenContract: TRON_USDT_CONTRACT_ADDRESS,
-    blockNumber: index + 1,
-    logIndex: integer(source.logIndex),
-    verification: "verified_contract_log"
+    blockNumber,
+    logIndex: nonnegativeInteger(source.logIndex, code),
+    verification: "verified_contract_log",
+    subjectAddress: string(source.subjectAddress, code),
+    confirmed: true,
+    successful: true,
+    ...(transactionIndex === undefined ? {} : { transactionIndex })
   };
 }
+
+type ParsedBlacklistTransfer = {
+  readonly identity: string;
+  readonly txHash: string;
+  readonly logIndex: number;
+  readonly occurredAt: string;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  readonly direction: "inbound" | "outbound";
+  readonly counterparty: string;
+  readonly amountRaw: string;
+};
 
 function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   const source = item as Record<string, unknown>;
   if (!Array.isArray(source.principalTransfers) || !Array.isArray(source.timelineEvents)) {
     throw new TypeError("offline_corpus_blacklist_invalid");
   }
-  const transfers = source.principalTransfers.map((value) => record(value));
   const subjectAddress = string(
     source.subjectAddress,
     "offline_corpus_blacklist_subject_invalid"
@@ -516,27 +641,79 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     source.listedAddress,
     "offline_corpus_blacklist_subject_invalid"
   ).trim();
-  if (subjectAddress === "" || listedAddress === "" || subjectAddress === listedAddress) {
+  const normalizedSubject = normalizedIdentity(subjectAddress, "offline_corpus_blacklist_subject_invalid");
+  const normalizedListed = normalizedIdentity(listedAddress, "offline_corpus_blacklist_subject_invalid");
+  if (normalizedSubject === normalizedListed) {
     throw new TypeError("offline_corpus_blacklist_subject_invalid");
   }
-  for (const transfer of transfers) {
-    const fromIsSubject = string(transfer.fromAddress).trim() === subjectAddress;
-    const toIsSubject = string(transfer.toAddress).trim() === subjectAddress;
+  const transfersByIdentity = new Map<string, ParsedBlacklistTransfer>();
+  for (const value of source.principalTransfers) {
+    const transfer = record(value, "offline_corpus_blacklist_transfer_invalid");
+    const code = "offline_corpus_blacklist_transfer_invalid";
+    if (transfer.tokenContract !== TRON_USDT_CONTRACT_ADDRESS ||
+      transfer.confirmed !== true || transfer.successful !== true) throw new TypeError(code);
+    const txHash = canonicalTxHash(transfer.txHash, code);
+    const logIndex = nonnegativeInteger(transfer.logIndex, code);
+    const fromAddress = string(transfer.fromAddress, code).trim();
+    const toAddress = string(transfer.toAddress, code).trim();
+    const fromIsSubject = fromAddress.toLowerCase() === normalizedSubject;
+    const toIsSubject = toAddress.toLowerCase() === normalizedSubject;
     if (fromIsSubject === toIsSubject) {
       throw new TypeError("offline_corpus_blacklist_subject_invalid");
     }
+    const direction = toIsSubject ? "inbound" as const : "outbound" as const;
+    const counterparty = (direction === "inbound" ? fromAddress : toAddress).toLowerCase();
+    const amountRaw = parseAmountRaw(transfer.amountRaw).toString();
+    const occurredAt = transfer.occurredAt === null || transfer.occurredAt === undefined
+      ? ""
+      : canonicalTimestamp(transfer.occurredAt, code);
+    const identity = `${txHash}:${logIndex}`;
+    const parsed = {
+      identity,
+      txHash,
+      logIndex,
+      occurredAt,
+      fromAddress,
+      toAddress,
+      direction,
+      counterparty,
+      amountRaw
+    } satisfies ParsedBlacklistTransfer;
+    const previous = transfersByIdentity.get(identity);
+    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(parsed)) {
+      throw new TypeError("offline_corpus_blacklist_identity_invalid");
+    }
+    transfersByIdentity.set(identity, previous ?? parsed);
   }
-  const events = source.timelineEvents.map(validTimelineEvent)
-    .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
-  const edges = transfers.map((transfer, index) => routeEdge({
-    id: `${string(transfer.txHash)}:${integer(transfer.logIndex)}`,
-    txHash: string(transfer.txHash),
-    fromAddress: string(transfer.fromAddress),
-    toAddress: string(transfer.toAddress),
-    amountRaw: string(transfer.amountRaw),
-    occurredAt: typeof transfer.occurredAt === "string"
-      ? transfer.occurredAt
-      : new Date(index).toISOString()
+  const eventsByIdentity = new Map<string, ValidatedTimelineEvent>();
+  for (const value of source.timelineEvents) {
+    const event = validTimelineEvent(value, normalizedListed);
+    const identity = `${event.txHash}:${event.logIndex}`;
+    const previous = eventsByIdentity.get(identity);
+    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(event)) {
+      throw new TypeError("offline_corpus_blacklist_timeline_invalid");
+    }
+    eventsByIdentity.set(identity, previous ?? event);
+  }
+  const transfers = [...transfersByIdentity.values()];
+  const events = [...eventsByIdentity.values()]
+    .sort((left, right) =>
+      Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+      (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+      (left.transactionIndex ?? Number.MAX_SAFE_INTEGER) -
+        (right.transactionIndex ?? Number.MAX_SAFE_INTEGER) ||
+      (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+      left.txHash.localeCompare(right.txHash)
+    );
+  const edges = transfers.map((transfer) => routeEdge({
+    id: transfer.identity,
+    txHash: transfer.txHash,
+    fromAddress: transfer.fromAddress,
+    toAddress: transfer.toAddress,
+    amountRaw: transfer.amountRaw,
+    // ponytail: route grouping requires a valid Date; the original empty
+    // timestamp is restored below, so this fixed sentinel never gains authority.
+    occurredAt: transfer.occurredAt || "1970-01-01T00:00:00.000Z"
   }));
   const groups = groupDirectPrincipalCounterparties({
     subjectAddress,
@@ -544,46 +721,22 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     directTransferCoverage: "complete"
   });
   const amounts = { before: 0n, active: 0n, unknown: 0n };
-  const firstRemoval = events.findIndex(({ eventKind }) => eventKind === "removed");
-  const activeLifecycle = firstRemoval === -1 ? events : events.slice(0, firstRemoval);
-  const timesByTransfer = new Map<string, string[]>();
-  for (const transfer of transfers) {
-    const fromAddress = string(transfer.fromAddress).trim();
-    const toAddress = string(transfer.toAddress).trim();
-    const direction = toAddress === subjectAddress ? "inbound" : "outbound";
-    const counterparty = direction === "inbound" ? fromAddress : toAddress;
-    const key = [
-      string(transfer.txHash).trim().toLowerCase(),
-      direction,
-      counterparty,
-      string(transfer.amountRaw)
-    ].join("|");
-    const times = timesByTransfer.get(key) ?? [];
-    times.push(typeof transfer.occurredAt === "string" ? transfer.occurredAt : "");
-    timesByTransfer.set(key, times);
-  }
-  const consumedTimes = new Map<string, number>();
+  let unmatchedCounterpartyAmountRaw = 0n;
   for (const group of groups) {
+    if (group.address.trim().toLowerCase() !== normalizedListed) {
+      unmatchedCounterpartyAmountRaw += group.principalAmountRaw;
+      continue;
+    }
     const partition = partitionPrincipalTransfersByBlacklistTimeline({
-      principalTransfers: group.principalTransfers.map((transfer) => {
-        const key = [
-          transfer.txHash.trim().toLowerCase(),
-          group.direction,
-          group.address.trim(),
-          transfer.amountRaw.toString()
-        ].join("|");
-        const index = consumedTimes.get(key) ?? 0;
-        const occurredAt = timesByTransfer.get(key)?.[index];
-        if (occurredAt === undefined) {
-          throw new TypeError("offline_corpus_blacklist_identity_invalid");
-        }
-        consumedTimes.set(key, index + 1);
-        return { ...transfer, occurredAt };
-      }),
+      principalTransfers: transfers
+        .filter((transfer) => transfer.direction === group.direction && transfer.counterparty === normalizedListed)
+        .map((transfer) => ({
+          txHash: transfer.txHash,
+          amountRaw: BigInt(transfer.amountRaw),
+          occurredAt: transfer.occurredAt
+        })),
       timeline: {
-        // ponytail: corpus cases contain no post-removal transfer; the reused
-        // partitioner is current-active scoped, so replay the active prefix.
-        events: activeLifecycle,
+        events,
         pagination: "complete",
         failureReason: null
       }
@@ -598,6 +751,8 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     beforeEventAmountRaw: amounts.before.toString(),
     activeAtEventAmountRaw: amounts.active.toString(),
     unknownAmountRaw: amounts.unknown.toString(),
+    unmatchedCounterpartyAmountRaw: unmatchedCounterpartyAmountRaw.toString(),
+    timelineEvents: events,
     partitions: {
       before_event: amounts.before.toString(),
       active_at_event: amounts.active.toString(),
@@ -612,21 +767,48 @@ function gasFreeResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   if (!settlement || !Array.isArray(source.replayEdges)) {
     throw new TypeError("offline_corpus_gasfree_invalid");
   }
-  const edges = source.replayEdges.map((value, index) => {
+  const movementKey = (movement: {
+    role: string;
+    fromAddress: string;
+    toAddress: string;
+    amountRaw: string;
+  }) => [
+    movement.role,
+    movement.fromAddress.trim().toLowerCase(),
+    movement.toAddress.trim().toLowerCase(),
+    movement.amountRaw
+  ].join("|");
+  const replayMovements = source.replayEdges.map((value) => {
     const edge = record(value);
     const economicRole = edge.economicRole;
-    if (economicRole !== "principal" && economicRole !== "service_fee") {
+    if ((economicRole !== "principal" && economicRole !== "service_fee") ||
+      edge.economicProtocol !== "tron_gasfree") {
       throw new TypeError("offline_corpus_gasfree_invalid");
     }
-    return routeEdge({
-      id: `gasfree:${index}`,
-      txHash: `gasfree:${index}`,
+    return {
+      role: economicRole,
       fromAddress: string(edge.fromAddress),
       toAddress: string(edge.toAddress),
-      amountRaw: string(edge.amountRaw),
-      occurredAt: new Date(index).toISOString(),
+      amountRaw: parseAmountRaw(edge.amountRaw).toString()
+    };
+  });
+  const supplied = replayMovements.map(movementKey).sort();
+  const extracted = settlement.movements.map(movementKey).sort();
+  if (supplied.length !== extracted.length || supplied.some((value, index) => value !== extracted[index])) {
+    throw new TypeError("offline_corpus_gasfree_edges_invalid");
+  }
+  const edges = [...settlement.movements]
+    .sort((left, right) => movementKey(left).localeCompare(movementKey(right)))
+    .map((movement) => {
+    return routeEdge({
+      id: `gasfree:${movementKey(movement)}`,
+      txHash: `gasfree:${movement.role}`,
+      fromAddress: movement.fromAddress,
+      toAddress: movement.toAddress,
+      amountRaw: movement.amountRaw,
+      occurredAt: "1970-01-01T00:00:00.000Z",
       economicProtocol: "tron_gasfree",
-      economicRole
+      economicRole: movement.role
     });
   });
   const groups = groupDirectPrincipalCounterparties({
@@ -643,8 +825,12 @@ function gasFreeResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     serviceFeeAmountRaw: settlement.serviceFeeAmountRaw,
     principalRole: "aml_money_path",
     serviceFeeRole: "accounting_only_consumption",
-    principalFeatureEligible: !isGasFreeServiceFeeEdge(edges[0]!),
-    serviceFeeFeatureEligible: !isGasFreeServiceFeeEdge(edges[1]!),
+    principalFeatureEligible: edges
+      .filter((edge) => edge.economicRole === "principal")
+      .every((edge) => !isGasFreeServiceFeeEdge(edge)),
+    serviceFeeFeatureEligible: edges
+      .filter((edge) => edge.economicRole === "service_fee")
+      .some((edge) => !isGasFreeServiceFeeEdge(edge)),
     principalCounterparties: groups.map((group) => ({
       address: group.address,
       direction: group.direction,
@@ -664,11 +850,13 @@ function drainerInput(item: OfflineCaseV1): ExactDrainerSceneInputV1 {
   const call = source.transferFromCall === null ? null : record(source.transferFromCall);
   const movement = source.movement === null ? null : record(source.movement);
   return {
+    methodContractAddress: string(methodEvidence.contractAddress),
     methodMap,
     topMethods: [],
     serviceLabel: null,
     relevantCall: call === null ? null : {
       txHash: string(call.txHash),
+      contractAddress: string(call.contractAddress),
       selector: string(call.selector),
       tokenContract: string(call.tokenContract),
       fromAddress: string(call.fromAddress),
@@ -696,13 +884,35 @@ function replayAdverseCase(item: OfflineCaseV1): ReplayCaseResultV1 {
   }
   if (item.id === "event-time-blacklist-partitions") return blacklistResult(item);
   if (item.id === "gasfree-principal-fee-classification") return gasFreeResult(item);
-  if (item.id.startsWith("drainer-")) {
+  if (item.id === "drainer-method-only" || item.id === "drainer-complete-evidence") {
     return { ...resultBase(item), kind: "drainer_scene", ...evaluateExactDrainerSceneV1(drainerInput(item)) };
   }
-  return { ...resultBase(item), kind: "context" };
+  throw new TypeError("offline_corpus_adverse_case_unknown");
 }
 
 function replayBroadScopeCase(item: BroadScopeCaseV1): ReplayCaseResultV1 {
+  if (!Array.isArray(item.directEdges) || !Array.isArray(item.secondHopRedBranches)) {
+    throw new TypeError("offline_corpus_broad_case_invalid");
+  }
+  normalizedIdentity(item.subjectAddress, "offline_corpus_broad_case_invalid");
+  const directCounterparties = new Set(item.directEdges.map((edge) => {
+    const code = "offline_corpus_broad_case_invalid";
+    string(edge.id, code);
+    string(edge.txHash, code);
+    if (edge.direction !== "inbound" && edge.direction !== "outbound") throw new TypeError(code);
+    parseAmountRaw(edge.amountRaw);
+    canonicalTimestamp(edge.occurredAt, code);
+    return normalizedIdentity(edge.counterpartyAddress, code);
+  }));
+  for (const branch of item.secondHopRedBranches) {
+    string(branch.branchId, "offline_corpus_broad_case_invalid");
+    string(branch.secondHopAddress, "offline_corpus_broad_case_invalid");
+    string(branch.evidenceId, "offline_corpus_broad_case_invalid");
+    if (!directCounterparties.has(normalizedIdentity(
+      branch.directCounterpartyAddress,
+      "offline_corpus_broad_case_invalid"
+    ))) throw new TypeError("offline_corpus_broad_red_branch_unbound");
+  }
   const edges = item.directEdges.map((edge) => routeEdge({
     id: edge.id,
     txHash: edge.txHash,
@@ -734,7 +944,10 @@ function replayBroadScopeCase(item: BroadScopeCaseV1): ReplayCaseResultV1 {
         amountRaw: value.amountRaw.toString()
       })),
     secondHopRedBranches: item.secondHopRedBranches.map((branch) => ({
-      ...branch,
+      branchId: branch.branchId,
+      directCounterpartyAddress: branch.directCounterpartyAddress,
+      secondHopAddress: branch.secondHopAddress,
+      evidenceId: branch.evidenceId,
       amountRaw: parseAmountRaw(branch.amountRaw).toString()
     }))
   };
@@ -750,6 +963,15 @@ export function evaluateExactDrainerSceneV1(
   });
   if (input.relevantCall !== null) parseAmountRaw(input.relevantCall.amountRaw);
   if (input.movement !== null) parseAmountRaw(input.movement.amountRaw);
+  const methodContractAddress = typeof input.methodContractAddress === "string"
+    ? input.methodContractAddress.trim()
+    : "";
+  const callContractAddress = typeof input.relevantCall?.contractAddress === "string"
+    ? input.relevantCall.contractAddress.trim()
+    : "";
+  if (methodContractAddress === "" || methodContractAddress !== input.methodContractAddress) {
+    return context("spender_contract_invalid");
+  }
   const fingerprint = detectVerify20Fingerprint({
     methodMap: { ...input.methodMap },
     topMethods: input.topMethods.map((method) => ({
@@ -765,6 +987,12 @@ export function evaluateExactDrainerSceneV1(
   if (!fingerprint.matched) return context("fingerprint_incomplete");
   const call = input.relevantCall;
   if (!call) return context("exact_call_missing");
+  if (callContractAddress === "" || callContractAddress !== call.contractAddress) {
+    return context("spender_contract_invalid");
+  }
+  if (methodContractAddress.toLowerCase() !== callContractAddress.toLowerCase()) {
+    return context("spender_contract_mismatch");
+  }
   if (call.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) {
     return context("token_not_official_usdt");
   }
@@ -808,15 +1036,27 @@ export function replayOfflineForensicModelCorpusV1(
   const broadScopeCases = source.broadScopeCases === undefined
     ? []
     : validateCases(source.broadScopeCases) as readonly BroadScopeCaseV1[];
+  const ids = [...ledgerCases, ...serviceCases, ...adverseCases, ...broadScopeCases].map(({ id }) => id);
+  if (new Set(ids).size !== ids.length) throw new TypeError("offline_corpus_duplicate_case_id");
   validateAmounts(source);
 
   const adverseResults = adverseCases.map(replayAdverseCase);
-  const exactRoles = new Map(adverseResults.flatMap((item) =>
-    item.kind === "service_label" && typeof item.address === "string" && typeof item.serviceRole === "string"
-      ? [[item.address, item.serviceRole] as const]
+  const exactLabels = new Map(adverseResults.flatMap((item) =>
+    item.kind === "service_label" && typeof item.address === "string" &&
+      item.frozenLabel !== null && typeof item.frozenLabel === "object"
+      ? [[item.address.trim().toLowerCase(), item.frozenLabel as FrozenLabelRecordV1] as const]
       : []
   ));
   const dataGaps: { caseId: string; code: string }[] = [];
+  const serviceResults = serviceCases.map((item) => replayServiceCase(item, exactLabels));
+  for (const result of serviceResults) {
+    if (result.exactRoleResolution === "anchor_missing") {
+      dataGaps.push({ caseId: result.id, code: "exact_service_role_anchor_missing" });
+    }
+    if (result.exactRoleResolution === "role_conflict") {
+      dataGaps.push({ caseId: result.id, code: "exact_service_role_conflict" });
+    }
+  }
   if (ledgerCases.some(({ id }) => id === "pacgy-recorded-chronology")) {
     dataGaps.push({ caseId: "pacgy-recorded-chronology", code: "history_incomplete" });
   }
@@ -829,7 +1069,7 @@ export function replayOfflineForensicModelCorpusV1(
   return {
     schemaVersion: "offline-forensic-model-replay-v1",
     ledgerCases: ledgerCases.map(replayLedgerCase),
-    serviceCases: serviceCases.map((item) => replayServiceCase(item, exactRoles)),
+    serviceCases: serviceResults,
     adverseCases: adverseResults,
     broadScopeCases: broadScopeCases.map(replayBroadScopeCase),
     dataGaps

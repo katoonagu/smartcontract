@@ -1833,6 +1833,7 @@ function exactDrainerScene(
 ): ExactDrainerSceneInputV1 {
   const call = {
     txHash: "scene-drain-tx",
+    contractAddress: "scene-spender",
     selector: "5082dd12",
     tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
     fromAddress: "scene-victim",
@@ -1843,6 +1844,7 @@ function exactDrainerScene(
     successful: true
   };
   return {
+    methodContractAddress: "scene-spender",
     methodMap: completeFingerprintMethods,
     topMethods: [],
     serviceLabel: null,
@@ -1856,6 +1858,38 @@ function exactDrainerScene(
       confirmed: true,
       successful: true
     },
+    ...overrides
+  };
+}
+
+const officialUsdt = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const canonicalHash = (hex: string) => hex.repeat(64);
+
+function blacklistEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    eventKind: "added",
+    occurredAt: "2026-01-02T00:00:00.000Z",
+    txHash: canonicalHash("a"),
+    tokenContract: officialUsdt,
+    subjectAddress: "listed",
+    logIndex: 0,
+    confirmed: true,
+    successful: true,
+    ...overrides
+  };
+}
+
+function blacklistTransfer(overrides: Record<string, unknown> = {}) {
+  return {
+    txHash: canonicalHash("b"),
+    logIndex: 0,
+    occurredAt: "2026-01-03T00:00:00.000Z",
+    tokenContract: officialUsdt,
+    fromAddress: "subject",
+    toAddress: "listed",
+    amountRaw: "1",
+    confirmed: true,
+    successful: true,
     ...overrides
   };
 }
@@ -1951,13 +1985,13 @@ describe("offline forensic model replay v1", () => {
 
     expect(blacklist).toMatchObject({
       kind: "blacklist_timeline",
-      beforeEventAmountRaw: "900000",
-      activeAtEventAmountRaw: "100000",
-      unknownAmountRaw: "50000",
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "1050000",
       partitions: {
-        before_event: "900000",
-        active_at_event: "100000",
-        unknown: "50000"
+        before_event: "0",
+        active_at_event: "0",
+        unknown: "1050000"
       }
     });
     expect(gasFree).toMatchObject({
@@ -1987,27 +2021,21 @@ describe("offline forensic model replay v1", () => {
         listedAddress: "listed",
         principalTransfers: [
           {
-            txHash: "same-tx",
+            ...blacklistTransfer(),
+            txHash: canonicalHash("1"),
             logIndex: 0,
             occurredAt: "2026-01-01T00:00:00.000Z",
-            fromAddress: "subject",
-            toAddress: "listed",
             amountRaw: "40"
           },
           {
-            txHash: "same-tx",
+            ...blacklistTransfer(),
+            txHash: canonicalHash("1"),
             logIndex: 1,
             occurredAt: "2026-01-03T00:00:00.000Z",
-            fromAddress: "subject",
-            toAddress: "listed",
             amountRaw: "60"
           }
         ],
-        timelineEvents: [{
-          eventKind: "added",
-          occurredAt: "2026-01-02T00:00:00.000Z",
-          logIndex: 0
-        }]
+        timelineEvents: [blacklistEvent()]
       }]
     }));
 
@@ -2026,26 +2054,26 @@ describe("offline forensic model replay v1", () => {
         id: "event-time-blacklist-partitions",
         evidenceClass: "synthetic_edge_case",
         subjectAddress: "subject",
-        listedAddress: "listed",
         principalTransfers: [
           {
-            txHash: "shared-tx",
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
             logIndex: 0,
             occurredAt: "2026-01-01T00:00:00.000Z",
-            fromAddress: "subject",
             toAddress: "counterparty-b",
             amountRaw: "10"
           },
           {
-            txHash: "shared-tx",
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
             logIndex: 1,
             occurredAt: activeAt,
-            fromAddress: "subject",
             toAddress: "counterparty-b",
             amountRaw: "10"
           },
           ...[2, 3, 4].map((logIndex) => ({
-            txHash: "shared-tx",
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
             logIndex,
             occurredAt: activeAt,
             fromAddress: "counterparty-a",
@@ -2053,37 +2081,37 @@ describe("offline forensic model replay v1", () => {
             amountRaw: "10"
           }))
         ],
-        timelineEvents: [{
-          eventKind: "added",
-          occurredAt: "2026-01-02T00:00:00.000Z",
-          logIndex: 0
-        }]
+        listedAddress: "counterparty-a",
+        timelineEvents: [blacklistEvent({ subjectAddress: "counterparty-a" })]
       }]
     }));
 
     expect(result.adverseCases[0]).toMatchObject({
       beforeEventAmountRaw: "0",
       activeAtEventAmountRaw: "30",
-      unknownAmountRaw: "20",
-      partitions: { before_event: "0", active_at_event: "30", unknown: "20" }
+      unknownAmountRaw: "0",
+      unmatchedCounterpartyAmountRaw: "20",
+      partitions: { before_event: "0", active_at_event: "30", unknown: "0" }
     });
   });
 
   it("binds mixed-direction blacklist replay to the explicit subject under permutation", () => {
     const transfers = [
       {
-        txHash: "outbound-active",
+        ...blacklistTransfer(),
+        txHash: canonicalHash("3"),
         logIndex: 0,
         occurredAt: "2026-01-03T00:00:00.000Z",
         fromAddress: "subject",
-        toAddress: "counterparty-a",
+        toAddress: "listed",
         amountRaw: "30"
       },
       {
-        txHash: "inbound-before",
+        ...blacklistTransfer(),
+        txHash: canonicalHash("4"),
         logIndex: 0,
         occurredAt: "2026-01-01T00:00:00.000Z",
-        fromAddress: "counterparty-b",
+        fromAddress: "listed",
         toAddress: "subject",
         amountRaw: "20"
       }
@@ -2096,11 +2124,7 @@ describe("offline forensic model replay v1", () => {
           subjectAddress: "subject",
           listedAddress: "listed",
           principalTransfers,
-          timelineEvents: [{
-            eventKind: "added",
-            occurredAt: "2026-01-02T00:00:00.000Z",
-            logIndex: 0
-          }]
+          timelineEvents: [blacklistEvent()]
         }]
       })).adverseCases[0];
 
@@ -2120,7 +2144,8 @@ describe("offline forensic model replay v1", () => {
     ["subject equals listed", { subjectAddress: "listed" }],
     ["subject on neither endpoint", {
       principalTransfers: [{
-        txHash: "outside",
+        ...blacklistTransfer(),
+        txHash: canonicalHash("5"),
         logIndex: 0,
         occurredAt: "2026-01-03T00:00:00.000Z",
         fromAddress: "outside-a",
@@ -2130,7 +2155,8 @@ describe("offline forensic model replay v1", () => {
     }],
     ["subject on both endpoints", {
       principalTransfers: [{
-        txHash: "self",
+        ...blacklistTransfer(),
+        txHash: canonicalHash("6"),
         logIndex: 0,
         occurredAt: "2026-01-03T00:00:00.000Z",
         fromAddress: "subject",
@@ -2146,12 +2172,7 @@ describe("offline forensic model replay v1", () => {
         subjectAddress: "subject",
         listedAddress: "listed",
         principalTransfers: [{
-          txHash: "valid",
-          logIndex: 0,
-          occurredAt: "2026-01-03T00:00:00.000Z",
-          fromAddress: "subject",
-          toAddress: "counterparty",
-          amountRaw: "1"
+          ...blacklistTransfer()
         }],
         timelineEvents: [],
         ...overrides
@@ -2286,6 +2307,257 @@ describe("offline forensic model replay v1", () => {
     });
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(JSON.stringify(result)).not.toMatch(/\d+n\b/u);
+  });
+
+  it.each([
+    ["non-canonical hash", { txHash: "not-a-hash" }],
+    ["wrong token", { tokenContract: "other-token" }],
+    ["wrong listed subject", { subjectAddress: "other-listed" }],
+    ["unconfirmed", { confirmed: false }],
+    ["unsuccessful", { successful: false }]
+  ])("fails closed on %s blacklist timeline evidence", (_name, eventOverrides) => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer()],
+        timelineEvents: [blacklistEvent(eventOverrides)]
+      }]
+    }))).toThrow("offline_corpus_blacklist_timeline_invalid");
+  });
+
+  it("preserves authoritative blacklist identity and applies it only to the listed group", () => {
+    const event = blacklistEvent({ blockNumber: 99, logIndex: 7 });
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [
+          blacklistTransfer({ amountRaw: "30" }),
+          blacklistTransfer({ txHash: canonicalHash("c"), toAddress: "unrelated", amountRaw: "20" })
+        ],
+        timelineEvents: [event]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      activeAtEventAmountRaw: "30",
+      unmatchedCounterpartyAmountRaw: "20",
+      timelineEvents: [{
+        txHash: canonicalHash("a"),
+        logIndex: 7,
+        blockNumber: 99,
+        tokenContract: officialUsdt,
+        occurredAt: "2026-01-02T00:00:00.000Z"
+      }]
+    });
+  });
+
+  it("deduplicates case-insensitive raw identities and keeps missing-time replay permutation-stable", () => {
+    const duplicate = blacklistTransfer({ txHash: canonicalHash("d"), amountRaw: "7" });
+    const missing = blacklistTransfer({ txHash: canonicalHash("e"), occurredAt: null, amountRaw: "5" });
+    const replay = (principalTransfers: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+    const transfers = [duplicate, { ...duplicate, txHash: canonicalHash("D") }, missing];
+
+    expect(replay(transfers)).toMatchObject({ activeAtEventAmountRaw: "7", unknownAmountRaw: "5" });
+    expect(replay([...transfers].reverse())).toEqual(replay(transfers));
+  });
+
+  it("fails closed on conflicting transfer and timeline identities", () => {
+    const replay = (principalTransfers: readonly Record<string, unknown>[], timelineEvents: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents
+        }]
+      }));
+    const transfer = blacklistTransfer();
+    expect(() => replay([transfer, { ...transfer, amountRaw: "2" }], [blacklistEvent()]))
+      .toThrow("offline_corpus_blacklist_identity_invalid");
+    const event = blacklistEvent();
+    expect(() => replay([transfer], [event, { ...event, eventKind: "removed" }]))
+      .toThrow("offline_corpus_blacklist_timeline_invalid");
+  });
+
+  it("does not classify post-removal transfers as active", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer({ occurredAt: "2026-01-04T00:00:00.000Z", amountRaw: "9" })],
+        timelineEvents: [
+          blacklistEvent(),
+          blacklistEvent({
+            eventKind: "removed",
+            txHash: canonicalHash("f"),
+            occurredAt: "2026-01-03T00:00:00.000Z"
+          })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({ activeAtEventAmountRaw: "0", unknownAmountRaw: "9" });
+  });
+
+  it("binds GasFree replay edges by exact role and movement, independent of row order", () => {
+    const base = structuredClone(corpus) as unknown as OfflineCorpusV1;
+    const gasFree = (base.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    const replayEdges = gasFree.replayEdges as Record<string, unknown>[];
+    gasFree.replayEdges = [...replayEdges].reverse();
+    const permuted = replayOfflineForensicModelCorpusV1(base).adverseCases
+      .find(({ id }) => id === "gasfree-principal-fee-classification");
+    const canonical = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1).adverseCases
+      .find(({ id }) => id === "gasfree-principal-fee-classification");
+    expect(permuted).toEqual(canonical);
+
+    const tampered = structuredClone(base);
+    const tamperedCase = (tampered.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    (tamperedCase.replayEdges as Record<string, unknown>[])[0]!.amountRaw = "1";
+    expect(() => replayOfflineForensicModelCorpusV1(tampered))
+      .toThrow("offline_corpus_gasfree_edges_invalid");
+  });
+
+  it("requires the drainer call contract to match the fingerprinted contract", () => {
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, contractAddress: "other-spender" }
+    }))).toMatchObject({ red: false, reason: "spender_contract_mismatch" });
+  });
+
+  it.each([
+    ["label created later", { observedVector: { observedEndTimestamp: "2026-07-19T00:00:00.000Z" } }],
+    ["missing anchor", {}],
+    ["role conflict", { observedVector: { observedEndTimestamp: "2026-07-26T00:00:00.000Z" }, exactRoleConflict: true }]
+  ])("does not bypass service inference for %s", (_name, serviceFields) => {
+    const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "service-time-authority",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
+        ...serviceFields
+      }],
+      adverseCases: [exactLabel as OfflineCorpusV1["adverseCases"][number]]
+    })).serviceCases[0];
+
+    expect(result).not.toMatchObject({ state: "exact_service_role" });
+  });
+
+  it("rejects duplicate IDs, unknown adverse IDs, and unbound broad red branches", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [{ id: "duplicate", evidenceClass: "synthetic_edge_case" }],
+      serviceCases: [{ id: "duplicate", evidenceClass: "synthetic_edge_case" }]
+    }))).toThrow("offline_corpus_duplicate_case_id");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{ id: "gasfree-principle-fee-classification", evidenceClass: "synthetic_edge_case" }]
+    }))).toThrow("offline_corpus_adverse_case_unknown");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "unbound-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "missing",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1"
+        }]
+      }]
+    }))).toThrow("offline_corpus_broad_red_branch_unbound");
+  });
+
+  it("rejects internally inconsistent recorded service vectors", () => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const firstWindow = (serviceCase.windows as Record<string, unknown>[])[0]!;
+    const predicate = firstWindow.recordedPredicate as Record<string, boolean>;
+    predicate.P = !predicate.P;
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-window-only",
+        evidenceClass: "recorded_calibration_vector",
+        windows: [{}]
+      }]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it("reports a data gap when an exact service role lacks an event anchor", () => {
+    const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "missing-service-anchor",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh"
+      }],
+      adverseCases: [exactLabel as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.dataGaps).toContainEqual({
+      caseId: "missing-service-anchor",
+      code: "exact_service_role_anchor_missing"
+    });
+  });
+
+  it("projects declared second-hop fields and remains JSON-safe with unknown bigint input", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "projected-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [{
+          id: "direct",
+          txHash: "direct",
+          direction: "outbound",
+          counterpartyAddress: "listed",
+          amountRaw: "1",
+          occurredAt: "2026-01-01T00:00:00.000Z"
+        }],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "listed",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1",
+          extra: { unsafe: 1n }
+        } as never]
+      }]
+    }));
+
+    expect(result.broadScopeCases[0]?.secondHopRedBranches).toEqual([{
+      branchId: "red",
+      directCounterpartyAddress: "listed",
+      secondHopAddress: "red-address",
+      evidenceId: "evidence",
+      amountRaw: "1"
+    }]);
+    expect(() => JSON.stringify(result)).not.toThrow();
   });
 
   it("rejects an unknown schema and non-canonical raw amount at the replay boundary", () => {
