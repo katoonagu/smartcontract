@@ -384,4 +384,21 @@ describe("service role map materialization", () => {
 
     expect(reverse).toEqual(forward);
   });
+
+  it("binds coverage identity to the traversal state", () => {
+    const { input } = fixture();
+    const firstInput = input();
+    const first = materializeServiceRoleEventMapV1(firstInput);
+    const same = materializeServiceRoleEventMapV1(firstInput);
+    const other = materializeServiceRoleEventMapV1(input({
+      shadowInput: {
+        ...firstInput.shadowInput,
+        state: { ...firstInput.shadowInput.state, fundingEpisodeId: "episode-2" }
+      }
+    }));
+
+    expect(first.coverage.traversalStateIds).toHaveLength(1);
+    expect(fingerprintCanonicalArtifact(same.coverage)).toBe(fingerprintCanonicalArtifact(first.coverage));
+    expect(fingerprintCanonicalArtifact(other.coverage)).not.toBe(fingerprintCanonicalArtifact(first.coverage));
+  });
 });

@@ -70,6 +70,7 @@ export type ServiceRoleMaterializationCoverageV1 = {
   runId: string;
   snapshotHash: string;
   addressHistoryManifestSha256: string;
+  traversalStateIds: readonly string[];
   sampledEventCount: number;
   fullyAuthorizedEventCount: number;
   roleCounts: Record<ServiceRoleShadowEventRoleV1, number>;
@@ -250,6 +251,7 @@ export function materializeServiceRoleEventMapV1(input: {
     runId: input.shadowInput.runId,
     snapshotHash: input.shadowInput.snapshotHash,
     addressHistoryManifestSha256: input.shadowInput.acceptedHistory.manifestSha256,
+    traversalStateIds: [shadow.artifact.traversalStateId].sort(),
     sampledEventCount: sampledIds.length,
     fullyAuthorizedEventCount: resolved.length,
     roleCounts,
