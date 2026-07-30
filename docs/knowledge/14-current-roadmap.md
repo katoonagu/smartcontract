@@ -20,6 +20,7 @@ code_refs:
   - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
+  - docs/superpowers/specs/2026-07-30-forensic-model-completion-roadmap-and-exact-role-capture-design.md
   - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
   - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
   - docs/superpowers/plans/2026-07-29-lean-forensic-model-validation.md
@@ -36,16 +37,20 @@ implementation plans do not override the status recorded here.
    replay, deployment, and attributable observation evidence exists.
 2. Preserve the implemented provider-cap correctness patch. Keep the new
    adverse-path disposition pure/offline and unwired.
-3. Keep the accepted 7/7 cashflow ledger slice shadow-only; replace the
-   remaining expectation-only cases with frozen canonical tapes before
-   planning either model for production.
-4. Freeze explicit subject-selection and cashflow-query policy plus fixtures;
-   no bounded subject-service mode or shared selector is approved yet.
-5. If the service model passes, freeze a separate blind set, complete two
-   reviews, and adjudicate it.
-6. Keep Stage D, production routing, canary, rollout and `500 + 100` outside
-   the immediate plan. Reopen `500 + 100` only when a real ambiguous case
-   demonstrates the need; plan Stage D only after the offline and blind gates.
+3. Capture exact role evidence for the frozen real Stage C history, materialize
+   one real `200/200` role map, and make the preserved Task 2 prerequisite
+   audit pass before adding any runtime hook.
+4. Complete Stage C as disabled runtime shadow with exact enabled/disabled byte
+   non-interference, then freeze a separate blind set, complete two reviews,
+   and adjudicate it without retuning the accepted version.
+5. Keep the accepted 7/7 cashflow ledger foundation offline-only while a
+   production-owned authority producer and a first `current_balance` selector
+   are separately proven. Add cashflow runtime shadow only after real complete
+   and unresolved controls exist.
+6. Keep bounded subject-service mode, Stage D, production boundary action,
+   canary, rollout and `500 + 100` outside the immediate plan. Reopen
+   `500 + 100` only when a real frozen ambiguous case demonstrates the need;
+   write the Stage D plan only after the Stage C shadow and blind gates.
 7. Run the full post-model knowledge/code conformance cleanup; factual
    contradictions already proven are corrected immediately, not deferred.
 8. Build recipient wallet precheck before signing or broadcasting.
@@ -72,9 +77,9 @@ paths from owning automatic output for the same chat/address pair.
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, adverse-disposition and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; `SUBJECT_EVENT_CAP` is unapproved | Freeze explicit selection/cap policy and canonical positive/negative fixtures before an implementation plan |
-| Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze `current_balance`, completed exact episode and triggered-relevance rules, including window/denominator/materiality/coverage/episode bounds |
-| Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7; the current broader runner matches 15/37 and still leaves 22 service/adverse expectations unreplayed. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate | Require accepted production sampling, upstream authority acquisition, and safe legacy-neutral immutable storage before any production plan |
-| Stage C | Pure `100 + 100` shadow classifier exists offline; the positive W8SRL result is recorded-vector evidence, D7NzP is sparse predicate-only evidence, and VUSXVhd remains insufficient | Complete the offline evidence gate and a separate blind set before any boundary-action proposal |
+| Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
+| Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
+| Stage C | The typed offline gate is implemented and approved at service `24/24` plus adverse `6/6`, with explicit evidence limitations. The pure shadow builder and fail-closed role-map materializer are implemented, but the known real history still has role authority `0/200`; no real map or runtime hook exists | Capture exact evidence for the frozen 200 events, materialize one real `200/200` map, make the preserved Task 2 prerequisite audit exit `0`, then complete disabled shadow wiring and byte non-interference before blind review |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
