@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -19,6 +19,7 @@ import {
   type AddressHistoryManifestV1
 } from "../src/unifiedCheck/addressHistory.js";
 import type { UnifiedAddressHistoryPageArtifactV1 } from "../src/unifiedCheck/productionAddressHistory.js";
+import { parseAnalysisManifestV1 } from "../src/unifiedCheck/contracts.js";
 import { insertUnifiedArtifact, type UnifiedQueryable } from "../src/unifiedCheck/repository.js";
 import {
   materializeServiceRoleEventMapV1,
@@ -232,12 +233,41 @@ function parseBackfill(value: unknown): ServiceRoleLocalEvidenceBackfillV1 {
 
 export async function readServiceRoleLocalEvidenceBackfill(path: string): Promise<ServiceRoleLocalEvidenceBackfillV1> {
   const absolute = resolve(path);
-  const status = await lstat(absolute).catch(() => fail("service_role_materialization_backfill_file_invalid"));
-  if (!status.isFile() || status.isSymbolicLink() || status.size > MAX_BACKFILL_BYTES) {
+  const pathStatus = await lstat(absolute, { bigint: true })
+    .catch(() => fail("service_role_materialization_backfill_file_invalid"));
+  if (!pathStatus.isFile() || pathStatus.isSymbolicLink() || pathStatus.size > BigInt(MAX_BACKFILL_BYTES)) {
     fail("service_role_materialization_backfill_file_invalid");
   }
-  if (resolve(await realpath(absolute)) !== absolute) fail("service_role_materialization_backfill_file_invalid");
-  return parseBackfill(parseJsonWithoutDuplicateKeys(await readFile(absolute, "utf8")));
+  const handle = await open(absolute, "r")
+    .catch(() => fail("service_role_materialization_backfill_file_invalid"));
+  try {
+    const openedStatus = await handle.stat({ bigint: true });
+    if (!openedStatus.isFile() || openedStatus.dev !== pathStatus.dev || openedStatus.ino !== pathStatus.ino ||
+      openedStatus.size > BigInt(MAX_BACKFILL_BYTES)) {
+      fail("service_role_materialization_backfill_file_invalid");
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_BACKFILL_BYTES + 1 - total));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_BACKFILL_BYTES) fail("service_role_materialization_backfill_file_invalid");
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    const currentStatus = await lstat(absolute, { bigint: true });
+    if (!currentStatus.isFile() || currentStatus.isSymbolicLink() ||
+      currentStatus.dev !== openedStatus.dev || currentStatus.ino !== openedStatus.ino) {
+      fail("service_role_materialization_backfill_file_invalid");
+    }
+    return parseBackfill(parseJsonWithoutDuplicateKeys(Buffer.concat(chunks, total).toString("utf8")));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("service_role_materialization_backfill_")) throw error;
+    return fail("service_role_materialization_backfill_file_invalid");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 export function parseServiceRoleMaterializationArgs(argv: readonly string[]): {
@@ -429,10 +459,18 @@ async function loadSource(db: ServiceRoleMaterializationQueryable, command: Serv
     fingerprintCanonicalArtifact(row.analysis_json) !== row.analysis_manifest_sha256) {
     fail("service_role_materialization_accepted_history_invalid");
   }
-  const analysis = record(row.analysis_json, "service_role_materialization_accepted_history_invalid");
   const manifest = row.manifest_json as AddressHistoryManifestV1;
-  if (analysis.runId !== command.runId || analysis.snapshotHash !== manifest.snapshotHash ||
-    analysis.subjectAddress !== row.subject_address || manifest.version !== "unified-address-history-manifest-v1" ||
+  let analysis: ReturnType<typeof parseAnalysisManifestV1>;
+  try {
+    analysis = parseAnalysisManifestV1(row.analysis_json, {
+      runId: command.runId,
+      subjectAddress: String(row.subject_address),
+      snapshotHash: manifest.snapshotHash
+    });
+  } catch {
+    fail("service_role_materialization_accepted_history_invalid");
+  }
+  if (analysis.snapshotHash !== manifest.snapshotHash || manifest.version !== "unified-address-history-manifest-v1" ||
     manifest.schemaVersion !== 1 || manifest.key !== row.logical_key || manifest.key !== addressHistoryManifestKey(manifest) ||
     !Array.isArray(manifest.pageArtifactHashes) || manifest.pageArtifactHashes.length === 0 ||
     manifest.pageArtifactHashes.length > MAX_HISTORY_PAGES || new Set(manifest.pageArtifactHashes).size !== manifest.pageArtifactHashes.length ||
@@ -482,8 +520,13 @@ async function loadSource(db: ServiceRoleMaterializationQueryable, command: Serv
     kind: "address_history_exhaustion",
     schemaVersion: "1"
   }), "service_role_materialization_inventory_invalid");
-  if (exhaustion.version !== "unified-address-history-exhaustion-v1" || exhaustion.manifestKey !== manifest.key ||
+  exactKeys(exhaustion, [
+    "version", "manifestKey", "snapshotHash", "address", "pageArtifactHashes", "reachedAccountCreation"
+  ], "service_role_materialization_inventory_invalid");
+  if (manifest.exhaustion.kind !== "account_creation_reached" ||
+    exhaustion.version !== "unified-address-history-exhaustion-v1" || exhaustion.manifestKey !== manifest.key ||
     exhaustion.snapshotHash !== manifest.snapshotHash || exhaustion.address !== manifest.address ||
+    exhaustion.reachedAccountCreation !== true ||
     canonicalizeArtifactJson(exhaustion.pageArtifactHashes) !== canonicalizeArtifactJson(manifest.pageArtifactHashes)) {
     fail("service_role_materialization_inventory_invalid");
   }

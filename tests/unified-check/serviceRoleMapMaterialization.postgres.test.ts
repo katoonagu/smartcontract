@@ -2,8 +2,31 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import pg from "pg";
+
+const backfillFileRace = vi.hoisted(() => ({
+  target: null as string | null,
+  replacement: null as string | null
+}));
+
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {
+    ...actual,
+    lstat: async (path: unknown, options?: unknown) => {
+      const status = await (actual.lstat as (...args: unknown[]) => Promise<unknown>)(path, options);
+      if (typeof path === "string" && path === backfillFileRace.target && backfillFileRace.replacement !== null) {
+        const replacementPath = `${path}.replacement`;
+        await actual.writeFile(replacementPath, backfillFileRace.replacement, "utf8");
+        await actual.rename(replacementPath, path);
+        backfillFileRace.target = null;
+        backfillFileRace.replacement = null;
+      }
+      return status;
+    }
+  };
+});
 
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
@@ -155,7 +178,12 @@ async function dispose(input: Harness): Promise<void> {
   await input.pool.end();
 }
 
-async function seedFixture(input: Harness, evidenceCount: number) {
+async function seedFixture(input: Harness, evidenceCount: number, options: {
+  analysisExtra?: Readonly<Record<string, unknown>>;
+  exhaustionExtra?: Readonly<Record<string, unknown>>;
+  reachedAccountCreation?: boolean;
+  exhaustionKind?: "provider_exhausted" | "account_creation_reached";
+} = {}) {
   const runId = randomUUID();
   const snapshotHash = fingerprintCanonicalArtifact(["snapshot", runId]);
   const recentStart = 1_720_000_000;
@@ -205,7 +233,8 @@ async function seedFixture(input: Harness, evidenceCount: number) {
     snapshotHash,
     address: PROFILED,
     pageArtifactHashes: [pageSha256],
-    reachedAccountCreation: true as const
+    reachedAccountCreation: options.reachedAccountCreation ?? true,
+    ...options.exhaustionExtra
   };
   const exhaustionSha256 = fingerprintCanonicalArtifact(exhaustionArtifact);
   const manifest = buildAddressHistoryManifest({
@@ -214,15 +243,34 @@ async function seedFixture(input: Harness, evidenceCount: number) {
     canonicalEventIds: events.map((item) => canonicalTronUsdtEventKey(item)),
     rawRowCount: 200,
     duplicateCount: 0,
-    exhaustion: { kind: "account_creation_reached", evidenceSha256: exhaustionSha256 }
+    exhaustion: { kind: options.exhaustionKind ?? "account_creation_reached", evidenceSha256: exhaustionSha256 }
   });
   const manifestSha256 = fingerprintCanonicalArtifact(manifest);
   const analysisManifest = {
     version: "analysis-manifest-v1",
     schemaVersion: 1,
     runId,
+    requestHash: fingerprintCanonicalArtifact(["request", runId]),
     snapshotHash,
-    subjectAddress: SUBJECT
+    chain: "tron",
+    subjectAddress: SUBJECT,
+    confirmedBlockNumber: "20000",
+    confirmedBlockHash: fingerprintCanonicalArtifact(["block", runId]),
+    confirmedBlockTimestamp: "2026-07-30T00:00:00.000Z",
+    labelDatasetSha256: fingerprintCanonicalArtifact(["labels", runId]),
+    scoringPolicyVersion: "test-scoring-v1",
+    attributionPolicyVersion: "test-attribution-v1",
+    traversalPolicyVersion: "snapshot-closure-v1",
+    runtimeCommit: "test-runtime-commit",
+    databaseSchemaVersion: 37,
+    paginationCutoffBlockNumber: "20000",
+    paginationCutoffBlockHash: fingerprintCanonicalArtifact(["block", runId]),
+    branchArtifactHashes: {
+      fast: fingerprintCanonicalArtifact(["fast", runId]),
+      deep: fingerprintCanonicalArtifact(["deep", runId]),
+      where: fingerprintCanonicalArtifact(["where", runId])
+    },
+    ...options.analysisExtra
   };
   const analysisManifestSha256 = fingerprintCanonicalArtifact(analysisManifest);
   const staleState: TraversalStateV1 = { ...state, fundingEpisodeId: "stale-episode" };
@@ -376,6 +424,29 @@ async function seedFixture(input: Harness, evidenceCount: number) {
 }
 
 postgresDescribe("service role map materialization (PostgreSQL)", () => {
+  it("rejects malformed analysis authority and incomplete exhaustion before sampling", async () => {
+    for (const [options, error] of [
+      [{ analysisExtra: { unexpected: true } }, "service_role_materialization_accepted_history_invalid"],
+      [{ reachedAccountCreation: false }, "service_role_materialization_inventory_invalid"],
+      [{ exhaustionExtra: { unexpected: true } }, "service_role_materialization_inventory_invalid"],
+      [{ exhaustionKind: "provider_exhausted" }, "service_role_materialization_inventory_invalid"]
+    ] as const) {
+      const test = await harness();
+      try {
+        const fixture = await seedFixture(test, 0, options);
+        await expect(runServiceRoleMapMaterialization(test.db, {
+          mode: "audit",
+          runId: fixture.runId,
+          manifestSha256: fixture.manifestSha256,
+          anchor: fixture.anchor,
+          backfill: fixture.backfill
+        })).rejects.toThrow(error);
+      } finally {
+        await dispose(test);
+      }
+    }
+  }, 30_000);
+
   it("audits 199/200 read-only, then atomically materializes an idempotent unreferenced 200/200 pair", async () => {
     const test = await harness();
     try {
@@ -554,6 +625,10 @@ describe("service role map materializer CLI boundary", () => {
       const validPath = join(directory, "valid.json");
       await writeFile(validPath, JSON.stringify(valid), "utf8");
       expect(await readServiceRoleLocalEvidenceBackfill(validPath)).toEqual(valid);
+      backfillFileRace.target = validPath;
+      backfillFileRace.replacement = `${JSON.stringify(valid)}${" ".repeat(1024 * 1024)}`;
+      await expect(readServiceRoleLocalEvidenceBackfill(validPath))
+        .rejects.toThrow("service_role_materialization_backfill_file_invalid");
       const duplicatePath = join(directory, "duplicate.json");
       await writeFile(duplicatePath, `{"schemaVersion":"a","schemaVersion":"b"}`, "utf8");
       await expect(readServiceRoleLocalEvidenceBackfill(duplicatePath))
