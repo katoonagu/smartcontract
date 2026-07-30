@@ -1239,8 +1239,20 @@
         "bytecodeFingerprint": "synthetic:sha256:001f3940a5ec3d9edb0f0dcd6e0f3b25fef58a423d07a93f7ba66edc129e3c16",
         "methodMap": [
           {
-            "selector": "23b872dd",
-            "signature": "transferFrom(address,address,uint256)"
+            "selector": "5082dd12",
+            "signature": "Verify20(address,address,address,uint256)"
+          },
+          {
+            "selector": "fc61dd23",
+            "signature": "Verify10(address,uint256)"
+          },
+          {
+            "selector": "ea4418d9",
+            "signature": "withdrawAllTrxTo(address)"
+          },
+          {
+            "selector": "f2fde38b",
+            "signature": "transferOwnership(address)"
           }
         ]
       },
@@ -1258,7 +1270,7 @@
         "txHash": "synthetic-drain-tx",
         "callIndex": 0,
         "contractAddress": "synthetic-spender",
-        "selector": "23b872dd",
+        "selector": "5082dd12",
         "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         "fromAddress": "synthetic-victim",
         "toAddress": "synthetic-drainer-receiver",

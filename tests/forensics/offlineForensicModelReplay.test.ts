@@ -23,6 +23,7 @@ import {
   type ExactDrainerSceneInputV1,
   type OfflineCorpusV1
 } from "../../src/forensics/offlineForensicModelReplay.js";
+import { detectVerify20Fingerprint } from "../../src/forensics/verify20Fingerprint.js";
 
 type Case = {
   readonly id: string;
@@ -48,6 +49,13 @@ const cases = [
   ...corpus.serviceCases,
   ...corpus.adverseCases
 ];
+
+const completeFingerprintMethods = {
+  "5082dd12": "Verify20(address,address,address,uint256)",
+  "fc61dd23": "Verify10(address,uint256)",
+  "ea4418d9": "withdrawAllTrxTo(address)",
+  "f2fde38b": "transferOwnership(address)"
+} as const;
 
 function collectAmountRawValues(value: unknown): unknown[] {
   if (Array.isArray(value)) return value.flatMap(collectAmountRawValues);
@@ -565,6 +573,16 @@ describe("forensic model offline corpus v1", () => {
       selector: methodOnly.observed.methodId,
       signature: "transferFrom(address,address,uint256)"
     }]);
+    expect(detectVerify20Fingerprint({
+      methodMap: Object.fromEntries(methodOnly.methodEvidence.methodMap.map(({ selector, signature }) =>
+        [selector, signature]
+      )),
+      topMethods: []
+    })).toMatchObject({
+      matched: false,
+      selectors: [],
+      missingSelectors: Object.keys(completeFingerprintMethods)
+    });
     expect(methodOnly.expectedExactDrainerAuthority).toBe(false);
     expect(methodOnly.approvalCall).toBeNull();
     expect(methodOnly.transferFromCall).toBeNull();
@@ -581,10 +599,22 @@ describe("forensic model offline corpus v1", () => {
       movement: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
     };
     expect(complete.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:sha256:[0-9a-f]{64}$/u);
-    expect(complete.methodEvidence.methodMap).toEqual([{
-      selector: complete.transferFromCall.selector,
-      signature: "transferFrom(address,address,uint256)"
-    }]);
+    expect(complete.methodEvidence.methodMap).toEqual(
+      Object.entries(completeFingerprintMethods).map(([selector, signature]) => ({ selector, signature }))
+    );
+    expect(detectVerify20Fingerprint({
+      methodMap: Object.fromEntries(complete.methodEvidence.methodMap.map(({ selector, signature }) =>
+        [selector, signature]
+      )),
+      topMethods: []
+    })).toEqual({
+      matched: true,
+      selectors: Object.keys(completeFingerprintMethods),
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    });
+    expect(complete.transferFromCall.selector).toBe("5082dd12");
     expect(complete.approvalCall).toMatchObject({ confirmed: true, successful: true });
     expect(complete.transferFromCall).toMatchObject({ confirmed: true, successful: true });
     expect(complete.approvalCall.spenderAddress).toBe(complete.methodEvidence.contractAddress);
@@ -1690,13 +1720,6 @@ describe("chronological proportional ledger v1", () => {
   });
 });
 
-const completeFingerprintMethods = {
-  "5082dd12": "Verify20(address,address,address,uint256)",
-  "fc61dd23": "Verify10(address,uint256)",
-  "ea4418d9": "withdrawAllTrxTo(address)",
-  "f2fde38b": "transferOwnership(address)"
-};
-
 function exactDrainerScene(
   overrides: Partial<ExactDrainerSceneInputV1> = {}
 ): ExactDrainerSceneInputV1 {
@@ -1941,13 +1964,21 @@ describe("offline forensic model replay v1", () => {
     expect(result.adverseCases.find(({ id }) => id === "drainer-method-only"))
       .toMatchObject({ kind: "drainer_scene", red: false, reason: "fingerprint_incomplete" });
     expect(result.adverseCases.find(({ id }) => id === "drainer-complete-evidence"))
-      .toMatchObject({ kind: "drainer_scene", red: false, reason: "fingerprint_incomplete" });
+      .toMatchObject({
+        kind: "drainer_scene",
+        classification: "exact_drainer_red",
+        red: true,
+        reason: "exact_call_and_movement_confirmed"
+      });
     expect(result.dataGaps).toEqual(expect.arrayContaining([
       { caseId: "pacgy-recorded-chronology", code: "history_incomplete" },
       { caseId: "tqr-d7nzp-recorded-control", code: "recorded_partial_vector" },
-      { caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" },
-      { caseId: "drainer-complete-evidence", code: "verify20_fingerprint_incomplete" }
+      { caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" }
     ]));
+    expect(result.dataGaps).not.toContainEqual({
+      caseId: "drainer-complete-evidence",
+      code: "verify20_fingerprint_incomplete"
+    });
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(JSON.stringify(result)).not.toMatch(/\d+n\b/u);
   });
