@@ -508,9 +508,26 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     throw new TypeError("offline_corpus_blacklist_invalid");
   }
   const transfers = source.principalTransfers.map((value) => record(value));
+  const subjectAddress = string(
+    source.subjectAddress,
+    "offline_corpus_blacklist_subject_invalid"
+  ).trim();
+  const listedAddress = string(
+    source.listedAddress,
+    "offline_corpus_blacklist_subject_invalid"
+  ).trim();
+  if (subjectAddress === "" || listedAddress === "" || subjectAddress === listedAddress) {
+    throw new TypeError("offline_corpus_blacklist_subject_invalid");
+  }
+  for (const transfer of transfers) {
+    const fromIsSubject = string(transfer.fromAddress).trim() === subjectAddress;
+    const toIsSubject = string(transfer.toAddress).trim() === subjectAddress;
+    if (fromIsSubject === toIsSubject) {
+      throw new TypeError("offline_corpus_blacklist_subject_invalid");
+    }
+  }
   const events = source.timelineEvents.map(validTimelineEvent)
     .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
-  const subjectAddress = string(transfers[0]?.fromAddress).trim();
   const edges = transfers.map((transfer, index) => routeEdge({
     id: `${string(transfer.txHash)}:${integer(transfer.logIndex)}`,
     txHash: string(transfer.txHash),

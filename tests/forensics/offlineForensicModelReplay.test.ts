@@ -1886,6 +1886,8 @@ describe("offline forensic model replay v1", () => {
       adverseCases: [{
         id: "event-time-blacklist-partitions",
         evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
         principalTransfers: [
           {
             txHash: "same-tx",
@@ -1926,6 +1928,8 @@ describe("offline forensic model replay v1", () => {
       adverseCases: [{
         id: "event-time-blacklist-partitions",
         evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
         principalTransfers: [
           {
             txHash: "shared-tx",
@@ -1966,6 +1970,96 @@ describe("offline forensic model replay v1", () => {
       unknownAmountRaw: "20",
       partitions: { before_event: "0", active_at_event: "30", unknown: "20" }
     });
+  });
+
+  it("binds mixed-direction blacklist replay to the explicit subject under permutation", () => {
+    const transfers = [
+      {
+        txHash: "outbound-active",
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "subject",
+        toAddress: "counterparty-a",
+        amountRaw: "30"
+      },
+      {
+        txHash: "inbound-before",
+        logIndex: 0,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        fromAddress: "counterparty-b",
+        toAddress: "subject",
+        amountRaw: "20"
+      }
+    ];
+    const replay = (principalTransfers: typeof transfers) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [{
+            eventKind: "added",
+            occurredAt: "2026-01-02T00:00:00.000Z",
+            logIndex: 0
+          }]
+        }]
+      })).adverseCases[0];
+
+    const expected = {
+      beforeEventAmountRaw: "20",
+      activeAtEventAmountRaw: "30",
+      unknownAmountRaw: "0",
+      partitions: { before_event: "20", active_at_event: "30", unknown: "0" }
+    };
+    expect(replay(transfers)).toMatchObject(expected);
+    expect(replay([...transfers].reverse())).toEqual(replay(transfers));
+  });
+
+  it.each([
+    ["missing subject", { subjectAddress: undefined }],
+    ["blank subject", { subjectAddress: "   " }],
+    ["subject equals listed", { subjectAddress: "listed" }],
+    ["subject on neither endpoint", {
+      principalTransfers: [{
+        txHash: "outside",
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "outside-a",
+        toAddress: "outside-b",
+        amountRaw: "1"
+      }]
+    }],
+    ["subject on both endpoints", {
+      principalTransfers: [{
+        txHash: "self",
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "subject",
+        toAddress: "subject",
+        amountRaw: "1"
+      }]
+    }]
+  ] as const)("rejects %s blacklist subject binding", (_name, overrides) => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [{
+          txHash: "valid",
+          logIndex: 0,
+          occurredAt: "2026-01-03T00:00:00.000Z",
+          fromAddress: "subject",
+          toAddress: "counterparty",
+          amountRaw: "1"
+        }],
+        timelineEvents: [],
+        ...overrides
+      }]
+    }))).toThrow("offline_corpus_blacklist_subject_invalid");
   });
 
   it("represents every broad direct counterparty in both directions and retains second-hop red", () => {
