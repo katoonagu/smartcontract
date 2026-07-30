@@ -322,6 +322,7 @@ import {
   createPostgresProviderPageStore,
   loadOrFetchProviderPage
 } from "./unifiedCheck/providerRequest";
+import { providerHistoryPage } from "./unifiedCheck/providerHistoryCompletion";
 import {
   createFrozenLabelDatasetLoader
 } from "./unifiedCheck/frozenLabels";
@@ -739,6 +740,7 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
               provider: loaded.provider,
               transfers: loaded.transfers,
               nextOffset: loaded.nextOffset,
+              completionReason: loaded.completionReason,
               complete: loaded.complete,
               metadataConsistent: loaded.metadataConsistent,
               rawResponseHashes: loaded.rawResponseHashes,
@@ -761,38 +763,20 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
         }
       });
       const loaded = cached.payload as {
-        provider: "tronscan" | "trongrid_fallback";
-        transfers: Awaited<
-          ReturnType<typeof tronClient.listRelatedTrc20TransferPagePinned>
-        >["transfers"];
-        nextOffset: number;
-        complete: boolean;
-        metadataConsistent: boolean;
+        provider?: unknown;
+        transfers?: unknown;
+        nextOffset?: unknown;
+        completionReason?: unknown;
+        metadataConsistent?: unknown;
       };
-      if (
-        (
-          loaded.provider !== "tronscan" &&
-          loaded.provider !== "trongrid_fallback"
-        ) ||
-        !Array.isArray(loaded.transfers) ||
-        !Number.isSafeInteger(loaded.nextOffset) ||
-        typeof loaded.complete !== "boolean" ||
-        loaded.metadataConsistent !== true
-      ) {
-        throw new Error("unified_direct_history_cached_page_invalid");
-      }
-      const content = {
-        kind: "page" as const,
+      return providerHistoryPage({
         cursor,
-        nextCursor: loaded.complete ? null : String(loaded.nextOffset),
+        provider: loaded.provider,
         transfers: loaded.transfers,
-        reachedAccountCreation: loaded.complete,
-        provider: loaded.provider
-      };
-      return {
-        ...content,
-        pageHash: fingerprintCanonicalArtifact(content)
-      };
+        nextOffset: loaded.nextOffset,
+        completionReason: loaded.completionReason,
+        metadataConsistent: loaded.metadataConsistent
+      });
     } catch (error) {
       const reason = error instanceof Error
         ? error.message

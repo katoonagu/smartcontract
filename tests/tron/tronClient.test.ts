@@ -1116,6 +1116,7 @@ describe("TronscanClient", () => {
       nextOffset: 100,
       total: 100,
       rangeTotal: 100,
+      completionReason: "range_exhausted",
       complete: true,
       metadataConsistent: true
     });
@@ -1148,6 +1149,7 @@ describe("TronscanClient", () => {
       nextOffset: 6,
       total: 10_000,
       rangeTotal: 10_000,
+      completionReason: "provider_range_capped",
       complete: true,
       metadataConsistent: true
     });
@@ -1178,6 +1180,37 @@ describe("TronscanClient", () => {
       nextOffset: 73,
       total: 10_000,
       rangeTotal: 10_000,
+      complete: true,
+      metadataConsistent: true
+    });
+  });
+
+  it("classifies a full page ending at the provider range cap separately from account creation", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 40_497,
+      rangeTotal: 10_000,
+      token_transfers: Array.from({ length: 50 }, (_, index) => ({
+        transaction_id: `capped-final-${9_950 + index}`,
+        from_address: "TSource111111111111111111111111111111",
+        to_address: "TSubject111111111111111111111111111111",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        quant: "1",
+        block_ts: 1_780_090_000_000 - index
+      }))
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 9_950, limit: 50 }
+    );
+
+    expect(page).toMatchObject({
+      start: 9_950,
+      nextOffset: 10_000,
+      total: 40_497,
+      rangeTotal: 10_000,
+      completionReason: "provider_range_capped",
       complete: true,
       metadataConsistent: true
     });

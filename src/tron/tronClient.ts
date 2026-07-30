@@ -200,10 +200,17 @@ export type PinnedTronscanTransferPage = {
   nextOffset: number;
   total: number | null;
   rangeTotal: number | null;
+  // ponytail: optional only for legacy pinned-page adapters; remove `?` after
+  // those callers adopt completion reasons. Unified rejects an omission.
+  completionReason?: "more" | "range_exhausted" | "provider_range_capped";
   complete: boolean;
   metadataConsistent: boolean;
   rawResponseHashes: string[];
   canonicalTransferHashes: string[];
+};
+
+type CompletedPinnedTronscanTransferPage = PinnedTronscanTransferPage & {
+  completionReason: NonNullable<PinnedTronscanTransferPage["completionReason"]>;
 };
 
 export function rawProviderTxRowPaginationId(
@@ -920,7 +927,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   async listRelatedTrc20TransferPagePinned(
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
-  ): Promise<PinnedTronscanTransferPage> {
+  ): Promise<CompletedPinnedTronscanTransferPage> {
     const start = Math.max(0, Math.floor(options.start ?? 0));
     const requestedLimit = Math.max(0, Math.floor(options.limit ?? TRONSCAN_TRANSFER_PAGE_LIMIT));
     const transfers: RawTronscanTrc20Transfer[] = [];
@@ -996,6 +1003,15 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
     const nextOffset = start + transfers.length;
     const authoritativeRangeTotal = rangeTotal ?? null;
+    const completionReason = !metadataConsistent
+      ? "more"
+      : authoritativeRangeTotal !== null
+        && authoritativeRangeTotal >= TRONSCAN_RANGE_TOTAL_CAP
+        && (cappedWindowComplete || nextOffset >= authoritativeRangeTotal)
+        ? "provider_range_capped"
+        : authoritativeRangeTotal !== null && nextOffset >= authoritativeRangeTotal
+          ? "range_exhausted"
+          : "more";
     return {
       provider: "tronscan",
       transfers,
@@ -1005,13 +1021,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       nextOffset,
       total: total ?? null,
       rangeTotal: authoritativeRangeTotal,
-      complete: metadataConsistent && (
-        cappedWindowComplete ||
-        (
-          authoritativeRangeTotal !== null &&
-          nextOffset >= authoritativeRangeTotal
-        )
-      ),
+      completionReason,
+      complete: completionReason !== "more",
       metadataConsistent,
       rawResponseHashes,
       canonicalTransferHashes
