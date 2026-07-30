@@ -3568,46 +3568,59 @@ describe("read-only forensic corpus CLI", () => {
           const named = clause?.namedBindings;
           const hasRuntimeBinding = clause === undefined || clause.name !== undefined ||
             (named !== undefined && (
-              ts.isNamespaceImport(named) || named.elements.some((element) => !element.isTypeOnly)
+              ts.isNamespaceImport(named) || named.elements.length === 0 ||
+              named.elements.some((element) => !element.isTypeOnly)
             ));
           if (clause?.isTypeOnly !== true && hasRuntimeBinding) add(node.moduleSpecifier);
         } else if (ts.isExportDeclaration(node)) {
           const clause = node.exportClause;
           const hasRuntimeBinding = clause === undefined || ts.isNamespaceExport(clause) ||
-            clause.elements.some((element) => !element.isTypeOnly);
+            clause.elements.length === 0 || clause.elements.some((element) => !element.isTypeOnly);
           if (!node.isTypeOnly && hasRuntimeBinding) add(node.moduleSpecifier);
         } else if (ts.isImportEqualsDeclaration(node)) {
           if (!node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
             add(node.moduleReference.expression);
           }
         } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-          add(node.arguments[0]);
+          const specifier = node.arguments[0];
+          if (specifier === undefined || !ts.isStringLiteralLike(specifier)) {
+            throw new Error(`nonliteral dynamic runtime import in ${path}`);
+          }
+          add(specifier);
         }
         ts.forEachChild(node, walk);
       };
       walk(file);
       return specifiers;
     };
-    expect(runtimeSpecifiers("proof.ts", `
+    expect.soft(runtimeSpecifiers("proof.ts", `
       import type { A } from "./type-only";
       import { type B, value } from "./mixed";
       import { type C } from "./specifier-type-only";
+      import {} from "./empty-import";
       import "./side-effect";
       export type { D } from "./export-type-only";
       export { type E, runtime } from "./re-export";
+      export {} from "./empty-export";
       export * from "./export-star";
       export * as namespace from "./namespace-export";
       import equal = require("./import-equals");
       void import("./dynamic");
     `)).toEqual([
       "./mixed",
+      "./empty-import",
       "./side-effect",
       "./re-export",
+      "./empty-export",
       "./export-star",
       "./namespace-export",
       "./import-equals",
       "./dynamic"
     ]);
+    expect.soft(() => runtimeSpecifiers("nonliteral-proof.ts", `
+      const dependency = "./dynamic";
+      void import(dependency);
+    `)).toThrowError("nonliteral dynamic runtime import in nonliteral-proof.ts");
     const candidates = (specifier: string, owner: string) => {
       const base = resolve(dirname(owner), specifier);
       return [base, `${base}.ts`, `${base}.js`, join(base, "index.ts"), join(base, "index.js")];
