@@ -898,6 +898,20 @@ describe("service behavior research v2 windows", () => {
     });
   });
 
+  it("does not let an unauthoritative 101st row weaken the retained window", () => {
+    const rows = [
+      ...serviceRows(0),
+      serviceRow(100, 0, { transactionIndex: null })
+    ];
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      orderAuthoritative: true
+    });
+  });
+
   it("marks missing or conflicting canonical order as unauthoritative", () => {
     const missing = serviceRows(0);
     missing[0] = { ...missing[0]!, transactionIndex: null };

@@ -169,8 +169,8 @@ function mostRepeatedAmount(rows: readonly ServiceBehaviorRowV2[]): {
 export function computeServiceWindowVectorV2(
   rows: readonly ServiceBehaviorRowV2[]
 ): CompleteServiceWindowVectorV2 {
-  let orderAuthoritative = rows.every(hasAuthoritativeOrder);
   const physicalRows = [...rows].sort(compareRows).slice(0, 100);
+  let orderAuthoritative = physicalRows.every(hasAuthoritativeOrder);
   const invalidPhysicalRowCount = physicalRows.filter((row) =>
     !row.valid || row.canonicalEventId === null
   ).length;
