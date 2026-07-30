@@ -99,6 +99,35 @@
         "solidifiedHead": 84888238,
         "authority": "diagnostic_non_pinned",
         "expectedState": "unresolved"
+      },
+      "recordedNonAuthoritativeCalibration": {
+        "targetRaw": "180000000",
+        "coveredRaw": "180000000",
+        "sourceOriginalRaw": "300000000",
+        "sourceUtilizedRaw": "180000000"
+      },
+      "replayInput": {
+        "subjectAddress": "recorded:PacGy",
+        "snapshotBlockNumber": 83711746,
+        "snapshotBlockHash": "unavailable:not-authoritative",
+        "snapshotEvidenceRef": "docs/superpowers/verification/2026-07-30-pacgy-canonical-tape-acceptance.json",
+        "historyCompleteness": "partial",
+        "openingBalanceRaw": "0",
+        "events": []
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "180000000",
+        "exactEventId": "receipt:676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "history_incomplete_before_anchor",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
       }
     },
     {
@@ -151,6 +180,38 @@
         "oldLotRemainingAmountRaw": "0",
         "currentBalanceAmountRaw": "82700000",
         "currentSource": "funder-new"
+      },
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-300"], "txHash": "in-300", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "old", "toAddress": "subject", "amountRaw": "300000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-70"], "txHash": "out-70", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "sink-70", "amountRaw": "70000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-12"], "txHash": "out-12", "blockNumber": 3, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 3000, "fromAddress": "subject", "toAddress": "sink-12", "amountRaw": "12000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-180"], "txHash": "out-180", "blockNumber": 4, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 4000, "fromAddress": "subject", "toAddress": "sink-180", "amountRaw": "180000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-38"], "txHash": "out-38", "blockNumber": 5, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 5000, "fromAddress": "subject", "toAddress": "sink-38", "amountRaw": "38000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-82-7"], "txHash": "in-82-7", "blockNumber": 6, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 6000, "fromAddress": "new", "toAddress": "subject", "amountRaw": "82700000" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "180000000",
+        "exactEventId": "receipt:out-180:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "180000000",
+        "coveredRaw": "180000000",
+        "allocations": [
+          { "lotId": "receipt:in-300:0", "sourceEventId": "receipt:in-300:0", "sourceAddress": "old", "usedAmountRaw": "180000000", "sourceOriginalRaw": "300000000" }
+        ]
       }
     },
     {
@@ -177,7 +238,37 @@
           "source": "b",
           "amountRaw": "1"
         }
-      ]
+      ],
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-a"], "txHash": "in-a", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "a", "toAddress": "subject", "amountRaw": "1" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-b"], "txHash": "in-b", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "b", "toAddress": "subject", "amountRaw": "2" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-2"], "txHash": "out-2", "blockNumber": 3, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 3000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "2" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "2",
+        "exactEventId": "receipt:out-2:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "2",
+        "coveredRaw": "2",
+        "allocations": [
+          { "lotId": "receipt:in-a:0", "sourceEventId": "receipt:in-a:0", "sourceAddress": "a", "usedAmountRaw": "1", "sourceOriginalRaw": "1" },
+          { "lotId": "receipt:in-b:0", "sourceEventId": "receipt:in-b:0", "sourceAddress": "b", "usedAmountRaw": "1", "sourceOriginalRaw": "2" }
+        ]
+      }
     },
     {
       "id": "exact-self-transfer-control",
@@ -189,7 +280,42 @@
         "amountRaw": "7"
       },
       "expectedBalanceAmountRaw": "10",
-      "expectedEffect": "cashflow_no_op"
+      "expectedEffect": "cashflow_no_op",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:self-7"], "txHash": "self-7", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "subject", "amountRaw": "7" }
+        ]
+      },
+      "query": {
+        "purpose": "current_balance",
+        "snapshotBalanceWitness": {
+          "amountRaw": "10",
+          "pinned": true,
+          "independent": true,
+          "subjectAddress": "subject",
+          "snapshotBlockNumber": 99,
+          "snapshotBlockHash": "synthetic-block-99",
+          "evidenceRef": "synthetic:independent-balance:99"
+        },
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "10",
+        "coveredRaw": "10",
+        "allocations": [
+          { "lotId": "receipt:in-10:0", "sourceEventId": "receipt:in-10:0", "sourceAddress": "funder", "usedAmountRaw": "10", "sourceOriginalRaw": "10" }
+        ]
+      }
     },
     {
       "id": "identity-collision-control",
@@ -210,7 +336,32 @@
           "amountRaw": "7"
         }
       ],
-      "expectedState": "identity_collision"
+      "expectedState": "identity_collision",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:shared"], "txHash": "shared", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "5" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:shared"], "txHash": "shared", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "7" }
+        ]
+      },
+      "query": {
+        "purpose": "amount_only",
+        "requestedAmountRaw": "1",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "canonical_event_identity_unresolved",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
     },
     {
       "id": "missing-order-control",
@@ -227,7 +378,33 @@
           "amountRaw": "8"
         }
       ],
-      "expectedState": "temporal_order_unresolved"
+      "expectedState": "temporal_order_unresolved",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 10, "transactionIndex": null, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 10000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-8"], "txHash": "out-8", "blockNumber": 10, "transactionIndex": null, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 10000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "8" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "8",
+        "exactEventId": "receipt:out-8:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "temporal_order_unresolved",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
     },
     {
       "id": "debit-over-inventory-control",
@@ -236,7 +413,33 @@
       "incomingAmountRaw": "10",
       "debitAmountRaw": "11",
       "expectedState": "history_incomplete",
-      "expectedReason": "debit_over_inventory"
+      "expectedReason": "debit_over_inventory",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-11"], "txHash": "out-11", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "11" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "11",
+        "exactEventId": "receipt:out-11:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "outgoing_exceeds_reconstructed_inventory",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
     }
   ],
   "serviceCases": [
