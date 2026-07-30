@@ -9,6 +9,14 @@ import {
   type LedgerLotV1,
   type SnapshotBalanceWitnessV1
 } from "../../src/forensics/chronologicalProportionalLedger.js";
+import {
+  classifyServiceBehavior100Plus100V2,
+  computeServiceWindowVectorV2,
+  evaluateServiceWindowPredicateV2,
+  type CompleteServiceWindowVectorV2,
+  type ServiceBehaviorRowV2,
+  type ServiceWindowVectorV2
+} from "../../src/forensics/serviceBehaviorResearch.js";
 
 type Case = {
   readonly id: string;
@@ -588,6 +596,550 @@ describe("forensic model offline corpus v1", () => {
     expect(complete.approvalCall.tokenContract).toBe(complete.transferFromCall.tokenContract);
     expect(complete.approvalCall.ownerAddress).toBe(complete.transferFromCall.fromAddress);
     expect(BigInt(complete.approvalCall.amountRaw)).toBeGreaterThanOrEqual(BigInt(complete.transferFromCall.amountRaw));
+  });
+});
+
+const sevenDaysSeconds = 7 * 24 * 60 * 60;
+
+function serviceVector(
+  overrides: Partial<CompleteServiceWindowVectorV2> = {}
+): CompleteServiceWindowVectorV2 {
+  return {
+    kind: "complete",
+    physicalRowCount: 100,
+    canonicalEventCount: 100,
+    featureEligibleEventCount: 100,
+    invalidPhysicalRowCount: 0,
+    collisionPhysicalRowCount: 0,
+    duplicatePhysicalRowCount: 0,
+    poisoningOnlyEventCount: 0,
+    gasFreeFeeEventCount: 0,
+    gasFreePrincipalEventCount: 0,
+    incomingCount: 20,
+    outgoingCount: 80,
+    uniqueSenders: 20,
+    uniqueRecipients: 80,
+    uniqueCounterparties: 100,
+    largestCounterpartyCount: 1,
+    largestCounterpartyShareDenominator: 100,
+    dominantDirection: "outgoing",
+    dominantDirectionCount: 80,
+    uniqueDominantCounterparties: 80,
+    dominantShareDenominator: 100,
+    medianDominantDirectionGapSeconds: { numerator: 15, denominator: 1 },
+    maxDominantDirectionEventsPerHour: 80,
+    activeUtcHourOfDayCount: 12,
+    dominantExactAmountRaw: 1_000n,
+    dominantExactAmountCount: 10,
+    dominantExactAmountShareDenominator: 80,
+    observedStartSeconds: 10 * sevenDaysSeconds,
+    observedEndSeconds: 10 * sevenDaysSeconds + 86_400,
+    observedWindowDurationSeconds: 86_400,
+    orderAuthoritative: true,
+    ...overrides
+  };
+}
+
+function serviceRow(
+  index: number,
+  startSeconds: number,
+  overrides: Partial<ServiceBehaviorRowV2> = {}
+): ServiceBehaviorRowV2 {
+  const outgoing = index < 80;
+  return {
+    canonicalEventId: `event-${index}`,
+    blockNumber: index + 1,
+    transactionIndex: 0,
+    eventIndex: 0,
+    occurredAtSeconds: outgoing
+      ? startSeconds + index
+      : startSeconds + (index - 79) * 3_600,
+    direction: outgoing ? "outgoing" : "incoming",
+    counterpartyAddress: `counterparty-${index}`,
+    amountRaw: outgoing ? 1_000n : BigInt(index + 1),
+    valid: true,
+    featureRole: "ordinary",
+    ...overrides
+  };
+}
+
+function serviceRows(startSeconds: number): ServiceBehaviorRowV2[] {
+  return Array.from({ length: 100 }, (_, index) => serviceRow(index, startSeconds));
+}
+
+function recordedServiceVector(
+  vector: FeatureVector,
+  orderAuthoritative = false
+): CompleteServiceWindowVectorV2 {
+  return serviceVector({
+    physicalRowCount: vector.physicalRowCount,
+    canonicalEventCount: vector.canonicalEventCount,
+    featureEligibleEventCount: vector.featureEligibleEventCount,
+    duplicatePhysicalRowCount: vector.physicalRowCount - vector.canonicalEventCount,
+    incomingCount: vector.incomingCount,
+    outgoingCount: vector.outgoingCount,
+    uniqueSenders: vector.uniqueSenders,
+    uniqueRecipients: vector.uniqueRecipients,
+    uniqueCounterparties: vector.uniqueCounterparties,
+    largestCounterpartyCount: vector.largestCounterparty.count,
+    largestCounterpartyShareDenominator: vector.largestCounterparty.shareDenominator,
+    dominantDirection: vector.dominantDirection,
+    dominantDirectionCount: vector.dominantDirectionCount,
+    uniqueDominantCounterparties: vector.uniqueDominantCounterparties,
+    dominantShareDenominator: vector.dominantShareDenominator,
+    medianDominantDirectionGapSeconds: {
+      numerator: vector.medianDominantDirectionGapSeconds.numerator,
+      denominator: vector.medianDominantDirectionGapSeconds.denominator === 2 ? 2 : 1
+    },
+    maxDominantDirectionEventsPerHour: vector.maxDominantDirectionEventsPerHour,
+    activeUtcHourOfDayCount: vector.activeUtcHourOfDayCount,
+    dominantExactAmountRaw: BigInt(vector.dominantExactAmount.amountRaw),
+    dominantExactAmountCount: vector.dominantExactAmount.count,
+    dominantExactAmountShareDenominator: vector.dominantExactAmount.shareDenominator,
+    observedStartSeconds: Date.parse(vector.observedStartTimestamp) / 1_000,
+    observedEndSeconds: Date.parse(vector.observedEndTimestamp) / 1_000,
+    observedWindowDurationSeconds: vector.observedWindowDurationSeconds,
+    orderAuthoritative
+  });
+}
+
+function passesServicePredicate(vector: ServiceWindowVectorV2): boolean {
+  const predicate = evaluateServiceWindowPredicateV2(vector);
+  return predicate.C && predicate.B && predicate.G && (predicate.H || predicate.R || predicate.X);
+}
+
+describe("service behavior research v2 predicates", () => {
+  it("applies the inclusive C threshold and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 120, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 19,
+      medianDominantDirectionGapSeconds: { numerator: 120, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(false);
+  });
+
+  it("applies every inclusive B boundary and rejects one unit beyond it", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 24,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 126,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 126
+    })).B).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 63,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(false);
+  });
+
+  it("applies both inclusive G branches and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 70,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 20,
+      uniqueSenders: 9,
+      uniqueRecipients: 9
+    })).G).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 69,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 20,
+      uniqueSenders: 9,
+      uniqueRecipients: 9
+    })).G).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 50,
+      uniqueDominantCounterparties: 19,
+      uniqueSenders: 10,
+      uniqueRecipients: 10
+    })).G).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 50,
+      uniqueDominantCounterparties: 19,
+      uniqueSenders: 9,
+      uniqueRecipients: 10
+    })).G).toBe(false);
+  });
+
+  it("applies the inclusive H threshold and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({ activeUtcHourOfDayCount: 12 })).H)
+      .toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({ activeUtcHourOfDayCount: 11 })).H)
+      .toBe(false);
+  });
+
+  it("applies both inclusive R boundaries and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 100,
+      dominantExactAmountCount: 10,
+      dominantExactAmountShareDenominator: 100
+    })).R).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 100,
+      dominantExactAmountCount: 9,
+      dominantExactAmountShareDenominator: 100
+    })).R).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 101,
+      dominantExactAmountCount: 10,
+      dominantExactAmountShareDenominator: 101
+    })).R).toBe(false);
+  });
+
+  it("applies every inclusive X boundary and rejects one unit below", () => {
+    const threshold = serviceVector({
+      dominantDirectionCount: 80,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 80,
+      medianDominantDirectionGapSeconds: { numerator: 15, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 79
+    });
+    expect(evaluateServiceWindowPredicateV2(threshold).X).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      dominantDirectionCount: 79
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      featureEligibleEventCount: 101
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      uniqueDominantCounterparties: 79
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      medianDominantDirectionGapSeconds: { numerator: 16, denominator: 1 }
+    })).X).toBe(false);
+  });
+
+  it("compares an even median using the exact central-gap sum", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 240, denominator: 2 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 241, denominator: 2 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(false);
+  });
+
+  it("makes C, R, and X false for an incoming/outgoing tie", () => {
+    const rows = Array.from({ length: 100 }, (_, index) => serviceRow(index, 0, {
+      direction: index < 50 ? "outgoing" : "incoming",
+      occurredAtSeconds: index,
+      amountRaw: 1_000n
+    }));
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      incomingCount: 50,
+      outgoingCount: 50,
+      dominantDirection: null,
+      dominantDirectionCount: 0,
+      medianDominantDirectionGapSeconds: null,
+      dominantExactAmountCount: 0
+    });
+    expect(evaluateServiceWindowPredicateV2(vector)).toMatchObject({
+      C: false,
+      R: false,
+      X: false
+    });
+  });
+
+  it("uses every eligible event as the largest-counterparty denominator", () => {
+    const rows = Array.from({ length: 100 }, (_, index) => serviceRow(index, 0, {
+      direction: index < 51 ? "outgoing" : "incoming",
+      counterpartyAddress: index < 51 ? `recipient-${index}` : "repeat-sender"
+    }));
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      featureEligibleEventCount: 100,
+      largestCounterpartyCount: 49,
+      largestCounterpartyShareDenominator: 100
+    });
+    expect(evaluateServiceWindowPredicateV2(vector).B).toBe(true);
+  });
+});
+
+describe("service behavior research v2 windows", () => {
+  it("consumes at most 100 physical rows and is invariant to authoritative permutation", () => {
+    const rows = [...serviceRows(0), serviceRow(100, 0)];
+    const forward = computeServiceWindowVectorV2(rows);
+    const reversed = computeServiceWindowVectorV2([...rows].reverse());
+
+    expect(forward).toEqual(reversed);
+    expect(forward).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      featureEligibleEventCount: 100,
+      observedWindowDurationSeconds: 72_000,
+      orderAuthoritative: true
+    });
+  });
+
+  it("marks missing or conflicting canonical order as unauthoritative", () => {
+    const missing = serviceRows(0);
+    missing[0] = { ...missing[0]!, transactionIndex: null };
+    expect(computeServiceWindowVectorV2(missing).orderAuthoritative).toBe(false);
+
+    const conflicting = serviceRows(0);
+    conflicting[1] = {
+      ...conflicting[1]!,
+      blockNumber: conflicting[0]!.blockNumber,
+      transactionIndex: conflicting[0]!.transactionIndex,
+      eventIndex: conflicting[0]!.eventIndex
+    };
+    expect(computeServiceWindowVectorV2(conflicting).orderAuthoritative).toBe(false);
+  });
+
+  it("does not top up a duplicate after the fixed 100 physical rows", () => {
+    const unique = serviceRows(0).slice(0, 99);
+    const vector = computeServiceWindowVectorV2([...unique, { ...unique[0]! }]);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 99,
+      duplicatePhysicalRowCount: 1
+    });
+  });
+
+  it("preserves invalid and collision inventory without positive features", () => {
+    const invalidRows = serviceRows(0);
+    invalidRows[99] = { ...invalidRows[99]!, valid: false };
+    expect(computeServiceWindowVectorV2(invalidRows)).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 99,
+      featureEligibleEventCount: 99,
+      invalidPhysicalRowCount: 1
+    });
+
+    const collisionRows = serviceRows(0).slice(0, 98);
+    const first = serviceRow(98, 0, { canonicalEventId: "collision" });
+    const second = { ...first, amountRaw: first.amountRaw + 1n };
+    expect(computeServiceWindowVectorV2([...collisionRows, first, second])).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 98,
+      featureEligibleEventCount: 98,
+      collisionPhysicalRowCount: 2
+    });
+  });
+
+  it("excludes poisoning and GasFree fees but includes GasFree principal", () => {
+    const rows = serviceRows(0);
+    rows[0] = { ...rows[0]!, featureRole: "poisoning_only" };
+    rows[1] = { ...rows[1]!, featureRole: "gasfree_fee" };
+    rows[2] = { ...rows[2]!, featureRole: "gasfree_principal" };
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      featureEligibleEventCount: 98,
+      poisoningOnlyEventCount: 1,
+      gasFreeFeeEventCount: 1,
+      gasFreePrincipalEventCount: 1,
+      outgoingCount: 78
+    });
+  });
+});
+
+describe("service behavior 100 plus 100 research classification v2", () => {
+  const historical = serviceVector({
+    observedStartSeconds: 0,
+    observedEndSeconds: 86_400
+  });
+  const recent = serviceVector({
+    observedStartSeconds: 86_400 + sevenDaysSeconds,
+    observedEndSeconds: 86_400 + sevenDaysSeconds + 86_400
+  });
+
+  it("requires both independent windows to pass the predicate", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent,
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("high_inferred_service");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, activeUtcHourOfDayCount: 11, dominantExactAmountCount: 9,
+        dominantDirectionCount: 79, uniqueDominantCounterparties: 79,
+        medianDominantDirectionGapSeconds: { numerator: 16, denominator: 1 },
+        maxDominantDirectionEventsPerHour: 14 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("non_service_profile");
+  });
+
+  it("returns insufficient data for fewer than 100 canonical events or missing order", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, canonicalEventCount: 99 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, orderAuthoritative: false }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, physicalRowCount: 101, canonicalEventCount: 101 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+  });
+
+  it("returns insufficient data for overlap or less than seven-day separation", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, observedStartSeconds: historical.observedEndSeconds! }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({
+        ...recent,
+        observedStartSeconds: historical.observedEndSeconds! + sevenDaysSeconds - 1
+      }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({
+        ...recent,
+        observedStartSeconds: historical.observedEndSeconds! + sevenDaysSeconds
+      }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("high_inferred_service");
+  });
+
+  it("keeps the sparse TXc control honest while classifying it insufficient", () => {
+    const txc = corpus.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control")!;
+    const txcRecent: ServiceWindowVectorV2 = {
+      kind: "incomplete",
+      physicalRowCount: 73,
+      canonicalEventCount: 73,
+      orderAuthoritative: false,
+      observedStartSeconds: null,
+      observedEndSeconds: null
+    };
+    const txcHistorical: ServiceWindowVectorV2 = {
+      kind: "incomplete",
+      physicalRowCount: 0,
+      canonicalEventCount: 0,
+      orderAuthoritative: false,
+      observedStartSeconds: null,
+      observedEndSeconds: null
+    };
+    const result = classifyServiceBehavior100Plus100V2({
+      recent: txcRecent,
+      historical: txcHistorical,
+      exactRoleConflict: false
+    });
+
+    expect(txc).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      behaviorClassification: "insufficient_data",
+      recordedPartialVector: {
+        recentObservedRowCount: 73,
+        historicalBaselineState: "empty"
+      }
+    });
+    expect(result).toEqual({
+      status: "insufficient_data",
+      recentVector: txcRecent,
+      historicalVector: txcHistorical,
+      recentPredicates: { C: false, B: false, G: false, H: false, R: false, X: false },
+      historicalPredicates: { C: false, B: false, G: false, H: false, R: false, X: false }
+    });
+  });
+
+  it("does not promote sparse D7NzP evidence into the full classifier", () => {
+    const tqr = corpus.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control")!;
+    expect(tqr).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      behaviorClassification: "non_service_profile",
+      recordedPartialVector: { cadencePredicate: false }
+    });
+    expect(tqr.limitations).toEqual(expect.arrayContaining([
+      "full_feature_vector_not_recorded",
+      "checked_subject_cannot_be_inferred_boundary"
+    ]));
+  });
+
+  it("replays W8SRL as a recorded two-window high control", () => {
+    const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration")!;
+    const windows = w8srl.windows as FeatureVector[];
+    const result = classifyServiceBehavior100Plus100V2({
+      recent: recordedServiceVector(windows[0]!, true),
+      historical: recordedServiceVector(windows[1]!, true),
+      exactRoleConflict: false
+    });
+
+    expect(w8srl.evidenceClass).toBe("recorded_calibration_vector");
+    expect(result.status).toBe("high_inferred_service");
+  });
+
+  it("returns role conflict for the exact Binance authority control", () => {
+    const binance = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    expect(binance).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      expectedClassification: "exact_service_label"
+    });
+    expect(classifyServiceBehavior100Plus100V2({
+      recent,
+      historical,
+      exactRoleConflict: true
+    }).status).toBe("role_conflict");
+  });
+
+  it("matches every complete recorded calibration predicate without upgrading evidence", () => {
+    const completeControls = corpus.serviceCases.filter(({ observedVector }) => observedVector);
+    expect(completeControls).toHaveLength(21);
+
+    for (const control of completeControls) {
+      const observed = control.observedVector as FeatureVector;
+      const actual = evaluateServiceWindowPredicateV2(recordedServiceVector(observed));
+      const { P, ...recorded } = observed.recordedPredicate;
+      expect(actual, control.address as string).toEqual(recorded);
+      expect(passesServicePredicate(recordedServiceVector(observed)), control.address as string)
+        .toBe(P);
+      expect(control.evidenceClass).toBe("recorded_calibration_vector");
+    }
+
+    const sh14eaf = completeControls.find(({ address }) =>
+      (address as string).endsWith("SH14eaf")
+    )!;
+    expect(passesServicePredicate(recordedServiceVector(sh14eaf.observedVector as FeatureVector)))
+      .toBe(false);
+
+    for (const suffix of ["q98cdn", "aEGqTr"]) {
+      const extreme = completeControls.find(({ address }) =>
+        (address as string).endsWith(suffix)
+      )!;
+      expect(evaluateServiceWindowPredicateV2(
+        recordedServiceVector(extreme.observedVector as FeatureVector)
+      )).toMatchObject({ X: true });
+    }
   });
 });
 
