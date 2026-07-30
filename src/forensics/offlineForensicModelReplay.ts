@@ -187,7 +187,7 @@ function canonicalTimestamp(value: unknown, code: string): string {
 function normalizedIdentity(value: unknown, code: string): string {
   const result = string(value, code).trim();
   if (result === "" || result !== value) throw new TypeError(code);
-  return result.toLowerCase();
+  return result;
 }
 
 function parseAmountRaw(value: unknown): bigint {
@@ -463,7 +463,7 @@ function replayServiceCase(
     }
   }
   const address = typeof source.address === "string" ? source.address : null;
-  const labels = address === null ? [] : exactLabels.get(address.trim().toLowerCase()) ?? [];
+  const labels = address === null ? [] : exactLabels.get(address) ?? [];
   const anchorTimestamp = serviceAnchorTimestamp(source);
   const eligibleLabels = anchorTimestamp === null
     ? []
@@ -542,6 +542,7 @@ function providerLabelResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     frozen !== null && frozen.authority === "tronscan-metadata" &&
     frozen.category === "service_metadata" && frozen.validTo === null &&
     typeof frozen.address === "string" && frozen.address.trim() !== "" &&
+    frozen.address.trim() === frozen.address &&
     typeof frozen.label === "string" && frozen.label.trim() !== "" &&
     typeof validFromValue === "string" && Number.isFinite(Date.parse(validFromValue)) &&
     new Date(validFromValue).toISOString() === validFromValue;
@@ -682,17 +683,15 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   if (!Array.isArray(source.principalTransfers) || !Array.isArray(source.timelineEvents)) {
     throw new TypeError("offline_corpus_blacklist_invalid");
   }
-  const subjectAddress = string(
+  const subjectAddress = normalizedIdentity(
     source.subjectAddress,
     "offline_corpus_blacklist_subject_invalid"
-  ).trim();
-  const listedAddress = string(
+  );
+  const listedAddress = normalizedIdentity(
     source.listedAddress,
     "offline_corpus_blacklist_subject_invalid"
-  ).trim();
-  const normalizedSubject = normalizedIdentity(subjectAddress, "offline_corpus_blacklist_subject_invalid");
-  const normalizedListed = normalizedIdentity(listedAddress, "offline_corpus_blacklist_subject_invalid");
-  if (normalizedSubject === normalizedListed) {
+  );
+  if (subjectAddress === listedAddress) {
     throw new TypeError("offline_corpus_blacklist_subject_invalid");
   }
   const transfersByIdentity = new Map<string, ParsedBlacklistTransfer>();
@@ -703,15 +702,15 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       transfer.confirmed !== true || transfer.successful !== true) throw new TypeError(code);
     const txHash = canonicalTxHash(transfer.txHash, code);
     const logIndex = nonnegativeInteger(transfer.logIndex, code);
-    const fromAddress = string(transfer.fromAddress, code).trim();
-    const toAddress = string(transfer.toAddress, code).trim();
-    const fromIsSubject = fromAddress.toLowerCase() === normalizedSubject;
-    const toIsSubject = toAddress.toLowerCase() === normalizedSubject;
+    const fromAddress = normalizedIdentity(transfer.fromAddress, code);
+    const toAddress = normalizedIdentity(transfer.toAddress, code);
+    const fromIsSubject = fromAddress === subjectAddress;
+    const toIsSubject = toAddress === subjectAddress;
     if (fromIsSubject === toIsSubject) {
       throw new TypeError("offline_corpus_blacklist_subject_invalid");
     }
     const direction = toIsSubject ? "inbound" as const : "outbound" as const;
-    const counterparty = (direction === "inbound" ? fromAddress : toAddress).toLowerCase();
+    const counterparty = direction === "inbound" ? fromAddress : toAddress;
     const amountRaw = parseAmountRaw(transfer.amountRaw).toString();
     const occurredAt = transfer.occurredAt === null || transfer.occurredAt === undefined
       ? ""
@@ -736,7 +735,7 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
   }
   const eventsByIdentity = new Map<string, ValidatedTimelineEvent>();
   for (const value of source.timelineEvents) {
-    const event = validTimelineEvent(value, normalizedListed);
+    const event = validTimelineEvent(value, listedAddress);
     const identity = `${event.txHash}:${event.logIndex}`;
     const previous = eventsByIdentity.get(identity);
     if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(event)) {
@@ -754,30 +753,13 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
       left.txHash.localeCompare(right.txHash)
     );
-  const edges = transfers.map((transfer) => routeEdge({
-    id: transfer.identity,
-    txHash: transfer.txHash,
-    fromAddress: transfer.fromAddress,
-    toAddress: transfer.toAddress,
-    amountRaw: transfer.amountRaw,
-    // ponytail: route grouping requires a valid Date; the original empty
-    // timestamp is restored below, so this fixed sentinel never gains authority.
-    occurredAt: transfer.occurredAt || "1970-01-01T00:00:00.000Z"
-  }));
-  const groups = groupDirectPrincipalCounterparties({
-    subjectAddress,
-    edges,
-    directTransferCoverage: "complete"
-  });
   const amounts = { before: 0n, active: 0n, unknown: 0n };
-  let unmatchedCounterpartyAmountRaw = 0n;
-  for (const group of groups) {
-    if (group.address.trim().toLowerCase() !== normalizedListed) {
-      unmatchedCounterpartyAmountRaw += group.principalAmountRaw;
-      continue;
-    }
+  const unmatchedCounterpartyAmountRaw = transfers
+    .filter(({ counterparty }) => counterparty !== listedAddress)
+    .reduce((sum, transfer) => sum + BigInt(transfer.amountRaw), 0n);
+  for (const direction of ["inbound", "outbound"] as const) {
     const selected = transfers
-      .filter((transfer) => transfer.direction === group.direction && transfer.counterparty === normalizedListed)
+      .filter((transfer) => transfer.direction === direction && transfer.counterparty === listedAddress)
       .map((transfer) => ({
         txHash: transfer.txHash,
         amountRaw: BigInt(transfer.amountRaw),
@@ -866,8 +848,8 @@ function gasFreeResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     amountRaw: string;
   }) => [
     movement.role,
-    movement.fromAddress.trim().toLowerCase(),
-    movement.toAddress.trim().toLowerCase(),
+    movement.fromAddress,
+    movement.toAddress,
     movement.amountRaw
   ].join("|");
   const replayMovements = source.replayEdges.map((value) => {
@@ -879,8 +861,8 @@ function gasFreeResult(item: OfflineCaseV1): ReplayCaseResultV1 {
     }
     return {
       role: economicRole,
-      fromAddress: string(edge.fromAddress),
-      toAddress: string(edge.toAddress),
+      fromAddress: normalizedIdentity(edge.fromAddress, "offline_corpus_gasfree_invalid"),
+      toAddress: normalizedIdentity(edge.toAddress, "offline_corpus_gasfree_invalid"),
       amountRaw: parseAmountRaw(edge.amountRaw).toString()
     };
   });
@@ -1148,7 +1130,7 @@ export function replayOfflineForensicModelCorpusV1(
     if (item.authoritative !== true || item.kind !== "service_label" ||
       typeof item.address !== "string" || item.frozenLabel === null ||
       typeof item.frozenLabel !== "object") continue;
-    const address = item.address.trim().toLowerCase();
+    const address = item.address;
     const labels = exactLabels.get(address) ?? [];
     labels.push(item.frozenLabel as FrozenLabelRecordV1);
     labels.sort((left, right) =>

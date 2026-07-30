@@ -2144,6 +2144,9 @@ describe("offline forensic model replay v1", () => {
     ["missing subject", { subjectAddress: undefined }],
     ["blank subject", { subjectAddress: "   " }],
     ["subject equals listed", { subjectAddress: "listed" }],
+    ["case-mutated subject endpoint", {
+      principalTransfers: [{ ...blacklistTransfer(), fromAddress: "Subject" }]
+    }],
     ["subject on neither endpoint", {
       principalTransfers: [{
         ...blacklistTransfer(),
@@ -2315,6 +2318,7 @@ describe("offline forensic model replay v1", () => {
     ["non-canonical hash", { txHash: "not-a-hash" }],
     ["wrong token", { tokenContract: "other-token" }],
     ["wrong listed subject", { subjectAddress: "other-listed" }],
+    ["case-mutated listed subject", { subjectAddress: "Listed" }],
     ["unconfirmed", { confirmed: false }],
     ["unsuccessful", { successful: false }]
   ])("fails closed on %s blacklist timeline evidence", (_name, eventOverrides) => {
@@ -2357,6 +2361,30 @@ describe("offline forensic model replay v1", () => {
         occurredAt: "2026-01-02T00:00:00.000Z"
       }]
     });
+  });
+
+  it("keeps case-distinct blacklist counterparties separate under permutation", () => {
+    const exact = blacklistTransfer({ txHash: canonicalHash("1"), amountRaw: "30" });
+    const caseDistinct = blacklistTransfer({
+      txHash: canonicalHash("2"),
+      toAddress: "Listed",
+      amountRaw: "20"
+    });
+    const replay = (principalTransfers: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+    const expected = { activeAtEventAmountRaw: "30", unmatchedCounterpartyAmountRaw: "20" };
+
+    expect(replay([exact, caseDistinct])).toMatchObject(expected);
+    expect(replay([caseDistinct, exact])).toEqual(replay([exact, caseDistinct]));
   });
 
   it("deduplicates case-insensitive raw identities and keeps missing-time replay permutation-stable", () => {
@@ -2509,6 +2537,13 @@ describe("offline forensic model replay v1", () => {
     (tamperedCase.replayEdges as Record<string, unknown>[])[0]!.amountRaw = "1";
     expect(() => replayOfflineForensicModelCorpusV1(tampered))
       .toThrow("offline_corpus_gasfree_edges_invalid");
+    const caseMutated = structuredClone(base);
+    const caseMutatedGasFree = (caseMutated.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    const caseMutatedEdge = (caseMutatedGasFree.replayEdges as Record<string, unknown>[])[0]!;
+    caseMutatedEdge.fromAddress = `t${String(caseMutatedEdge.fromAddress).slice(1)}`;
+    expect(() => replayOfflineForensicModelCorpusV1(caseMutated))
+      .toThrow("offline_corpus_gasfree_edges_invalid");
   });
 
   it("requires the drainer call contract to match the fingerprinted contract", () => {
@@ -2611,6 +2646,25 @@ describe("offline forensic model replay v1", () => {
     });
   });
 
+  it.each([
+    ["lowercase", (address: string) => address.toLowerCase()],
+    ["whitespace-padded", (address: string) => ` ${address} `]
+  ])("does not resolve an exact provider label for a %s address mutation", (_name, mutate) => {
+    const address = "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh";
+    const label = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "case-sensitive-provider-address",
+        evidenceClass: "recorded_calibration_vector",
+        address: mutate(address),
+        anchorTimestamp: "2026-07-26T00:00:00.000Z"
+      }],
+      adverseCases: [label as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.serviceCases[0]).not.toMatchObject({ state: "exact_service_role" });
+  });
+
   it("rejects conflicting normalized method selectors independent of row order", () => {
     const scene = structuredClone(corpus.adverseCases
       .find(({ id }) => id === "drainer-complete-evidence")!) as Record<string, unknown>;
@@ -2650,6 +2704,62 @@ describe("offline forensic model replay v1", () => {
         }]
       }]
     }))).toThrow("offline_corpus_broad_red_branch_unbound");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "case-distinct-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [{
+          id: "direct",
+          txHash: "direct",
+          direction: "outbound",
+          counterpartyAddress: "Listed",
+          amountRaw: "1",
+          occurredAt: "2026-01-01T00:00:00.000Z"
+        }],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "listed",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1"
+        }]
+      }]
+    }))).toThrow("offline_corpus_broad_red_branch_unbound");
+  });
+
+  it("keeps case-distinct broad-scope counterparties separate", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "case-distinct-counterparties",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [
+          {
+            id: "upper",
+            txHash: "upper",
+            direction: "outbound",
+            counterpartyAddress: "Listed",
+            amountRaw: "1",
+            occurredAt: "2026-01-01T00:00:00.000Z"
+          },
+          {
+            id: "lower",
+            txHash: "lower",
+            direction: "outbound",
+            counterpartyAddress: "listed",
+            amountRaw: "2",
+            occurredAt: "2026-01-01T00:00:00.000Z"
+          }
+        ],
+        secondHopRedBranches: []
+      }]
+    }));
+
+    expect(result.broadScopeCases[0]?.shallowProbe).toEqual([
+      { address: "Listed", directions: ["outbound"], amountRaw: "1" },
+      { address: "listed", directions: ["outbound"], amountRaw: "2" }
+    ]);
   });
 
   it("rejects internally inconsistent recorded service vectors", () => {
