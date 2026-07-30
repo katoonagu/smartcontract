@@ -2592,6 +2592,14 @@ describe("offline forensic model replay v1", () => {
       serviceCases: [completeService as OfflineCorpusV1["serviceCases"][number]]
     }));
 
+    expect(result.ledgerCases[0]).toMatchObject({
+      state: "unresolved",
+      reason: "requested_amount_not_positive",
+      authoritative: false,
+      targetRaw: "0",
+      coveredRaw: "0",
+      allocations: []
+    });
     expect(result.dataGaps).toEqual([]);
   });
 

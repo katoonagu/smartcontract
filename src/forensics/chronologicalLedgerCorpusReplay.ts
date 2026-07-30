@@ -18,6 +18,7 @@ export type LedgerCorpusActualV1 = {
     | "temporal_order_unresolved"
     | "history_incomplete_before_anchor"
     | "outgoing_exceeds_reconstructed_inventory"
+    | "requested_amount_not_positive"
     | null;
   readonly authoritative: boolean;
   readonly targetRaw: string;
@@ -52,7 +53,8 @@ const ACTUAL_REASONS = new Set<LedgerCorpusActualV1["reason"]>([
   "canonical_event_identity_unresolved",
   "temporal_order_unresolved",
   "history_incomplete_before_anchor",
-  "outgoing_exceeds_reconstructed_inventory"
+  "outgoing_exceeds_reconstructed_inventory",
+  "requested_amount_not_positive"
 ]);
 
 function record(value: unknown, code: string): Record<string, unknown> {
@@ -233,6 +235,8 @@ function publicReason(
       return "history_incomplete_before_anchor";
     case "debit_exceeds_inventory":
       return "outgoing_exceeds_reconstructed_inventory";
+    case "requested_amount_not_positive":
+      return "requested_amount_not_positive";
     case "snapshot_inconsistent":
     case "balance_witness_missing":
     case "balance_witness_binding_mismatch":
