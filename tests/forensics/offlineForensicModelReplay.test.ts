@@ -1355,6 +1355,12 @@ describe("service behavior 100 plus 100 research classification v2", () => {
 
     expect(w8srl.evidenceClass).toBe("recorded_calibration_vector");
     expect(result.status).toBe("high_inferred_service");
+    const compatibilityBytes = JSON.parse(JSON.stringify(result, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    ));
+    expect(fingerprintCanonicalArtifact(compatibilityBytes)).toBe(
+      "903b8b930068c34d96addcd4fee667a21b8dace37fcb640393c1523a85d26c09"
+    );
   });
 
   it("returns role conflict for the exact Binance authority control", () => {
