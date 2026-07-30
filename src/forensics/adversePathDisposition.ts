@@ -6,6 +6,7 @@ export type ExactAdverseEndpointAuthorityClassV1 =
   | "event_time_sanctions_endpoint"
   | "event_time_restricted_endpoint"
   | "exact_htx_endpoint"
+  | "exact_restricted_exchange_endpoint"
   | "tracked_drainer_endpoint"
   | "tracked_collector_endpoint"
   | "confirmed_harmful_endpoint"
@@ -106,6 +107,7 @@ const EXACT_ENDPOINT_AUTHORITIES: ReadonlySet<ExactAdverseEndpointAuthorityClass
     "event_time_sanctions_endpoint",
     "event_time_restricted_endpoint",
     "exact_htx_endpoint",
+    "exact_restricted_exchange_endpoint",
     "tracked_drainer_endpoint",
     "tracked_collector_endpoint",
     "confirmed_harmful_endpoint",

@@ -63,6 +63,7 @@ describe("adverse path disposition v1", () => {
     ["event-time sanctions", "event_time_sanctions_endpoint"],
     ["event-time restricted service", "event_time_restricted_endpoint"],
     ["exact HTX", "exact_htx_endpoint"],
+    ["exact restricted exchange", "exact_restricted_exchange_endpoint"],
     ["tracked drainer", "tracked_drainer_endpoint"],
     ["tracked collector", "tracked_collector_endpoint"],
     ["confirmed harmful endpoint", "confirmed_harmful_endpoint"],
@@ -242,7 +243,11 @@ describe("adverse path disposition v1", () => {
     });
   });
 
-  it.each(["recorded_calibration_vector", "future_authority_class"])(
+  it.each([
+    "recorded_calibration_vector",
+    "restricted_exchange_endpoint",
+    "future_authority_class"
+  ])(
     "does not promote unknown authority class %s to exact evidence",
     (authorityClass) => {
       const result = decideAdversePathDispositionV1({
