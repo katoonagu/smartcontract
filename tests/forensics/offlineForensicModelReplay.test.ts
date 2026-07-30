@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   apportionRawLargestRemainderV1,
   canonicalizeChronologicalLedgerEventsV1,
@@ -24,6 +24,7 @@ import {
   type OfflineCorpusV1
 } from "../../src/forensics/offlineForensicModelReplay.js";
 import { detectVerify20Fingerprint } from "../../src/forensics/verify20Fingerprint.js";
+import * as directHardEvidence from "../../src/forensics/directHardEvidence.js";
 
 type Case = {
   readonly id: string;
@@ -2095,6 +2096,36 @@ describe("offline forensic model replay v1", () => {
       unmatchedCounterpartyAmountRaw: "20",
       partitions: { before_event: "0", active_at_event: "30", unknown: "0" }
     });
+  });
+
+  it("drives blacklist replay from the canonical group helper output", () => {
+    const canonicalGroup = directHardEvidence.groupDirectPrincipalCounterparties;
+    const grouping = vi.spyOn(directHardEvidence, "groupDirectPrincipalCounterparties")
+      .mockImplementation((input) => canonicalGroup(input).map((group) => ({
+        ...group,
+        principalAmountRaw: 30n,
+        principalTransfers: group.principalTransfers.filter(({ amountRaw }) => amountRaw === 30n)
+      })));
+    try {
+      const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers: [
+            blacklistTransfer({ txHash: canonicalHash("1"), amountRaw: "30" }),
+            blacklistTransfer({ txHash: canonicalHash("2"), amountRaw: "20" })
+          ],
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+
+      expect(grouping).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ activeAtEventAmountRaw: "30", hardEvidenceAmountRaw: "30" });
+    } finally {
+      grouping.mockRestore();
+    }
   });
 
   it("binds mixed-direction blacklist replay to the explicit subject under permutation", () => {

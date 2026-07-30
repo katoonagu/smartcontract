@@ -753,18 +753,58 @@ function blacklistResult(item: OfflineCaseV1): ReplayCaseResultV1 {
       (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
       left.txHash.localeCompare(right.txHash)
     );
+  const transferByGroupingIdentity = new Map(transfers.map((transfer) => [
+    JSON.stringify([
+      transfer.identity,
+      transfer.direction,
+      transfer.counterparty,
+      transfer.amountRaw
+    ]),
+    transfer
+  ]));
+  const groups = groupDirectPrincipalCounterparties({
+    subjectAddress,
+    edges: [...transferByGroupingIdentity].map(([groupingIdentity, transfer]) => routeEdge({
+      id: groupingIdentity,
+      txHash: groupingIdentity,
+      fromAddress: transfer.fromAddress,
+      toAddress: transfer.toAddress,
+      amountRaw: transfer.amountRaw,
+      // ponytail: the grouping helper requires a valid Date; exact timestamps
+      // are rebound below before any temporal interpretation.
+      occurredAt: transfer.occurredAt || "1970-01-01T00:00:00.000Z"
+    })),
+    directTransferCoverage: "complete"
+  });
+  const reboundGroupingIdentities = new Set<string>();
+  const reboundGroups = groups.map((group) => {
+    const principalTransfers = group.principalTransfers.map((transfer) => {
+      const sourceTransfer = transferByGroupingIdentity.get(transfer.txHash);
+      if (sourceTransfer === undefined || sourceTransfer.direction !== group.direction ||
+        sourceTransfer.counterparty !== group.address ||
+        BigInt(sourceTransfer.amountRaw) !== transfer.amountRaw ||
+        reboundGroupingIdentities.has(transfer.txHash)) {
+        throw new TypeError("offline_corpus_blacklist_group_binding_invalid");
+      }
+      reboundGroupingIdentities.add(transfer.txHash);
+      return {
+        txHash: sourceTransfer.txHash,
+        amountRaw: transfer.amountRaw,
+        occurredAt: sourceTransfer.occurredAt
+      };
+    });
+    if (principalTransfers.reduce((sum, transfer) => sum + transfer.amountRaw, 0n) !==
+      group.principalAmountRaw) {
+      throw new TypeError("offline_corpus_blacklist_group_binding_invalid");
+    }
+    return { ...group, principalTransfers };
+  });
   const amounts = { before: 0n, active: 0n, unknown: 0n };
-  const unmatchedCounterpartyAmountRaw = transfers
-    .filter(({ counterparty }) => counterparty !== listedAddress)
-    .reduce((sum, transfer) => sum + BigInt(transfer.amountRaw), 0n);
-  for (const direction of ["inbound", "outbound"] as const) {
-    const selected = transfers
-      .filter((transfer) => transfer.direction === direction && transfer.counterparty === listedAddress)
-      .map((transfer) => ({
-        txHash: transfer.txHash,
-        amountRaw: BigInt(transfer.amountRaw),
-        occurredAt: transfer.occurredAt
-      }));
+  const unmatchedCounterpartyAmountRaw = reboundGroups
+    .filter(({ address }) => address !== listedAddress)
+    .reduce((sum, group) => sum + group.principalAmountRaw, 0n);
+  for (const group of reboundGroups.filter(({ address }) => address === listedAddress)) {
+    const selected = group.principalTransfers;
     const addition = events[0];
     const removal = events[1];
     const blockOrderValid = addition !== undefined && removal !== undefined &&
