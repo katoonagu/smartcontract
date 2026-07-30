@@ -40,12 +40,18 @@ import {
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import { buildAddressHistoryManifest } from "../../src/unifiedCheck/addressHistory.js";
 import {
+  buildServiceRoleExactEvidenceCaptureManifestV1,
+  evaluateServiceRoleExactEvidenceCaptureV1,
+  type ServiceRoleExactEvidenceCaptureReceiptV1
+} from "../../src/unifiedCheck/serviceRoleExactEvidenceCapture.js";
+import {
   type ServiceRolePoisoningDispositionV1,
   type ServiceRoleProviderRiskDispositionV1
 } from "../../src/unifiedCheck/serviceRoleMapMaterialization.js";
 import { traversalStateId, type TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
 import {
   runServiceRoleMapMaterialization,
+  loadServiceRoleMaterializationSource,
   parseServiceRoleMaterializationArgs,
   readServiceRoleLocalEvidenceBackfill,
   type ServiceRoleLocalEvidenceBackfillV1,
@@ -68,7 +74,7 @@ function event(index: number, timestamp: number): IndexedTronUsdtTransfer {
     blockNumber: 20_000 - index,
     blockTimestamp: new Date(timestamp * 1_000),
     eventIndex: 0,
-    fromAddress: `TSender-${index}`,
+    fromAddress: SUBJECT,
     toAddress: PROFILED,
     amountRaw: "1000000",
     method: "transfer",
@@ -96,6 +102,7 @@ function providerEvidence(item: IndexedTronUsdtTransfer): TronTransactionProvide
     confirmed: true,
     contractRet: "SUCCESS",
     revert: false,
+    riskTransaction: false,
     contractData: {
       contract_address: OTHER_CONTROLLER,
       data: `a9059cbb${"0".repeat(128)}`
@@ -203,6 +210,10 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
     allocatedAmountRaw: "1",
     sourceEventIds: [canonicalTronUsdtEventKey(recent[0]!)]
   };
+  const exactStates = Array.from({ length: 7 }, (_, index): TraversalStateV1 => ({
+    ...state,
+    fundingEpisodeId: `episode-${index}-${runId}`
+  }));
   const identity = {
     chain: "tron" as const,
     snapshotHash,
@@ -274,7 +285,6 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
   };
   const analysisManifestSha256 = fingerprintCanonicalArtifact(analysisManifest);
   const staleState: TraversalStateV1 = { ...state, fundingEpisodeId: "stale-episode" };
-  const parallelState: TraversalStateV1 = { ...state, fundingEpisodeId: "parallel-episode" };
   const compaction = {
     version: "unified-traversal-compaction-v2" as const,
     analysisManifestHash: analysisManifestSha256,
@@ -294,7 +304,7 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
   const delta = {
     version: "unified-traversal-delta-v1" as const,
     previousDeltaHash: null,
-    addedFrontier: [state, parallelState],
+    addedFrontier: exactStates,
     removedFrontierStateIds: [traversalStateId(staleState)],
     addedVisited: [],
     addedTerminals: [],
@@ -433,7 +443,72 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
     snapshotHash,
     manifestSha256,
     anchor: state.anchorTimestamp,
-    backfill
+    backfill,
+    events
+  };
+}
+
+async function seedCompletedCapture(
+  input: Harness,
+  fixture: Awaited<ReturnType<typeof seedFixture>>,
+  mutateReceipt: (receipt: ServiceRoleExactEvidenceCaptureReceiptV1) => ServiceRoleExactEvidenceCaptureReceiptV1 =
+    (receipt) => receipt,
+  receiptStoredSha256?: string,
+  captureStates: (states: TraversalStateV1[]) => TraversalStateV1[] = (states) => states
+): Promise<ServiceRoleLocalEvidenceBackfillV1> {
+  const source = await loadServiceRoleMaterializationSource(input.db, {
+    runId: fixture.runId,
+    manifestSha256: fixture.manifestSha256,
+    anchor: fixture.anchor
+  }, false);
+  const manifest = buildServiceRoleExactEvidenceCaptureManifestV1({
+    runId: source.runId,
+    snapshotHash: source.snapshotHash,
+    subjectAddress: source.subjectAddress,
+    states: captureStates(source.states),
+    anchor: fixture.anchor,
+    acceptedHistory: source.acceptedHistory
+  });
+  const evaluation = evaluateServiceRoleExactEvidenceCaptureV1({
+    manifest,
+    acceptedEvents: source.acceptedHistory.events,
+    transactionEvidence: new Map(fixture.events.map((item) => [item.txHash, providerEvidence(item)]))
+  });
+  if (!evaluation.receipt) throw new Error("test_capture_not_complete");
+  for (const item of [
+    { ...manifest, kind: "service_role_exact_evidence_capture_manifest" },
+    ...evaluation.poisoning.map((entry) => ({ ...entry, kind: "service_role_poisoning_disposition" })),
+    ...evaluation.providerRisk.map((entry) => ({ ...entry, kind: "service_role_provider_risk_disposition" }))
+  ]) {
+    await input.client.query(
+      `insert into unified_check_artifacts
+       (sha256,created_by_run_id,kind,schema_version,artifact_json)
+       values ($1,$2,$3,'1',$4::jsonb)
+       on conflict (sha256) do nothing`,
+      [item.sha256, fixture.runId, item.kind, JSON.stringify(item.artifact)]
+    );
+  }
+  const receipt = mutateReceipt(evaluation.receipt.artifact);
+  await input.client.query(
+    `insert into unified_check_artifacts
+     (sha256,created_by_run_id,kind,schema_version,artifact_json)
+     values ($1,$2,'service_role_exact_evidence_capture','1',$3::jsonb)`,
+    [receiptStoredSha256 ?? fingerprintCanonicalArtifact(receipt), fixture.runId, JSON.stringify(receipt)]
+  );
+  return {
+    schemaVersion: "service-role-local-evidence-backfill-v1",
+    runId: fixture.runId,
+    snapshotHash: fixture.snapshotHash,
+    addressHistoryManifestSha256: fixture.manifestSha256,
+    sampledCanonicalEventIds: [...receipt.sampledCanonicalEventIds],
+    entries: receipt.entries.map((entry) => ({
+      canonicalEventId: entry.canonicalEventId,
+      transactionInfoEvidenceId: entry.transactionInfoEvidenceId,
+      transactionInfoPayloadSha256: entry.transactionInfoPayloadSha256,
+      transactionInfoFinalityWitnessSha256: entry.transactionInfoFinalityWitnessSha256,
+      poisoningEvidenceSha256: entry.poisoningDispositionSha256,
+      providerRiskEvidenceSha256: entry.providerRiskDispositionSha256
+    }))
   };
 }
 
@@ -461,7 +536,32 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
     }
   }, 30_000);
 
-  it("audits 199/200 read-only, then atomically materializes an idempotent unreferenced 200/200 pair", async () => {
+  it("keeps 200 valid raw and disposition rows incomplete without a completed capture receipt", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      for (const mode of ["audit", "materialize"] as const) {
+        const result = await runServiceRoleMapMaterialization(test.db, {
+          mode,
+          runId: fixture.runId,
+          manifestSha256: fixture.manifestSha256,
+          anchor: fixture.anchor,
+          backfill: fixture.backfill
+        });
+        expect(result.classification).toBe("incomplete");
+        expect(result.eventRoleMapSha256).toBeNull();
+        expect(result.evidenceBundleSha256).toBeNull();
+      }
+      expect((await test.client.query(
+        `select count(*)::int count from unified_check_artifacts
+         where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')`
+      )).rows[0].count).toBe(0);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("audits a missing receipt read-only, then atomically materializes an idempotent unreferenced 200/200 pair", async () => {
     const test = await harness();
     try {
       const fixture = await seedFixture(test, 199);
@@ -484,16 +584,17 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       expect(test.transactionModes).toEqual(["read_only", "read_only"]);
       expect(first.coverage).toMatchObject({
         sampledEventCount: 200,
-        fullyAuthorizedEventCount: 199
+        fullyAuthorizedEventCount: 0
       });
-      expect(first.coverage.traversalStateIds).toHaveLength(2);
+      expect(first.coverage.traversalStateIds).toHaveLength(7);
       expect((await test.client.query(
         `select count(*)::int count from unified_check_artifacts
          where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')`
       )).rows[0].count).toBe(0);
 
       const completed = await seedFixtureEvidenceEntry(test, fixture, 199);
-      const completeCommand = { ...command, backfill: completed };
+      const receiptBackfill = await seedCompletedCapture(test, { ...fixture, backfill: completed });
+      const completeCommand = { ...command, backfill: receiptBackfill };
       const materialized = await runServiceRoleMapMaterialization(test.db, {
         mode: "materialize",
         ...completeCommand
@@ -524,6 +625,176 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
          order by kind`
       )).rows;
       expect(afterRetry).toEqual(beforeRetry);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("accepts one hash-valid source-bound receipt without a legacy backfill", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      await seedCompletedCapture(test, fixture);
+      const result = await runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      });
+      expect(result.classification).toBe("complete");
+      expect(result.coverage).toMatchObject({ sampledEventCount: 200, fullyAuthorizedEventCount: 200 });
+      expect(test.transactionModes).toEqual(["read_only"]);
+      expect((await test.client.query(
+        `select count(*)::int count from unified_check_artifacts
+         where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')`
+      )).rows[0].count).toBe(0);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("rejects two completed receipt candidates for one run, history, and sample", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      await seedCompletedCapture(test, fixture);
+      await seedCompletedCapture(test, fixture, (receipt) => ({
+        ...receipt,
+        entries: receipt.entries.map((entry, index) => index === 0
+          ? { ...entry, role: "provider_risk" }
+          : entry)
+      }));
+      await expect(runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      })).rejects.toThrow("service_role_materialization_capture_conflict");
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("rejects bad receipt, event-body, raw, and disposition hashes", async () => {
+    const mutations: Array<{
+      name: string;
+      mutate: (receipt: ServiceRoleExactEvidenceCaptureReceiptV1) => ServiceRoleExactEvidenceCaptureReceiptV1;
+      storedSha256?: string;
+    }> = [
+      { name: "artifact hash", mutate: (receipt) => receipt, storedSha256: "f".repeat(64) },
+      { name: "event body", mutate: (receipt) => ({ ...receipt, entries: receipt.entries.map((entry, index) => index === 0 ? { ...entry, eventBodySha256: "f".repeat(64) } : entry) }) },
+      { name: "raw payload", mutate: (receipt) => ({ ...receipt, entries: receipt.entries.map((entry, index) => index === 0 ? { ...entry, transactionInfoPayloadSha256: "f".repeat(64) } : entry) }) },
+      { name: "poisoning disposition", mutate: (receipt) => ({ ...receipt, entries: receipt.entries.map((entry, index) => index === 0 ? { ...entry, poisoningDispositionSha256: "f".repeat(64) } : entry) }) },
+      { name: "provider disposition", mutate: (receipt) => ({ ...receipt, entries: receipt.entries.map((entry, index) => index === 0 ? { ...entry, providerRiskDispositionSha256: "f".repeat(64) } : entry) }) }
+    ];
+    for (const mutation of mutations) {
+      const test = await harness();
+      try {
+        const fixture = await seedFixture(test, 200);
+        await seedCompletedCapture(test, fixture, mutation.mutate, mutation.storedSha256);
+        await expect(runServiceRoleMapMaterialization(test.db, {
+          mode: "audit",
+          runId: fixture.runId,
+          manifestSha256: fixture.manifestSha256,
+          anchor: fixture.anchor,
+          backfill: null
+        }), mutation.name).rejects.toThrow("service_role_materialization_capture_conflict");
+      } finally {
+        await dispose(test);
+      }
+    }
+  }, 120_000);
+
+  it("rejects a receipt bound to the wrong ordered sample", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      await seedCompletedCapture(test, fixture, (receipt) => ({
+        ...receipt,
+        sampledCanonicalEventIds: [...receipt.sampledCanonicalEventIds].reverse()
+      }));
+      await expect(runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      })).rejects.toThrow("service_role_materialization_capture_conflict");
+      expect((await test.client.query(
+        `select count(*)::int count from unified_check_artifacts
+         where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')`
+      )).rows[0].count).toBe(0);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("ignores a valid receipt owned by a different capture-manifest identity", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      await seedCompletedCapture(test, fixture, (receipt) => receipt, undefined, (states) =>
+        states.map((state, index) => ({ ...state, fundingEpisodeId: `other-episode-${index}` })));
+      const result = await runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      });
+      expect(result.classification).toBe("incomplete");
+      expect(result.eventRoleMapSha256).toBeNull();
+      expect((await test.client.query(
+        `select count(*)::int count from unified_check_artifacts
+         where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')`
+      )).rows[0].count).toBe(0);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("requires legacy backfill references to equal the receipt and never lets them bypass it", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const mismatched = {
+        ...backfill,
+        entries: backfill.entries.map((entry, index) => index === 0
+          ? { ...entry, poisoningEvidenceSha256: backfill.entries[1]!.poisoningEvidenceSha256 }
+          : entry)
+      };
+      await expect(runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: mismatched
+      })).rejects.toThrow("service_role_materialization_backfill_binding_invalid");
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("reparses GasFree from raw evidence and rejects a different inline receipt disposition", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      await seedCompletedCapture(test, fixture, (receipt) => ({
+        ...receipt,
+        entries: receipt.entries.map((entry, index) => index === 0
+          ? { ...entry, gasFree: { disposition: "not_gasfree", reason: "selector_not_registered", settlementSha256: null, movementSha256: null } }
+          : entry)
+      }));
+      await expect(runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      })).rejects.toThrow("service_role_materialization_capture_conflict");
     } finally {
       await dispose(test);
     }
@@ -560,27 +831,14 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
          where kind='service_role_event_evidence_bundle'`
       )).rows[0].count).toBe(0);
 
-      const mismatched = {
-        ...fixture.backfill,
-        entries: fixture.backfill.entries.map((entry, index) => index === 0
-          ? { ...entry, transactionInfoPayloadSha256: "f".repeat(64) }
-          : entry)
-      };
-      await expect(runServiceRoleMapMaterialization(test.db, {
-        mode: "audit",
-        runId: fixture.runId,
-        manifestSha256: fixture.manifestSha256,
-        anchor: fixture.anchor,
-        backfill: mismatched
-      })).rejects.toThrow("service_role_materialization_backfill_binding_invalid");
-
       const atomic = await seedFixture(test, 200);
+      const atomicBackfill = await seedCompletedCapture(test, atomic);
       const audit = await runServiceRoleMapMaterialization(test.db, {
         mode: "audit",
         runId: atomic.runId,
         manifestSha256: atomic.manifestSha256,
         anchor: atomic.anchor,
-        backfill: atomic.backfill
+        backfill: atomicBackfill
       });
       expect(audit.eventRoleMapSha256).toMatch(/^[0-9a-f]{64}$/u);
       await test.client.query(
@@ -594,7 +852,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         runId: atomic.runId,
         manifestSha256: atomic.manifestSha256,
         anchor: atomic.anchor,
-        backfill: atomic.backfill
+        backfill: atomicBackfill
       })).rejects.toThrow("unified_artifact_conflict");
       expect((await test.client.query(
         `select count(*)::int count from unified_check_artifacts

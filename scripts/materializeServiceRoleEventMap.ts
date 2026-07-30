@@ -10,7 +10,6 @@ import {
 import { canonicalTronUsdtEventKey } from "../src/forensics/tronAddressAllTimeIndex.js";
 import {
   getTransactionProviderEvidence,
-  transactionProviderEvidenceId,
   type TronTransactionProviderEvidenceV1
 } from "../src/storage/transactionEvidenceRepository.js";
 import type { IndexedTronUsdtTransfer } from "../src/types.js";
@@ -20,6 +19,12 @@ import {
 } from "../src/unifiedCheck/addressHistory.js";
 import type { UnifiedAddressHistoryPageArtifactV1 } from "../src/unifiedCheck/productionAddressHistory.js";
 import { parseAnalysisManifestV1 } from "../src/unifiedCheck/contracts.js";
+import {
+  buildServiceRoleExactEvidenceCaptureManifestV1,
+  validateServiceRoleExactEvidenceCaptureReceiptV1,
+  type ServiceRoleExactEvidenceCaptureManifestV1,
+  type ServiceRoleExactEvidenceCaptureReceiptV1
+} from "../src/unifiedCheck/serviceRoleExactEvidenceCapture.js";
 import { insertUnifiedArtifact, type UnifiedQueryable } from "../src/unifiedCheck/repository.js";
 import {
   materializeServiceRoleEventMapV1,
@@ -577,23 +582,6 @@ export type ServiceRoleMaterializationSource = Awaited<
   ReturnType<typeof loadServiceRoleMaterializationSource>
 >;
 
-async function loadBoundDisposition<T>(db: ServiceRoleMaterializationQueryable, input: {
-  sha256: string;
-  runId: string;
-  kind: string;
-}): Promise<{ sha256: string; artifact: T }> {
-  const rows = await artifactRows(db, [input.sha256]);
-  return {
-    sha256: input.sha256,
-    artifact: validateArtifactRow(rows.get(input.sha256), {
-      sha256: input.sha256,
-      runId: input.runId,
-      kind: input.kind,
-      schemaVersion: "1"
-    }) as T
-  };
-}
-
 async function buildMaterialization(db: ServiceRoleMaterializationQueryable, command: ServiceRoleMaterializationCommand, lock: boolean): Promise<Materialization> {
   const source = await loadServiceRoleMaterializationSource(db, command, lock);
   const shadowInputs = source.states.map((state) => ({
@@ -615,95 +603,177 @@ async function buildMaterialization(db: ServiceRoleMaterializationQueryable, com
   if (shadows.some((item) => fingerprintCanonicalArtifact(item!.artifact.sampledCanonicalEventIds) !== sampleIdentity)) {
     fail("service_role_materialization_traversal_state_conflict");
   }
-  const sampledSet = new Set(sampledIds);
   const events = new Map(source.acceptedHistory.events.map((item) => [canonicalTronUsdtEventKey(item), item]));
 
-  const references = new Map<string, ServiceRoleLocalEvidenceBackfillV1["entries"][number]>();
-  const automaticPoisoning = new Map<string, string>();
-  const automaticProviderRisk = new Map<string, string>();
+  let captureManifest: { sha256: string; artifact: ServiceRoleExactEvidenceCaptureManifestV1 };
+  try {
+    captureManifest = buildServiceRoleExactEvidenceCaptureManifestV1({
+      runId: source.runId,
+      snapshotHash: source.snapshotHash,
+      subjectAddress: source.subjectAddress,
+      states: source.states,
+      anchor: command.anchor,
+      acceptedHistory: source.acceptedHistory
+    });
+  } catch {
+    fail("service_role_materialization_capture_conflict");
+  }
+
+  const receiptRows = await db.query(
+    `select sha256,created_by_run_id,kind,schema_version,artifact_json
+       from unified_check_artifacts
+      where created_by_run_id=$1
+        and kind='service_role_exact_evidence_capture'
+        and artifact_json->>'addressHistoryManifestSha256'=$2
+        and artifact_json->>'captureManifestSha256'=$3
+      order by sha256`,
+    [source.runId, command.manifestSha256, captureManifest.sha256]
+  );
+  if (receiptRows.rows.length === 0) return materializeAcrossStates(shadowInputs, []);
+  if (receiptRows.rows.length !== 1) fail("service_role_materialization_capture_conflict");
+
+  let receipt: { sha256: string; artifact: ServiceRoleExactEvidenceCaptureReceiptV1 };
+  try {
+    const row = receiptRows.rows[0];
+    receipt = {
+      sha256: String(row.sha256),
+      artifact: validateArtifactRow(row, {
+        sha256: String(row.sha256),
+        runId: source.runId,
+        kind: "service_role_exact_evidence_capture",
+        schemaVersion: "1"
+      }) as ServiceRoleExactEvidenceCaptureReceiptV1
+    };
+    if (receipt.artifact.captureManifestSha256 !== captureManifest.sha256 ||
+      receipt.artifact.runId !== source.runId || receipt.artifact.snapshotHash !== source.snapshotHash ||
+      receipt.artifact.addressHistoryManifestSha256 !== command.manifestSha256 ||
+      canonicalizeArtifactJson(receipt.artifact.sampledCanonicalEventIds) !== canonicalizeArtifactJson(sampledIds)) {
+      fail("service_role_materialization_capture_conflict");
+    }
+    const manifestRows = await artifactRows(db, [receipt.artifact.captureManifestSha256]);
+    const storedManifest = validateArtifactRow(manifestRows.get(receipt.artifact.captureManifestSha256), {
+      sha256: receipt.artifact.captureManifestSha256,
+      runId: source.runId,
+      kind: "service_role_exact_evidence_capture_manifest",
+      schemaVersion: "1"
+    });
+    if (canonicalizeArtifactJson(storedManifest) !== canonicalizeArtifactJson(captureManifest.artifact)) {
+      fail("service_role_materialization_capture_conflict");
+    }
+  } catch {
+    fail("service_role_materialization_capture_conflict");
+  }
+
+  if (!Array.isArray(receipt.artifact.entries) || receipt.artifact.entries.length !== sampledIds.length) {
+    fail("service_role_materialization_capture_conflict");
+  }
+  const receiptEntries = new Map(receipt.artifact.entries.map((entry) => [entry.canonicalEventId, entry]));
+  if (receiptEntries.size !== sampledIds.length || sampledIds.some((id) => !receiptEntries.has(id))) {
+    fail("service_role_materialization_capture_conflict");
+  }
+  const dispositionHashes = receipt.artifact.entries.flatMap((entry) => [
+    entry.poisoningDispositionSha256,
+    entry.providerRiskDispositionSha256
+  ]);
+  if (dispositionHashes.some((value) => typeof value !== "string" || !HASH.test(value))) {
+    fail("service_role_materialization_capture_conflict");
+  }
+  const dispositionRows = await artifactRows(db, dispositionHashes);
+  const poisoning = new Map<string, { sha256: string; artifact: ServiceRolePoisoningDispositionV1 }>();
+  const providerRisk = new Map<string, { sha256: string; artifact: ServiceRoleProviderRiskDispositionV1 }>();
+  try {
+    for (const entry of receipt.artifact.entries) {
+      poisoning.set(entry.canonicalEventId, {
+        sha256: entry.poisoningDispositionSha256,
+        artifact: validateArtifactRow(dispositionRows.get(entry.poisoningDispositionSha256), {
+          sha256: entry.poisoningDispositionSha256,
+          runId: source.runId,
+          kind: "service_role_poisoning_disposition",
+          schemaVersion: "1"
+        }) as ServiceRolePoisoningDispositionV1
+      });
+      providerRisk.set(entry.canonicalEventId, {
+        sha256: entry.providerRiskDispositionSha256,
+        artifact: validateArtifactRow(dispositionRows.get(entry.providerRiskDispositionSha256), {
+          sha256: entry.providerRiskDispositionSha256,
+          runId: source.runId,
+          kind: "service_role_provider_risk_disposition",
+          schemaVersion: "1"
+        }) as ServiceRoleProviderRiskDispositionV1
+      });
+    }
+  } catch {
+    fail("service_role_materialization_capture_conflict");
+  }
+
+  const transactionEvidence = new Map<string, TronTransactionProviderEvidenceV1>();
+  for (const event of captureManifest.artifact.events) {
+    const evidence = await getTransactionProviderEvidence(db as any, {
+      version: "tron-transaction-provider-evidence-v1",
+      chain: "tron",
+      txHash: event.txHash,
+      provider: "tronscan",
+      endpoint: "transaction-info",
+      providerSchemaVersion: 1
+    });
+    if (evidence) transactionEvidence.set(event.txHash, evidence as TronTransactionProviderEvidenceV1);
+  }
+  try {
+    validateServiceRoleExactEvidenceCaptureReceiptV1({
+      manifest: captureManifest,
+      receipt,
+      acceptedEvents: source.acceptedHistory.events,
+      transactionEvidence,
+      poisoning,
+      providerRisk
+    });
+  } catch {
+    fail("service_role_materialization_capture_conflict");
+  }
+
   if (command.backfill !== null) {
     const backfill = parseBackfill(command.backfill);
-    if (backfill.runId !== source.runId || backfill.snapshotHash !== source.snapshotHash ||
-      backfill.addressHistoryManifestSha256 !== command.manifestSha256 ||
-      canonicalizeArtifactJson([...backfill.sampledCanonicalEventIds].sort()) !== canonicalizeArtifactJson([...sampledSet].sort()) ||
-      backfill.entries.some((entry) => !sampledSet.has(entry.canonicalEventId))) {
+    const expectedBackfill: ServiceRoleLocalEvidenceBackfillV1 = {
+      schemaVersion: "service-role-local-evidence-backfill-v1",
+      runId: receipt.artifact.runId,
+      snapshotHash: receipt.artifact.snapshotHash,
+      addressHistoryManifestSha256: receipt.artifact.addressHistoryManifestSha256,
+      sampledCanonicalEventIds: receipt.artifact.sampledCanonicalEventIds,
+      entries: receipt.artifact.entries.map((entry) => ({
+        canonicalEventId: entry.canonicalEventId,
+        transactionInfoEvidenceId: entry.transactionInfoEvidenceId,
+        transactionInfoPayloadSha256: entry.transactionInfoPayloadSha256,
+        transactionInfoFinalityWitnessSha256: entry.transactionInfoFinalityWitnessSha256,
+        poisoningEvidenceSha256: entry.poisoningDispositionSha256,
+        providerRiskEvidenceSha256: entry.providerRiskDispositionSha256
+      }))
+    };
+    if (canonicalizeArtifactJson(backfill) !== canonicalizeArtifactJson(expectedBackfill)) {
       fail("service_role_materialization_backfill_binding_invalid");
-    }
-    for (const entry of backfill.entries) references.set(entry.canonicalEventId, entry);
-  } else {
-    const dispositionRows = await db.query(
-      `select sha256,kind,artifact_json from unified_check_artifacts
-        where created_by_run_id=$1
-          and kind in ('service_role_poisoning_disposition','service_role_provider_risk_disposition')
-          and artifact_json->>'addressHistoryManifestSha256'=$2`,
-      [source.runId, command.manifestSha256]
-    );
-    for (const row of dispositionRows.rows) {
-      const id = row.artifact_json?.canonicalEventId;
-      if (typeof id !== "string" || !sampledSet.has(id)) continue;
-      if (row.kind === "service_role_poisoning_disposition") {
-        if (automaticPoisoning.has(id)) fail("service_role_materialization_evidence_conflict");
-        automaticPoisoning.set(id, String(row.sha256));
-      } else {
-        if (automaticProviderRisk.has(id)) fail("service_role_materialization_evidence_conflict");
-        automaticProviderRisk.set(id, String(row.sha256));
-      }
     }
   }
 
   const localEvidence: Array<Parameters<typeof materializeServiceRoleEventMapV1>[0]["localEvidence"][number]> = [];
   for (const canonicalEventId of sampledIds) {
     const item = events.get(canonicalEventId);
-    if (!item) fail("service_role_materialization_backfill_binding_invalid");
-    const identity = {
-      version: "tron-transaction-provider-evidence-v1" as const,
-      chain: "tron" as const,
-      txHash: item.txHash.toLowerCase(),
-      provider: "tronscan" as const,
-      endpoint: "transaction-info" as const,
-      providerSchemaVersion: 1 as const
-    };
-    const evidenceId = transactionProviderEvidenceId(identity);
-    const reference = references.get(canonicalEventId);
-    if (reference && evidenceId !== reference.transactionInfoEvidenceId) {
-      fail("service_role_materialization_backfill_binding_invalid");
-    }
-    const evidence = await getTransactionProviderEvidence(db as any, identity);
-    if (reference && (!evidence || evidence.payloadSha256 !== reference.transactionInfoPayloadSha256 ||
-      evidence.finality.witnessSha256 !== reference.transactionInfoFinalityWitnessSha256)) {
-      fail("service_role_materialization_backfill_binding_invalid");
-    }
-    const poisoningSha256 = reference?.poisoningEvidenceSha256 ?? automaticPoisoning.get(canonicalEventId) ?? null;
-    const providerRiskSha256 = reference?.providerRiskEvidenceSha256 ?? automaticProviderRisk.get(canonicalEventId) ?? null;
-    const poisoning = poisoningSha256 === null ? null : await loadBoundDisposition<ServiceRolePoisoningDispositionV1>(db, {
-      sha256: poisoningSha256, runId: source.runId, kind: "service_role_poisoning_disposition"
-    });
-    const providerRisk = providerRiskSha256 === null ? null : await loadBoundDisposition<ServiceRoleProviderRiskDispositionV1>(db, {
-      sha256: providerRiskSha256, runId: source.runId, kind: "service_role_provider_risk_disposition"
-    });
-    const bindingError = reference
-      ? "service_role_materialization_backfill_binding_invalid"
-      : "service_role_materialization_evidence_invalid";
-    if (poisoning && (poisoning.artifact.schemaVersion !== "service-role-poisoning-disposition-v1" ||
-      poisoning.artifact.policyVersion !== "address-poisoning-v1" || poisoning.artifact.runId !== source.runId ||
-      poisoning.artifact.snapshotHash !== source.snapshotHash ||
-      poisoning.artifact.addressHistoryManifestSha256 !== command.manifestSha256 ||
-      poisoning.artifact.canonicalEventId !== canonicalEventId || poisoning.artifact.coverage !== "complete" ||
-      !["not_poisoning", "poisoning_only"].includes(poisoning.artifact.disposition))) fail(bindingError);
-    if (providerRisk && (providerRisk.artifact.schemaVersion !== "service-role-provider-risk-disposition-v1" ||
-      providerRisk.artifact.runId !== source.runId || providerRisk.artifact.snapshotHash !== source.snapshotHash ||
-      providerRisk.artifact.addressHistoryManifestSha256 !== command.manifestSha256 ||
-      providerRisk.artifact.canonicalEventId !== canonicalEventId ||
-      !["not_provider_risk", "provider_risk"].includes(providerRisk.artifact.disposition))) fail(bindingError);
+    if (!item) fail("service_role_materialization_capture_conflict");
+    const entry = receiptEntries.get(canonicalEventId)!;
+    const evidence = transactionEvidence.get(item.txHash.toLowerCase()) ?? null;
     localEvidence.push({
       canonicalEventId,
-      transactionInfo: evidence ? { id: evidenceId, evidence: evidence as TronTransactionProviderEvidenceV1 } : null,
-      poisoning,
-      providerRisk
+      transactionInfo: evidence ? { id: entry.transactionInfoEvidenceId, evidence } : null,
+      poisoning: poisoning.get(canonicalEventId) ?? null,
+      providerRisk: providerRisk.get(canonicalEventId) ?? null
     });
   }
-  const materializations = shadowInputs.map((shadowInput) =>
-    materializeServiceRoleEventMapV1({ shadowInput, localEvidence }));
+  return materializeAcrossStates(shadowInputs, localEvidence);
+}
+
+function materializeAcrossStates(
+  shadowInputs: readonly Parameters<typeof materializeServiceRoleEventMapV1>[0]["shadowInput"][],
+  localEvidence: Parameters<typeof materializeServiceRoleEventMapV1>[0]["localEvidence"]
+): Materialization {
+  const materializations = shadowInputs.map((shadowInput) => materializeServiceRoleEventMapV1({ shadowInput, localEvidence }));
   const first = materializations[0]!;
   const coverageIdentity = fingerprintCanonicalArtifact({ ...first.coverage, traversalStateIds: [] });
   if (materializations.some((item) =>
