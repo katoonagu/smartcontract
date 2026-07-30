@@ -420,6 +420,7 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
     uniqueCounterparties <= featureEligibleEventCount &&
     uniqueCounterparties >= Math.max(uniqueSenders, uniqueRecipients) &&
     uniqueCounterparties <= uniqueSenders + uniqueRecipients &&
+    (featureEligibleEventCount === 0 || largestCounterpartyCount >= 1) &&
     largestCounterpartyCount <= featureEligibleEventCount &&
     largestCounterpartyShareDenominator === featureEligibleEventCount &&
     (dominantDirection === "incoming" ? incomingCount > outgoingCount : outgoingCount > incomingCount) &&
@@ -428,6 +429,7 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
       dominantDirection === "incoming" ? uniqueSenders : uniqueRecipients
     ) &&
     dominantShareDenominator === featureEligibleEventCount &&
+    (dominantDirectionCount === 0 || maxDominantDirectionEventsPerHour >= 1) &&
     maxDominantDirectionEventsPerHour <= dominantDirectionCount &&
     activeUtcHourOfDayCount <= 24 && activeUtcHourOfDayCount <= featureEligibleEventCount &&
     dominantExactAmountCount <= dominantDirectionCount &&

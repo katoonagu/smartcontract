@@ -2977,6 +2977,30 @@ describe("offline forensic model replay v1", () => {
     }))).toThrow("offline_corpus_service_vector_invalid");
   });
 
+  it.each([
+    ["largest counterparty", "recent", 0, "largestCounterparty"],
+    ["largest counterparty", "historical", 1, "largestCounterparty"],
+    ["dominant hourly bucket", "recent", 0, "maxDominantDirectionEventsPerHour"],
+    ["dominant hourly bucket", "historical", 1, "maxDominantDirectionEventsPerHour"],
+    ["dominant repeated amount", "recent", 0, "dominantExactAmount"],
+    ["dominant repeated amount", "historical", 1, "dominantExactAmount"]
+  ] as const)("rejects a zero %s count in the %s window", (_name, _kind, windowIndex, field) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as Record<string, unknown>[])[windowIndex]!;
+    if (field === "largestCounterparty") {
+      (window.largestCounterparty as Record<string, unknown>).count = 0;
+    } else if (field === "dominantExactAmount") {
+      (window.dominantExactAmount as Record<string, unknown>).count = 0;
+    } else {
+      window.maxDominantDirectionEventsPerHour = 0;
+    }
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
   it("routes both recorded windows through the 100 plus 100 classifier", () => {
     const serviceCase = structuredClone(corpus.serviceCases
       .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
