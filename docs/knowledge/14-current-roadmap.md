@@ -138,11 +138,13 @@ Verification on this tree passed:
   graph excluded production paths;
 - `git diff --check`.
 
-The exact PowerShell capture below is runnable from the repository root.
-`Start-Process -PassThru` records the expected nonzero CLI exits without
-turning exit code 1 into a script abort. Base64 encoding is used only to compare
-the two raw byte arrays exactly; the files themselves are not decoded or
-line-normalized before the comparison or hash calculation.
+The PowerShell recipe below records a deterministic capture from the repository
+root. The numeric baseline that follows it is historical evidence for tree
+`b6c0f74dcd11119f62ba93923a2fec209d6f36e3`; reproduce those exact bytes only
+from that tree. `Start-Process -PassThru` records the expected nonzero CLI exits
+without turning exit code 1 into a script abort. Base64 encoding is used only to
+compare the two raw byte arrays exactly; the files themselves are not decoded
+or line-normalized before the comparison or hash calculation.
 
 ```powershell
 $replayTemp = Join-Path ([IO.Path]::GetTempPath()) ("forensic-replay-" + [guid]::NewGuid())
@@ -181,7 +183,9 @@ $joined = foreach ($mismatch in $report.expectationMismatches) {
 $joined | Where-Object ResultState -ne "expectation_level" | Format-Table CaseId, ResultState, Reason -AutoSize
 ```
 
-Expected stable output, apart from the unique temporary-directory name:
+Historical stable output on
+`b6c0f74dcd11119f62ba93923a2fec209d6f36e3`, apart from the unique
+temporary-directory name:
 `Exit1: 1`, `Exit2: 1`, `ByteIdentical: True`, both stdout lengths
 `11958`, both stdout SHA-256 values
 `6ddce2ac4814f5cd9a6f5e38359662c63c706004feea7f31af4b133323adb109`,
@@ -191,6 +195,15 @@ and `DataGaps: 4`. The final table contains
 `pacgy-recorded-chronology` with `unresolved` / `history_incomplete` and
 `event-time-blacklist-partitions` with no `state` or `reason` field in that
 typed result.
+
+On the current Cashflow Foundation plus Stage C offline integration tree, the
+same default runner remains deterministically fail-closed: both runs exit `1`,
+stdout is byte-identical at `12334` bytes with SHA-256
+`372e7b64f97ba02bbc58db431af1db73eac57465ceec5e8946f9daef6239a9e8`, stderr
+is empty, `22` expectations are not replayed, `21` of those remain
+`expectation_level`, `1` is another unresolved result, `15` cases match, and
+there are `4` data gaps. The separate ledger-only gate passes `7/7`; the real
+PacGy case remains `unresolved` / `history_incomplete_before_anchor`.
 
 This is no production activation. Stage D remains deferred and not approved;
 production routing, scoring, traversal, configuration and delivery are
