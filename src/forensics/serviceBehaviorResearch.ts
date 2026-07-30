@@ -12,7 +12,9 @@ export type ServiceBehaviorRowV2 = {
     | "ordinary"
     | "poisoning_only"
     | "gasfree_fee"
-    | "gasfree_principal";
+    | "gasfree_principal"
+    | "provider_risk";
+  readonly orderAuthority?: "exact_position" | "unique_block";
 };
 
 export type MedianGapV2 = {
@@ -111,10 +113,11 @@ function compareRows(left: ServiceBehaviorRowV2, right: ServiceBehaviorRowV2): n
 }
 
 function hasAuthoritativeOrder(row: ServiceBehaviorRowV2): boolean {
-  return Number.isSafeInteger(row.blockNumber) && row.blockNumber >= 0 &&
-    Number.isSafeInteger(row.transactionIndex) && (row.transactionIndex ?? -1) >= 0 &&
-    Number.isSafeInteger(row.eventIndex) && (row.eventIndex ?? -1) >= 0 &&
-    Number.isSafeInteger(row.occurredAtSeconds);
+  if (!Number.isSafeInteger(row.blockNumber) || row.blockNumber < 0 ||
+    !Number.isSafeInteger(row.occurredAtSeconds)) return false;
+  if (row.orderAuthority === "unique_block") return true;
+  return Number.isSafeInteger(row.transactionIndex) && (row.transactionIndex ?? -1) >= 0 &&
+    Number.isSafeInteger(row.eventIndex) && (row.eventIndex ?? -1) >= 0;
 }
 
 function samePayload(left: ServiceBehaviorRowV2, right: ServiceBehaviorRowV2): boolean {
@@ -126,7 +129,8 @@ function samePayload(left: ServiceBehaviorRowV2, right: ServiceBehaviorRowV2): b
     left.counterpartyAddress === right.counterpartyAddress &&
     left.amountRaw === right.amountRaw &&
     left.valid === right.valid &&
-    left.featureRole === right.featureRole;
+    left.featureRole === right.featureRole &&
+    left.orderAuthority === right.orderAuthority;
 }
 
 function medianGap(rows: readonly ServiceBehaviorRowV2[]): MedianGapV2 | null {
@@ -196,10 +200,16 @@ export function computeServiceWindowVectorV2(
   }
   canonicalRows.sort(compareRows);
   const orderSlots = new Set<string>();
+  const uniqueBlockAuthority = canonicalRows.some(({ orderAuthority }) =>
+    orderAuthority === "unique_block"
+  );
+  const blocks = new Set<number>();
   for (const row of canonicalRows) {
     const slot = `${row.blockNumber}:${row.transactionIndex}:${row.eventIndex}`;
     if (orderSlots.has(slot)) orderAuthoritative = false;
     orderSlots.add(slot);
+    if (uniqueBlockAuthority && blocks.has(row.blockNumber)) orderAuthoritative = false;
+    blocks.add(row.blockNumber);
   }
 
   const poisoningOnlyEventCount = canonicalRows.filter(({ featureRole }) =>
