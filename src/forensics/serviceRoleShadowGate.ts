@@ -9,6 +9,8 @@ import {
 } from "../unifiedCheck/serviceRoleShadow";
 import { canonicalTronUsdtEventKey } from "./tronAddressAllTimeIndex";
 import type { IndexedTronUsdtTransfer } from "../types";
+import { addressHistoryManifestKey } from "../unifiedCheck/addressHistory";
+import type { TraversalStateV1 } from "../unifiedCheck/traversal";
 
 export type StageCCaseEvaluationV1 =
   | "reconstructed_history_replay"
@@ -39,7 +41,7 @@ export type ServiceRoleShadowGateReceiptV1 = {
   mismatches: readonly string[];
 };
 
-const HASH = "a".repeat(64);
+const SHA256 = /^[0-9a-f]{64}$/u;
 const RECONSTRUCTION_CASE_ID = "reconstructed-accepted-history-v1";
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -77,86 +79,138 @@ function serviceEvaluation(id: string): StageCCaseEvaluationV1 {
   return "expectation_integrity_only";
 }
 
-function reconstruct(fixture: unknown): { matched: boolean; mismatch: string | null } {
-  const source = record(fixture);
-  const spec = source && record(source.eventSpec);
-  if (!source || !spec || source.schemaVersion !== "service-role-shadow-reconstruction-v1" ||
-    source.caseId !== RECONSTRUCTION_CASE_ID || source.expectedStatus !== "high_inferred_service" ||
-    typeof source.sourceSha256 !== "string") return { matched: false, mismatch: "reconstruction_fixture_invalid" };
-  const expectedSource = fingerprintCanonicalArtifact({
-    schemaVersion: source.schemaVersion,
-    caseId: source.caseId,
-    expectedStatus: source.expectedStatus,
-    eventSpec: spec
-  });
-  if (source.sourceSha256 !== expectedSource || spec.anchorSeconds === undefined ||
-    spec.recentRows !== 100 || spec.historicalRows !== 100 || spec.role !== "ordinary" ||
-    spec.authority !== "existing_hash_bound_economic_role_v1") {
-    return { matched: false, mismatch: "reconstruction_source_binding_invalid" };
-  }
-  const anchorSeconds = spec.anchorSeconds;
-  if (typeof anchorSeconds !== "number" || !Number.isSafeInteger(anchorSeconds)) {
-    return { matched: false, mismatch: "reconstruction_anchor_invalid" };
-  }
-  const profiledAddress = "TStageCProfile";
-  const events: IndexedTronUsdtTransfer[] = [
-    ...Array.from({ length: 100 }, (_, index) => indexedEvent(index, anchorSeconds - index, profiledAddress)),
-    ...Array.from({ length: 100 }, (_, index) => indexedEvent(index + 100, anchorSeconds - 8 * 86_400 - index, profiledAddress))
-  ];
-  const map: ServiceRoleShadowEventRoleMapV1 = {
-    schemaVersion: "service-role-shadow-event-role-map-v1",
-    runId: "stage-c-fixture-run",
-    snapshotHash: HASH,
-    addressHistoryManifestSha256: "b".repeat(64),
-    entries: events.map((event) => ({
-      canonicalEventId: canonicalTronUsdtEventKey(event),
-      role: "ordinary",
-      authority: "existing_hash_bound_economic_role_v1",
-      evidenceSha256: "c".repeat(64)
-    }))
+function fixtureEvent(value: unknown): IndexedTronUsdtTransfer | null {
+  const source = record(value);
+  if (!source || typeof source.txHash !== "string" ||
+    !Number.isSafeInteger(source.blockNumber) || !Number.isSafeInteger(source.eventIndex) ||
+    typeof source.blockTimestamp !== "string" ||
+    new Date(source.blockTimestamp).toISOString() !== source.blockTimestamp ||
+    typeof source.fromAddress !== "string" || typeof source.toAddress !== "string" ||
+    typeof source.amountRaw !== "string" || !/^(0|[1-9][0-9]*)$/u.test(source.amountRaw) ||
+    (source.method !== "transfer" && source.method !== "transferFrom") ||
+    !(source.callerAddress === null || typeof source.callerAddress === "string") ||
+    !(source.contractRet === null || typeof source.contractRet === "string") ||
+    typeof source.confirmed !== "boolean") return null;
+  return {
+    txHash: source.txHash,
+    blockNumber: source.blockNumber as number,
+    blockTimestamp: new Date(source.blockTimestamp),
+    eventIndex: source.eventIndex as number,
+    fromAddress: source.fromAddress,
+    toAddress: source.toAddress,
+    amountRaw: source.amountRaw,
+    method: source.method,
+    callerAddress: source.callerAddress,
+    contractRet: source.contractRet,
+    confirmed: source.confirmed
   };
-  const result = maybeBuildServiceRoleShadowArtifactV1({
-    mode: "service-role-shadow-100-plus-100-v1",
-    runId: map.runId,
-    snapshotHash: HASH,
-    subjectAddress: "TStageCSubject",
-    state: {
-      address: profiledAddress,
-      direction: "backward",
-      anchorTimestamp: events[0]!.blockTimestamp.toISOString(),
-      fundingEpisodeId: "stage-c-fixture-episode",
-      allocatedAmountRaw: "1",
-      sourceEventIds: [canonicalTronUsdtEventKey(events[0]!)]
-    },
-    acceptedHistory: {
-      manifestKey: "stage-c-fixture-manifest",
-      manifestSha256: map.addressHistoryManifestSha256,
-      pageArtifactHashes: ["d".repeat(64)],
-      events
-    },
-    eventRoleMap: { sha256: fingerprintCanonicalArtifact(map), artifact: map }
-  });
-  return result?.artifact.result.status === source.expectedStatus
-    ? { matched: true, mismatch: null }
-    : { matched: false, mismatch: "reconstructed_history_not_matched" };
 }
 
-function indexedEvent(index: number, timestamp: number, address: string): IndexedTronUsdtTransfer {
-  return {
-    txHash: `stage-c-tx-${index}`,
-    blockNumber: 10_000 - index,
-    blockTimestamp: new Date(timestamp * 1_000),
-    eventIndex: 0,
-    fromAddress: `TSender-${index}`,
-    toAddress: address,
-    amountRaw: "1000000",
-    method: "transfer",
-    eventType: "Transfer",
-    callerAddress: null,
-    contractRet: "SUCCESS",
-    finalResult: "SUCCESS",
-    confirmed: true
-  };
+function reconstruct(fixture: unknown): { matched: boolean; mismatch: string | null } {
+  try {
+    const source = record(fixture);
+    const stateSource = source && record(source.state);
+    const accepted = source && record(source.acceptedHistory);
+    const manifestRef = accepted && record(accepted.manifest);
+    const manifest = manifestRef && record(manifestRef.artifact);
+    const roleRef = source && record(source.eventRoleMap);
+    const roleArtifact = roleRef && record(roleRef.artifact);
+    if (!source || !stateSource || !accepted || !manifestRef || !manifest || !roleRef || !roleArtifact ||
+      source.schemaVersion !== "service-role-shadow-reconstruction-v1" ||
+      source.caseId !== RECONSTRUCTION_CASE_ID || source.expectedStatus !== "high_inferred_service" ||
+      typeof source.runId !== "string" || typeof source.snapshotHash !== "string" ||
+      !SHA256.test(source.snapshotHash) || typeof source.subjectAddress !== "string" ||
+      typeof manifestRef.sha256 !== "string" || !SHA256.test(manifestRef.sha256) ||
+      fingerprintCanonicalArtifact(manifest) !== manifestRef.sha256 ||
+      typeof roleRef.sha256 !== "string" || !SHA256.test(roleRef.sha256) ||
+      fingerprintCanonicalArtifact(roleArtifact) !== roleRef.sha256 || !Array.isArray(accepted.pages)) {
+      return { matched: false, mismatch: "reconstruction_fixture_invalid" };
+    }
+    const state: TraversalStateV1 = {
+      address: String(stateSource.address),
+      direction: stateSource.direction as TraversalStateV1["direction"],
+      anchorTimestamp: String(stateSource.anchorTimestamp),
+      fundingEpisodeId: String(stateSource.fundingEpisodeId),
+      allocatedAmountRaw: String(stateSource.allocatedAmountRaw),
+      sourceEventIds: Array.isArray(stateSource.sourceEventIds) &&
+        stateSource.sourceEventIds.every((id) => typeof id === "string")
+        ? stateSource.sourceEventIds : []
+    };
+    if ((state.direction !== "backward" && state.direction !== "forward") ||
+      new Date(state.anchorTimestamp).toISOString() !== state.anchorTimestamp ||
+      state.sourceEventIds.length === 0) {
+      return { matched: false, mismatch: "reconstruction_anchor_invalid" };
+    }
+    const pageHashes: string[] = [];
+    const events: IndexedTronUsdtTransfer[] = [];
+    for (const item of accepted.pages) {
+      const pageRef = record(item);
+      const page = pageRef && record(pageRef.artifact);
+      if (!pageRef || !page || typeof pageRef.sha256 !== "string" ||
+        !SHA256.test(pageRef.sha256) || fingerprintCanonicalArtifact(page) !== pageRef.sha256 ||
+        page.version !== "unified-address-history-page-v1" || page.schemaVersion !== 1 ||
+        page.runId !== source.runId || page.manifestKey !== manifest.key ||
+        typeof page.providerPageHash !== "string" || !SHA256.test(page.providerPageHash) ||
+        !Array.isArray(page.events) || page.rawRowCount !== page.events.length) {
+        return { matched: false, mismatch: "reconstruction_page_binding_invalid" };
+      }
+      const parsed = page.events.map(fixtureEvent);
+      if (parsed.some((event) => event === null)) {
+        return { matched: false, mismatch: "reconstruction_page_event_invalid" };
+      }
+      pageHashes.push(pageRef.sha256);
+      events.push(...parsed as IndexedTronUsdtTransfer[]);
+    }
+    const canonical = new Map<string, string>();
+    for (const event of events) {
+      const id = canonicalTronUsdtEventKey(event);
+      const bytes = fingerprintCanonicalArtifact({
+        ...event,
+        blockTimestamp: event.blockTimestamp.toISOString()
+      });
+      if (canonical.has(id) && canonical.get(id) !== bytes) {
+        return { matched: false, mismatch: "reconstruction_event_conflict" };
+      }
+      canonical.set(id, bytes);
+    }
+    const canonicalIds = [...canonical.keys()].sort();
+    const expectedManifestKey = addressHistoryManifestKey({
+      chain: "tron",
+      snapshotHash: source.snapshotHash,
+      tokenContract: String(manifest.tokenContract),
+      address: state.address,
+      providerRequestVersion: String(manifest.providerRequestVersion)
+    });
+    if (manifest.version !== "unified-address-history-manifest-v1" || manifest.schemaVersion !== 1 ||
+      manifest.key !== expectedManifestKey || manifest.snapshotHash !== source.snapshotHash ||
+      manifest.address !== state.address || manifest.rawRowCount !== events.length ||
+      manifest.canonicalEventCount !== canonicalIds.length || manifest.duplicateCount !== events.length - canonicalIds.length ||
+      !Array.isArray(manifest.pageArtifactHashes) ||
+      fingerprintCanonicalArtifact(manifest.pageArtifactHashes) !== fingerprintCanonicalArtifact(pageHashes) ||
+      manifest.eventInventorySha256 !== fingerprintCanonicalArtifact(canonicalIds)) {
+      return { matched: false, mismatch: "reconstruction_manifest_binding_invalid" };
+    }
+    const map = roleArtifact as ServiceRoleShadowEventRoleMapV1;
+    const result = maybeBuildServiceRoleShadowArtifactV1({
+      mode: "service-role-shadow-100-plus-100-v1",
+      runId: source.runId,
+      snapshotHash: source.snapshotHash,
+      subjectAddress: source.subjectAddress,
+      state,
+      acceptedHistory: {
+        manifestKey: expectedManifestKey,
+        manifestSha256: manifestRef.sha256,
+        pageArtifactHashes: pageHashes,
+        events
+      },
+      eventRoleMap: { sha256: roleRef.sha256, artifact: map }
+    });
+    return result?.artifact.result.status === source.expectedStatus
+      ? { matched: true, mismatch: null }
+      : { matched: false, mismatch: "reconstructed_history_not_matched" };
+  } catch {
+    return { matched: false, mismatch: "reconstruction_fixture_invalid" };
+  }
 }
 
 export function replayServiceRoleShadowGateV1(input: {

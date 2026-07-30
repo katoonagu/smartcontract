@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { replayServiceRoleShadowGateV1 } from "../../src/forensics/serviceRoleShadowGate.js";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
+import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
 
 const corpus = JSON.parse(readFileSync(
   new URL("../fixtures/forensics/forensic-model-offline-corpus-v1.json", import.meta.url), "utf8"
@@ -12,6 +14,32 @@ const reconstructionFixture = JSON.parse(readFileSync(
 ));
 
 describe("Stage C service-role shadow admission gate", () => {
+  it("freezes accepted manifest/page bytes and authoritative role entries", () => {
+    const pages = reconstructionFixture.acceptedHistory.pages;
+    const events = pages.flatMap(({ artifact }: { artifact: { events: unknown[] } }) => artifact.events);
+
+    expect(pages).toHaveLength(2);
+    expect(events).toHaveLength(200);
+    expect(pages.map(({ artifact }: { artifact: { events: unknown[] } }) => artifact.events.length))
+      .toEqual([100, 100]);
+    expect(reconstructionFixture.acceptedHistory.manifest.sha256).toBe(
+      fingerprintCanonicalArtifact(reconstructionFixture.acceptedHistory.manifest.artifact)
+    );
+    expect(pages.map(({ sha256 }: { sha256: string }) => sha256)).toEqual(
+      reconstructionFixture.acceptedHistory.manifest.artifact.pageArtifactHashes
+    );
+    for (const page of pages) expect(page.sha256).toBe(fingerprintCanonicalArtifact(page.artifact));
+    expect(reconstructionFixture.eventRoleMap.artifact.entries).toHaveLength(200);
+    expect(reconstructionFixture.eventRoleMap.sha256).toBe(
+      fingerprintCanonicalArtifact(reconstructionFixture.eventRoleMap.artifact)
+    );
+    expect(reconstructionFixture.eventRoleMap.artifact.entries.map(
+      ({ canonicalEventId }: { canonicalEventId: string }) => canonicalEventId
+    )).toEqual(events.map((event: { txHash: string; eventIndex: number }) =>
+      canonicalTronUsdtEventKey(event)
+    ));
+  });
+
   it("emits the exact typed receipt with honest evidence limitations", () => {
     const receipt = replayServiceRoleShadowGateV1({ corpus, reconstructedFixture: reconstructionFixture });
 
@@ -54,10 +82,14 @@ describe("Stage C service-role shadow admission gate", () => {
   });
 
   it("turns red when accepted reconstruction bindings or case identity are tampered", () => {
+    const wrongRoleBinding = {
+      ...reconstructionFixture.eventRoleMap.artifact,
+      runId: "other-run"
+    };
     const variants = [
-      { ...reconstructionFixture, sourceSha256: "0".repeat(64) },
-      { ...reconstructionFixture, eventSpec: { ...reconstructionFixture.eventSpec, anchorSeconds: 1 } },
-      { ...reconstructionFixture, eventSpec: { ...reconstructionFixture.eventSpec, authority: "unbound" } },
+      { ...reconstructionFixture, acceptedHistory: { ...reconstructionFixture.acceptedHistory, manifest: { ...reconstructionFixture.acceptedHistory.manifest, sha256: "0".repeat(64) } } },
+      { ...reconstructionFixture, state: { ...reconstructionFixture.state, anchorTimestamp: "2020-01-01T00:00:00.000Z" } },
+      { ...reconstructionFixture, eventRoleMap: { sha256: fingerprintCanonicalArtifact(wrongRoleBinding), artifact: wrongRoleBinding } },
       { ...reconstructionFixture, caseId: "duplicate-case" }
     ];
 

@@ -129,6 +129,29 @@ describe("service role shadow accepted-history reconstruction", () => {
     }
   });
 
+  it("uses the stricter seven-day cutoff from the oldest recent event", () => {
+    const { input, events, map } = fixture();
+    const anchorSeconds = events[0]!.blockTimestamp.getTime() / 1_000;
+    const betweenCutoffs = event(500, anchorSeconds - 7 * 24 * 60 * 60 - 50);
+    const expandedMap = {
+      ...map,
+      entries: [...map.entries, {
+        canonicalEventId: canonicalTronUsdtEventKey(betweenCutoffs),
+        role: "ordinary" as const,
+        authority: "existing_hash_bound_economic_role_v1" as const,
+        evidenceSha256: "c".repeat(64)
+      }]
+    };
+    const output = maybeBuildServiceRoleShadowArtifactV1(input({
+      acceptedHistory: { ...input().acceptedHistory, events: [...events, betweenCutoffs] },
+      eventRoleMap: { sha256: fingerprintCanonicalArtifact(expandedMap), artifact: expandedMap }
+    }));
+
+    expect(output?.artifact.result.status).toBe("high_inferred_service");
+    expect(output?.artifact.sampledCanonicalEventIds.historical)
+      .not.toContain(canonicalTronUsdtEventKey(betweenCutoffs));
+  });
+
   it("refuses checked subjects, unproven anchors, same-block order, and source collisions", () => {
     const { input, state, events } = fixture();
     const cases = [
@@ -155,8 +178,25 @@ describe("service role shadow accepted-history reconstruction", () => {
     ];
 
     for (const value of variants) {
-      expect(maybeBuildServiceRoleShadowArtifactV1(value)?.artifact.result.status).toBe("insufficient_data");
+      expect(maybeBuildServiceRoleShadowArtifactV1(value)?.artifact.result).toMatchObject({
+        status: "insufficient_data"
+      });
     }
     expect(canonicalTronUsdtEventKey(events[0]!)).toBe(map.entries[0]!.canonicalEventId);
+  });
+
+  it("refuses role maps bound to the wrong snapshot or accepted manifest", () => {
+    const { input, map } = fixture();
+    for (const artifact of [
+      { ...map, snapshotHash: "e".repeat(64) },
+      { ...map, addressHistoryManifestSha256: "e".repeat(64) }
+    ]) {
+      expect(maybeBuildServiceRoleShadowArtifactV1(input({
+        eventRoleMap: { sha256: fingerprintCanonicalArtifact(artifact), artifact }
+      }))?.artifact.result).toMatchObject({
+        status: "insufficient_data",
+        insufficientReason: "source_binding_invalid"
+      });
+    }
   });
 });
