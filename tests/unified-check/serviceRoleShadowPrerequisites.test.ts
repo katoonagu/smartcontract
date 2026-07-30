@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
-import { buildAddressHistoryManifest } from "../../src/unifiedCheck/addressHistory.js";
+import {
+  addressHistoryManifestKey,
+  buildAddressHistoryManifest
+} from "../../src/unifiedCheck/addressHistory.js";
 import type { ServiceRoleShadowEventRoleMapV1 } from "../../src/unifiedCheck/serviceRoleShadow.js";
 import type { TraversalCompactionArtifactV2 } from "../../src/unifiedCheck/traversalDelta.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
@@ -55,7 +58,13 @@ function fixture(roleCount: number | null) {
     version: "unified-address-history-page-v1",
     schemaVersion: 1,
     runId: "run-1",
-    manifestKey: "pending",
+    manifestKey: addressHistoryManifestKey({
+      chain: "tron",
+      snapshotHash: SNAPSHOT,
+      tokenContract: TOKEN,
+      address: PROFILED,
+      providerRequestVersion: "unified-address-history-v1"
+    }),
     providerPageHash: "b".repeat(64),
     rawRowCount: events.length,
     events: events.map((item) => ({
@@ -64,34 +73,58 @@ function fixture(roleCount: number | null) {
     }))
   };
   const canonicalIds = events.map((item) => canonicalTronUsdtEventKey(item)).sort();
-  const preliminaryManifest = buildAddressHistoryManifest({
+  const boundPage = page;
+  const pageSha256 = fingerprintCanonicalArtifact(boundPage);
+  const exhaustion = {
+    version: "unified-address-history-exhaustion-v1",
+    manifestKey: page.manifestKey,
+    snapshotHash: SNAPSHOT,
+    address: PROFILED,
+    pageArtifactHashes: [pageSha256],
+    reachedAccountCreation: true
+  };
+  const exhaustionSha256 = fingerprintCanonicalArtifact(exhaustion);
+  const manifest = buildAddressHistoryManifest({
     chain: "tron",
     snapshotHash: SNAPSHOT,
     tokenContract: TOKEN,
     address: PROFILED,
     providerRequestVersion: "unified-address-history-v1",
-    pageArtifactHashes: ["c".repeat(64)],
+    pageArtifactHashes: [pageSha256],
     canonicalEventIds: canonicalIds,
     rawRowCount: events.length,
     duplicateCount: 0,
     exhaustion: {
       kind: "account_creation_reached",
-      evidenceSha256: "d".repeat(64)
+      evidenceSha256: exhaustionSha256
     }
   });
-  const boundPage = { ...page, manifestKey: preliminaryManifest.key };
-  const pageSha256 = fingerprintCanonicalArtifact(boundPage);
-  const manifest = {
-    ...preliminaryManifest,
-    pageArtifactHashes: [pageSha256]
-  };
   const manifestSha256 = fingerprintCanonicalArtifact(manifest);
   const analysisManifest = {
     version: "analysis-manifest-v1",
+    schemaVersion: 1,
     runId: "run-1",
+    requestHash: "1".repeat(64),
+    snapshotHash: SNAPSHOT,
+    chain: "tron",
     subjectAddress: SUBJECT,
-    snapshotHash: SNAPSHOT
-  };
+    confirmedBlockNumber: "10000",
+    confirmedBlockHash: "2".repeat(64),
+    confirmedBlockTimestamp: "2026-07-30T00:00:00.000Z",
+    labelDatasetSha256: "3".repeat(64),
+    scoringPolicyVersion: "scoring-signal-matrix-v4",
+    attributionPolicyVersion: "selected-attribution-policy-v1",
+    traversalPolicyVersion: "snapshot-closure-v1",
+    runtimeCommit: "test-runtime",
+    databaseSchemaVersion: 37,
+    paginationCutoffBlockNumber: "10000",
+    paginationCutoffBlockHash: "2".repeat(64),
+    branchArtifactHashes: {
+      fast: "4".repeat(64),
+      where: "5".repeat(64),
+      deep: "6".repeat(64)
+    }
+  } as const;
   const analysisManifestSha256 = fingerprintCanonicalArtifact(analysisManifest);
   const compaction: TraversalCompactionArtifactV2 = {
     version: "unified-traversal-compaction-v2",
@@ -109,6 +142,41 @@ function fixture(roleCount: number | null) {
     selectedForwardRaw: "0"
   };
   const compactionSha256 = fingerprintCanonicalArtifact(compaction);
+  const bundleEntries = events.slice(0, roleCount ?? 0).map((item) => {
+    const canonicalEventId = canonicalTronUsdtEventKey(item);
+    return {
+      canonicalEventId,
+      transactionInfoEvidenceId: `transaction-info:${canonicalEventId}`,
+      transactionInfoPayloadSha256: fingerprintCanonicalArtifact([
+        "transaction-info-payload",
+        canonicalEventId
+      ]),
+      transactionInfoFinalityWitnessSha256: fingerprintCanonicalArtifact([
+        "transaction-info-finality",
+        canonicalEventId
+      ]),
+      poisoningDispositionSha256: fingerprintCanonicalArtifact([
+        "poisoning-disposition",
+        canonicalEventId
+      ]),
+      providerRiskDispositionSha256: fingerprintCanonicalArtifact([
+        "provider-risk-disposition",
+        canonicalEventId
+      ]),
+      role: "ordinary" as const
+    };
+  });
+  const bundle = roleCount === null ? null : {
+    schemaVersion: "service-role-event-evidence-bundle-v1",
+    policyVersion: "existing-hash-bound-economic-role-v1",
+    runId: "run-1",
+    snapshotHash: SNAPSHOT,
+    addressHistoryManifestSha256: manifestSha256,
+    entries: bundleEntries
+  } as const;
+  const bundleSha256 = bundle === null
+    ? null
+    : fingerprintCanonicalArtifact(bundle);
   const roleMap: ServiceRoleShadowEventRoleMapV1 | null = roleCount === null
     ? null
     : {
@@ -116,11 +184,11 @@ function fixture(roleCount: number | null) {
         runId: "run-1",
         snapshotHash: SNAPSHOT,
         addressHistoryManifestSha256: manifestSha256,
-        entries: events.slice(0, roleCount).map((item) => ({
-          canonicalEventId: canonicalTronUsdtEventKey(item),
-          role: "ordinary",
+        entries: bundleEntries.map((entry) => ({
+          canonicalEventId: entry.canonicalEventId,
+          role: entry.role,
           authority: "existing_hash_bound_economic_role_v1",
-          evidenceSha256: "f".repeat(64)
+          evidenceSha256: bundleSha256!
         }))
       };
   const roleMapSha256 = roleMap === null
@@ -171,12 +239,26 @@ function fixture(roleCount: number | null) {
       schema_version: "1",
       artifact_json: roleMap
     }],
+    roleBundles: bundle === null ? [] : [{
+      sha256: bundleSha256!,
+      created_by_run_id: "run-1",
+      kind: "service_role_event_evidence_bundle",
+      schema_version: "1",
+      artifact_json: bundle
+    }],
     pages: [{
       sha256: pageSha256,
       created_by_run_id: "run-1",
       kind: "address_history_page",
       schema_version: "1",
       artifact_json: boundPage
+    }],
+    exhaustions: [{
+      sha256: exhaustionSha256,
+      created_by_run_id: "run-1",
+      kind: "address_history_exhaustion",
+      schema_version: "1",
+      artifact_json: exhaustion
     }]
   };
   const calls: string[] = [];
@@ -205,13 +287,19 @@ function fixture(roleCount: number | null) {
       if (sql.includes("service_role_shadow:role_maps")) {
         return { rows: rows.roleMaps };
       }
+      if (sql.includes("service_role_shadow:role_bundles")) {
+        return { rows: rows.roleBundles };
+      }
       if (sql.includes("service_role_shadow:pages")) {
         return { rows: rows.pages };
+      }
+      if (sql.includes("service_role_shadow:exhaustions")) {
+        return { rows: rows.exhaustions };
       }
       return { rows: [] };
     }
   };
-  return { calls, db, manifestSha256, rows };
+  return { bundleSha256, calls, db, manifestSha256, rows };
 }
 
 function appendDuplicateEvent(
@@ -223,13 +311,58 @@ function appendDuplicateEvent(
   page.rawRowCount += 1;
   const pageSha256 = fingerprintCanonicalArtifact(page);
   rows.pages[0]!.sha256 = pageSha256;
-  const manifest = rows.accepted[0]!.manifest_json;
+  const exhaustion = rows.exhaustions[0]!.artifact_json;
+  exhaustion.pageArtifactHashes = [pageSha256];
+  const exhaustionSha256 = fingerprintCanonicalArtifact(exhaustion);
+  rows.exhaustions[0]!.sha256 = exhaustionSha256;
+  const manifest = rows.accepted[0]!.manifest_json as unknown as {
+    pageArtifactHashes: string[];
+    rawRowCount: number;
+    duplicateCount: number;
+    exhaustion: { evidenceSha256: string };
+  };
   manifest.pageArtifactHashes = [pageSha256];
   manifest.rawRowCount += 1;
   manifest.duplicateCount += 1;
+  manifest.exhaustion.evidenceSha256 = exhaustionSha256;
   const manifestSha256 = fingerprintCanonicalArtifact(manifest);
   rows.accepted[0]!.attempt_artifact_sha256 = manifestSha256;
   rows.accepted[0]!.manifest_sha256 = manifestSha256;
+  return manifestSha256;
+}
+
+function replaceAnalysisManifest(
+  rows: ReturnType<typeof fixture>["rows"],
+  analysisManifest: Record<string, unknown>
+): string {
+  const analysisManifestSha256 = fingerprintCanonicalArtifact(analysisManifest);
+  const accepted = rows.accepted[0]! as unknown as Record<string, unknown>;
+  accepted.analysis_manifest_json = analysisManifest;
+  accepted.analysis_manifest_sha256 = analysisManifestSha256;
+  const checkpoint = rows.traversal[0]!.checkpoint_json as unknown as
+    Record<string, unknown>;
+  checkpoint.analysisManifestHash = analysisManifestSha256;
+  const priorCompaction = rows.traversalArtifacts[0]!.artifact_json;
+  const compaction = {
+    ...priorCompaction,
+    analysisManifestHash: analysisManifestSha256
+  };
+  const compactionSha256 = fingerprintCanonicalArtifact(compaction);
+  rows.traversalArtifacts[0]!.artifact_json = compaction;
+  rows.traversalArtifacts[0]!.sha256 = compactionSha256;
+  checkpoint.compactionSha256 = compactionSha256;
+  return analysisManifestSha256;
+}
+
+function replaceAcceptedManifest(
+  rows: ReturnType<typeof fixture>["rows"],
+  manifest: Record<string, unknown>
+): string {
+  const manifestSha256 = fingerprintCanonicalArtifact(manifest);
+  const accepted = rows.accepted[0]! as unknown as Record<string, unknown>;
+  accepted.manifest_json = manifest;
+  accepted.manifest_sha256 = manifestSha256;
+  accepted.attempt_artifact_sha256 = manifestSha256;
   return manifestSha256;
 }
 
@@ -250,7 +383,9 @@ describe("service role shadow prerequisite audit", () => {
       failures: [{ manifestSha256, reason: "role_map_missing" }]
     });
     expect(serviceRoleShadowPrerequisiteExitCode(receipt)).toBe(2);
-    expect(calls[0]).toMatch(/^begin transaction read only$/iu);
+    expect(calls[0]).toMatch(
+      /^begin transaction isolation level repeatable read read only$/iu
+    );
     expect(calls.at(-1)).toMatch(/^rollback$/iu);
   });
 
@@ -383,10 +518,127 @@ describe("service role shadow prerequisite audit", () => {
       historiesWithRoleMap: 1,
       fullyRoleBoundHistories: 0,
       sampledEvents: 200,
-      roleBoundSampledEvents: 199,
-      failures: [{ manifestSha256, reason: "role_authority_missing" }]
+      roleBoundSampledEvents: 0,
+      failures: [{ manifestSha256, reason: "role_authority_conflict" }]
     });
     expect(serviceRoleShadowPrerequisiteExitCode(receipt)).toBe(2);
+  });
+
+  it("rejects an invented evidence hash without its exact evidence bundle", async () => {
+    const { db, manifestSha256, rows } = fixture(200);
+    rows.roleBundles.length = 0;
+
+    const receipt = await runServiceRoleShadowPrerequisiteAuditReadOnly(db);
+
+    expect(receipt).toMatchObject({
+      fullyRoleBoundHistories: 0,
+      roleBoundSampledEvents: 0,
+      failures: [{ manifestSha256, reason: "role_authority_conflict" }]
+    });
+    expect(serviceRoleShadowPrerequisiteExitCode(receipt)).toBe(2);
+  });
+
+  it("rejects map evidence hashes that do not bind the persisted bundle", async () => {
+    const { db, manifestSha256, rows } = fixture(200);
+    const roleMap = rows.roleMaps[0]!.artifact_json;
+    roleMap.entries = roleMap.entries.map((entry) => ({
+      ...entry,
+      evidenceSha256: "f".repeat(64)
+    }));
+    rows.roleMaps[0]!.sha256 = fingerprintCanonicalArtifact(roleMap);
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        fullyRoleBoundHistories: 0,
+        roleBoundSampledEvents: 0,
+        failures: [{ manifestSha256, reason: "role_authority_conflict" }]
+      });
+  });
+
+  it("rejects multiple same-history evidence bundles", async () => {
+    const { db, manifestSha256, rows } = fixture(200);
+    const conflictingBundle = {
+      ...rows.roleBundles[0]!.artifact_json,
+      entries: rows.roleBundles[0]!.artifact_json.entries.map((entry, index) =>
+        index === 0
+          ? { ...entry, transactionInfoEvidenceId: "conflicting-evidence" }
+          : entry
+      )
+    };
+    rows.roleBundles.push({
+      ...rows.roleBundles[0]!,
+      sha256: fingerprintCanonicalArtifact(conflictingBundle),
+      artifact_json: conflictingBundle
+    });
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        fullyRoleBoundHistories: 0,
+        roleBoundSampledEvents: 0,
+        failures: [{ manifestSha256, reason: "role_authority_conflict" }]
+      });
+  });
+
+  it("rejects a canonically hashed but truncated analysis manifest", async () => {
+    const { db, rows } = fixture(null);
+    const analysisManifest = rows.accepted[0]!.analysis_manifest_json;
+    const analysisManifestSha256 = replaceAnalysisManifest(rows, {
+      version: analysisManifest.version,
+      runId: analysisManifest.runId,
+      subjectAddress: analysisManifest.subjectAddress,
+      snapshotHash: analysisManifest.snapshotHash
+    });
+
+    const receipt = await runServiceRoleShadowPrerequisiteAuditReadOnly(db);
+
+    expect(analysisManifestSha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(receipt).toMatchObject({
+      acceptedHistories: 0,
+      reconstructedHistories: 0,
+      fullyRoleBoundHistories: 0
+    });
+  });
+
+  it("rejects an address-history manifest without exhaustion", async () => {
+    const { db, rows } = fixture(null);
+    const { exhaustion: _exhaustion, ...truncated } =
+      rows.accepted[0]!.manifest_json;
+    const manifestSha256 = replaceAcceptedManifest(rows, truncated);
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        reconstructedHistories: 0,
+        failures: [{ manifestSha256, reason: "source_binding_invalid" }]
+      });
+  });
+
+  it("rejects provider-exhausted history as account-creation authority", async () => {
+    const { db, rows } = fixture(null);
+    const current = rows.accepted[0]!.manifest_json;
+    const manifestSha256 = replaceAcceptedManifest(rows, {
+      ...current,
+      exhaustion: {
+        ...current.exhaustion,
+        kind: "provider_exhausted"
+      }
+    });
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        reconstructedHistories: 0,
+        failures: [{ manifestSha256, reason: "source_binding_invalid" }]
+      });
+  });
+
+  it("rejects a missing account-creation exhaustion evidence artifact", async () => {
+    const { db, manifestSha256, rows } = fixture(null);
+    rows.exhaustions.length = 0;
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        reconstructedHistories: 0,
+        failures: [{ manifestSha256, reason: "source_binding_invalid" }]
+      });
   });
 
   it("rejects a page whose persisted bytes no longer match its hash", async () => {

@@ -10,8 +10,10 @@ import {
 import { canonicalTronUsdtEventKey } from "../src/forensics/tronAddressAllTimeIndex.js";
 import {
   addressHistoryManifestKey,
+  buildAddressHistoryManifest,
   type AddressHistoryManifestV1
 } from "../src/unifiedCheck/addressHistory.js";
+import { parseAnalysisManifestV1 } from "../src/unifiedCheck/contracts.js";
 import type { UnifiedAddressHistoryPageArtifactV1 } from "../src/unifiedCheck/productionAddressHistory.js";
 import {
   maybeBuildServiceRoleShadowArtifactV1,
@@ -155,10 +157,8 @@ function acceptedHistory(row: Record<string, unknown>): AcceptedHistory | null {
     typeof subjectAddress !== "string" || subjectAddress.length === 0 ||
     typeof snapshotHash !== "string" || !HASH.test(snapshotHash) ||
     typeof analysisManifestSha256 !== "string" || !HASH.test(analysisManifestSha256) ||
-    !analysisManifest || fingerprintCanonicalArtifact(analysisManifest) !== analysisManifestSha256 ||
-    analysisManifest.version !== "analysis-manifest-v1" ||
-    analysisManifest.runId !== runId || analysisManifest.subjectAddress !== subjectAddress ||
-    analysisManifest.snapshotHash !== snapshotHash ||
+    !analysisManifest ||
+    fingerprintCanonicalArtifact(analysisManifest) !== analysisManifestSha256 ||
     typeof manifestSha256 !== "string" || !HASH.test(manifestSha256) ||
     attemptArtifactSha256 !== manifestSha256 ||
     row.manifest_created_by_run_id !== runId ||
@@ -169,6 +169,11 @@ function acceptedHistory(row: Record<string, unknown>): AcceptedHistory | null {
     !Array.isArray(manifest.pageArtifactHashes)
   ) return null;
   try {
+    parseAnalysisManifestV1(analysisManifest, {
+      runId,
+      subjectAddress,
+      snapshotHash
+    });
     if (manifest.key !== addressHistoryManifestKey({
       chain: manifest.chain as "tron",
       snapshotHash: String(manifest.snapshotHash),
@@ -377,10 +382,40 @@ async function loadRunStates(input: {
   }
 }
 
+function validAccountCreationExhaustion(input: {
+  history: AcceptedHistory;
+  row: ArtifactRow | null;
+}): boolean {
+  const artifact = record(input.row?.artifact);
+  if (
+    input.history.manifest.exhaustion?.kind !== "account_creation_reached" ||
+    !input.row ||
+    input.row.sha256 !== input.history.manifest.exhaustion.evidenceSha256 ||
+    input.row.runId !== input.history.runId ||
+    input.row.kind !== "address_history_exhaustion" ||
+    input.row.schemaVersion !== "1" ||
+    fingerprintCanonicalArtifact(input.row.artifact) !== input.row.sha256 ||
+    !artifact
+  ) return false;
+  return fingerprintCanonicalArtifact(artifact) === fingerprintCanonicalArtifact({
+    version: "unified-address-history-exhaustion-v1",
+    manifestKey: input.history.manifest.key,
+    snapshotHash: input.history.snapshotHash,
+    address: input.history.manifest.address,
+    pageArtifactHashes: [...input.history.manifest.pageArtifactHashes],
+    reachedAccountCreation: true
+  });
+}
+
 function eventsFromPages(input: {
   history: AcceptedHistory;
   pageRows: readonly ArtifactRow[];
+  exhaustionRow: ArtifactRow | null;
 }): IndexedTronUsdtTransfer[] | null {
+  if (!validAccountCreationExhaustion({
+    history: input.history,
+    row: input.exhaustionRow
+  })) return null;
   const byHash = new Map(input.pageRows.map((row) => [row.sha256, row]));
   const events = new Map<string, { raw: unknown; event: IndexedTronUsdtTransfer }>();
   let rawRowCount = 0;
@@ -393,7 +428,8 @@ function eventsFromPages(input: {
       !page || page.version !== "unified-address-history-page-v1" || page.schemaVersion !== 1 ||
       page.runId !== input.history.runId || page.manifestKey !== input.history.manifest.key ||
       !HASH.test(String(page.providerPageHash)) || !Number.isSafeInteger(page.rawRowCount) ||
-      page.rawRowCount < 0 || !Array.isArray(page.events)
+      page.rawRowCount < 0 || !Array.isArray(page.events) ||
+      page.rawRowCount !== page.events.length
     ) return null;
     rawRowCount += page.rawRowCount;
     for (const value of page.events) {
@@ -407,37 +443,81 @@ function eventsFromPages(input: {
     }
   }
   const canonicalIds = [...events.keys()].sort();
-  if (
-    rawRowCount !== input.history.manifest.rawRowCount ||
-    canonicalIds.length !== input.history.manifest.canonicalEventCount ||
-    rawRowCount - canonicalIds.length !== input.history.manifest.duplicateCount ||
-    fingerprintCanonicalArtifact(canonicalIds) !== input.history.manifest.eventInventorySha256
-  ) return null;
+  try {
+    const rebuilt = buildAddressHistoryManifest({
+      chain: input.history.manifest.chain,
+      snapshotHash: input.history.snapshotHash,
+      tokenContract: input.history.manifest.tokenContract,
+      address: input.history.manifest.address,
+      providerRequestVersion: input.history.manifest.providerRequestVersion,
+      pageArtifactHashes: input.history.manifest.pageArtifactHashes,
+      canonicalEventIds: canonicalIds,
+      rawRowCount,
+      duplicateCount: rawRowCount - canonicalIds.length,
+      exhaustion: input.history.manifest.exhaustion
+    });
+    if (
+      fingerprintCanonicalArtifact(rebuilt) !== input.history.manifestSha256
+    ) return null;
+  } catch {
+    return null;
+  }
   return canonicalIds.map((id) => events.get(id)!.event);
+}
+
+function serviceRole(value: unknown): value is ServiceRoleShadowEventRoleMapV1["entries"][number]["role"] {
+  return typeof value === "string" && [
+    "ordinary", "poisoning_only", "gasfree_fee", "gasfree_principal",
+    "provider_risk"
+  ].includes(value);
 }
 
 function boundRoleIds(input: {
   history: AcceptedHistory;
-  row: ArtifactRow | null;
+  mapRow: ArtifactRow | null;
+  bundleRow: ArtifactRow | null;
 }): ReadonlySet<string> {
-  const map = record(input.row?.artifact) as ServiceRoleShadowEventRoleMapV1 | null;
+  const map = record(input.mapRow?.artifact) as ServiceRoleShadowEventRoleMapV1 | null;
+  const bundle = record(input.bundleRow?.artifact);
   if (
-    !input.row || input.row.runId !== input.history.runId ||
-    input.row.kind !== "service_role_event_role_map" || input.row.schemaVersion !== "1" ||
-    fingerprintCanonicalArtifact(input.row.artifact) !== input.row.sha256 ||
+    !input.mapRow || input.mapRow.runId !== input.history.runId ||
+    input.mapRow.kind !== "service_role_event_role_map" ||
+    input.mapRow.schemaVersion !== "1" ||
+    fingerprintCanonicalArtifact(input.mapRow.artifact) !== input.mapRow.sha256 ||
     !map || map.schemaVersion !== "service-role-shadow-event-role-map-v1" ||
     map.runId !== input.history.runId || map.snapshotHash !== input.history.snapshotHash ||
     map.addressHistoryManifestSha256 !== input.history.manifestSha256 ||
-    !Array.isArray(map.entries)
+    !Array.isArray(map.entries) || map.entries.length !== 200 ||
+    !input.bundleRow || input.bundleRow.runId !== input.history.runId ||
+    input.bundleRow.kind !== "service_role_event_evidence_bundle" ||
+    input.bundleRow.schemaVersion !== "1" ||
+    fingerprintCanonicalArtifact(input.bundleRow.artifact) !== input.bundleRow.sha256 ||
+    !bundle || bundle.schemaVersion !== "service-role-event-evidence-bundle-v1" ||
+    bundle.policyVersion !== "existing-hash-bound-economic-role-v1" ||
+    bundle.runId !== input.history.runId ||
+    bundle.snapshotHash !== input.history.snapshotHash ||
+    bundle.addressHistoryManifestSha256 !== input.history.manifestSha256 ||
+    !Array.isArray(bundle.entries) || bundle.entries.length !== 200
   ) return new Set();
   const ids = new Set<string>();
-  for (const entry of map.entries) {
+  for (let index = 0; index < map.entries.length; index++) {
+    const entry = record(map.entries[index]);
+    const evidence = record(bundle.entries[index]);
     if (
-      !entry || typeof entry.canonicalEventId !== "string" || ids.has(entry.canonicalEventId) ||
-      !["ordinary", "poisoning_only", "gasfree_fee", "gasfree_principal", "provider_risk"]
-        .includes(entry.role) ||
+      !entry || !evidence ||
+      typeof entry.canonicalEventId !== "string" ||
+      entry.canonicalEventId.length === 0 || ids.has(entry.canonicalEventId) ||
+      !serviceRole(entry.role) ||
       entry.authority !== "existing_hash_bound_economic_role_v1" ||
-      !HASH.test(entry.evidenceSha256)
+      entry.evidenceSha256 !== input.bundleRow.sha256 ||
+      evidence.canonicalEventId !== entry.canonicalEventId ||
+      evidence.role !== entry.role ||
+      typeof evidence.transactionInfoEvidenceId !== "string" ||
+      evidence.transactionInfoEvidenceId.length === 0 ||
+      !HASH.test(String(evidence.transactionInfoPayloadSha256)) ||
+      !HASH.test(String(evidence.transactionInfoFinalityWitnessSha256)) ||
+      !HASH.test(String(evidence.poisoningDispositionSha256)) ||
+      !HASH.test(String(evidence.providerRiskDispositionSha256))
     ) return new Set();
     ids.add(entry.canonicalEventId);
   }
@@ -573,6 +653,38 @@ export async function auditServiceRoleShadowPrerequisitesV1(
       )).rows.map(artifactRow).filter((row): row is ArtifactRow => row !== null);
       for (const row of rows) pagesByHash.set(row.sha256, row);
     }
+    const exhaustionBindings = work.map(({ history }) => ({
+      run_id: history.runId,
+      sha256: history.manifest.exhaustion?.evidenceSha256
+    })).filter((binding) =>
+      typeof binding.sha256 === "string" && HASH.test(binding.sha256)
+    );
+    const exhaustionRows = exhaustionBindings.length === 0 ? [] :
+      (await db.query(
+        `/* service_role_shadow:exhaustions */
+         with bindings as (
+           select distinct run_id, sha256
+             from jsonb_to_recordset($1::jsonb)
+               as binding(run_id text, sha256 text)
+         )
+         select artifact.sha256, artifact.created_by_run_id, artifact.kind,
+                artifact.schema_version, artifact.artifact_json
+           from bindings
+           join unified_check_artifacts artifact
+             on artifact.sha256 = bindings.sha256
+            and artifact.created_by_run_id = bindings.run_id
+            and artifact.kind = 'address_history_exhaustion'
+            and artifact.schema_version = '1'
+          order by artifact.created_by_run_id, artifact.sha256`,
+        [JSON.stringify(exhaustionBindings)]
+      )).rows.map(artifactRow).filter((row): row is ArtifactRow => row !== null);
+    const exhaustionByBinding = new Map<string, ArtifactRow[]>();
+    for (const row of exhaustionRows) {
+      const key = `${row.runId}\u0000${row.sha256}`;
+      const rows = exhaustionByBinding.get(key) ?? [];
+      rows.push(row);
+      exhaustionByBinding.set(key, rows);
+    }
     const roleBindings = [...new Map(work.map(({ history }) => [
       `${history.runId}\u0000${history.manifestSha256}`,
       { run_id: history.runId, manifest_sha256: history.manifestSha256 }
@@ -614,13 +726,57 @@ export async function auditServiceRoleShadowPrerequisitesV1(
       rows.push(row);
       roleMapsByHistory.set(key, rows);
     }
+    const roleBundleRows = roleBindings.length === 0 ? [] : (await db.query(
+      `/* service_role_shadow:role_bundles */
+       with bindings as (
+         select run_id, manifest_sha256
+           from jsonb_to_recordset($1::jsonb)
+             as binding(run_id text, manifest_sha256 text)
+       ), ranked as (
+         select artifact.sha256, artifact.created_by_run_id, artifact.kind,
+                artifact.schema_version, artifact.artifact_json,
+                row_number() over (
+                  partition by bindings.run_id, bindings.manifest_sha256
+                  order by artifact.sha256
+                ) as ordinal
+           from bindings
+           join unified_check_artifacts artifact
+             on artifact.created_by_run_id = bindings.run_id
+            and artifact.kind = 'service_role_event_evidence_bundle'
+            and artifact.schema_version = '1'
+            and artifact.artifact_json->>'addressHistoryManifestSha256' =
+              bindings.manifest_sha256
+       )
+       select sha256, created_by_run_id, kind, schema_version, artifact_json
+         from ranked
+        where ordinal <= 2
+        order by created_by_run_id,
+                 artifact_json->>'addressHistoryManifestSha256', sha256`,
+      [JSON.stringify(roleBindings)]
+    )).rows.map(artifactRow).filter((row): row is ArtifactRow => row !== null);
+    const roleBundlesByHistory = new Map<string, ArtifactRow[]>();
+    for (const row of roleBundleRows) {
+      const manifestSha256 = record(row.artifact)?.addressHistoryManifestSha256;
+      if (typeof manifestSha256 !== "string") continue;
+      const key = `${row.runId}\u0000${manifestSha256}`;
+      const rows = roleBundlesByHistory.get(key) ?? [];
+      rows.push(row);
+      roleBundlesByHistory.set(key, rows);
+    }
 
     for (const { history, candidates } of work) {
       const pageRows = history.manifest.pageArtifactHashes.flatMap((sha256) => {
         const row = pagesByHash.get(sha256);
         return row ? [row] : [];
       });
-      const events = eventsFromPages({ history, pageRows });
+      const exhaustionRows = exhaustionByBinding.get(
+        `${history.runId}\u0000${history.manifest.exhaustion?.evidenceSha256}`
+      ) ?? [];
+      const events = eventsFromPages({
+        history,
+        pageRows,
+        exhaustionRow: exhaustionRows.length === 1 ? exhaustionRows[0]! : null
+      });
       if (!events) {
         failures.push({ manifestSha256: history.manifestSha256, reason: "source_binding_invalid" });
         continue;
@@ -628,8 +784,22 @@ export async function auditServiceRoleShadowPrerequisitesV1(
       const mapRows = roleMapsByHistory.get(
         `${history.runId}\u0000${history.manifestSha256}`
       ) ?? [];
+      const bundleRows = roleBundlesByHistory.get(
+        `${history.runId}\u0000${history.manifestSha256}`
+      ) ?? [];
       if (mapRows.length > 0) historiesWithRoleMap += 1;
-      const roleMap = mapRows.length === 1 ? {
+      const roleIds = mapRows.length === 1 && bundleRows.length === 1
+        ? boundRoleIds({
+            history,
+            mapRow: mapRows[0]!,
+            bundleRow: bundleRows[0]!
+          })
+        : new Set<string>();
+      const roleAuthorityValid = roleIds.size === 200;
+      const roleAuthorityConflict = mapRows.length > 1 || bundleRows.length > 1 ||
+        mapRows.length !== bundleRows.length ||
+        (mapRows.length === 1 && !roleAuthorityValid);
+      const roleMap = roleAuthorityValid ? {
         sha256: mapRows[0]!.sha256,
         artifact: mapRows[0]!.artifact as ServiceRoleShadowEventRoleMapV1
       } : null;
@@ -662,20 +832,17 @@ export async function auditServiceRoleShadowPrerequisitesV1(
         ...selected.artifact.sampledCanonicalEventIds.historical
       ];
       sampledEvents += sampledIds.length;
-      const roleIds = mapRows.length === 1
-        ? boundRoleIds({ history, row: mapRows[0]! })
-        : new Set<string>();
       roleBoundSampledEvents += sampledIds.filter((id) => roleIds.has(id)).length;
       const exactWindows = selected.artifact.sampledCanonicalEventIds.recent.length === 100 &&
         selected.artifact.sampledCanonicalEventIds.historical.length === 100;
       if (exactWindows) reconstructedHistories += 1;
-      if (selected.artifact.result.classifier !== null && mapRows.length === 1) {
+      if (selected.artifact.result.classifier !== null && roleAuthorityValid) {
         fullyRoleBoundHistories += 1;
         continue;
       }
       failures.push({
         manifestSha256: history.manifestSha256,
-        reason: mapRows.length > 1
+        reason: roleAuthorityConflict
           ? "role_authority_conflict"
           : selected.artifact.result.insufficientReason ?? "source_binding_invalid"
       });
@@ -708,7 +875,9 @@ export async function auditServiceRoleShadowPrerequisitesV1(
 export async function runServiceRoleShadowPrerequisiteAuditReadOnly(
   db: ServiceRoleShadowAuditQueryable
 ): Promise<ServiceRoleShadowPrerequisiteReceiptV1> {
-  await db.query("begin transaction read only");
+  await db.query(
+    "begin transaction isolation level repeatable read read only"
+  );
   try {
     return await auditServiceRoleShadowPrerequisitesV1(db);
   } finally {
