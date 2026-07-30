@@ -9,6 +9,13 @@ import {
 type Case = OfflineCorpusV1["ledgerCases"][number];
 type CaseResult = OfflineReplayResultV1["ledgerCases"][number];
 type Mismatch = { readonly caseId: string; readonly code: string };
+type CaseKind = "ledger" | "service" | "adverse" | "broad_scope";
+type ExpectationStatus =
+  | "matched"
+  | "mismatch"
+  | "missing"
+  | "not_replayed"
+  | "unsupported";
 
 const DEFAULT_FIXTURE = new URL(
   "../tests/fixtures/forensics/forensic-model-offline-corpus-v1.json",
@@ -29,70 +36,184 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function hasFrozenExpectation(source: Case): boolean {
-  const item = source as Record<string, unknown>;
-  if (Object.keys(item).some((key) => key === "expected" || key.startsWith("expected")) ||
-    typeof item.behaviorClassification === "string") return true;
-  const observed = record(item.observedVector);
-  if (observed.recordedPredicate !== undefined) return true;
-  return Array.isArray(item.windows) && item.windows.some((window) =>
-    record(window).recordedPredicate !== undefined
-  );
+function expectedFieldNames(source: Record<string, unknown>): readonly string[] {
+  return Object.keys(source).filter((key) => key.startsWith("expected")).sort();
 }
 
-function matchesDeclaredExpectation(source: Case, actual: CaseResult): boolean {
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+function canonicalAmount(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/u.test(value);
+}
+
+function compareLedgerExpectations(
+  source: Record<string, unknown>,
+  result: Record<string, unknown>
+): ExpectationStatus {
+  const fields = expectedFieldNames(source);
+  if (fields.length === 0) return "missing";
+  let matched = true;
+  let replayed = true;
+  for (const field of fields) {
+    const value = source[field];
+    switch (field) {
+      case "expectedAuthoritativeState":
+        if (value !== "history_incomplete" && value !== "complete") return "unsupported";
+        matched &&= value === result.state || value === result.reason;
+        break;
+      case "expected": { // ponytail: v1 exposes no result fields for this legacy control shape.
+        const expectation = record(value);
+        const keys = [
+          "currentBalanceAmountRaw",
+          "currentSource",
+          "episodeCoveredAmountRaw",
+          "oldLotRemainingAmountRaw",
+          "state"
+        ];
+        if (!hasExactKeys(expectation, keys) || expectation.state !== "complete" ||
+          !canonicalAmount(expectation.episodeCoveredAmountRaw) ||
+          !canonicalAmount(expectation.oldLotRemainingAmountRaw) ||
+          !canonicalAmount(expectation.currentBalanceAmountRaw) ||
+          typeof expectation.currentSource !== "string" || expectation.currentSource === "") {
+          return "unsupported";
+        }
+        replayed = false;
+        break;
+      }
+      case "expectedAllocations":
+        if (!Array.isArray(value) || value.some((item) => {
+          const allocation = record(item);
+          return !hasExactKeys(allocation, ["amountRaw", "source"]) ||
+            typeof allocation.source !== "string" || allocation.source === "" ||
+            !canonicalAmount(allocation.amountRaw);
+        })) return "unsupported";
+        replayed = false;
+        break;
+      case "expectedBalanceAmountRaw":
+        if (!canonicalAmount(value)) return "unsupported";
+        replayed = false;
+        break;
+      case "expectedEffect":
+        if (value !== "cashflow_no_op") return "unsupported";
+        replayed = false;
+        break;
+      case "expectedState":
+        if (!["complete", "history_incomplete", "identity_collision", "temporal_order_unresolved"]
+          .includes(value as string)) return "unsupported";
+        matched &&= value === result.state || value === result.reason;
+        break;
+      case "expectedReason":
+        if (value !== "debit_over_inventory") return "unsupported";
+        matched &&= value === result.reason;
+        break;
+      default:
+        return "unsupported";
+    }
+  }
+  if (!replayed || result.state === "expectation_level") return "not_replayed";
+  return matched ? "matched" : "mismatch";
+}
+
+function compareServiceExpectations(
+  source: Record<string, unknown>,
+  result: Record<string, unknown>
+): ExpectationStatus {
+  if (expectedFieldNames(source).length > 0) return "unsupported";
+  const observed = record(source.observedVector);
+  const hasRecordedPredicate = observed.recordedPredicate !== undefined ||
+    (Array.isArray(source.windows) && source.windows.some((window) =>
+      record(window).recordedPredicate !== undefined
+    ));
+  const classification = source.behaviorClassification;
+  if (classification === undefined && !hasRecordedPredicate) return "missing";
+  if (classification !== undefined &&
+    classification !== "high_service_behavior" &&
+    classification !== "non_service_profile" &&
+    classification !== "insufficient_data") return "unsupported";
+  if (result.state === "expectation_level") return "not_replayed";
+  if (classification === undefined) return "matched";
+  const expectedState = {
+    high_service_behavior: "high_inferred_service",
+    non_service_profile: "non_service_profile",
+    insufficient_data: "insufficient_data"
+  }[classification];
+  return expectedState === result.state ? "matched" : "mismatch";
+}
+
+function compareAdverseExpectations(
+  source: Record<string, unknown>,
+  result: Record<string, unknown>
+): ExpectationStatus {
+  const fields = expectedFieldNames(source);
+  if (fields.length === 0) return "missing";
+  let matched = true;
+  for (const field of fields) {
+    const value = source[field];
+    switch (field) {
+      case "expectedClassification":
+        if (value !== "exact_service_label" && value !== "exact_service_label_not_backdated") {
+          return "unsupported";
+        }
+        matched &&= result.kind === "service_label" && result.authoritative === true &&
+          result.atValidityStart === "eligible" && (
+            value === "exact_service_label"
+              ? result.serviceRole === "cex:binance" && result.adverse === false
+              : result.serviceRole === "cex:htx-huobi" && result.adverse === true &&
+                result.beforeValidityStart === "label_not_valid_at_event"
+          );
+        break;
+      case "expectedHardEvidenceAmountRaw":
+        if (!canonicalAmount(value)) return "unsupported";
+        matched &&= value === result.hardEvidenceAmountRaw;
+        break;
+      case "expectedRule":
+        if (value !== "only_active_at_event_partition_is_authoritative") return "unsupported";
+        matched &&= record(result.partitions).active_at_event === result.hardEvidenceAmountRaw;
+        break;
+      case "expectedRoles": { // ponytail: v1 has exactly the principal/fee role pair.
+        const roles = record(value);
+        if (!hasExactKeys(roles, ["fee", "principal"]) ||
+          roles.principal !== "aml_money_path" ||
+          roles.fee !== "accounting_only_consumption") return "unsupported";
+        matched &&= roles.principal === result.principalRole && roles.fee === result.serviceFeeRole;
+        break;
+      }
+      case "expectedCurrentProvenanceState":
+        if (value !== "unresolved") return "unsupported";
+        matched &&= result.ledgerExecuted === false;
+        break;
+      case "expectedEvidenceLevel":
+        if (value !== "context_only" && value !== "exact_approval_drain") return "unsupported";
+        matched &&= value === "context_only"
+          ? result.classification === "context_only" && result.red === false
+          : result.classification === "exact_drainer_red" && result.red === true;
+        break;
+      case "expectedExactDrainerAuthority":
+        if (typeof value !== "boolean") return "unsupported";
+        matched &&= value === result.red;
+        break;
+      default:
+        return "unsupported";
+    }
+  }
+  if (result.state === "expectation_level") return "not_replayed";
+  return matched ? "matched" : "mismatch";
+}
+
+function compareCaseExpectation(
+  kind: CaseKind,
+  source: Case,
+  actual: CaseResult
+): ExpectationStatus {
   const expected = source as Record<string, unknown>;
   const result = actual as Record<string, unknown>;
-  if (result.state === "expectation_level") return false;
-
-  if (typeof expected.expectedAuthoritativeState === "string" &&
-    expected.expectedAuthoritativeState !== result.state &&
-    expected.expectedAuthoritativeState !== result.reason) return false;
-  if (typeof expected.expectedState === "string" &&
-    expected.expectedState !== result.state &&
-    expected.expectedState !== result.reason) return false;
-  if (typeof expected.expectedReason === "string" && expected.expectedReason !== result.reason) {
-    return false;
-  }
-
-  if (typeof expected.behaviorClassification === "string") {
-    const expectedState = {
-      high_service_behavior: "high_inferred_service",
-      non_service_profile: "non_service_profile",
-      insufficient_data: "insufficient_data"
-    }[expected.behaviorClassification];
-    if (expectedState !== undefined && expectedState !== result.state) return false;
-  }
-
-  if (expected.expectedClassification === "exact_service_label" &&
-    (result.kind !== "service_label" || result.authoritative !== true ||
-      result.atValidityStart !== "eligible")) return false;
-  if (expected.expectedClassification === "exact_service_label_not_backdated" &&
-    (result.kind !== "service_label" || result.authoritative !== true ||
-      result.atValidityStart !== "eligible" ||
-      result.beforeValidityStart !== "label_not_valid_at_event")) return false;
-
-  if (typeof expected.expectedHardEvidenceAmountRaw === "string" &&
-    expected.expectedHardEvidenceAmountRaw !== result.hardEvidenceAmountRaw) return false;
-  if (expected.expectedRule === "only_active_at_event_partition_is_authoritative") {
-    const partitions = record(result.partitions);
-    if (partitions.active_at_event !== result.hardEvidenceAmountRaw) return false;
-  }
-
-  const roles = record(expected.expectedRoles);
-  if (typeof roles.principal === "string" && roles.principal !== result.principalRole) return false;
-  if (typeof roles.fee === "string" && roles.fee !== result.serviceFeeRole) return false;
-  if (expected.expectedCurrentProvenanceState === "unresolved" && result.ledgerExecuted !== false) {
-    return false;
-  }
-
-  if (typeof expected.expectedExactDrainerAuthority === "boolean" &&
-    expected.expectedExactDrainerAuthority !== result.red) return false;
-  if (expected.expectedEvidenceLevel === "context_only" && result.classification !== "context_only") {
-    return false;
-  }
-  if (expected.expectedEvidenceLevel === "exact_approval_drain" && result.red !== true) return false;
-  return true;
+  if (kind === "ledger") return compareLedgerExpectations(expected, result);
+  if (kind === "service") return compareServiceExpectations(expected, result);
+  if (kind === "adverse") return compareAdverseExpectations(expected, result);
+  return expectedFieldNames(expected).length === 0 ? "missing" : "unsupported";
 }
 
 function compareExpectations(
@@ -100,28 +221,27 @@ function compareExpectations(
   result: OfflineReplayResultV1
 ): readonly Mismatch[] {
   const sources = new Map([
-    ...corpus.ledgerCases,
-    ...corpus.serviceCases,
-    ...corpus.adverseCases,
-    ...(corpus.broadScopeCases ?? [])
-  ].map((item) => [item.id, item] as const));
+    ...corpus.ledgerCases.map((source) => ({ kind: "ledger" as const, source })),
+    ...corpus.serviceCases.map((source) => ({ kind: "service" as const, source })),
+    ...corpus.adverseCases.map((source) => ({ kind: "adverse" as const, source })),
+    ...(corpus.broadScopeCases ?? []).map((source) => ({ kind: "broad_scope" as const, source }))
+  ].map((item) => [item.source.id, item] as const));
   return [
     ...result.ledgerCases,
     ...result.serviceCases,
     ...result.adverseCases,
     ...result.broadScopeCases
   ].flatMap((actual): Mismatch[] => {
-    const source = sources.get(actual.id);
-    if (source === undefined) return [{ caseId: actual.id, code: "frozen_expectation_missing" }];
-    if (!hasFrozenExpectation(source)) {
-      return [{ caseId: actual.id, code: "frozen_expectation_missing" }];
-    }
-    if (matchesDeclaredExpectation(source, actual)) return [];
+    const item = sources.get(actual.id);
+    if (item === undefined) return [{ caseId: actual.id, code: "frozen_expectation_missing" }];
+    const comparison = compareCaseExpectation(item.kind, item.source, actual);
+    if (comparison === "matched") return [];
     return [{
       caseId: actual.id,
-      code: actual.state === "expectation_level"
-        ? "frozen_expectation_not_replayed"
-        : "frozen_expectation_mismatch"
+      code: comparison === "missing" ? "frozen_expectation_missing"
+        : comparison === "unsupported" ? "unsupported_frozen_expectation"
+          : comparison === "not_replayed" ? "frozen_expectation_not_replayed"
+            : "frozen_expectation_mismatch"
     }];
   }).sort((left, right) =>
     left.caseId < right.caseId ? -1

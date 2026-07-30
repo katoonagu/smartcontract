@@ -3231,6 +3231,20 @@ describe("read-only forensic corpus CLI", () => {
     ["--import", "tsx", cliPath, ...args],
     { cwd, encoding: "utf8" }
   );
+  const runMutatedCorpus = async (
+    mutate: (value: Record<string, unknown>) => void
+  ) => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-expectation-"));
+    const path = join(directory, "corpus.json");
+    try {
+      const value = structuredClone(corpus) as unknown as Record<string, unknown>;
+      mutate(value);
+      await writeFile(path, JSON.stringify(value), "utf8");
+      return runCli(["--fixture", path]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
 
   it("prints one deterministic canonical report for the default and explicit fixture", () => {
     const first = runCli();
@@ -3348,6 +3362,73 @@ describe("read-only forensic corpus CLI", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("rejects an unknown value for a supported frozen expectation field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedClassification =
+        "unknown_future_classification";
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("rejects every unknown top-level expected field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedFoo = true;
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("rejects an invalid shape for a known frozen expectation field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "gasfree-principal-fee-classification")!.expectedRoles = {
+        principal: "future_role",
+        fee: "accounting_only_consumption"
+      };
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "gasfree-principal-fee-classification",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("compares a supported expectation mutation against actual replay fields", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedClassification =
+        "exact_service_label_not_backdated";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "frozen_expectation_mismatch"
+      }])
+    });
   });
 
   it("is byte-identical across runs and writes nothing in its working directory", async () => {

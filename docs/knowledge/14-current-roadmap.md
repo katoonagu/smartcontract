@@ -97,12 +97,17 @@ Evidence limits remain explicit:
 
 Verification on this tree passed:
 
-- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts`: 148 tests;
-- the Task 4 eight-file forensic/authority gate: 367 tests;
+- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts`: 152 tests;
 - `npm run typecheck`;
+- `npm test -- tests/forensics/offlineForensicModelReplay.test.ts tests/forensics/directHardEvidence.test.ts tests/forensics/contractDrivenEvidence.test.ts tests/forensics/approvalDrainProvenance.test.ts tests/forensics/verify20Fingerprint.test.ts tests/forensics/gasFreeSettlement.test.ts tests/unified-check/labelCatalog.test.ts tests/unified-check/providerServiceBindings.test.ts`:
+  371 tests across the full eight-file authority gate;
 - `npm test -- tests/forensics/tronAddressAllTimeIndex.test.ts tests/unified-check/directHistory.test.ts tests/golden-v2/attribution.test.ts`: 33 tests;
-- `npm test`: 5,099 passed and 157 skipped across 288 passed and 27 skipped
-  test files.
+- `npm test`: 5,103 passed and 157 skipped across 288 passed and 27 skipped
+  test files;
+- `node --import tsx scripts/replayForensicModelCorpus.ts > $env:TEMP\forensic-replay-1.json`;
+- `node --import tsx scripts/replayForensicModelCorpus.ts > $env:TEMP\forensic-replay-2.json`;
+- `Compare-Object (Get-Content -Raw $env:TEMP\forensic-replay-1.json) (Get-Content -Raw $env:TEMP\forensic-replay-2.json)`: no differences; both CLI exits were 1 because the offline gate remained failed, while raw stdout capture was byte-identical at the size and hash recorded above;
+- `git diff --check`.
 
 This is no production activation. Stage D remains deferred and not approved;
 production routing, scoring, traversal, configuration and delivery are
