@@ -380,7 +380,9 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
   const code = "offline_corpus_service_vector_invalid";
   const source = record(value, code);
   const largest = record(source.largestCounterparty, code);
-  const median = record(source.medianDominantDirectionGapSeconds, code);
+  const median = source.medianDominantDirectionGapSeconds === null
+    ? null
+    : record(source.medianDominantDirectionGapSeconds, code);
   const repeated = record(source.dominantExactAmount, code);
   const dominantDirection = source.dominantDirection;
   if (dominantDirection !== "incoming" && dominantDirection !== "outgoing") {
@@ -400,9 +402,11 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
   const dominantDirectionCount = count(source.dominantDirectionCount);
   const uniqueDominantCounterparties = count(source.uniqueDominantCounterparties);
   const dominantShareDenominator = count(source.dominantShareDenominator);
-  const medianNumerator = count(median.numerator);
-  const medianDenominator = integer(median.denominator, code);
-  if (medianDenominator !== 1 && medianDenominator !== 2) throw new TypeError(code);
+  const medianNumerator = median === null ? null : count(median.numerator);
+  const medianDenominator = median === null ? null : integer(median.denominator, code);
+  if (medianDenominator !== null && medianDenominator !== 1 && medianDenominator !== 2) {
+    throw new TypeError(code);
+  }
   const maxDominantDirectionEventsPerHour = count(source.maxDominantDirectionEventsPerHour);
   const activeUtcHourOfDayCount = count(source.activeUtcHourOfDayCount);
   const dominantExactAmountCount = count(repeated.count);
@@ -416,6 +420,8 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
     physicalRowCount >= canonicalEventCount &&
     featureEligibleEventCount <= canonicalEventCount &&
     incomingCount + outgoingCount === featureEligibleEventCount &&
+    (incomingCount === 0) === (uniqueSenders === 0) &&
+    (outgoingCount === 0) === (uniqueRecipients === 0) &&
     uniqueSenders <= incomingCount && uniqueRecipients <= outgoingCount &&
     uniqueCounterparties <= featureEligibleEventCount &&
     uniqueCounterparties >= Math.max(uniqueSenders, uniqueRecipients) &&
@@ -436,6 +442,10 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
     (dominantDirectionCount === 0 || dominantExactAmountCount >= 1) &&
     dominantExactAmountCount <= dominantDirectionCount &&
     dominantExactAmountShareDenominator === dominantDirectionCount &&
+    (dominantDirectionCount <= 1
+      ? median === null
+      : medianNumerator !== null && medianDenominator !== null &&
+        medianNumerator <= observedWindowDurationSeconds * medianDenominator) &&
     observedStartSeconds <= observedEndSeconds &&
     observedEndSeconds - observedStartSeconds === observedWindowDurationSeconds;
   if (!coherent) throw new TypeError(code);
@@ -461,9 +471,9 @@ function recordedWindowVector(value: unknown, minimumRows = 0): CompleteServiceW
     dominantDirectionCount,
     uniqueDominantCounterparties,
     dominantShareDenominator,
-    medianDominantDirectionGapSeconds: {
-      numerator: medianNumerator,
-      denominator: medianDenominator
+    medianDominantDirectionGapSeconds: median === null ? null : {
+      numerator: medianNumerator!,
+      denominator: medianDenominator!
     },
     maxDominantDirectionEventsPerHour,
     activeUtcHourOfDayCount,

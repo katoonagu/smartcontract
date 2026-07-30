@@ -3012,6 +3012,95 @@ describe("offline forensic model replay v1", () => {
     }))).toThrow("offline_corpus_service_vector_invalid");
   });
 
+  it.each([
+    ["incoming", "recent", 0],
+    ["incoming", "historical", 1],
+    ["outgoing", "recent", 0],
+    ["outgoing", "historical", 1]
+  ] as const)("rejects positive %s events without a unique address in the %s window", (
+    direction,
+    _kind,
+    windowIndex
+  ) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as FeatureVector[])[windowIndex]!;
+    if (direction === "incoming") {
+      window.uniqueSenders = 0;
+      window.uniqueCounterparties = window.uniqueRecipients;
+    } else {
+      window.uniqueRecipients = 0;
+      window.uniqueDominantCounterparties = 0;
+      window.uniqueCounterparties = window.uniqueSenders;
+    }
+    window.recordedPredicate = recomputePredicate(window);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it.each([
+    ["recent", 0],
+    ["historical", 1]
+  ] as const)("rejects a dominant median gap larger than the %s window", (_kind, windowIndex) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as FeatureVector[])[windowIndex]!;
+    window.medianDominantDirectionGapSeconds.numerator =
+      (window.observedWindowDurationSeconds + 1) *
+      window.medianDominantDirectionGapSeconds.denominator;
+    window.recordedPredicate = recomputePredicate(window);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  const oneEventRecordedVector = (median: unknown): Record<string, unknown> => ({
+    physicalRowCount: 1,
+    canonicalEventCount: 1,
+    featureEligibleEventCount: 1,
+    incomingCount: 1,
+    outgoingCount: 0,
+    uniqueSenders: 1,
+    uniqueRecipients: 0,
+    uniqueCounterparties: 1,
+    largestCounterparty: { count: 1, shareDenominator: 1 },
+    dominantDirection: "incoming",
+    dominantDirectionCount: 1,
+    uniqueDominantCounterparties: 1,
+    dominantShareDenominator: 1,
+    medianDominantDirectionGapSeconds: median,
+    maxDominantDirectionEventsPerHour: 1,
+    activeUtcHourOfDayCount: 1,
+    dominantExactAmount: { amountRaw: "1", count: 1, shareDenominator: 1 },
+    observedStartTimestamp: "2026-01-01T00:00:00.000Z",
+    observedEndTimestamp: "2026-01-01T00:00:00.000Z",
+    observedWindowDurationSeconds: 0,
+    recordedPredicate: { C: false, B: false, G: false, H: false, R: false, X: false, P: false }
+  });
+
+  it("accepts the honest null median for a one-event recorded vector", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-event-vector",
+        evidenceClass: "recorded_calibration_vector",
+        observedVector: oneEventRecordedVector(null)
+      }]
+    }))).not.toThrow();
+  });
+
+  it("rejects a median gap for a one-event recorded vector", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-event-vector",
+        evidenceClass: "recorded_calibration_vector",
+        observedVector: oneEventRecordedVector({ numerator: 0, denominator: 1 })
+      }]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
   it("routes both recorded windows through the 100 plus 100 classifier", () => {
     const serviceCase = structuredClone(corpus.serviceCases
       .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
