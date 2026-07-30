@@ -725,6 +725,74 @@ describe("chronological proportional ledger v1", () => {
     ])).toMatchObject({ state: "unresolved", reason: "order_unresolved", blockNumber: 10 });
   });
 
+  it("rejects one transaction hash mapped to different transaction positions", () => {
+    const events = [
+      ledgerEvent({
+        canonicalEventId: "caller:0",
+        txHash: "shared-tx",
+        blockNumber: 10,
+        transactionIndex: 0,
+        eventIndex: 0,
+        fromAddress: "a",
+        toAddress: subjectAddress,
+        amountRaw: 5n
+      }),
+      ledgerEvent({
+        canonicalEventId: "caller:1",
+        txHash: "shared-tx",
+        blockNumber: 10,
+        transactionIndex: 1,
+        eventIndex: 1,
+        fromAddress: "b",
+        toAddress: subjectAddress,
+        amountRaw: 7n
+      })
+    ];
+    const forward = canonicalizeChronologicalLedgerEventsV1(events);
+    const reversed = canonicalizeChronologicalLedgerEventsV1([...events].reverse());
+
+    expect(reversed).toEqual(forward);
+    expect(forward).toMatchObject({
+      state: "unresolved",
+      reason: "order_unresolved",
+      blockNumber: 10
+    });
+  });
+
+  it("rejects different transaction hashes mapped to one block transaction slot", () => {
+    const events = [
+      ledgerEvent({
+        canonicalEventId: "caller:a",
+        txHash: "tx-a",
+        blockNumber: 10,
+        transactionIndex: 0,
+        eventIndex: 0,
+        fromAddress: "a",
+        toAddress: subjectAddress,
+        amountRaw: 5n
+      }),
+      ledgerEvent({
+        canonicalEventId: "caller:b",
+        txHash: "tx-b",
+        blockNumber: 10,
+        transactionIndex: 0,
+        eventIndex: 1,
+        fromAddress: "b",
+        toAddress: subjectAddress,
+        amountRaw: 7n
+      })
+    ];
+    const forward = canonicalizeChronologicalLedgerEventsV1(events);
+    const reversed = canonicalizeChronologicalLedgerEventsV1([...events].reverse());
+
+    expect(reversed).toEqual(forward);
+    expect(forward).toMatchObject({
+      state: "unresolved",
+      reason: "order_unresolved",
+      blockNumber: 10
+    });
+  });
+
   it("breaks equal largest-remainder ties by canonical lot ID", () => {
     expect(apportionRawLargestRemainderV1(1n, [lot("b", 1n), lot("a", 1n)]))
       .toEqual([
@@ -835,6 +903,40 @@ describe("chronological proportional ledger v1", () => {
       requestedAmountRaw: 5n,
       snapshotBalanceWitness: balanceWitness(10n)
     })).toMatchObject({ state: "complete", targetRaw: 5n, coveredRaw: 5n });
+  });
+
+  it("rejects events after the ledger snapshot before allocation or episode selection", () => {
+    const ledger = runChronologicalProportionalLedgerV1({
+      subjectAddress,
+      ...ledgerSnapshot,
+      historyCompleteness: "genesis_complete",
+      openingBalanceRaw: 0n,
+      events: [ledgerEvent({
+        canonicalEventId: "after-snapshot",
+        blockNumber: ledgerSnapshot.snapshotBlockNumber + 1,
+        fromAddress: "funder",
+        toAddress: subjectAddress,
+        amountRaw: 10n
+      })]
+    });
+
+    expect(ledger).toMatchObject({
+      state: "unresolved",
+      reason: "snapshot_inconsistent",
+      authoritative: false,
+      totalIncomingRaw: 0n,
+      remainingRaw: 0n
+    });
+    expect(selectLedgerProvenanceV1({
+      ledger,
+      purpose: "current_balance",
+      snapshotBalanceWitness: balanceWitness(10n)
+    })).toMatchObject({ state: "unresolved", reason: "snapshot_inconsistent" });
+    expect(selectLedgerProvenanceV1({
+      ledger,
+      purpose: "exact_episode",
+      exactEventId: "receipt:tx:after-snapshot:0"
+    })).toMatchObject({ state: "unresolved", reason: "snapshot_inconsistent" });
   });
 
   it("does not make exact episode selection depend on a current live balance", () => {

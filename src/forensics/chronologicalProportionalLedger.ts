@@ -57,6 +57,7 @@ export type LedgerInputV1 = {
 export type LedgerFailureReasonV1 =
   | CanonicalizationReasonV1
   | "history_incomplete"
+  | "snapshot_inconsistent"
   | "debit_exceeds_inventory";
 
 export type LedgerResultV1 = {
@@ -155,15 +156,43 @@ function compareCanonicalOrder(left: LedgerEventV1, right: LedgerEventV1): numbe
 
 function hasUnresolvedBlockOrder(events: readonly LedgerEventV1[]): number | null {
   const byBlock = new Map<number, LedgerEventV1[]>();
+  const positionsByTxHash = new Map<string, Set<string>>();
+  const blocksByTxHash = new Map<string, Set<number>>();
+  const txHashesBySlot = new Map<string, Set<string>>();
+  const unresolvedBlocks = new Set<number>();
   for (const event of events) {
     const block = byBlock.get(event.blockNumber) ?? [];
     block.push(event);
     byBlock.set(event.blockNumber, block);
+
+    const position = `${event.blockNumber}:${event.transactionIndex ?? "missing"}`;
+    const positions = positionsByTxHash.get(event.txHash) ?? new Set<string>();
+    positions.add(position);
+    positionsByTxHash.set(event.txHash, positions);
+    const txBlocks = blocksByTxHash.get(event.txHash) ?? new Set<number>();
+    txBlocks.add(event.blockNumber);
+    blocksByTxHash.set(event.txHash, txBlocks);
+    if (event.transactionIndex !== null) {
+      const slot = `${event.blockNumber}:${event.transactionIndex}`;
+      const slotTxHashes = txHashesBySlot.get(slot) ?? new Set<string>();
+      slotTxHashes.add(event.txHash);
+      txHashesBySlot.set(slot, slotTxHashes);
+      if (slotTxHashes.size > 1) unresolvedBlocks.add(event.blockNumber);
+    }
+  }
+  for (const [txHash, positions] of positionsByTxHash) {
+    if (positions.size > 1) {
+      for (const blockNumber of blocksByTxHash.get(txHash) ?? []) {
+        unresolvedBlocks.add(blockNumber);
+      }
+    }
   }
   for (const blockNumber of [...byBlock.keys()].sort((left, right) => left - right)) {
     const block = byBlock.get(blockNumber) as LedgerEventV1[];
     if (block.length < 2) continue;
-    if (block.some(({ transactionIndex }) => transactionIndex === null)) return blockNumber;
+    if (block.some(({ transactionIndex }) => transactionIndex === null)) {
+      unresolvedBlocks.add(blockNumber);
+    }
     for (let index = 0; index < block.length; index += 1) {
       const left = block[index];
       if (!left) continue;
@@ -172,11 +201,11 @@ function hasUnresolvedBlockOrder(events: readonly LedgerEventV1[]): number | nul
         if (!right) continue;
         if (
           left.transactionIndex === right.transactionIndex && left.eventIndex === right.eventIndex
-        ) return blockNumber;
+        ) unresolvedBlocks.add(blockNumber);
       }
     }
   }
-  return null;
+  return [...unresolvedBlocks].sort((left, right) => left - right)[0] ?? null;
 }
 
 export function canonicalizeChronologicalLedgerEventsV1(
@@ -321,6 +350,14 @@ export function runChronologicalProportionalLedgerV1(input: LedgerInputV1): Ledg
       state: "unresolved",
       reason: canonical.reason,
       authoritative: false
+    });
+  }
+  if (canonical.events.some(({ blockNumber }) => blockNumber > input.snapshotBlockNumber)) {
+    return ledgerResult(input, {
+      state: "unresolved",
+      reason: "snapshot_inconsistent",
+      authoritative: false,
+      events: canonical.events
     });
   }
 
