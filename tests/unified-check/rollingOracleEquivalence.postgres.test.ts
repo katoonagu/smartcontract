@@ -1085,11 +1085,29 @@ function productionProviderPage(
   };
 }
 
+async function normalizeProductionOracleReadiness(
+  client: pg.PoolClient,
+  runId: string,
+  frozenClockIso: string
+): Promise<void> {
+  // ponytail: this oracle intentionally bypasses scheduling-time semantics;
+  // scheduler and backoff behavior have separate tests.
+  await client.query(
+    `update unified_check_tasks
+        set ready_at = $2::timestamptz
+      where run_id = $1
+        and status in ('QUEUED','WAITING_RETRY')
+        and ready_at is distinct from $2::timestamptz`,
+    [runId, frozenClockIso]
+  );
+}
+
 async function productionOracleFacts(input: {
   readonly client: pg.PoolClient;
   readonly replay: UnifiedProviderReplayV1;
   readonly policy: "barrier" | "rolling";
   readonly capacity: number;
+  readonly forceFutureReadyAtMs?: number;
 }): Promise<OracleFacts> {
   const db = hostFor(input.client);
   const policyVersion = input.replay.deterministic.traversalPolicyVersion;
@@ -1177,6 +1195,18 @@ async function productionOracleFacts(input: {
   if (intake.kind !== "attached") {
     throw new Error("rolling_oracle_intake_not_attached");
   }
+  if (input.forceFutureReadyAtMs !== undefined) {
+    const forced = await input.client.query(
+      `update unified_check_tasks
+          set ready_at = statement_timestamp() +
+            ($2::bigint * interval '1 millisecond')
+        where run_id = $1
+          and status in ('QUEUED','WAITING_RETRY')
+        returning id`,
+      [RUN_ID, input.forceFutureReadyAtMs]
+    );
+    expect(forced.rowCount).toBeGreaterThan(0);
+  }
   let runtimeNumber = 0;
   const makeRuntime = () => {
     const process = ++runtimeNumber;
@@ -1227,7 +1257,17 @@ async function productionOracleFacts(input: {
   let restarted = false;
   let completed = false;
   for (let guard = 0; guard < 128; guard += 1) {
+    await normalizeProductionOracleReadiness(
+      input.client,
+      RUN_ID,
+      input.replay.frozenClockIso
+    );
     await runtime.runAnalysisCycle();
+    await normalizeProductionOracleReadiness(
+      input.client,
+      RUN_ID,
+      input.replay.frozenClockIso
+    );
     await runtime.runProviderCycle(0);
     if (!restarted) {
       const durableProgress = Number((await input.client.query(
@@ -1290,8 +1330,18 @@ async function productionOracleFacts(input: {
     [RUN_ID]
   )).rows[0]!;
   const completedRestart = makeRuntime();
+  await normalizeProductionOracleReadiness(
+    input.client,
+    RUN_ID,
+    input.replay.frozenClockIso
+  );
   await expect(completedRestart.runProviderCycle())
     .resolves.toMatchObject({ outcome: "idle" });
+  await normalizeProductionOracleReadiness(
+    input.client,
+    RUN_ID,
+    input.replay.frozenClockIso
+  );
   await expect(completedRestart.runAnalysisCycle())
     .resolves.toMatchObject({ outcome: "idle" });
   await expect(completedRestart.runFinalizationCycle())
@@ -1415,13 +1465,15 @@ async function runScenario(input: {
   readonly policy: "barrier" | "rolling";
   readonly capacity: number;
   readonly seed: number;
+  readonly forceFutureReadyAtMs?: number;
 }): Promise<OracleFacts> {
   void input.seed;
   return withSchema(({ client }) => productionOracleFacts({
     client,
     replay: input.replay,
     policy: input.policy,
-    capacity: input.capacity
+    capacity: input.capacity,
+    forceFutureReadyAtMs: input.forceFutureReadyAtMs
   }));
 }
 
@@ -1543,6 +1595,34 @@ describe("Unified rolling oracle comparison harness", () => {
 });
 
 postgresDescribe("Unified barrier versus rolling exact PostgreSQL oracle", () => {
+  it("keeps canonical facts and evidence hashes stable when task readiness is briefly in the future", async () => {
+    const replay = parseUnifiedProviderReplayV1(canonicalJsonFilePayload(
+      await readFile(
+        "tests/fixtures/unified-wallet/adaptive-rolling-provider-replay-v2.json",
+        "utf8"
+      )
+    ));
+    const baseline = await runScenario({
+      replay,
+      policy: "rolling",
+      capacity: 8,
+      seed: BASE_SEED + 8
+    });
+    const futureReady = await runScenario({
+      replay,
+      policy: "rolling",
+      capacity: 8,
+      seed: BASE_SEED + 8,
+      forceFutureReadyAtMs: 2_000
+    });
+
+    expect(futureReady.canonicalFacts).toEqual(baseline.canonicalFacts);
+    expect(futureReady.evidenceBundleSha256)
+      .toBe(baseline.evidenceBundleSha256);
+    expect(compareUnifiedReplayOracleFacts(baseline, futureReady).equivalent)
+      .toBe(true);
+  });
+
   it.each(POLICY_FIXTURES)(
     "keeps $policy production traversal exact through capacities, restart, and delivery idempotency",
     async ({ policy, path, receiptOutputEnv }) => {
