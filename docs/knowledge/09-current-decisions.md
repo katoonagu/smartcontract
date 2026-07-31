@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-30
+last_verified: 2026-07-31
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -19,6 +19,9 @@ code_refs:
   - scripts/runUnifiedWalletCanary.ts
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - scripts/captureUnifiedWslMemory.ps1
+  - scripts/captureServiceRoleExactEvidence.ts
+  - scripts/materializeServiceRoleEventMap.ts
+  - scripts/auditServiceRoleShadowPrerequisites.ts
   - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
@@ -300,6 +303,30 @@ scores, assertions, and delivery artifacts are not recalculated or rewritten.
   `4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407`.
 
 ## Approved Forensic Model — Not Yet Production
+
+### Stage C exact-role evidence admission
+
+- The frozen source is run
+  `5417cbf6-7cef-4b91-8367-d266eaf3857e`, accepted address-history manifest
+  `08dff32559b2c793f4bf4b185b6186548296ba1694b8ee90320c228db8e0e9c0`,
+  and anchor `2026-06-04T09:20:33.000Z`.
+- One complete exact capture exists: manifest
+  `3549712030d464a8b76a81c78000ba860e9065aa553f15a265ce6dda9c3a00d4`
+  and completed receipt
+  `f73237add53aa53baef87ddf86f5b8188fad90706879fc93ab22a916816a8d04`.
+  It resolves `200/200` sampled events across 200 unique transactions.
+- One evidence bundle
+  `f84498b1f3098789233486ddd1135a3cfb708d3baff0c375fcc6a926f3270974`
+  and one event-role map
+  `6f5e219e16b49e3e7434763a5647104125823dd6cc1367972578b1f45056fa40`
+  authorize `200/200` events. Every role is `ordinary`; missing and conflicts
+  are empty.
+- The final prerequisite audit exits `0` with one fully role-bound history and
+  200 role-bound sampled events. All capture, disposition, bundle, and map
+  artifacts remain referenced by zero accepted attempts.
+- This admission completes the real-evidence prerequisite only. Stage C stays
+  disabled and offline: no production import, configuration, traversal,
+  finalization, score, report, Admin, bot, delivery, or runtime hook changed.
 
 The chronological ledger, exact rounding, opening/residual, artifact, probe,
 closure, `95%` known-allocation deep selection, exact-bound nonterminal lead

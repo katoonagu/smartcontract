@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-30
+last_verified: 2026-07-31
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -37,12 +37,13 @@ implementation plans do not override the status recorded here.
    replay, deployment, and attributable observation evidence exists.
 2. Preserve the implemented provider-cap correctness patch. Keep the new
    adverse-path disposition pure/offline and unwired.
-3. Capture exact role evidence for the frozen real Stage C history, materialize
-   one real `200/200` role map, and make the preserved Task 2 prerequisite
-   audit pass before adding any runtime hook.
-4. Complete Stage C as disabled runtime shadow with exact enabled/disabled byte
-   non-interference, then freeze a separate blind set, complete two reviews,
-   and adjudicate it without retuning the accepted version.
+3. Preserve the admitted real Stage C evidence and Task 2 proof: one frozen
+   `200/200` role map exists and the prerequisite audit passes, with no runtime
+   hook.
+4. Write and execute a separate plan for Stage C disabled runtime shadow with
+   exact enabled/disabled byte non-interference. Only then freeze a separate
+   blind set, complete two reviews, and adjudicate it without retuning the
+   accepted version.
 5. Keep the accepted 7/7 cashflow ledger foundation offline-only while a
    production-owned authority producer and a first `current_balance` selector
    are separately proven. Add cashflow runtime shadow only after real complete
@@ -79,7 +80,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; `SUBJECT_EVENT_CAP` is unapproved | Freeze explicit selection/cap policy and canonical positive/negative fixtures before an implementation plan |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | The typed offline gate is implemented and approved at service `24/24` plus adverse `6/6`, with explicit evidence limitations. The pure shadow builder and fail-closed role-map materializer are implemented, but the known real history still has role authority `0/200`; no real map or runtime hook exists | Capture exact evidence for the frozen 200 events, materialize one real `200/200` map, make the preserved Task 2 prerequisite audit exit `0`, then complete disabled shadow wiring and byte non-interference before blind review |
+| Stage C | Real evidence admission and preserved Task 2 proof are complete: the frozen accepted history has one exact `200/200` role map, the prerequisite audit exits `0`, and the standalone artifacts have zero accepted-attempt references. No runtime hook exists | Write a separate disabled-shadow plan and prove enabled/disabled byte non-interference before blind review |
 | Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -213,6 +214,29 @@ PacGy case remains `unresolved` / `history_incomplete_before_anchor`.
 This is no production activation. Stage D remains deferred and not approved;
 production routing, scoring, traversal, configuration and delivery are
 unchanged.
+
+## Stage C Real Evidence Admission — 2026-07-31
+
+The frozen run `5417cbf6-7cef-4b91-8367-d266eaf3857e`, accepted
+address-history manifest
+`08dff32559b2c793f4bf4b185b6186548296ba1694b8ee90320c228db8e0e9c0`,
+and anchor `2026-06-04T09:20:33.000Z` now have one exact completed capture and
+one real `200/200` role map. Capture manifest
+`3549712030d464a8b76a81c78000ba860e9065aa553f15a265ce6dda9c3a00d4`,
+receipt
+`f73237add53aa53baef87ddf86f5b8188fad90706879fc93ab22a916816a8d04`,
+evidence bundle
+`f84498b1f3098789233486ddd1135a3cfb708d3baff0c375fcc6a926f3270974`,
+and role map
+`6f5e219e16b49e3e7434763a5647104125823dd6cc1367972578b1f45056fa40`
+revalidate without missing events or conflicts. All 200 roles are `ordinary`.
+
+The prerequisite audit exits `0` with
+`fullyRoleBoundHistories=1` and `roleBoundSampledEvents=200`. These are
+standalone offline artifacts referenced by zero accepted attempts. Production
+runtime/config paths remain byte-unmodified from the pre-plan baseline. Real
+evidence admission and the preserved Task 2 prerequisite are complete; Stage C
+runtime shadow is the next separate design/plan and remains disabled.
 
 ## Correctness Gate
 

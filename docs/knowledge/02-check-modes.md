@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-30
+last_verified: 2026-07-31
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -32,6 +32,12 @@ from the Unified lifecycle.
 
 Address-poisoning protection is a separate wallet-safety monitor. It never
 becomes AML evidence or a substitute for any of the four checks.
+
+Stage C exact-role evidence is still an offline operator/proof path, not a
+production check mode. One frozen accepted history now has one standalone
+`200/200` event-role map backed by exact transaction evidence. The map is
+referenced by no accepted attempt and changes no production traversal, score,
+report, delivery, configuration, or runtime hook.
 
 ## Unified Wallet Check
 

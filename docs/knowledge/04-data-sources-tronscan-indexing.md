@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-30
+last_verified: 2026-07-31
 owner_area: tronscan
 code_refs:
   - src/index.ts
@@ -92,6 +92,14 @@ decoded transfer recipient/amount, and execution result. Malformed,
 unsupported, multi-contract, or insufficient payloads are explicit
 `ambiguous` evidence rather than a clean result; failed and reverted calls are
 parsed with `successful=false`.
+
+The bounded Stage C operator capture reuses that existing scheduler-backed
+`transaction-info` path and the existing transaction-evidence repository. It
+adds no endpoint, provider-capacity class, checker-local queue, or runtime
+hook. For the accepted frozen history, `riskTransaction=false` on the accepted
+address-history page is only corroboration; exact role authority comes from
+the separately hash-bound, confirmed `transaction-info` payload and finality
+witness for each canonical event.
 
 Finalized raw and transaction-info responses use deterministic immutable
 `raw_evidence` rows. The stored identity binds chain, normalized transaction

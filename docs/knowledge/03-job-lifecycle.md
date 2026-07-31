@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-31
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -40,6 +40,13 @@ not reinterpreted as Unified results.
 A technical/provider stop must remain distinguishable from a risk decision.
 Legacy retries keep their current ownership rules; operators must not grant
 both legacy and Unified workers delivery ownership.
+
+The Stage C exact-role capture is a bounded operator CLI, not a job, task, or
+worker. Its manifest, dispositions, completed receipt, evidence bundle, and
+role map are standalone immutable artifacts referenced by zero accepted
+attempts. The accepted real `200/200` map therefore changes no legacy or
+Unified lifecycle state, claim, retry, finalization, score, report, or
+delivery rule.
 
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the
