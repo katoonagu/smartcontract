@@ -260,7 +260,7 @@ function parseFenceUnchecked(input: {
     }
     const observed = rawOutcome.observedRoleMapV2Sha256s === null
       ? null
-      : ownedSortedStrings(rawOutcome.observedRoleMapV2Sha256s, false);
+      : ownedSortedStrings(rawOutcome.observedRoleMapV2Sha256s, true);
     if (rawOutcome.reason === "preload_timeout" && observed !== null) {
       throw new TypeError("invalid_timeout");
     }
@@ -393,6 +393,32 @@ type ExistingFenceResolution =
       readonly observedRoleMapV2Sha256s: readonly string[];
     };
 
+type UnavailableReason = "preload_timeout" | "malformed" | "conflict";
+
+class FencePublicationRequest extends Error {
+  readonly reason: UnavailableReason;
+  readonly observedRoleMapV2Sha256s: readonly string[] | null;
+
+  constructor(
+    reason: UnavailableReason,
+    observedRoleMapV2Sha256s: readonly string[] | null
+  ) {
+    super("service_role_shadow_fence_publication_requested");
+    this.name = "FencePublicationRequest";
+    this.reason = reason;
+    this.observedRoleMapV2Sha256s = observedRoleMapV2Sha256s === null
+      ? null
+      : Object.freeze([...new Set(observedRoleMapV2Sha256s)].sort());
+  }
+}
+
+class ServiceRoleArtifactInsertConflict extends Error {
+  constructor() {
+    super("service_role_shadow_artifact_insert_conflict");
+    this.name = "ServiceRoleArtifactInsertConflict";
+  }
+}
+
 function storedArtifactRow(value: Record<string, unknown>): StoredArtifactRow {
   if (
     typeof value.sha256 !== "string" ||
@@ -448,7 +474,11 @@ function validateRuntimeInput(input: {
 function timeoutError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
-  return code === "55P03" || code === "57014";
+  const message = (error as { message?: unknown }).message;
+  if (typeof message !== "string") return false;
+  return code === "57014"
+    ? /due to statement timeout/iu.test(message)
+    : code === "55P03" && /due to lock timeout/iu.test(message);
 }
 
 async function setPreloadDeadlines(client: UnifiedQueryable): Promise<void> {
@@ -811,7 +841,8 @@ async function resolveExistingFence(
         mapsByCompoundBindingKey: indexMaps(maps)
       }
     };
-  } catch {
+  } catch (error) {
+    if (timeoutError(error) || !(error instanceof TypeError)) throw error;
     return {
       kind: "unavailable",
       reason: "malformed",
@@ -831,7 +862,7 @@ async function persistFence(
   }
 ): Promise<RuntimeState> {
   const fence = buildServiceRoleShadowInputFenceV1(input);
-  await insertUnifiedArtifact(client, {
+  await insertServiceRoleArtifact(client, {
     sha256: fence.sha256,
     createdByRunId: input.runId,
     kind: "service_role_shadow_input_fence",
@@ -842,6 +873,42 @@ async function persistFence(
     fence,
     mapsByCompoundBindingKey: indexMaps(input.maps ?? [])
   };
+}
+
+async function insertServiceRoleArtifact(
+  client: UnifiedQueryable,
+  input: {
+    readonly sha256: string;
+    readonly createdByRunId: string;
+    readonly kind: string;
+    readonly schemaVersion: string;
+    readonly artifact: unknown;
+  }
+): Promise<void> {
+  let rawRow: unknown;
+  try {
+    rawRow = await insertUnifiedArtifact(client, input);
+  } catch (error) {
+    if (error instanceof Error && error.message === "unified_artifact_conflict") {
+      throw new ServiceRoleArtifactInsertConflict();
+    }
+    throw error;
+  }
+  try {
+    const row = storedArtifactRow(rawRow as Record<string, unknown>);
+    if (
+      row.sha256 !== input.sha256 ||
+      row.createdByRunId !== input.createdByRunId ||
+      row.kind !== input.kind ||
+      row.schemaVersion !== input.schemaVersion ||
+      fingerprintCanonicalArtifact(row.artifact) !== input.sha256 ||
+      canonicalizeArtifactJson(row.artifact) !== canonicalizeArtifactJson(input.artifact)
+    ) {
+      throw new TypeError("inserted_artifact_mismatch");
+    }
+  } catch {
+    throw new ServiceRoleArtifactInsertConflict();
+  }
 }
 
 async function scanAndPublish(
@@ -875,36 +942,37 @@ async function scanAndPublish(
     });
   } catch (error) {
     if (timeoutError(error)) throw error;
-    return persistFence(client, {
-      ...input,
-      outcome: {
-        kind: "unavailable",
-        reason: "malformed",
-        observedRoleMapV2Sha256s
-      }
-    });
+    if (!(error instanceof TypeError)) throw error;
+    throw new FencePublicationRequest("malformed", observedRoleMapV2Sha256s);
   }
   const inputSet = buildServiceRoleShadowInputSetV1({
     runId: input.runId,
     snapshotHash: input.snapshotHash,
     roleMapV2Sha256s: observedRoleMapV2Sha256s
   });
-  await insertUnifiedArtifact(client, {
-    sha256: inputSet.sha256,
-    createdByRunId: input.runId,
-    kind: "service_role_shadow_input_set",
-    schemaVersion: "1",
-    artifact: inputSet.artifact
-  });
-  return persistFence(client, {
-    ...input,
-    outcome: {
-      kind: "ready",
-      inputSetSha256: inputSet.sha256,
-      roleMapV2Sha256s: inputSet.artifact.roleMapV2Sha256s
-    },
-    maps
-  });
+  try {
+    await insertServiceRoleArtifact(client, {
+      sha256: inputSet.sha256,
+      createdByRunId: input.runId,
+      kind: "service_role_shadow_input_set",
+      schemaVersion: "1",
+      artifact: inputSet.artifact
+    });
+    return await persistFence(client, {
+      ...input,
+      outcome: {
+        kind: "ready",
+        inputSetSha256: inputSet.sha256,
+        roleMapV2Sha256s: inputSet.artifact.roleMapV2Sha256s
+      },
+      maps
+    });
+  } catch (error) {
+    if (error instanceof ServiceRoleArtifactInsertConflict) {
+      throw new FencePublicationRequest("conflict", observedRoleMapV2Sha256s);
+    }
+    throw error;
+  }
 }
 
 async function initializeNormally(
@@ -922,26 +990,23 @@ async function initializeNormally(
     const existing = await resolveExistingFence(client, input);
     if (existing.kind === "reuse") return existing.state;
     if (existing.kind === "unavailable") {
-      return persistFence(client, {
-        ...input,
-        outcome: {
-          kind: "unavailable",
-          reason: existing.reason,
-          observedRoleMapV2Sha256s: existing.observedRoleMapV2Sha256s
-        }
-      });
+      throw new FencePublicationRequest(
+        existing.reason,
+        existing.observedRoleMapV2Sha256s
+      );
     }
     return scanAndPublish(client, input);
   });
 }
 
-async function publishTimeout(
+async function publishUnavailable(
   db: UnifiedTransactionalQueryable,
   input: {
     readonly runId: string;
     readonly snapshotHash: string;
     readonly runtimeCommit: string;
-  }
+  },
+  request: FencePublicationRequest
 ): Promise<RuntimeState> {
   return db.transaction(async (client) => {
     await setPreloadDeadlines(client);
@@ -963,11 +1028,35 @@ async function publishTimeout(
       ...input,
       outcome: {
         kind: "unavailable",
-        reason: "preload_timeout",
-        observedRoleMapV2Sha256s: null
+        reason: request.reason,
+        observedRoleMapV2Sha256s: request.observedRoleMapV2Sha256s
       }
     });
   });
+}
+
+const PUBLICATION_ATTEMPTS = 2;
+
+async function convergeUnavailable(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    readonly runId: string;
+    readonly snapshotHash: string;
+    readonly runtimeCommit: string;
+  },
+  request: FencePublicationRequest
+): Promise<RuntimeState> {
+  // ponytail: Two one-second publication attempts cap an externally held lock at
+  // about two seconds; scheduler-owned retry is the upgrade path, while cache
+  // eviction lets a later caller retry until that owner exists.
+  for (let attempt = 1; attempt <= PUBLICATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await publishUnavailable(db, input, request);
+    } catch (error) {
+      if (!timeoutError(error) || attempt === PUBLICATION_ATTEMPTS) throw error;
+    }
+  }
+  throw new Error("service_role_shadow_publication_attempts_exhausted");
 }
 
 async function initializeState(
@@ -978,12 +1067,19 @@ async function initializeState(
     readonly runtimeCommit: string;
   }
 ): Promise<RuntimeState> {
+  let request: FencePublicationRequest;
   try {
     return await initializeNormally(db, input);
   } catch (error) {
-    if (!timeoutError(error)) throw error;
-    return publishTimeout(db, input);
+    if (error instanceof FencePublicationRequest) {
+      request = error;
+    } else if (timeoutError(error)) {
+      request = new FencePublicationRequest("preload_timeout", null);
+    } else {
+      throw error;
+    }
   }
+  return convergeUnavailable(db, input, request);
 }
 
 export function createServiceRoleShadowRuntimeV1(input: {
@@ -1031,13 +1127,16 @@ export function createServiceRoleShadowRuntimeV1(input: {
       ...run,
       runtimeCommit: input.runtimeCommit
     });
-    const fencePromise = statePromise.then(({ fence }) => ({
+    const fencePromise = statePromise.then(({ fence }) => Object.freeze({
       sha256: fence.sha256,
       artifact: fence.artifact
     }));
     void fencePromise.catch(() => undefined);
     const created = { snapshotHash: run.snapshotHash, statePromise, fencePromise };
     cache.set(run.runId, created);
+    void statePromise.catch(() => {
+      if (cache.get(run.runId) === created) cache.delete(run.runId);
+    });
     return created;
   };
 
@@ -1055,7 +1154,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
       }
       const state = await cacheEntry(lookup).statePromise;
       const maps = state.mapsByCompoundBindingKey.get(lookup.compoundBindingKey) ?? [];
-      if (maps.length === 0) return { kind: "missing" };
+      if (maps.length === 0) return Object.freeze({ kind: "missing" as const });
       if (maps.length > 1) {
         return Object.freeze({
           kind: "conflict" as const,

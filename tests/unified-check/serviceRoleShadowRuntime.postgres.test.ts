@@ -145,13 +145,16 @@ async function waitForRuntimeLockWait(input: {
   pid: number;
   queryFragment: string;
   lockKind: "advisory" | "run_row";
-}): Promise<number> {
-  const deadline = performance.now() + 750;
+  afterQueryStartedAt?: string;
+  deadlineMs?: number;
+}): Promise<{ observedAt: number; queryStartedAt: string }> {
+  const deadline = performance.now() + (input.deadlineMs ?? 750);
   while (performance.now() < deadline) {
     const row = (await input.harness.admin.query(
       `select activity.state,
               activity.wait_event_type,
               activity.query,
+              activity.query_start::text as query_started_at,
               coalesce(bool_or(
                 not held.granted and (
                   ($2 = 'advisory' and held.locktype = 'advisory') or
@@ -162,16 +165,21 @@ async function waitForRuntimeLockWait(input: {
          left join pg_locks held on held.pid = activity.pid
         where activity.pid = $1
         group by activity.pid, activity.state,
-                 activity.wait_event_type, activity.query`,
+                 activity.wait_event_type, activity.query, activity.query_start`,
       [input.pid, input.lockKind]
     )).rows[0];
     if (
       row?.state === "active" &&
       row.wait_event_type === "Lock" &&
       row.waiting_on_expected_lock === true &&
+      typeof row.query_started_at === "string" &&
+      row.query_started_at !== input.afterQueryStartedAt &&
       String(row.query).toLowerCase().includes(input.queryFragment.toLowerCase())
     ) {
-      return performance.now();
+      return {
+        observedAt: performance.now(),
+        queryStartedAt: row.query_started_at
+      };
     }
     await delay(10);
   }
@@ -265,18 +273,18 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     const startedAt = performance.now();
     const fencePromise = runtime(harness.poolA).loadInputFence(seeded);
     try {
-      const waitObservedAt = await waitForRuntimeLockWait({
+      const wait = await waitForRuntimeLockWait({
         harness,
         pid: runtimePid,
         queryFragment: "for update of run",
         lockKind: "run_row"
       });
-      await delay(1_050);
+      await delay(1_200);
       await holder.query("rollback");
       const holderReleasedAt = performance.now();
       const fence = await fencePromise;
       const elapsedMs = performance.now() - startedAt;
-      expect(holderReleasedAt - waitObservedAt).toBeGreaterThanOrEqual(1_000);
+      expect(holderReleasedAt - wait.observedAt).toBeGreaterThanOrEqual(1_000);
       expect(elapsedMs).toBeGreaterThanOrEqual(1_000);
       expect(elapsedMs).toBeLessThan(2_500);
       expect(fence.artifact.outcome).toEqual({
@@ -328,13 +336,21 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     const startedAt = performance.now();
     const fencePromise = runtime(harness.poolA).loadInputFence(seeded);
     try {
-      const waitObservedAt = await waitForRuntimeLockWait({
+      const wait = await waitForRuntimeLockWait({
         harness,
         pid: runtimePid,
         queryFragment: "pg_advisory_xact_lock",
         lockKind: "advisory"
       });
-      await delay(1_050);
+      const publicationWait = await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "pg_advisory_xact_lock",
+        lockKind: "advisory",
+        afterQueryStartedAt: wait.queryStartedAt,
+        deadlineMs: 1_500
+      });
+      await delay(75);
       await holder.query(
         "select pg_advisory_unlock(hashtextextended($1::text,0))",
         [`service-role-shadow-input-fence-v1:${seeded.runId}`]
@@ -342,7 +358,8 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       const holderReleasedAt = performance.now();
       const fence = await fencePromise;
       const elapsedMs = performance.now() - startedAt;
-      expect(holderReleasedAt - waitObservedAt).toBeGreaterThanOrEqual(1_000);
+      expect(holderReleasedAt - wait.observedAt).toBeGreaterThanOrEqual(1_000);
+      expect(publicationWait.queryStartedAt).not.toBe(wait.queryStartedAt);
       expect(elapsedMs).toBeGreaterThanOrEqual(1_000);
       expect(elapsedMs).toBeLessThan(2_500);
       expect(fence.artifact.outcome).toEqual({
@@ -351,6 +368,81 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
         observedRoleMapV2Sha256s: null
       });
       await expectNoRuntimeAdvisoryLocks(harness, [runtimePid]);
+    } finally {
+      await holder.query("select pg_advisory_unlock_all()").catch(() => undefined);
+      await fencePromise.catch(() => undefined);
+      await holder.end();
+    }
+  }, 30_000);
+
+  it("retries a timed-out publication transaction and converges on a durable fallback fence", async () => {
+    const seeded = await seedRun(harness);
+    const runtimePid = await backendPid(harness.poolA);
+    const holder = new pg.Client({
+      connectionString,
+      options: `-c search_path=${harness.schema}`
+    });
+    await holder.connect();
+    await holder.query(
+      "select pg_advisory_lock(hashtextextended($1::text,0))",
+      [`service-role-shadow-input-fence-v1:${seeded.runId}`]
+    );
+    const startedAt = performance.now();
+    const fencePromise = runtime(harness.poolA).loadInputFence(seeded);
+    try {
+      const normalWait = await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "pg_advisory_xact_lock",
+        lockKind: "advisory"
+      });
+      const firstPublicationWait = await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "pg_advisory_xact_lock",
+        lockKind: "advisory",
+        afterQueryStartedAt: normalWait.queryStartedAt,
+        deadlineMs: 1_500
+      });
+      const fallbackWait = await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "pg_advisory_xact_lock",
+        lockKind: "advisory",
+        afterQueryStartedAt: firstPublicationWait.queryStartedAt,
+        deadlineMs: 1_500
+      });
+      await delay(75);
+      await holder.query(
+        "select pg_advisory_unlock(hashtextextended($1::text,0))",
+        [`service-role-shadow-input-fence-v1:${seeded.runId}`]
+      );
+      const holderReleasedAt = performance.now();
+      const fence = await fencePromise;
+      const elapsedMs = performance.now() - startedAt;
+      expect(firstPublicationWait.queryStartedAt).not.toBe(normalWait.queryStartedAt);
+      expect(fallbackWait.queryStartedAt).not.toBe(firstPublicationWait.queryStartedAt);
+      expect(holderReleasedAt - firstPublicationWait.observedAt)
+        .toBeGreaterThanOrEqual(1_000);
+      expect(elapsedMs).toBeGreaterThanOrEqual(1_800);
+      expect(elapsedMs).toBeLessThan(3_500);
+      expect(fence.artifact.outcome).toEqual({
+        kind: "unavailable",
+        reason: "preload_timeout",
+        observedRoleMapV2Sha256s: null
+      });
+      expect((await harness.admin.query(
+        `select kind,count(*)::int count
+           from unified_check_artifacts
+          where created_by_run_id=$1
+            and kind in ('service_role_shadow_input_set','service_role_shadow_input_fence')
+          group by kind order by kind`,
+        [seeded.runId]
+      )).rows).toEqual([
+        { kind: "service_role_shadow_input_fence", count: 1 }
+      ]);
+      await expectNoRuntimeAdvisoryLocks(harness, [runtimePid]);
+      expect(await runtime(harness.poolB).loadInputFence(seeded)).toEqual(fence);
     } finally {
       await holder.query("select pg_advisory_unlock_all()").catch(() => undefined);
       await fencePromise.catch(() => undefined);

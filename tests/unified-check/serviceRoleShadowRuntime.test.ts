@@ -24,6 +24,14 @@ const SNAPSHOT_HASH = "a".repeat(64);
 const RUNTIME_COMMIT = "task-4-test-runtime";
 const SUBJECT = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 
+function postgresError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+function statementTimeoutError(): Error & { code: string } {
+  return postgresError("57014", "canceling statement due to statement timeout");
+}
+
 type ArtifactRow = {
   sha256: string;
   created_by_run_id: string;
@@ -154,6 +162,10 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
   wrapperScans = 0;
   failReadyFenceInsertOnce = false;
   failInputSetInsertOnce = false;
+  unavailableFenceTimeoutsRemaining = 0;
+  inputSetInsertErrorOnce: Error | null = null;
+  artifactLoadErrorOnce: Error | null = null;
+  winnerFenceOnUnavailableTimeout: ArtifactRow | null = null;
   fatalWrapperScanOnce = false;
   private transactionNumber = 0;
   private artifacts = new Map<string, ArtifactRow>();
@@ -228,6 +240,11 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
         ).sort((left, right) => left.sha256.localeCompare(right.sha256)) };
       }
       if (normalized.includes("sha256 = any")) {
+        if (this.artifactLoadErrorOnce) {
+          const error = this.artifactLoadErrorOnce;
+          this.artifactLoadErrorOnce = null;
+          throw error;
+        }
         const hashes = values[0] as readonly string[];
         const runId = String(values[1]);
         return { rows: hashes.map((hash) => staged.get(hash)).filter((row): row is ArtifactRow =>
@@ -235,15 +252,30 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
       }
       if (normalized.startsWith("insert into unified_check_artifacts")) {
         const [sha256, runId, kind, schemaVersion, json] = values.map(String);
+        if (this.inputSetInsertErrorOnce && kind === "service_role_shadow_input_set") {
+          const error = this.inputSetInsertErrorOnce;
+          this.inputSetInsertErrorOnce = null;
+          throw error;
+        }
         if (this.failInputSetInsertOnce && kind === "service_role_shadow_input_set") {
           this.failInputSetInsertOnce = false;
-          throw Object.assign(new Error("statement timeout"), { code: "57014" });
+          throw statementTimeoutError();
         }
-        if (this.failReadyFenceInsertOnce && kind === "service_role_shadow_input_fence") {
+        if (kind === "service_role_shadow_input_fence") {
           const artifact = JSON.parse(json) as ServiceRoleShadowInputFenceV1;
-          if (artifact.outcome.kind === "ready") {
+          if (this.failReadyFenceInsertOnce && artifact.outcome.kind === "ready") {
             this.failReadyFenceInsertOnce = false;
-            throw Object.assign(new Error("statement timeout"), { code: "57014" });
+            throw statementTimeoutError();
+          }
+          if (this.unavailableFenceTimeoutsRemaining > 0 && artifact.outcome.kind === "unavailable") {
+            this.unavailableFenceTimeoutsRemaining -= 1;
+            if (this.winnerFenceOnUnavailableTimeout) {
+              this.artifacts.set(
+                this.winnerFenceOnUnavailableTimeout.sha256,
+                structuredClone(this.winnerFenceOnUnavailableTimeout)
+              );
+            }
+            throw statementTimeoutError();
           }
         }
         if (staged.has(sha256)) return { rows: [] };
@@ -360,6 +392,53 @@ describe("service role shadow runtime contracts", () => {
     })).toThrow("service_role_shadow_input_fence_v1_invalid");
     expect(accesses).toBe(0);
   });
+
+  it("requires unavailable observed hashes to be sorted unique lowercase SHA-256 values", () => {
+    const valid = buildServiceRoleShadowInputFenceV1({
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      runtimeCommit: RUNTIME_COMMIT,
+      outcome: {
+        kind: "unavailable",
+        reason: "malformed",
+        observedRoleMapV2Sha256s: ["b".repeat(64), "c".repeat(64)]
+      }
+    });
+    for (const observedRoleMapV2Sha256s of [
+      ["not-a-hash"],
+      ["B".repeat(64)],
+      ["b".repeat(64), "b".repeat(64)],
+      ["c".repeat(64), "b".repeat(64)]
+    ]) {
+      const artifact = {
+        ...valid.artifact,
+        outcome: { ...valid.artifact.outcome, observedRoleMapV2Sha256s }
+      };
+      expect(() => parseServiceRoleShadowInputFenceV1({
+        artifact,
+        expectedSha256: fingerprintCanonicalArtifact(artifact)
+      })).toThrow("service_role_shadow_input_fence_v1_invalid");
+    }
+
+    let accesses = 0;
+    const accessorHashes: string[] = [];
+    Object.defineProperty(accessorHashes, "0", {
+      enumerable: true,
+      get() {
+        accesses += 1;
+        return "b".repeat(64);
+      }
+    });
+    Object.defineProperty(accessorHashes, "length", { value: 1 });
+    expect(() => parseServiceRoleShadowInputFenceV1({
+      artifact: {
+        ...valid.artifact,
+        outcome: { ...valid.artifact.outcome, observedRoleMapV2Sha256s: accessorHashes }
+      },
+      expectedSha256: "f".repeat(64)
+    })).toThrow("service_role_shadow_input_fence_v1_invalid");
+    expect(accesses).toBe(0);
+  });
 });
 
 describe("service role shadow runtime fence", () => {
@@ -372,14 +451,25 @@ describe("service role shadow runtime fence", () => {
     await expect(first).resolves.toMatchObject({ artifact: {
       outcome: { kind: "ready", roleMapV2Sha256s: [] }
     } });
+    const envelope = await first;
+    expect(Object.isFrozen(envelope)).toBe(true);
+    expect(Object.isFrozen(envelope.artifact)).toBe(true);
+    expect(Object.isFrozen(envelope.artifact.outcome)).toBe(true);
+    expect(() => {
+      (envelope as { sha256: string }).sha256 = "f".repeat(64);
+    }).toThrow();
+    expect(await runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH }))
+      .toBe(envelope);
     expect(db.wrapperScans).toBe(1);
     await runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
     expect(db.wrapperScans).toBe(1);
-    await expect(runtime.lookupMap({
+    const missing = await runtime.lookupMap({
       runId: RUN_ID,
       snapshotHash: SNAPSHOT_HASH,
       compoundBindingKey: "e".repeat(64)
-    })).resolves.toEqual({ kind: "missing" });
+    });
+    expect(missing).toEqual({ kind: "missing" });
+    expect(Object.isFrozen(missing)).toBe(true);
   });
 
   it("reuses a strict fence after restart without rescanning or accepting a new wrapper", async () => {
@@ -417,6 +507,11 @@ describe("service role shadow runtime fence", () => {
       reason: "malformed",
       observedRoleMapV2Sha256s: [valid.wrapperSha256]
     });
+    expect(db.transactions).toEqual(["rollback", "commit"]);
+    expect(db.calls.filter((call) =>
+      call.sql.includes("insert into unified_check_artifacts") &&
+      call.values[2] === "service_role_shadow_input_fence"
+    ).map((call) => call.transaction)).toEqual([2]);
   });
 
   it("returns compound missing, found, and conflict only from the frozen validated set", async () => {
@@ -500,6 +595,205 @@ describe("service role shadow runtime fence", () => {
     expect(db.rows().some((row) => row.kind === "service_role_shadow_input_set")).toBe(false);
   });
 
+  it("retries one timed-out publication transaction and caches the durable fallback fence", async () => {
+    const db = new MemoryDatabase();
+    seedRoleArtifacts(db);
+    db.failReadyFenceInsertOnce = true;
+    db.unavailableFenceTimeoutsRemaining = 1;
+    const runtime = createServiceRoleShadowRuntimeV1({ db, runtimeCommit: RUNTIME_COMMIT });
+    const first = runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    const second = runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(second).toBe(first);
+    await expect(first).resolves.toMatchObject({ artifact: { outcome: {
+      kind: "unavailable",
+      reason: "preload_timeout"
+    } } });
+    expect(db.transactions).toEqual(["rollback", "rollback", "commit"]);
+    expect(db.rows().filter((row) =>
+      row.created_by_run_id === RUN_ID &&
+      row.kind === "service_role_shadow_input_fence"
+    )).toHaveLength(1);
+    await expect(createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH })).resolves.toEqual(
+      await first
+    );
+  });
+
+  it("rechecks and adopts a durable winner after the first publication attempt times out", async () => {
+    const db = new MemoryDatabase();
+    seedRoleArtifacts(db);
+    db.failReadyFenceInsertOnce = true;
+    db.unavailableFenceTimeoutsRemaining = 1;
+    const winner = buildServiceRoleShadowInputFenceV1({
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      runtimeCommit: RUNTIME_COMMIT,
+      outcome: {
+        kind: "unavailable",
+        reason: "preload_timeout",
+        observedRoleMapV2Sha256s: null
+      }
+    });
+    db.winnerFenceOnUnavailableTimeout = artifactRow(
+      RUN_ID,
+      "service_role_shadow_input_fence",
+      "1",
+      winner.artifact,
+      winner.sha256
+    );
+    const fence = await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(fence).toEqual({ sha256: winner.sha256, artifact: winner.artifact });
+    expect(db.transactions).toEqual(["rollback", "rollback", "commit"]);
+    expect(db.rows().filter((row) => row.kind === "service_role_shadow_input_fence"))
+      .toHaveLength(1);
+  });
+
+  it("evicts an exhausted publication promise so a later call can converge", async () => {
+    const db = new MemoryDatabase();
+    const roles = roleArtifacts();
+    db.put(artifactRow(RUN_ID, "service_role_event_role_map", "2", {
+      ...roles.wrapper,
+      unexpected: true
+    }, roles.wrapperSha256));
+    db.unavailableFenceTimeoutsRemaining = 2;
+    const runtime = createServiceRoleShadowRuntimeV1({ db, runtimeCommit: RUNTIME_COMMIT });
+    const exhausted = runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    await expect(exhausted).rejects.toThrow("statement timeout");
+    expect(db.transactions).toEqual(["rollback", "rollback", "rollback"]);
+
+    const retry = runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(retry).not.toBe(exhausted);
+    await expect(retry).resolves.toMatchObject({ artifact: { outcome: {
+      kind: "unavailable",
+      reason: "malformed",
+      observedRoleMapV2Sha256s: [roles.wrapperSha256]
+    } } });
+    expect(db.transactions).toEqual([
+      "rollback", "rollback", "rollback", "rollback", "commit"
+    ]);
+  });
+
+  it("does not classify explicit cancellation or a non-timeout lock error by code alone", async () => {
+    for (const error of [
+      postgresError("57014", "canceling statement due to user request"),
+      postgresError("55P03", "could not obtain lock on row in relation unified_check_runs")
+    ]) {
+      const db = new MemoryDatabase();
+      db.inputSetInsertErrorOnce = error;
+      await expect(createServiceRoleShadowRuntimeV1({
+        db,
+        runtimeCommit: RUNTIME_COMMIT
+      }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH }))
+        .rejects.toThrow(error.message);
+      expect(db.transactions).toEqual(["rollback"]);
+      expect(db.rows().some((row) =>
+        row.created_by_run_id === RUN_ID &&
+        row.kind === "service_role_shadow_input_fence"
+      )).toBe(false);
+    }
+  });
+
+  it("propagates explicit cancellation while revalidating an existing fence", async () => {
+    const db = new MemoryDatabase();
+    await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    db.artifactLoadErrorOnce = postgresError(
+      "57014",
+      "canceling statement due to user request"
+    );
+    await expect(createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH }))
+      .rejects.toThrow("canceling statement due to user request");
+    expect(db.transactions).toEqual(["commit", "rollback"]);
+    expect(db.rows().filter((row) =>
+      row.created_by_run_id === RUN_ID &&
+      row.kind === "service_role_shadow_input_fence"
+    )).toHaveLength(1);
+  });
+
+  it("classifies 55P03 only when its message identifies lock_timeout", async () => {
+    const db = new MemoryDatabase();
+    db.inputSetInsertErrorOnce = postgresError(
+      "55P03",
+      "canceling statement due to lock timeout"
+    );
+    const fence = await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(fence.artifact.outcome).toEqual({
+      kind: "unavailable",
+      reason: "preload_timeout",
+      observedRoleMapV2Sha256s: null
+    });
+    expect(db.transactions).toEqual(["rollback", "commit"]);
+  });
+
+  it("routes foreign-owned exact-hash input-set and ready-fence conflicts through rollback-first publication", async () => {
+    for (const foreignKind of ["input_set", "ready_fence"] as const) {
+      const db = new MemoryDatabase();
+      const inputSet = buildServiceRoleShadowInputSetV1({
+        runId: RUN_ID,
+        snapshotHash: SNAPSHOT_HASH,
+        roleMapV2Sha256s: []
+      });
+      if (foreignKind === "input_set") {
+        db.put(artifactRow(
+          "foreign-run",
+          "service_role_shadow_input_set",
+          "1",
+          inputSet.artifact,
+          inputSet.sha256
+        ));
+      } else {
+        const ready = buildServiceRoleShadowInputFenceV1({
+          runId: RUN_ID,
+          snapshotHash: SNAPSHOT_HASH,
+          runtimeCommit: RUNTIME_COMMIT,
+          outcome: {
+            kind: "ready",
+            inputSetSha256: inputSet.sha256,
+            roleMapV2Sha256s: []
+          }
+        });
+        db.put(artifactRow(
+          "foreign-run",
+          "service_role_shadow_input_fence",
+          "1",
+          ready.artifact,
+          ready.sha256
+        ));
+      }
+      const fence = await createServiceRoleShadowRuntimeV1({
+        db,
+        runtimeCommit: RUNTIME_COMMIT
+      }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+      expect(fence.artifact.outcome).toEqual({
+        kind: "unavailable",
+        reason: "conflict",
+        observedRoleMapV2Sha256s: []
+      });
+      expect(db.transactions).toEqual(["rollback", "commit"]);
+      expect(db.rows().some((row) =>
+        row.created_by_run_id === RUN_ID &&
+        row.kind === "service_role_shadow_input_set"
+      )).toBe(false);
+      expect(db.rows().filter((row) =>
+        row.created_by_run_id === RUN_ID &&
+        row.kind === "service_role_shadow_input_fence"
+      )).toHaveLength(1);
+    }
+  });
+
   it("publishes deterministic malformed, conflict, and preload-timeout fences", async () => {
     const malformed = async () => {
       const db = new MemoryDatabase();
@@ -575,6 +869,11 @@ describe("service role shadow runtime fence", () => {
       reason: "conflict",
       observedRoleMapV2Sha256s: []
     });
+    expect(db.transactions).toEqual(["rollback", "commit"]);
+    expect(db.calls.filter((call) =>
+      call.sql.includes("insert into unified_check_artifacts") &&
+      call.values[2] === "service_role_shadow_input_fence"
+    ).map((call) => call.transaction)).toEqual([2]);
     const restarted = await createServiceRoleShadowRuntimeV1({
       db,
       runtimeCommit: RUNTIME_COMMIT
