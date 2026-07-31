@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
 import type { UnifiedTraversalPolicyVersion } from "./unifiedCheck/contracts";
+import type { ServiceRoleShadowMode } from "./unifiedCheck/serviceRoleShadow";
 
 export type CrossChainStage2Config = {
   crossChainStage2Enabled: boolean;
@@ -78,6 +79,7 @@ export type AppConfig = {
   unifiedRollingUserCheckBasisPoints: number;
   unifiedProviderCapacityCeiling: number;
   unifiedIsolatedWorkerOnly: boolean;
+  unifiedServiceRoleShadowPolicy: ServiceRoleShadowMode;
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
@@ -218,6 +220,17 @@ function parseUnifiedTraversalPolicyVersion(
   ) return rawValue;
   throw new Error(
     "UNIFIED_TRAVERSAL_POLICY_VERSION must be snapshot-closure-v1 or snapshot-closure-v2"
+  );
+}
+
+function parseUnifiedServiceRoleShadowPolicy(
+  value: string | undefined
+): ServiceRoleShadowMode {
+  if (value === undefined || value === "disabled") return "disabled";
+  if (value === "service-role-shadow-100-plus-100-v1") return value;
+  throw new Error(
+    "UNIFIED_SERVICE_ROLE_SHADOW_POLICY must be disabled or " +
+    "service-role-shadow-100-plus-100-v1"
   );
 }
 
@@ -570,6 +583,9 @@ export function loadConfig(): AppConfig {
       "UNIFIED_ISOLATED_WORKER_ONLY",
       process.env.UNIFIED_ISOLATED_WORKER_ONLY,
       false
+    ),
+    unifiedServiceRoleShadowPolicy: parseUnifiedServiceRoleShadowPolicy(
+      process.env.UNIFIED_SERVICE_ROLE_SHADOW_POLICY
     ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(
       "TRONSCAN_DASHBOARD_CACHE_TTL_MS",

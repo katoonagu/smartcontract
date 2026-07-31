@@ -635,6 +635,33 @@ describe("loadConfig", () => {
     expect(loadConfig().runtimeInstanceLabel).toBe("Hermes test");
   });
 
+  it("defaults the Unified service role shadow policy to disabled", () => {
+    setRequiredEnv();
+
+    expect(loadConfig().unifiedServiceRoleShadowPolicy).toBe("disabled");
+  });
+
+  it.each([
+    "disabled",
+    "service-role-shadow-100-plus-100-v1"
+  ])("accepts Unified service role shadow policy %s", (value) => {
+    setRequiredEnv({ UNIFIED_SERVICE_ROLE_SHADOW_POLICY: value });
+
+    expect(loadConfig().unifiedServiceRoleShadowPolicy).toBe(value);
+  });
+
+  it.each([
+    "",
+    "true",
+    "false",
+    "1",
+    "service-role-shadow-500-plus-100-v1"
+  ])("rejects invalid Unified service role shadow policy %j", (value) => {
+    setRequiredEnv({ UNIFIED_SERVICE_ROLE_SHADOW_POLICY: value });
+
+    expect(() => loadConfig()).toThrow("UNIFIED_SERVICE_ROLE_SHADOW_POLICY");
+  });
+
   it("parses adaptive Unified controller settings", () => {
     setRequiredEnv({
       UNIFIED_PROVIDER_CONCURRENCY_LIMIT: "32",

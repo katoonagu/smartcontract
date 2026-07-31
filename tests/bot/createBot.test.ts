@@ -448,6 +448,7 @@ function createConfig(): AppConfig {
     unifiedRollingUserCheckBasisPoints: 0,
     unifiedProviderCapacityCeiling: 1,
     unifiedIsolatedWorkerOnly: false,
+    unifiedServiceRoleShadowPolicy: "disabled",
     tronscanDashboardCacheTtlMs: 300_000,
     tronscanDashboardMaxPages: 5,
     tronscanDashboardForceRefreshCooldownMs: 60_000,
