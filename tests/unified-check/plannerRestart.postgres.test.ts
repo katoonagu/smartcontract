@@ -48,6 +48,22 @@ type PlannerTransitionRow =
     readonly acceptedAttemptId: string | null;
   };
 
+async function normalizeScenarioReadiness(
+  client: pg.PoolClient,
+  runId: string,
+  frozenClockIso: string
+): Promise<void> {
+  // ponytail: this suite tests restart/planner semantics; scheduling/backoff readiness is covered separately.
+  await client.query(
+    `update unified_check_tasks
+        set ready_at = $2::timestamptz
+      where run_id = $1
+        and status in ('QUEUED','WAITING_RETRY')
+        and ready_at is distinct from $2::timestamptz`,
+    [runId, frozenClockIso]
+  );
+}
+
 function transactionHost(
   client: pg.PoolClient
 ): UnifiedTransactionalQueryable {
@@ -283,7 +299,7 @@ async function withScenario<T>(
     ) => {
       const processId = ++runtimeNumber;
       let id = 0;
-      return createUnifiedProductionRuntime({
+      const active = createUnifiedProductionRuntime({
         db: options.db ?? host(),
         runtimeCommit: "candidate",
         providerConfigurationSha256: PROVIDER_CONFIGURATION_SHA256,
@@ -328,6 +344,27 @@ async function withScenario<T>(
         loadCounterpartyLabels: async () => new Map(),
         loadHardEvidence: async () => ({})
       });
+      return {
+        ...active,
+        async runProviderCycle(
+          ...args: Parameters<typeof active.runProviderCycle>
+        ) {
+          await normalizeScenarioReadiness(
+            client,
+            "run-restart",
+            snapshot.timestamp
+          );
+          return active.runProviderCycle(...args);
+        },
+        async runAnalysisCycle() {
+          await normalizeScenarioReadiness(
+            client,
+            "run-restart",
+            snapshot.timestamp
+          );
+          return active.runAnalysisCycle();
+        }
+      };
     };
     const preparePlannedState = async (
       active: ReturnType<typeof createUnifiedProductionRuntime>
@@ -412,7 +449,7 @@ async function expectNoDuplicateAuthority(
 }
 
 postgresDescribe("Unified planner restart resume", () => {
-  it("rolls planning back when loss occurs before admission and replans once after restart", async () => {
+  it("rolls planning back when loss occurs before admission and replans once after restart despite fixture clock rollback", async () => {
     await withScenario([FIRST_SOURCE], async ({
       client,
       host,
@@ -427,6 +464,15 @@ postgresDescribe("Unified planner restart resume", () => {
         db: failBeforeBarrierAdmission(host()),
         leaseMs: 0
       });
+      const forced = await client.query(
+        `update unified_check_tasks
+            set ready_at = statement_timestamp() + interval '2 seconds'
+          where run_id = 'run-restart'
+            and id = 'task-traversal'
+            and status in ('QUEUED','WAITING_RETRY')
+          returning id`
+      );
+      expect(forced.rowCount).toBe(1);
       await expect(interruptedProcess.runAnalysisCycle())
         .resolves.toMatchObject({
           outcome: "failed",
@@ -884,7 +930,7 @@ postgresDescribe("Unified planner restart resume", () => {
     });
   });
 
-  it("returns the accepted attempt for a stable retry after the DB commit response is lost", async () => {
+  it("returns the accepted attempt for a stable retry after the DB commit response is lost despite fixture clock rollback", async () => {
     await withScenario([FIRST_SOURCE], async ({
       client,
       host,
@@ -892,6 +938,20 @@ postgresDescribe("Unified planner restart resume", () => {
       preparePlannedState
     }) => {
       await preparePlannedState(runtime());
+      const forced = await client.query(
+        `update unified_check_tasks
+            set ready_at = statement_timestamp() + interval '2 seconds'
+          where run_id = 'run-restart'
+            and kind = 'address_history'
+            and status in ('QUEUED','WAITING_RETRY')
+          returning id`
+      );
+      expect(forced.rowCount).toBe(1);
+      await normalizeScenarioReadiness(
+        client,
+        "run-restart",
+        "2026-07-23T13:00:00.000Z"
+      );
       const claimed = await claimUnifiedTask(client, {
         workerId: "provider-before-loss",
         leaseToken: "lease-before-loss",
