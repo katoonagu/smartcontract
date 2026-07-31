@@ -185,6 +185,44 @@ describe("Unified provider request identity", () => {
     }
   });
 
+  it("rejects invalid provider-request-identity-v2 runtime shapes", () => {
+    for (const [field, value, code] of [
+      ["blockStart", 0, "unified_invalid_provider_block_range"],
+      ["blockEnd", 84713573, "unified_invalid_provider_block_range"],
+      ["snapshotBlockNumber", 84713573, "unified_invalid_provider_snapshot"],
+      [
+        "timestampStartInclusiveMs",
+        1785427200000,
+        "unified_invalid_provider_timestamp_range"
+      ],
+      [
+        "timestampEndInclusiveMs",
+        1785430800000,
+        "unified_invalid_provider_timestamp_range"
+      ]
+    ] as const) {
+      expect(() =>
+        buildProviderRequestIdentityV2({
+          ...baseV2,
+          [field]: value
+        } as unknown as ProviderRequestIdentityV2Input)
+      ).toThrowError(new TypeError(code));
+    }
+
+    expect(() =>
+      buildProviderRequestIdentityV2({
+        ...baseV2,
+        direction: "sideways"
+      } as unknown as ProviderRequestIdentityV2Input)
+    ).toThrowError(new TypeError("unified_invalid_provider_direction"));
+    expect(() =>
+      buildProviderRequestIdentityV2({
+        ...baseV2,
+        order: "random"
+      } as unknown as ProviderRequestIdentityV2Input)
+    ).toThrowError(new TypeError("unified_invalid_provider_order"));
+  });
+
   it("uses every semantic field and ignores credential selection", () => {
     const first = buildProviderRequestIdentity({ ...base, apiKey: "key-a", apiKeyIndex: 0 });
     const credentialChanged = buildProviderRequestIdentity({ ...base, apiKey: "key-b", apiKeyIndex: 3 });

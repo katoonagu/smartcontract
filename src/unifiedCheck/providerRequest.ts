@@ -129,6 +129,11 @@ function raw(value: string, code: string): string {
   return value;
 }
 
+function rawV2(value: unknown, code: string): string {
+  if (typeof value !== "string") throw new TypeError(code);
+  return raw(value, code);
+}
+
 function offset(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError("unified_invalid_provider_page_offset");
@@ -197,9 +202,9 @@ export function buildProviderRequestIdentityV2(
   if (!TRON_ADDRESS.test(input.address) || !TRON_ADDRESS.test(input.tokenContract)) {
     throw new TypeError("unified_invalid_provider_address");
   }
-  const blockStart = raw(input.blockStart, "unified_invalid_provider_block_range");
-  const blockEnd = raw(input.blockEnd, "unified_invalid_provider_block_range");
-  const snapshotBlockNumber = raw(
+  const blockStart = rawV2(input.blockStart, "unified_invalid_provider_block_range");
+  const blockEnd = rawV2(input.blockEnd, "unified_invalid_provider_block_range");
+  const snapshotBlockNumber = rawV2(
     input.snapshotBlockNumber,
     "unified_invalid_provider_snapshot"
   );
@@ -212,14 +217,24 @@ export function buildProviderRequestIdentityV2(
   if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 10_000) {
     throw new TypeError("unified_invalid_provider_page_size");
   }
+  if (
+    input.direction !== "incoming" &&
+    input.direction !== "outgoing" &&
+    input.direction !== "both"
+  ) {
+    throw new TypeError("unified_invalid_provider_direction");
+  }
+  if (input.order !== "asc" && input.order !== "desc") {
+    throw new TypeError("unified_invalid_provider_order");
+  }
   if (input.windowKind !== "recent" && input.windowKind !== "historical") {
     throw new TypeError("unified_invalid_provider_window_kind");
   }
-  const timestampStartInclusiveMs = raw(
+  const timestampStartInclusiveMs = rawV2(
     input.timestampStartInclusiveMs,
     "unified_invalid_provider_timestamp_range"
   );
-  const timestampEndInclusiveMs = raw(
+  const timestampEndInclusiveMs = rawV2(
     input.timestampEndInclusiveMs,
     "unified_invalid_provider_timestamp_range"
   );
