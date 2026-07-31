@@ -283,6 +283,15 @@ type BuiltProviderRequestIdentity<TIdentity> = {
   readonly sha256: string;
 };
 
+const V2_PROVENANCE_KEYS = [
+  "pageOffset",
+  "provider",
+  "requestId",
+  "requestIdentity",
+  "requestIdentityCanonicalJson",
+  "requestIdentitySha256"
+] as const;
+
 function validateStored(
   expected: { identity: { snapshotBlockHash: string }; sha256: string },
   record: ProviderPageRecord
@@ -306,10 +315,22 @@ function validateStoredV2(
   record: ProviderPageRecord
 ): ProviderPageRecord {
   validateStored(expected, record);
-  const persistedIdentity = record.provenance.requestIdentity;
-  let rebuilt: BuiltProviderRequestIdentity<ProviderRequestIdentityV2>;
   try {
-    rebuilt = buildProviderRequestIdentityV2(
+    canonicalizeArtifactJson(record.provenance);
+    const keys = Object.keys(record.provenance).sort();
+    if (
+      keys.length !== V2_PROVENANCE_KEYS.length ||
+      keys.some((key, index) => key !== V2_PROVENANCE_KEYS[index]) ||
+      typeof record.provenance.provider !== "string" ||
+      typeof record.provenance.requestId !== "string" ||
+      typeof record.provenance.requestIdentityCanonicalJson !== "string" ||
+      typeof record.provenance.requestIdentitySha256 !== "string" ||
+      typeof record.provenance.pageOffset !== "number"
+    ) {
+      throw new Error("unified_provider_page_cache_mismatch");
+    }
+    const persistedIdentity = record.provenance.requestIdentity;
+    const rebuilt = buildProviderRequestIdentityV2(
       persistedIdentity as ProviderRequestIdentityV2Input
     );
     if (
@@ -393,19 +414,13 @@ function validateFetchedV2(
   ) {
     throw new Error("unified_provider_page_provenance_missing");
   }
-  const {
-    routeAnchorEventId: ignoredRouteAnchorEventId,
-    classifierStatus: ignoredClassifierStatus,
-    samplingDecision: ignoredSamplingDecision,
-    behaviorClass: ignoredBehaviorClass,
-    ...providerProvenance
-  } = fetched.provenance;
-  void ignoredRouteAnchorEventId;
-  void ignoredClassifierStatus;
-  void ignoredSamplingDecision;
-  void ignoredBehaviorClass;
+  const { provider, requestId } = fetched.provenance;
+  if (typeof provider !== "string" || typeof requestId !== "string") {
+    throw new Error("unified_provider_page_provenance_missing");
+  }
   const provenance = {
-    ...providerProvenance,
+    provider,
+    requestId,
     requestIdentity: identity,
     requestIdentityCanonicalJson: expected.canonicalJson,
     requestIdentitySha256: expected.sha256,

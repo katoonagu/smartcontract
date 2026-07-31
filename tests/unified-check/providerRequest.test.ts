@@ -308,7 +308,14 @@ describe("Unified provider request identity", () => {
         routeAnchorEventId: firstProbe.routeAnchorEventId,
         classifierStatus: firstProbe.classifierStatus,
         samplingDecision: firstProbe.samplingDecision,
-        behaviorClass: firstProbe.behaviorClass
+        behaviorClass: firstProbe.behaviorClass,
+        classifierOutput: { label: "service" },
+        samplingPolicy: { kind: "subject" },
+        behaviorPolicy: { kind: "adverse" },
+        arbitraryNested: {
+          classifierOutput: { label: "nested-service" },
+          routeAnchorEventId: "nested-route-anchor"
+        }
       }
     }));
     const secondFetch = vi.fn(async () => responseV2());
@@ -337,6 +344,15 @@ describe("Unified provider request identity", () => {
       expect(first.provenance).not.toHaveProperty(forbidden);
       expect(first.provenance.requestIdentity).not.toHaveProperty(forbidden);
     }
+    const expected = buildProviderRequestIdentityV2(baseV2);
+    expect(first.provenance).toEqual({
+      provider: "tronscan",
+      requestId: "provider-request-1",
+      requestIdentity: expected.identity,
+      requestIdentityCanonicalJson: expected.canonicalJson,
+      requestIdentitySha256: expected.sha256,
+      pageOffset: 0
+    });
   });
 
   it("loads provider-request-identity-v2 pages into distinct window and offset rows", async () => {
@@ -358,6 +374,24 @@ describe("Unified provider request identity", () => {
     expect(new Set(records.map(({ requestIdentitySha256 }) => requestIdentitySha256)))
       .toHaveLength(3);
     expect(store.rows).toHaveLength(3);
+  });
+
+  it("rejects non-string provider-request-identity-v2 audit fields before caching", async () => {
+    for (const [key, value] of [
+      ["provider", 7],
+      ["requestId", { nested: true }]
+    ] as const) {
+      const store = new MemoryPages();
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => ({
+          ...responseV2(),
+          provenance: { ...responseV2().provenance, [key]: value }
+        })
+      }), key).rejects.toThrow("unified_provider_page_provenance_missing");
+      expect(store.rows).toHaveLength(0);
+    }
   });
 
   it("loads provider-request-identity-v2 pages only from fully validated provenance", async () => {
@@ -412,6 +446,48 @@ describe("Unified provider request identity", () => {
       { ...original.provenance, requestIdentityCanonicalJson: `${expected.canonicalJson} ` },
       { ...original.provenance, requestIdentitySha256: "b".repeat(64) },
       { ...original.provenance, pageOffset: 1 }
+    ]) {
+      const store = new MemoryPages();
+      store.rows.set(expected.sha256, { ...original, provenance });
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => responseV2()
+      })).rejects.toThrow("unified_provider_page_cache_mismatch");
+    }
+
+    for (const [key, value] of [
+      ["routeAnchorEventId", "route-anchor"],
+      ["classifierStatus", "classified"],
+      ["samplingDecision", "subject"],
+      ["behaviorClass", "adverse"],
+      ["classifierOutput", { label: "service" }],
+      ["samplingPolicy", { kind: "subject" }],
+      ["behaviorPolicy", { kind: "adverse" }],
+      ["arbitraryNested", { classifierOutput: { label: "service" } }],
+      ["arbitraryExtra", "unexpected"]
+    ] as const) {
+      const store = new MemoryPages();
+      store.rows.set(expected.sha256, {
+        ...original,
+        provenance: { ...original.provenance, [key]: value }
+      });
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => responseV2()
+      }), key).rejects.toThrow("unified_provider_page_cache_mismatch");
+    }
+
+    for (const provenance of [
+      { ...original.provenance, provider: 7 },
+      { ...original.provenance, requestId: { nested: true } },
+      Object.fromEntries(
+        Object.entries(original.provenance).filter(([key]) => key !== "provider")
+      ),
+      Object.fromEntries(
+        Object.entries(original.provenance).filter(([key]) => key !== "requestId")
+      )
     ]) {
       const store = new MemoryPages();
       store.rows.set(expected.sha256, { ...original, provenance });
