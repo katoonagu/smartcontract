@@ -47,6 +47,29 @@ export type ProviderRequestIdentity = {
   readonly confirmationPolicy: string;
 };
 
+export type ProviderRequestWindowKindV2 = "recent" | "historical";
+
+export type ProviderRequestIdentityV2Input = Omit<
+  ProviderRequestIdentityInput,
+  "cursor"
+> & {
+  readonly windowKind: ProviderRequestWindowKindV2;
+  readonly timestampStartInclusiveMs: string;
+  readonly timestampEndInclusiveMs: string;
+  readonly pageOffset: number;
+};
+
+export type ProviderRequestIdentityV2 = Omit<
+  ProviderRequestIdentity,
+  "version" | "cursor"
+> & {
+  readonly version: "provider-request-identity-v2";
+  readonly windowKind: ProviderRequestWindowKindV2;
+  readonly timestampStartInclusiveMs: string;
+  readonly timestampEndInclusiveMs: string;
+  readonly pageOffset: number;
+};
+
 export type ProviderPageRecord = {
   readonly requestIdentitySha256: string;
   readonly snapshotBlockHash: string;
@@ -106,6 +129,13 @@ function raw(value: string, code: string): string {
   return value;
 }
 
+function offset(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError("unified_invalid_provider_page_offset");
+  }
+  return value;
+}
+
 export function buildProviderRequestIdentity(
   input: ProviderRequestIdentityInput
 ): { identity: ProviderRequestIdentity; canonicalJson: string; sha256: string } {
@@ -151,6 +181,74 @@ export function buildProviderRequestIdentity(
       input.confirmationPolicy,
       "unified_invalid_confirmation_policy"
     )
+  };
+  const canonical = canonicalizeArtifactJson(identity);
+  return {
+    identity,
+    canonicalJson: canonical,
+    sha256: fingerprintCanonicalArtifact(identity)
+  };
+}
+
+export function buildProviderRequestIdentityV2(
+  input: ProviderRequestIdentityV2Input
+): { identity: ProviderRequestIdentityV2; canonicalJson: string; sha256: string } {
+  if (input.chain !== "tron") throw new TypeError("unified_invalid_provider_chain");
+  if (!TRON_ADDRESS.test(input.address) || !TRON_ADDRESS.test(input.tokenContract)) {
+    throw new TypeError("unified_invalid_provider_address");
+  }
+  const blockStart = raw(input.blockStart, "unified_invalid_provider_block_range");
+  const blockEnd = raw(input.blockEnd, "unified_invalid_provider_block_range");
+  const snapshotBlockNumber = raw(
+    input.snapshotBlockNumber,
+    "unified_invalid_provider_snapshot"
+  );
+  if (BigInt(blockStart) > BigInt(blockEnd) || BigInt(blockEnd) > BigInt(snapshotBlockNumber)) {
+    throw new TypeError("unified_invalid_provider_block_range");
+  }
+  if (!HASH.test(input.snapshotBlockHash)) {
+    throw new TypeError("unified_invalid_provider_snapshot");
+  }
+  if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 10_000) {
+    throw new TypeError("unified_invalid_provider_page_size");
+  }
+  if (input.windowKind !== "recent" && input.windowKind !== "historical") {
+    throw new TypeError("unified_invalid_provider_window_kind");
+  }
+  const timestampStartInclusiveMs = raw(
+    input.timestampStartInclusiveMs,
+    "unified_invalid_provider_timestamp_range"
+  );
+  const timestampEndInclusiveMs = raw(
+    input.timestampEndInclusiveMs,
+    "unified_invalid_provider_timestamp_range"
+  );
+  if (BigInt(timestampStartInclusiveMs) > BigInt(timestampEndInclusiveMs)) {
+    throw new TypeError("unified_invalid_provider_timestamp_range");
+  }
+  const identity: ProviderRequestIdentityV2 = {
+    version: "provider-request-identity-v2",
+    chain: "tron",
+    providerFamily: text(input.providerFamily, "unified_invalid_provider_family"),
+    endpoint: text(input.endpoint, "unified_invalid_provider_endpoint"),
+    apiSchemaVersion: text(input.apiSchemaVersion, "unified_invalid_provider_schema"),
+    address: input.address,
+    tokenContract: input.tokenContract,
+    blockStart,
+    blockEnd,
+    direction: input.direction,
+    order: input.order,
+    pageSize: input.pageSize,
+    snapshotBlockNumber,
+    snapshotBlockHash: input.snapshotBlockHash,
+    confirmationPolicy: text(
+      input.confirmationPolicy,
+      "unified_invalid_confirmation_policy"
+    ),
+    windowKind: input.windowKind,
+    timestampStartInclusiveMs,
+    timestampEndInclusiveMs,
+    pageOffset: offset(input.pageOffset)
   };
   const canonical = canonicalizeArtifactJson(identity);
   return {

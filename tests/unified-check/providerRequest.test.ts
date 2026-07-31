@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildProviderRequestIdentity,
+  buildProviderRequestIdentityV2,
   loadOrFetchProviderPage,
   type ProviderPageRecord,
   type ProviderPageStore,
-  type ProviderRequestIdentityInput
+  type ProviderRequestIdentityInput,
+  type ProviderRequestIdentityV2Input
 } from "../../src/unifiedCheck/providerRequest";
 
 const base: ProviderRequestIdentityInput = {
@@ -23,6 +25,16 @@ const base: ProviderRequestIdentityInput = {
   snapshotBlockNumber: "84713573",
   snapshotBlockHash: "a".repeat(64),
   confirmationPolicy: "solidified"
+};
+
+const { cursor: ignoredV1Cursor, ...baseWithoutCursor } = base;
+void ignoredV1Cursor;
+const baseV2: ProviderRequestIdentityV2Input = {
+  ...baseWithoutCursor,
+  windowKind: "recent",
+  timestampStartInclusiveMs: "1785427200000",
+  timestampEndInclusiveMs: "1785430800000",
+  pageOffset: 0
 };
 
 class MemoryPages implements ProviderPageStore {
@@ -55,6 +67,124 @@ function response(identity = base, cursor = identity.cursor) {
 }
 
 describe("Unified provider request identity", () => {
+  it("keeps provider-request-identity-v1 bytes frozen", () => {
+    const result = buildProviderRequestIdentity(base);
+
+    expect(result.canonicalJson).toBe(
+      '{"address":"TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy","apiSchemaVersion":"tronscan-v1","blockEnd":"84713573","blockStart":"0","chain":"tron","confirmationPolicy":"solidified","cursor":null,"direction":"incoming","endpoint":"/api/token_trc20/transfers","order":"asc","pageSize":50,"providerFamily":"tronscan","snapshotBlockHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshotBlockNumber":"84713573","tokenContract":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t","version":"provider-request-identity-v1"}'
+    );
+    expect(result.sha256).toBe(
+      "b1ec66d56e087cc0c03a136c9ac75e809a969fb6b81155ad5b3648835fdaff9c"
+    );
+    expect(result.identity).not.toHaveProperty("windowKind");
+    expect(result.identity).not.toHaveProperty("timestampStartInclusiveMs");
+    expect(result.identity).not.toHaveProperty("timestampEndInclusiveMs");
+    expect(result.identity).not.toHaveProperty("pageOffset");
+  });
+
+  it("keeps provider-request-identity-v2 collisions request-semantic", () => {
+    const first = buildProviderRequestIdentityV2({
+      ...baseV2,
+      apiKey: "key-a",
+      apiKeyIndex: 0
+    });
+    const credentialsChanged = buildProviderRequestIdentityV2({
+      ...baseV2,
+      apiKey: "key-b",
+      apiKeyIndex: 3
+    });
+    expect(credentialsChanged.sha256).toBe(first.sha256);
+
+    const firstProbe = { ...baseV2, routeAnchorEventId: "route-anchor-a" };
+    const secondProbe = { ...baseV2, routeAnchorEventId: "route-anchor-b" };
+    const firstProbeIdentity = buildProviderRequestIdentityV2(firstProbe);
+    expect(buildProviderRequestIdentityV2(secondProbe).sha256).toBe(
+      firstProbeIdentity.sha256
+    );
+    expect(firstProbeIdentity.identity).not.toHaveProperty("routeAnchorEventId");
+
+    for (const [field, value] of [
+      ["windowKind", "historical"],
+      ["timestampEndInclusiveMs", "1785430800001"],
+      ["pageOffset", 50]
+    ] as const) {
+      expect(
+        buildProviderRequestIdentityV2({ ...baseV2, [field]: value }).sha256
+      ).not.toBe(first.sha256);
+    }
+
+    expect(Object.keys(first.identity)).toEqual([
+      "version",
+      "chain",
+      "providerFamily",
+      "endpoint",
+      "apiSchemaVersion",
+      "address",
+      "tokenContract",
+      "blockStart",
+      "blockEnd",
+      "direction",
+      "order",
+      "pageSize",
+      "snapshotBlockNumber",
+      "snapshotBlockHash",
+      "confirmationPolicy",
+      "windowKind",
+      "timestampStartInclusiveMs",
+      "timestampEndInclusiveMs",
+      "pageOffset"
+    ]);
+  });
+
+  it("validates provider-request-identity-v2 bounds and inherited fields", () => {
+    for (const [field, value] of [
+      ["timestampStartInclusiveMs", "01"],
+      ["timestampStartInclusiveMs", "-1"],
+      ["timestampEndInclusiveMs", "1.5"]
+    ] as const) {
+      expect(() =>
+        buildProviderRequestIdentityV2({ ...baseV2, [field]: value })
+      ).toThrow(TypeError);
+    }
+    expect(() =>
+      buildProviderRequestIdentityV2({
+        ...baseV2,
+        timestampStartInclusiveMs: "1785430800001"
+      })
+    ).toThrow(TypeError);
+
+    for (const pageOffset of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => buildProviderRequestIdentityV2({ ...baseV2, pageOffset })).toThrow(
+        TypeError
+      );
+    }
+    expect(() =>
+      buildProviderRequestIdentityV2({
+        ...baseV2,
+        windowKind: "unknown" as ProviderRequestIdentityV2Input["windowKind"]
+      })
+    ).toThrow(TypeError);
+
+    for (const invalidInput of [
+      { ...baseV2, chain: "ethereum" },
+      { ...baseV2, address: "not-an-address" },
+      { ...baseV2, tokenContract: "not-an-address" },
+      { ...baseV2, blockStart: "01" },
+      { ...baseV2, blockEnd: "84713574" },
+      { ...baseV2, snapshotBlockNumber: "not-a-block" },
+      { ...baseV2, snapshotBlockHash: "z".repeat(64) },
+      { ...baseV2, pageSize: 0 },
+      { ...baseV2, providerFamily: " " },
+      { ...baseV2, endpoint: "" },
+      { ...baseV2, apiSchemaVersion: "" },
+      { ...baseV2, confirmationPolicy: "" }
+    ]) {
+      expect(() =>
+        buildProviderRequestIdentityV2(invalidInput as ProviderRequestIdentityV2Input)
+      ).toThrow(TypeError);
+    }
+  });
+
   it("uses every semantic field and ignores credential selection", () => {
     const first = buildProviderRequestIdentity({ ...base, apiKey: "key-a", apiKeyIndex: 0 });
     const credentialChanged = buildProviderRequestIdentity({ ...base, apiKey: "key-b", apiKeyIndex: 3 });
