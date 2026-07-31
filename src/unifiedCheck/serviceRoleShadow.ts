@@ -229,7 +229,6 @@ function selectAcceptedHistoryWindowV1(input: {
   for (const event of input.acceptedHistoryEvents) {
     if (!(event.blockTimestamp instanceof Date) || timestampSeconds(event.blockTimestamp) === null ||
       !Number.isSafeInteger(event.blockNumber) || event.blockNumber < 0 ||
-      !Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0 ||
       event.confirmed !== true || event.reverted === true || event.contractRet === "REVERT" ||
       event.finalResult === "FAILED" ||
       (event.fromAddress !== input.state.address && event.toAddress !== input.state.address)) {
@@ -280,6 +279,9 @@ export function deriveServiceRoleShadowAcceptedHistoryBindingV1(input: {
   const selection = selectAcceptedHistoryWindowV1(input);
   if (!selection.ok) {
     throw new TypeError(`service_role_shadow_binding_${selection.bindingReason}`);
+  }
+  if (!Number.isSafeInteger(selection.anchor.event.eventIndex) || selection.anchor.event.eventIndex < 0) {
+    throw new TypeError("service_role_shadow_binding_anchor_event_index_invalid");
   }
   const sampledIds = new Set(selection.sampled.map(({ id }) => id));
   if ([...selection.duplicateCanonicalEventIds].some((id) => sampledIds.has(id))) {

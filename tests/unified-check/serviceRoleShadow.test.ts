@@ -301,6 +301,48 @@ describe("service role shadow accepted-history reconstruction", () => {
     }
   });
 
+  it("preserves V1 selection for an unsafe anchor event index but rejects the new binding", () => {
+    const { input, state, events, map } = fixture();
+    const negativeEvents = events.map((item, index) => index === 0
+      ? { ...item, eventIndex: -1 }
+      : item);
+    const negativeState: TraversalStateV1 = {
+      ...state,
+      sourceEventIds: [canonicalTronUsdtEventKey(negativeEvents[0]!)]
+    };
+    const negativeMap: ServiceRoleShadowEventRoleMapV1 = {
+      ...map,
+      entries: negativeEvents.map((item) => ({
+        canonicalEventId: canonicalTronUsdtEventKey(item),
+        role: "ordinary",
+        authority: "existing_hash_bound_economic_role_v1",
+        evidenceSha256: "c".repeat(64)
+      }))
+    };
+    const value = input({
+      state: negativeState,
+      acceptedHistory: { ...input().acceptedHistory, events: negativeEvents },
+      eventRoleMap: {
+        sha256: fingerprintCanonicalArtifact(negativeMap),
+        artifact: negativeMap
+      }
+    });
+    const output = maybeBuildServiceRoleShadowArtifactV1(value);
+
+    expect(output?.artifact.result).toMatchObject({
+      status: "high_inferred_service",
+      insufficientReason: null
+    });
+    expect(output?.artifact.sampledCanonicalEventIds.recent).toHaveLength(100);
+    expect(output?.artifact.sampledCanonicalEventIds.historical).toHaveLength(100);
+    expect(output?.sha256).toBe(fingerprintCanonicalArtifact(output?.artifact));
+    expect(maybeBuildServiceRoleShadowArtifactV1(value)).toEqual(output);
+    expect(() => deriveServiceRoleShadowAcceptedHistoryBindingV1({
+      state: negativeState,
+      acceptedHistoryEvents: negativeEvents
+    })).toThrowError(new TypeError("service_role_shadow_binding_anchor_event_index_invalid"));
+  });
+
   it("parses an exact V2 wrapper and rejects a V1 body", () => {
     const { artifact } = bindingFixture();
     const { map } = fixture();
