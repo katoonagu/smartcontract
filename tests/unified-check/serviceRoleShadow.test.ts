@@ -3,8 +3,13 @@ import { describe, expect, it } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
 import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
   maybeBuildServiceRoleShadowArtifactV1,
-  type ServiceRoleShadowEventRoleMapV1
+  parseServiceRoleShadowEventRoleMapV2,
+  serviceRoleShadowCompoundBindingKeyV1,
+  type ServiceRoleShadowAcceptedHistoryBindingV1,
+  type ServiceRoleShadowEventRoleMapV1,
+  type ServiceRoleShadowEventRoleMapV2
 } from "../../src/unifiedCheck/serviceRoleShadow.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import type { TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
@@ -80,6 +85,47 @@ function fixture() {
   };
 }
 
+function bindingFixture() {
+  const { state, events } = fixture();
+  const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+    state,
+    acceptedHistoryEvents: events
+  });
+  const artifact: ServiceRoleShadowEventRoleMapV2 = {
+    schemaVersion: "service-role-shadow-event-role-map-v2",
+    policyVersion: "service-role-shadow-100-plus-100-v1",
+    runId: "run-1",
+    snapshotHash: HASH,
+    addressHistoryManifestSha256: "b".repeat(64),
+    sourceEventRoleMapV1Sha256: "c".repeat(64),
+    evidenceBundleSha256: "d".repeat(64),
+    binding,
+    exactCoverage: { recent: 100, historical: 100, total: 200 },
+    productionEffect: false
+  };
+  return { state, events, binding, artifact };
+}
+
+function replaceSamples(
+  binding: ServiceRoleShadowAcceptedHistoryBindingV1,
+  recent: readonly string[],
+  historical: readonly string[]
+): ServiceRoleShadowAcceptedHistoryBindingV1 {
+  const sampledCanonicalEventIds = { recent, historical };
+  return {
+    ...binding,
+    sampledCanonicalEventIds,
+    sampledEventIdsSha256: fingerprintCanonicalArtifact(sampledCanonicalEventIds)
+  };
+}
+
+function parseV2(artifact: unknown) {
+  return parseServiceRoleShadowEventRoleMapV2({
+    artifact,
+    expectedSha256: fingerprintCanonicalArtifact(artifact)
+  });
+}
+
 describe("service role shadow accepted-history reconstruction", () => {
   it("does nothing when disabled", () => {
     const { input } = fixture();
@@ -100,6 +146,7 @@ describe("service role shadow accepted-history reconstruction", () => {
       boundaryPageAuthority: false,
       physicalPageRequestHashes: []
     });
+    expect(output?.sha256).toBe("7f51ea7d092d8a2d73bc003975e5a0848c7ea749d9c6eab2f3ecb9d72efcd799");
     expect(output?.sha256).toBe(fingerprintCanonicalArtifact(output?.artifact));
   });
 
@@ -198,5 +245,145 @@ describe("service role shadow accepted-history reconstruction", () => {
         insufficientReason: "source_binding_invalid"
       });
     }
+  });
+
+  it("derives an exact anchor and stable lexically sorted sample binding without mutating input", () => {
+    const { state, events } = fixture();
+    const acceptedHistoryEvents = [...events].reverse();
+    const inputOrder = acceptedHistoryEvents.map((item) => canonicalTronUsdtEventKey(item));
+    const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({ state, acceptedHistoryEvents });
+    const anchor = events[0]!;
+
+    expect(binding).toMatchObject({
+      profiledAddress,
+      direction: "backward",
+      anchorBinding: {
+        canonicalEventId: canonicalTronUsdtEventKey(anchor),
+        blockNumber: anchor.blockNumber,
+        timestamp: anchor.blockTimestamp.toISOString(),
+        eventIndex: anchor.eventIndex,
+        orderAuthority: "unique_block"
+      }
+    });
+    expect(binding.sampledCanonicalEventIds.recent).toEqual(
+      [...binding.sampledCanonicalEventIds.recent].sort()
+    );
+    expect(binding.sampledCanonicalEventIds.historical).toEqual(
+      [...binding.sampledCanonicalEventIds.historical].sort()
+    );
+    expect(binding.sampledEventIdsSha256).toBe(
+      fingerprintCanonicalArtifact(binding.sampledCanonicalEventIds)
+    );
+    expect(deriveServiceRoleShadowAcceptedHistoryBindingV1({
+      state,
+      acceptedHistoryEvents: events
+    })).toEqual(binding);
+    expect(acceptedHistoryEvents.map((item) => canonicalTronUsdtEventKey(item))).toEqual(inputOrder);
+  });
+
+  it("fails closed on unproven or incomplete accepted-history bindings", () => {
+    const { state, events } = fixture();
+    const cases: Array<[string, TraversalStateV1, readonly IndexedTronUsdtTransfer[]]> = [
+      ["service_role_shadow_binding_anchor_unproven", { ...state, sourceEventIds: ["missing"] }, events],
+      ["service_role_shadow_binding_recent_window_incomplete", state, events.slice(0, 99)],
+      ["service_role_shadow_binding_historical_window_incomplete", state, events.slice(0, 199)],
+      ["service_role_shadow_binding_order_unproven", state,
+        events.map((item, index) => index === 1 ? { ...item, blockNumber: events[0]!.blockNumber } : item)],
+      ["service_role_shadow_binding_duplicate", state, [...events, events[0]!]],
+      ["service_role_shadow_binding_collision", state, [...events, { ...events[0]!, amountRaw: "2" }]]
+    ];
+
+    for (const [message, candidateState, acceptedHistoryEvents] of cases) {
+      expect(() => deriveServiceRoleShadowAcceptedHistoryBindingV1({
+        state: candidateState,
+        acceptedHistoryEvents
+      })).toThrowError(new TypeError(message));
+    }
+  });
+
+  it("parses an exact V2 wrapper and rejects a V1 body", () => {
+    const { artifact } = bindingFixture();
+    const { map } = fixture();
+
+    expect(parseV2(artifact)).toEqual(artifact);
+    expect(() => parseV2(map)).toThrowError(
+      new TypeError("service_role_shadow_event_role_map_v2_invalid")
+    );
+  });
+
+  it("rejects duplicate or overlapping V2 samples even when their hashes match", () => {
+    const { artifact, binding } = bindingFixture();
+    const duplicateRecent = [...binding.sampledCanonicalEventIds.recent];
+    duplicateRecent[1] = duplicateRecent[0]!;
+    duplicateRecent.sort();
+    const overlappingHistorical = [
+      ...binding.sampledCanonicalEventIds.historical.slice(1),
+      binding.sampledCanonicalEventIds.recent[0]!
+    ].sort();
+
+    for (const candidateBinding of [
+      replaceSamples(binding, duplicateRecent, binding.sampledCanonicalEventIds.historical),
+      replaceSamples(binding, binding.sampledCanonicalEventIds.recent, overlappingHistorical)
+    ]) {
+      expect(() => parseV2({ ...artifact, binding: candidateBinding })).toThrowError(
+        new TypeError("service_role_shadow_event_role_map_v2_invalid")
+      );
+    }
+  });
+
+  it("strictly rejects extra, missing, typed, ordering, coverage, and hash violations", () => {
+    const { artifact, binding } = bindingFixture();
+    const { evidenceBundleSha256: _missing, ...missing } = artifact;
+    const reversedRecent = [...binding.sampledCanonicalEventIds.recent].reverse();
+    const invalid = [
+      { ...artifact, extra: true },
+      missing,
+      { ...artifact, binding: { ...binding, anchorBinding: { ...binding.anchorBinding, extra: true } } },
+      { ...artifact, binding: { ...binding, anchorBinding: { ...binding.anchorBinding, blockNumber: "1" } } },
+      { ...artifact, binding: replaceSamples(binding, reversedRecent, binding.sampledCanonicalEventIds.historical) },
+      { ...artifact, exactCoverage: { recent: 100, historical: 100, total: 199 } },
+      { ...artifact, snapshotHash: HASH.toUpperCase() },
+      { ...artifact, binding: { ...binding, sampledEventIdsSha256: "e".repeat(64) } }
+    ];
+
+    for (const candidate of invalid) {
+      expect(() => parseV2(candidate)).toThrowError(
+        new TypeError("service_role_shadow_event_role_map_v2_invalid")
+      );
+    }
+    expect(() => parseServiceRoleShadowEventRoleMapV2({
+      artifact,
+      expectedSha256: "f".repeat(64)
+    })).toThrowError(new TypeError("service_role_shadow_event_role_map_v2_invalid"));
+    expect(() => parseServiceRoleShadowEventRoleMapV2({
+      artifact,
+      expectedSha256: HASH.toUpperCase()
+    })).toThrowError(new TypeError("service_role_shadow_event_role_map_v2_invalid"));
+  });
+
+  it("compound keys cannot collide across anchors or sampled sets", () => {
+    const { artifact, binding } = bindingFixture();
+    const key = serviceRoleShadowCompoundBindingKeyV1(artifact);
+    const wrongAnchor = {
+      ...binding,
+      anchorBinding: {
+        ...binding.anchorBinding,
+        canonicalEventId: binding.sampledCanonicalEventIds.recent[1]!,
+        blockNumber: binding.anchorBinding.blockNumber + 1
+      }
+    };
+    const changedRecent = [
+      ...binding.sampledCanonicalEventIds.recent.slice(0, -1),
+      "zz-replacement-event"
+    ].sort();
+    const changedSamples = replaceSamples(
+      binding,
+      changedRecent,
+      binding.sampledCanonicalEventIds.historical
+    );
+
+    expect(serviceRoleShadowCompoundBindingKeyV1({ ...artifact, binding: wrongAnchor })).not.toBe(key);
+    expect(serviceRoleShadowCompoundBindingKeyV1({ ...artifact, binding: changedSamples })).not.toBe(key);
+    expect(parseV2({ ...artifact, binding: changedSamples }).binding).toEqual(changedSamples);
   });
 });

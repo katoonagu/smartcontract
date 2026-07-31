@@ -31,6 +31,38 @@ export type ServiceRoleShadowEventRoleMapV1 = {
   }[];
 };
 
+export type ServiceRoleShadowAnchorBindingV1 = {
+  canonicalEventId: string;
+  blockNumber: number;
+  timestamp: string;
+  eventIndex: number;
+  orderAuthority: "unique_block";
+};
+
+export type ServiceRoleShadowAcceptedHistoryBindingV1 = {
+  profiledAddress: string;
+  direction: TraversalStateV1["direction"];
+  anchorBinding: ServiceRoleShadowAnchorBindingV1;
+  sampledCanonicalEventIds: {
+    recent: readonly string[];
+    historical: readonly string[];
+  };
+  sampledEventIdsSha256: string;
+};
+
+export type ServiceRoleShadowEventRoleMapV2 = {
+  schemaVersion: "service-role-shadow-event-role-map-v2";
+  policyVersion: "service-role-shadow-100-plus-100-v1";
+  runId: string;
+  snapshotHash: string;
+  addressHistoryManifestSha256: string;
+  sourceEventRoleMapV1Sha256: string;
+  evidenceBundleSha256: string;
+  binding: ServiceRoleShadowAcceptedHistoryBindingV1;
+  exactCoverage: { recent: 100; historical: 100; total: 200 };
+  productionEffect: false;
+};
+
 export type ServiceRoleShadowInsufficientReasonV1 =
   | "checked_subject_excluded" | "anchor_unproven"
   | "recent_window_incomplete" | "historical_window_incomplete"
@@ -153,6 +185,274 @@ function validSource(input: Input): boolean {
     new Set(input.acceptedHistory.pageArtifactHashes).size === input.acceptedHistory.pageArtifactHashes.length;
 }
 
+type SelectedAcceptedHistoryEvent = {
+  id: string;
+  event: IndexedTronUsdtTransfer;
+  timestamp: number;
+};
+
+type AcceptedHistorySelectionFailure = {
+  ok: false;
+  reason: Extract<ServiceRoleShadowInsufficientReasonV1,
+    "anchor_unproven" | "recent_window_incomplete" |
+    "historical_window_incomplete" | "order_unproven" | "source_binding_invalid">;
+  bindingReason: "anchor_unproven" | "recent_window_incomplete" |
+    "historical_window_incomplete" | "order_unproven" | "collision";
+  recent: readonly SelectedAcceptedHistoryEvent[];
+  historical: readonly SelectedAcceptedHistoryEvent[];
+};
+
+type AcceptedHistorySelection = {
+  ok: true;
+  anchor: SelectedAcceptedHistoryEvent;
+  recent: readonly SelectedAcceptedHistoryEvent[];
+  historical: readonly SelectedAcceptedHistoryEvent[];
+  sampled: readonly SelectedAcceptedHistoryEvent[];
+  duplicateCanonicalEventIds: ReadonlySet<string>;
+} | AcceptedHistorySelectionFailure;
+
+function selectAcceptedHistoryWindowV1(input: {
+  state: TraversalStateV1;
+  acceptedHistoryEvents: readonly IndexedTronUsdtTransfer[];
+}): AcceptedHistorySelection {
+  const failure = (
+    reason: AcceptedHistorySelectionFailure["reason"],
+    bindingReason: AcceptedHistorySelectionFailure["bindingReason"],
+    recent: readonly SelectedAcceptedHistoryEvent[] = [],
+    historical: readonly SelectedAcceptedHistoryEvent[] = []
+  ): AcceptedHistorySelection => ({ ok: false, reason, bindingReason, recent, historical });
+  const anchorSeconds = safeAnchor(input.state.anchorTimestamp);
+  if (anchorSeconds === null) return failure("anchor_unproven", "anchor_unproven");
+
+  const canonical = new Map<string, IndexedTronUsdtTransfer>();
+  const duplicateCanonicalEventIds = new Set<string>();
+  for (const event of input.acceptedHistoryEvents) {
+    if (!(event.blockTimestamp instanceof Date) || timestampSeconds(event.blockTimestamp) === null ||
+      !Number.isSafeInteger(event.blockNumber) || event.blockNumber < 0 ||
+      !Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0 ||
+      event.confirmed !== true || event.reverted === true || event.contractRet === "REVERT" ||
+      event.finalResult === "FAILED" ||
+      (event.fromAddress !== input.state.address && event.toAddress !== input.state.address)) {
+      continue;
+    }
+    const id = canonicalTronUsdtEventKey(event);
+    const prior = canonical.get(id);
+    if (prior) {
+      if (eventFingerprint(prior) !== eventFingerprint(event)) {
+        return failure("source_binding_invalid", "collision");
+      }
+      duplicateCanonicalEventIds.add(id);
+    }
+    canonical.set(id, event);
+  }
+  const ordered = [...canonical.entries()]
+    .map(([id, event]) => ({ id, event, timestamp: timestampSeconds(event.blockTimestamp)! }))
+    .sort((left, right) => right.event.blockNumber - left.event.blockNumber ||
+      right.timestamp - left.timestamp || right.id.localeCompare(left.id));
+  const anchored = ordered.filter(({ id, timestamp }) =>
+    input.state.sourceEventIds.includes(id) && timestamp === anchorSeconds
+  );
+  if (anchored.length !== 1) return failure("anchor_unproven", "anchor_unproven");
+  const recent = ordered.filter(({ timestamp }) => timestamp <= anchorSeconds).slice(0, 100);
+  if (recent.length !== 100) {
+    return failure("recent_window_incomplete", "recent_window_incomplete", recent);
+  }
+  const recentBaselineStart = recent.at(-1)!.timestamp;
+  const historicalCutoff = Math.min(
+    anchorSeconds - SEVEN_DAYS_SECONDS,
+    recentBaselineStart - SEVEN_DAYS_SECONDS
+  );
+  const historical = ordered.filter(({ timestamp }) => timestamp < historicalCutoff).slice(0, 100);
+  if (historical.length !== 100) {
+    return failure("historical_window_incomplete", "historical_window_incomplete", recent, historical);
+  }
+  const sampled = [...recent, ...historical];
+  if (new Set(sampled.map(({ event }) => event.blockNumber)).size !== sampled.length) {
+    return failure("order_unproven", "order_unproven", recent, historical);
+  }
+  return { ok: true, anchor: anchored[0]!, recent, historical, sampled, duplicateCanonicalEventIds };
+}
+
+export function deriveServiceRoleShadowAcceptedHistoryBindingV1(input: {
+  state: TraversalStateV1;
+  acceptedHistoryEvents: readonly IndexedTronUsdtTransfer[];
+}): ServiceRoleShadowAcceptedHistoryBindingV1 {
+  const selection = selectAcceptedHistoryWindowV1(input);
+  if (!selection.ok) {
+    throw new TypeError(`service_role_shadow_binding_${selection.bindingReason}`);
+  }
+  const sampledIds = new Set(selection.sampled.map(({ id }) => id));
+  if ([...selection.duplicateCanonicalEventIds].some((id) => sampledIds.has(id))) {
+    throw new TypeError("service_role_shadow_binding_duplicate");
+  }
+  const recent = selection.recent.map(({ id }) => id).sort();
+  const historical = selection.historical.map(({ id }) => id).sort();
+  if (new Set(recent).size !== recent.length || new Set(historical).size !== historical.length) {
+    throw new TypeError("service_role_shadow_binding_duplicate");
+  }
+  const recentIds = new Set(recent);
+  if (historical.some((id) => recentIds.has(id))) {
+    throw new TypeError("service_role_shadow_binding_collision");
+  }
+  const sampledCanonicalEventIds = { recent, historical };
+  return {
+    profiledAddress: input.state.address,
+    direction: input.state.direction,
+    anchorBinding: {
+      canonicalEventId: selection.anchor.id,
+      blockNumber: selection.anchor.event.blockNumber,
+      timestamp: selection.anchor.event.blockTimestamp.toISOString(),
+      eventIndex: selection.anchor.event.eventIndex,
+      orderAuthority: "unique_block"
+    },
+    sampledCanonicalEventIds,
+    sampledEventIdsSha256: fingerprintCanonicalArtifact(sampledCanonicalEventIds)
+  };
+}
+
+function exactRecord(value: unknown, expectedKeys: readonly string[]): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("invalid_record");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const keys = Reflect.ownKeys(value);
+  if ((prototype !== Object.prototype && prototype !== null) ||
+    keys.length !== expectedKeys.length ||
+    keys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))) {
+    throw new TypeError("invalid_record");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (expectedKeys.some((key) => {
+    const descriptor = descriptors[key];
+    return !descriptor || !("value" in descriptor) || !descriptor.enumerable;
+  })) {
+    throw new TypeError("invalid_record");
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactSortedEventIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length !== 100) {
+    throw new TypeError("invalid_event_ids");
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || keys.some((key) => key !== "length" &&
+    (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key) || Number(key) >= value.length))) {
+    throw new TypeError("invalid_event_ids");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const ids: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable ||
+      typeof descriptor.value !== "string" || descriptor.value.length === 0) {
+      throw new TypeError("invalid_event_ids");
+    }
+    const id = descriptor.value;
+    if (index > 0 && ids[index - 1]! >= id) throw new TypeError("invalid_event_ids");
+    ids.push(id);
+  }
+  return ids;
+}
+
+function parseServiceRoleShadowEventRoleMapV2Unchecked(input: {
+  artifact: unknown;
+  expectedSha256: string;
+}): ServiceRoleShadowEventRoleMapV2 {
+  if (typeof input.expectedSha256 !== "string" || !HASH.test(input.expectedSha256)) {
+    throw new TypeError("invalid_hash");
+  }
+  const artifact = exactRecord(input.artifact, [
+    "schemaVersion",
+    "policyVersion",
+    "runId",
+    "snapshotHash",
+    "addressHistoryManifestSha256",
+    "sourceEventRoleMapV1Sha256",
+    "evidenceBundleSha256",
+    "binding",
+    "exactCoverage",
+    "productionEffect"
+  ]);
+  if (artifact.schemaVersion !== "service-role-shadow-event-role-map-v2" ||
+    artifact.policyVersion !== "service-role-shadow-100-plus-100-v1" ||
+    typeof artifact.runId !== "string" || artifact.runId.length === 0 ||
+    artifact.productionEffect !== false) {
+    throw new TypeError("invalid_root");
+  }
+  for (const hash of [
+    artifact.snapshotHash,
+    artifact.addressHistoryManifestSha256,
+    artifact.sourceEventRoleMapV1Sha256,
+    artifact.evidenceBundleSha256
+  ]) {
+    if (typeof hash !== "string" || !HASH.test(hash)) throw new TypeError("invalid_hash");
+  }
+
+  const binding = exactRecord(artifact.binding, [
+    "profiledAddress",
+    "direction",
+    "anchorBinding",
+    "sampledCanonicalEventIds",
+    "sampledEventIdsSha256"
+  ]);
+  if (typeof binding.profiledAddress !== "string" || binding.profiledAddress.length === 0 ||
+    (binding.direction !== "backward" && binding.direction !== "forward") ||
+    typeof binding.sampledEventIdsSha256 !== "string" || !HASH.test(binding.sampledEventIdsSha256)) {
+    throw new TypeError("invalid_binding");
+  }
+  const anchor = exactRecord(binding.anchorBinding, [
+    "canonicalEventId", "blockNumber", "timestamp", "eventIndex", "orderAuthority"
+  ]);
+  if (typeof anchor.canonicalEventId !== "string" || anchor.canonicalEventId.length === 0 ||
+    !Number.isSafeInteger(anchor.blockNumber) || (anchor.blockNumber as number) < 0 ||
+    typeof anchor.timestamp !== "string" || safeAnchor(anchor.timestamp) === null ||
+    !Number.isSafeInteger(anchor.eventIndex) || (anchor.eventIndex as number) < 0 ||
+    anchor.orderAuthority !== "unique_block") {
+    throw new TypeError("invalid_anchor");
+  }
+  const sampled = exactRecord(binding.sampledCanonicalEventIds, ["recent", "historical"]);
+  const recent = exactSortedEventIds(sampled.recent);
+  const historical = exactSortedEventIds(sampled.historical);
+  const recentIds = new Set(recent);
+  if (historical.some((id) => recentIds.has(id)) ||
+    fingerprintCanonicalArtifact({ recent, historical }) !== binding.sampledEventIdsSha256) {
+    throw new TypeError("invalid_samples");
+  }
+  const coverage = exactRecord(artifact.exactCoverage, ["recent", "historical", "total"]);
+  if (coverage.recent !== 100 || coverage.historical !== 100 || coverage.total !== 200) {
+    throw new TypeError("invalid_coverage");
+  }
+  if (fingerprintCanonicalArtifact(input.artifact) !== input.expectedSha256) {
+    throw new TypeError("invalid_hash");
+  }
+  return input.artifact as ServiceRoleShadowEventRoleMapV2;
+}
+
+export function parseServiceRoleShadowEventRoleMapV2(input: {
+  artifact: unknown;
+  expectedSha256: string;
+}): ServiceRoleShadowEventRoleMapV2 {
+  try {
+    return parseServiceRoleShadowEventRoleMapV2Unchecked(input);
+  } catch {
+    throw new TypeError("service_role_shadow_event_role_map_v2_invalid");
+  }
+}
+
+export function serviceRoleShadowCompoundBindingKeyV1(input: Pick<
+  ServiceRoleShadowEventRoleMapV2,
+  "runId" | "snapshotHash" | "addressHistoryManifestSha256" | "binding"
+>): string {
+  return fingerprintCanonicalArtifact({
+    schemaVersion: "service-role-shadow-compound-binding-key-v1",
+    runId: input.runId,
+    snapshotHash: input.snapshotHash,
+    addressHistoryManifestSha256: input.addressHistoryManifestSha256,
+    binding: input.binding
+  });
+}
+
 export function maybeBuildServiceRoleShadowArtifactV1(input: Input): {
   sha256: string;
   artifact: ServiceRoleShadowArtifactV1;
@@ -193,43 +493,18 @@ export function maybeBuildServiceRoleShadowArtifactV1(input: Input): {
 
   if (input.state.address === input.subjectAddress) return insufficient("checked_subject_excluded");
   if (!validSource(input)) return insufficient("source_binding_invalid");
-  const anchor = safeAnchor(input.state.anchorTimestamp);
-  if (anchor === null) return insufficient("anchor_unproven");
-
-  const canonical = new Map<string, IndexedTronUsdtTransfer>();
-  for (const event of input.acceptedHistory.events) {
-    if (!(event.blockTimestamp instanceof Date) || timestampSeconds(event.blockTimestamp) === null ||
-      !Number.isSafeInteger(event.blockNumber) || event.blockNumber < 0 ||
-      event.confirmed !== true || event.reverted === true || event.contractRet === "REVERT" ||
-      event.finalResult === "FAILED" ||
-      (event.fromAddress !== input.state.address && event.toAddress !== input.state.address)) {
-      continue;
-    }
-    const id = canonicalTronUsdtEventKey(event);
-    const prior = canonical.get(id);
-    if (prior && eventFingerprint(prior) !== eventFingerprint(event)) return insufficient("source_binding_invalid");
-    canonical.set(id, event);
+  const selection = selectAcceptedHistoryWindowV1({
+    state: input.state,
+    acceptedHistoryEvents: input.acceptedHistory.events
+  });
+  if (!selection.ok) {
+    return insufficient(
+      selection.reason,
+      selection.recent.map(({ id }) => id),
+      selection.historical.map(({ id }) => id)
+    );
   }
-  const ordered = [...canonical.entries()]
-    .map(([id, event]) => ({ id, event, timestamp: timestampSeconds(event.blockTimestamp)! }))
-    .sort((left, right) => right.event.blockNumber - left.event.blockNumber ||
-      right.timestamp - left.timestamp || right.id.localeCompare(left.id));
-  const anchored = ordered.filter(({ id, timestamp }) =>
-    input.state.sourceEventIds.includes(id) && timestamp === anchor
-  );
-  if (anchored.length !== 1) return insufficient("anchor_unproven");
-  const recent = ordered.filter(({ timestamp }) => timestamp <= anchor).slice(0, 100);
-  if (recent.length !== 100) return insufficient("recent_window_incomplete", recent.map(({ id }) => id));
-  const recentBaselineStart = recent.at(-1)!.timestamp;
-  const historicalCutoff = Math.min(anchor - SEVEN_DAYS_SECONDS, recentBaselineStart - SEVEN_DAYS_SECONDS);
-  const historical = ordered.filter(({ timestamp }) => timestamp < historicalCutoff).slice(0, 100);
-  if (historical.length !== 100) return insufficient(
-    "historical_window_incomplete", recent.map(({ id }) => id), historical.map(({ id }) => id)
-  );
-  const sampled = [...recent, ...historical];
-  if (new Set(sampled.map(({ event }) => event.blockNumber)).size !== sampled.length) {
-    return insufficient("order_unproven", recent.map(({ id }) => id), historical.map(({ id }) => id));
-  }
+  const { recent, historical, sampled } = selection;
   if (input.eventRoleMap === null) return insufficient(
     "role_map_missing", recent.map(({ id }) => id), historical.map(({ id }) => id)
   );
