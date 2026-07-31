@@ -28,13 +28,17 @@ import {
 import { insertUnifiedArtifact, type UnifiedQueryable } from "../src/unifiedCheck/repository.js";
 import {
   materializeServiceRoleEventMapV1,
+  materializeServiceRoleEventMapV2,
   type ServiceRoleMaterializationCoverageV1,
   type ServiceRolePoisoningDispositionV1,
   type ServiceRoleProviderRiskDispositionV1
 } from "../src/unifiedCheck/serviceRoleMapMaterialization.js";
 import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
   maybeBuildServiceRoleShadowArtifactV1,
-  type ServiceRoleShadowEventRoleMapV1
+  parseServiceRoleShadowEventRoleMapV2,
+  type ServiceRoleShadowEventRoleMapV1,
+  type ServiceRoleShadowEventRoleMapV2
 } from "../src/unifiedCheck/serviceRoleShadow.js";
 import { traversalStateId, type TraversalStateV1 } from "../src/unifiedCheck/traversal.js";
 import {
@@ -91,9 +95,13 @@ export type ServiceRoleMaterializationRunResult = {
   coverage: ServiceRoleMaterializationCoverageV1;
   evidenceBundleSha256: string | null;
   eventRoleMapSha256: string | null;
+  eventRoleMapV2Sha256: string | null;
 };
 
-type Materialization = ReturnType<typeof materializeServiceRoleEventMapV1>;
+type V1Materialization = ReturnType<typeof materializeServiceRoleEventMapV1>;
+type Materialization = V1Materialization & {
+  mapV2: ReturnType<typeof materializeServiceRoleEventMapV2> | null;
+};
 
 function fail(code: string): never {
   throw new Error(code);
@@ -603,6 +611,15 @@ async function buildMaterialization(db: ServiceRoleMaterializationQueryable, com
   if (shadows.some((item) => fingerprintCanonicalArtifact(item!.artifact.sampledCanonicalEventIds) !== sampleIdentity)) {
     fail("service_role_materialization_traversal_state_conflict");
   }
+  const bindingIdentities = shadowInputs.map((shadowInput) => fingerprintCanonicalArtifact(
+    deriveServiceRoleShadowAcceptedHistoryBindingV1({
+      state: shadowInput.state,
+      acceptedHistoryEvents: shadowInput.acceptedHistory.events
+    })
+  ));
+  if (new Set(bindingIdentities).size !== 1) {
+    fail("service_role_materialization_traversal_state_conflict");
+  }
   const events = new Map(source.acceptedHistory.events.map((item) => [canonicalTronUsdtEventKey(item), item]));
 
   let captureManifest: { sha256: string; artifact: ServiceRoleExactEvidenceCaptureManifestV1 };
@@ -774,15 +791,25 @@ function materializeAcrossStates(
   localEvidence: Parameters<typeof materializeServiceRoleEventMapV1>[0]["localEvidence"]
 ): Materialization {
   const materializations = shadowInputs.map((shadowInput) => materializeServiceRoleEventMapV1({ shadowInput, localEvidence }));
+  const wrappers = materializations.map((item, index) => item.bundle && item.map
+    ? materializeServiceRoleEventMapV2({
+      shadowInput: { ...shadowInputs[index]!, eventRoleMap: null },
+      sourceMap: item.map,
+      evidenceBundle: item.bundle
+    })
+    : null);
   const first = materializations[0]!;
+  const firstWrapper = wrappers[0] ?? null;
   const coverageIdentity = fingerprintCanonicalArtifact({ ...first.coverage, traversalStateIds: [] });
   if (materializations.some((item) =>
     fingerprintCanonicalArtifact({ ...item.coverage, traversalStateIds: [] }) !== coverageIdentity ||
-    item.bundle?.sha256 !== first.bundle?.sha256 || item.map?.sha256 !== first.map?.sha256)) {
+    item.bundle?.sha256 !== first.bundle?.sha256 || item.map?.sha256 !== first.map?.sha256) ||
+    wrappers.some((item) => item?.sha256 !== firstWrapper?.sha256)) {
     fail("service_role_materialization_traversal_state_conflict");
   }
   return {
     ...first,
+    mapV2: firstWrapper,
     coverage: {
       ...first.coverage,
       traversalStateIds: [...new Set(materializations.flatMap((item) => item.coverage.traversalStateIds))].sort()
@@ -800,15 +827,27 @@ async function assertExistingArtifacts(db: ServiceRoleMaterializationQueryable, 
       order by kind,sha256`,
     [command.runId, command.manifestSha256]
   );
-  const maps = rows.rows.filter((row) => row.kind === "service_role_event_role_map");
-  const bundles = rows.rows.filter((row) => row.kind === "service_role_event_evidence_bundle");
-  if (maps.length > 1 || maps.some((row) => result.map === null || row.sha256 !== result.map.sha256) ||
-    bundles.length > 1 || bundles.some((row) => result.bundle === null || row.sha256 !== result.bundle.sha256)) {
+  const mapsV1 = rows.rows.filter((row) => row.kind === "service_role_event_role_map" && String(row.schema_version) === "1");
+  const mapsV2 = rows.rows.filter((row) => row.kind === "service_role_event_role_map" && String(row.schema_version) === "2");
+  const bundles = rows.rows.filter((row) => row.kind === "service_role_event_evidence_bundle" && String(row.schema_version) === "1");
+  if (mapsV1.length > 1 || mapsV1.some((row) => result.map === null || row.sha256 !== result.map.sha256) ||
+    mapsV2.length > 1 || mapsV2.some((row) => result.mapV2 === null || row.sha256 !== result.mapV2.sha256) ||
+    bundles.length > 1 || bundles.some((row) => result.bundle === null || row.sha256 !== result.bundle.sha256) ||
+    mapsV1.length + mapsV2.length + bundles.length !== rows.rows.length) {
     fail("service_role_materialization_existing_map_conflict");
   }
   for (const row of rows.rows) {
     const expectedKind = row.kind === "service_role_event_role_map" ? "service_role_event_role_map" : "service_role_event_evidence_bundle";
-    validateArtifactRow(row, { sha256: String(row.sha256), runId: command.runId, kind: expectedKind, schemaVersion: "1" });
+    const schemaVersion = String(row.schema_version);
+    const artifact = validateArtifactRow(row, {
+      sha256: String(row.sha256),
+      runId: command.runId,
+      kind: expectedKind,
+      schemaVersion
+    });
+    if (expectedKind === "service_role_event_role_map" && schemaVersion === "2") {
+      parseServiceRoleShadowEventRoleMapV2({ artifact, expectedSha256: String(row.sha256) });
+    }
   }
   if (rows.rows.length > 0) {
     const referenced = await db.query(
@@ -821,10 +860,11 @@ async function assertExistingArtifacts(db: ServiceRoleMaterializationQueryable, 
 
 function resultOf(value: Materialization): ServiceRoleMaterializationRunResult {
   return {
-    classification: value.bundle !== null && value.map !== null ? "complete" : "incomplete",
+    classification: value.bundle !== null && value.map !== null && value.mapV2 !== null ? "complete" : "incomplete",
     coverage: value.coverage,
     evidenceBundleSha256: value.bundle?.sha256 ?? null,
-    eventRoleMapSha256: value.map?.sha256 ?? null
+    eventRoleMapSha256: value.map?.sha256 ?? null,
+    eventRoleMapV2Sha256: value.mapV2?.sha256 ?? null
   };
 }
 
@@ -844,12 +884,13 @@ export async function runServiceRoleMapMaterialization(
   }
   const initial = await buildMaterialization(db, command, false);
   await assertExistingArtifacts(db, command, initial);
-  if (initial.bundle === null || initial.map === null) return resultOf(initial);
+  if (initial.bundle === null || initial.map === null || initial.mapV2 === null) return resultOf(initial);
   return db.transaction("read_write", async (tx) => {
     const current = await buildMaterialization(tx, command, true);
     if (fingerprintCanonicalArtifact(current.coverage) !== fingerprintCanonicalArtifact(initial.coverage) ||
       current.bundle?.sha256 !== initial.bundle?.sha256 || current.map?.sha256 !== initial.map?.sha256 ||
-      current.bundle === null || current.map === null) {
+      current.mapV2?.sha256 !== initial.mapV2?.sha256 ||
+      current.bundle === null || current.map === null || current.mapV2 === null) {
       fail("service_role_materialization_recheck_conflict");
     }
     await assertExistingArtifacts(tx, command, current);
@@ -869,9 +910,17 @@ export async function runServiceRoleMapMaterialization(
       artifact: current.map.artifact as ServiceRoleShadowEventRoleMapV1
     });
     if (String(mapRow.created_by_run_id) !== command.runId) fail("service_role_materialization_artifact_creator_conflict");
+    const mapV2Row = await insertUnifiedArtifact(tx as UnifiedQueryable, {
+      sha256: current.mapV2.sha256,
+      createdByRunId: command.runId,
+      kind: "service_role_event_role_map",
+      schemaVersion: "2",
+      artifact: current.mapV2.artifact as ServiceRoleShadowEventRoleMapV2
+    });
+    if (String(mapV2Row.created_by_run_id) !== command.runId) fail("service_role_materialization_artifact_creator_conflict");
     const referenced = await tx.query(
       "select count(*)::int count from unified_check_attempts where artifact_sha256=any($1::text[])",
-      [[current.bundle.sha256, current.map.sha256]]
+      [[current.bundle.sha256, current.map.sha256, current.mapV2.sha256]]
     );
     if (Number(referenced.rows[0]?.count) !== 0) fail("service_role_materialization_artifact_referenced");
     return resultOf(current);

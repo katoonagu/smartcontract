@@ -1,4 +1,7 @@
-import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
 import {
   classifyGasFreeSettlementDispositionV1,
   gasFreeMovementForEdge
@@ -11,8 +14,11 @@ import {
 } from "../storage/transactionEvidenceRepository";
 import type { IndexedTronUsdtTransfer } from "../types";
 import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
   maybeBuildServiceRoleShadowArtifactV1,
+  parseServiceRoleShadowEventRoleMapV2,
   type ServiceRoleShadowEventRoleMapV1,
+  type ServiceRoleShadowEventRoleMapV2,
   type ServiceRoleShadowEventRoleV1,
   type ServiceRoleShadowMode
 } from "./serviceRoleShadow";
@@ -304,4 +310,96 @@ export function materializeServiceRoleEventMapV1(input: {
     bundle,
     map: { sha256: fingerprintCanonicalArtifact(mapArtifact), artifact: mapArtifact }
   };
+}
+
+export function materializeServiceRoleEventMapV2(input: {
+  shadowInput: Parameters<typeof maybeBuildServiceRoleShadowArtifactV1>[0];
+  sourceMap: BoundArtifact<ServiceRoleShadowEventRoleMapV1>;
+  evidenceBundle: BoundArtifact<ServiceRoleEventEvidenceBundleV1>;
+}): {
+  artifact: ServiceRoleShadowEventRoleMapV2;
+  canonicalJson: string;
+  sha256: string;
+} {
+  try {
+    const { shadowInput, sourceMap, evidenceBundle } = input;
+    const map = sourceMap.artifact;
+    const bundle = evidenceBundle.artifact;
+    const manifestSha256 = shadowInput.acceptedHistory.manifestSha256;
+    if (shadowInput.mode !== "service-role-shadow-100-plus-100-v1" ||
+      !HASH.test(sourceMap.sha256) || fingerprintCanonicalArtifact(map) !== sourceMap.sha256 ||
+      !HASH.test(evidenceBundle.sha256) || fingerprintCanonicalArtifact(bundle) !== evidenceBundle.sha256 ||
+      map.schemaVersion !== "service-role-shadow-event-role-map-v1" ||
+      bundle.schemaVersion !== "service-role-event-evidence-bundle-v1" ||
+      bundle.policyVersion !== "existing-hash-bound-economic-role-v1" ||
+      typeof shadowInput.runId !== "string" || shadowInput.runId.length === 0 ||
+      !HASH.test(shadowInput.snapshotHash) || !HASH.test(manifestSha256) ||
+      map.runId !== shadowInput.runId || bundle.runId !== shadowInput.runId ||
+      map.snapshotHash !== shadowInput.snapshotHash || bundle.snapshotHash !== shadowInput.snapshotHash ||
+      map.addressHistoryManifestSha256 !== manifestSha256 ||
+      bundle.addressHistoryManifestSha256 !== manifestSha256 ||
+      !Array.isArray(map.entries) || !Array.isArray(bundle.entries) ||
+      map.entries.length !== 200 || bundle.entries.length !== 200) {
+      throw new TypeError("invalid_root");
+    }
+
+    const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+      state: shadowInput.state,
+      acceptedHistoryEvents: shadowInput.acceptedHistory.events
+    });
+    const sampledIds = [
+      ...binding.sampledCanonicalEventIds.recent,
+      ...binding.sampledCanonicalEventIds.historical
+    ];
+    const sampledIdSet = new Set(sampledIds);
+    const mapById = new Map<string, ServiceRoleShadowEventRoleV1>();
+    for (const entry of map.entries) {
+      if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
+        !ROLES.includes(entry.role) || entry.authority !== "existing_hash_bound_economic_role_v1" ||
+        entry.evidenceSha256 !== evidenceBundle.sha256 || mapById.has(entry.canonicalEventId)) {
+        throw new TypeError("invalid_map");
+      }
+      mapById.set(entry.canonicalEventId, entry.role);
+    }
+    const bundleById = new Map<string, ServiceRoleShadowEventRoleV1>();
+    for (const entry of bundle.entries) {
+      if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
+        typeof entry.transactionInfoEvidenceId !== "string" || entry.transactionInfoEvidenceId.length === 0 ||
+        !HASH.test(entry.transactionInfoPayloadSha256) ||
+        !HASH.test(entry.transactionInfoFinalityWitnessSha256) ||
+        !HASH.test(entry.poisoningDispositionSha256) || !HASH.test(entry.providerRiskDispositionSha256) ||
+        !ROLES.includes(entry.role) || bundleById.has(entry.canonicalEventId)) {
+        throw new TypeError("invalid_bundle");
+      }
+      bundleById.set(entry.canonicalEventId, entry.role);
+    }
+    if (sampledIdSet.size !== 200 || sampledIds.some((id) =>
+      !mapById.has(id) || !bundleById.has(id) || mapById.get(id) !== bundleById.get(id)) ||
+      [...mapById.keys()].some((id) => !bundleById.has(id) || !sampledIdSet.has(id)) ||
+      [...bundleById.keys()].some((id) => !mapById.has(id) || !sampledIdSet.has(id))) {
+      throw new TypeError("invalid_coverage");
+    }
+
+    const candidate: ServiceRoleShadowEventRoleMapV2 = {
+      schemaVersion: "service-role-shadow-event-role-map-v2",
+      policyVersion: "service-role-shadow-100-plus-100-v1",
+      runId: shadowInput.runId,
+      snapshotHash: shadowInput.snapshotHash,
+      addressHistoryManifestSha256: manifestSha256,
+      sourceEventRoleMapV1Sha256: sourceMap.sha256,
+      evidenceBundleSha256: evidenceBundle.sha256,
+      binding,
+      exactCoverage: { recent: 100, historical: 100, total: 200 },
+      productionEffect: false
+    };
+    const canonicalJson = canonicalizeArtifactJson(candidate);
+    const sha256 = fingerprintCanonicalArtifact(candidate);
+    const artifact = parseServiceRoleShadowEventRoleMapV2({ artifact: candidate, expectedSha256: sha256 });
+    if (canonicalizeArtifactJson(artifact) !== canonicalJson || canonicalJson.includes("\n")) {
+      throw new TypeError("invalid_canonical_json");
+    }
+    return { artifact, canonicalJson, sha256 };
+  } catch {
+    throw new TypeError("service_role_event_role_map_v2_materialization_invalid");
+  }
 }

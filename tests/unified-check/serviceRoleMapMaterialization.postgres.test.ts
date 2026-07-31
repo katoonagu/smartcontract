@@ -48,6 +48,7 @@ import {
   type ServiceRolePoisoningDispositionV1,
   type ServiceRoleProviderRiskDispositionV1
 } from "../../src/unifiedCheck/serviceRoleMapMaterialization.js";
+import { parseServiceRoleShadowEventRoleMapV2 } from "../../src/unifiedCheck/serviceRoleShadow.js";
 import { traversalStateId, type TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
 import {
   runServiceRoleMapMaterialization,
@@ -190,6 +191,7 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
   exhaustionExtra?: Readonly<Record<string, unknown>>;
   reachedAccountCreation?: boolean;
   exhaustionKind?: "provider_exhausted" | "account_creation_reached";
+  mutateExactStates?: (states: TraversalStateV1[]) => TraversalStateV1[];
 } = {}) {
   const runId = randomUUID();
   const snapshotHash = fingerprintCanonicalArtifact(["snapshot", runId]);
@@ -210,10 +212,11 @@ async function seedFixture(input: Harness, evidenceCount: number, options: {
     allocatedAmountRaw: "1",
     sourceEventIds: [canonicalTronUsdtEventKey(recent[0]!)]
   };
-  const exactStates = Array.from({ length: 7 }, (_, index): TraversalStateV1 => ({
+  const baseExactStates = Array.from({ length: 7 }, (_, index): TraversalStateV1 => ({
     ...state,
     fundingEpisodeId: `episode-${index}-${runId}`
   }));
+  const exactStates = options.mutateExactStates?.(baseExactStates) ?? baseExactStates;
   const identity = {
     chain: "tron" as const,
     snapshotHash,
@@ -513,6 +516,26 @@ async function seedCompletedCapture(
 }
 
 postgresDescribe("service role map materialization (PostgreSQL)", () => {
+  it("rejects traversal states that would bind different wrapper directions", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 0, {
+        mutateExactStates: (states) => states.map((state, index) => index === 0
+          ? { ...state, direction: "forward" }
+          : state)
+      });
+      await expect(runServiceRoleMapMaterialization(test.db, {
+        mode: "audit",
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill: null
+      })).rejects.toThrow("service_role_materialization_traversal_state_conflict");
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
   it("rejects malformed analysis authority and incomplete exhaustion before sampling", async () => {
     for (const [options, error] of [
       [{ analysisExtra: { unexpected: true } }, "service_role_materialization_accepted_history_invalid"],
@@ -550,6 +573,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         });
         expect(result.classification).toBe("incomplete");
         expect(result.eventRoleMapSha256).toBeNull();
+        expect(result.eventRoleMapV2Sha256).toBeNull();
         expect(result.evidenceBundleSha256).toBeNull();
       }
       expect((await test.client.query(
@@ -561,7 +585,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
     }
   }, 30_000);
 
-  it("audits a missing receipt read-only, then atomically materializes an idempotent unreferenced 200/200 pair", async () => {
+  it("audits a missing receipt read-only, then atomically materializes an idempotent unreferenced V1 pair and V2 wrapper", async () => {
     const test = await harness();
     try {
       const fixture = await seedFixture(test, 199);
@@ -580,6 +604,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         ...command
       });
       expect(first.classification).toBe("incomplete");
+      expect(first.eventRoleMapV2Sha256).toBeNull();
       expect(second.coverage).toEqual(first.coverage);
       expect(test.transactionModes).toEqual(["read_only", "read_only"]);
       expect(first.coverage).toMatchObject({
@@ -601,28 +626,47 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       });
       expect(materialized.classification).toBe("complete");
       expect(materialized.coverage.fullyAuthorizedEventCount).toBe(200);
+      expect(materialized.eventRoleMapV2Sha256).toMatch(/^[0-9a-f]{64}$/u);
       const beforeRetry = (await test.client.query(
         `select sha256,created_by_run_id,kind,schema_version,artifact_json,created_at
          from unified_check_artifacts
          where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')
-         order by kind`
+         order by kind,schema_version`
       )).rows;
-      expect(beforeRetry).toHaveLength(2);
+      expect(beforeRetry).toHaveLength(3);
       expect(beforeRetry.every((row) => row.created_by_run_id === fixture.runId)).toBe(true);
+      expect(beforeRetry.map((row) => [row.kind, row.schema_version])).toEqual([
+        ["service_role_event_evidence_bundle", "1"],
+        ["service_role_event_role_map", "1"],
+        ["service_role_event_role_map", "2"]
+      ]);
+      const wrapperRow = beforeRetry.find((row) => row.kind === "service_role_event_role_map" && row.schema_version === "2");
+      expect(wrapperRow.sha256).toBe(materialized.eventRoleMapV2Sha256);
+      expect(wrapperRow.artifact_json).toMatchObject({
+        sourceEventRoleMapV1Sha256: materialized.eventRoleMapSha256,
+        evidenceBundleSha256: materialized.evidenceBundleSha256,
+        exactCoverage: { recent: 100, historical: 100, total: 200 },
+        productionEffect: false
+      });
+      expect(parseServiceRoleShadowEventRoleMapV2({
+        artifact: wrapperRow.artifact_json,
+        expectedSha256: wrapperRow.sha256
+      })).toEqual(wrapperRow.artifact_json);
       expect((await test.client.query(
         `select count(*)::int count from unified_check_attempts
          where artifact_sha256=any($1::text[])`,
         [beforeRetry.map((row) => row.sha256)]
       )).rows[0].count).toBe(0);
-      await runServiceRoleMapMaterialization(test.db, {
+      const retry = await runServiceRoleMapMaterialization(test.db, {
         mode: "materialize",
         ...completeCommand
       });
+      expect(retry).toEqual(materialized);
       const afterRetry = (await test.client.query(
         `select sha256,created_by_run_id,kind,schema_version,artifact_json,created_at
          from unified_check_artifacts
          where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')
-         order by kind`
+         order by kind,schema_version`
       )).rows;
       expect(afterRetry).toEqual(beforeRetry);
     } finally {
@@ -643,6 +687,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         backfill: null
       });
       expect(result.classification).toBe("complete");
+      expect(result.eventRoleMapV2Sha256).toMatch(/^[0-9a-f]{64}$/u);
       expect(result.coverage).toMatchObject({ sampledEventCount: 200, fullyAuthorizedEventCount: 200 });
       expect(test.transactionModes).toEqual(["read_only"]);
       expect((await test.client.query(
@@ -841,11 +886,12 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         backfill: atomicBackfill
       });
       expect(audit.eventRoleMapSha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(audit.eventRoleMapV2Sha256).toMatch(/^[0-9a-f]{64}$/u);
       await test.client.query(
         `insert into unified_check_artifacts
          (sha256,created_by_run_id,kind,schema_version,artifact_json)
          values ($1,$2,'conflicting_kind','1','{}'::jsonb)`,
-        [audit.eventRoleMapSha256, atomic.runId]
+        [audit.eventRoleMapV2Sha256, atomic.runId]
       );
       await expect(runServiceRoleMapMaterialization(test.db, {
         mode: "materialize",
@@ -856,9 +902,40 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       })).rejects.toThrow("unified_artifact_conflict");
       expect((await test.client.query(
         `select count(*)::int count from unified_check_artifacts
-         where created_by_run_id=$1 and kind='service_role_event_evidence_bundle'`,
+         where created_by_run_id=$1
+           and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')`,
         [atomic.runId]
       )).rows[0].count).toBe(0);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("rejects a hash-tampered stored V2 wrapper", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const command = {
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill
+      };
+      const expected = await runServiceRoleMapMaterialization(test.db, { mode: "audit", ...command });
+      await test.client.query(
+        `insert into unified_check_artifacts
+         (sha256,created_by_run_id,kind,schema_version,artifact_json)
+         values ($1,$2,'service_role_event_role_map','2',$3::jsonb)`,
+        [expected.eventRoleMapV2Sha256, fixture.runId, JSON.stringify({
+          runId: fixture.runId,
+          addressHistoryManifestSha256: fixture.manifestSha256,
+          evidenceBundleSha256: "f".repeat(64)
+        })]
+      );
+
+      await expect(runServiceRoleMapMaterialization(test.db, { mode: "audit", ...command }))
+        .rejects.toThrow("service_role_materialization_artifact_invalid");
     } finally {
       await dispose(test);
     }
