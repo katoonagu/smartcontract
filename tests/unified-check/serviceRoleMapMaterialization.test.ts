@@ -11,10 +11,14 @@ import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTim
 import {
   materializeServiceRoleEventMapV1,
   materializeServiceRoleEventMapV2,
+  type ServiceRoleEventEvidenceBundleV1,
   type ServiceRolePoisoningDispositionV1,
   type ServiceRoleProviderRiskDispositionV1
 } from "../../src/unifiedCheck/serviceRoleMapMaterialization.js";
-import { parseServiceRoleShadowEventRoleMapV2 } from "../../src/unifiedCheck/serviceRoleShadow.js";
+import {
+  parseServiceRoleShadowEventRoleMapV2,
+  type ServiceRoleShadowEventRoleMapV1
+} from "../../src/unifiedCheck/serviceRoleShadow.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import type { TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
 import { TRON_USDT_CONTRACT_ADDRESS as USDT } from "../../src/parser/transactionParser.js";
@@ -222,19 +226,20 @@ function gasFreePayload(item: IndexedTronUsdtTransfer, fee: boolean) {
 }
 
 describe("service role map materialization", () => {
-  function completeV2() {
+  function completeV1() {
     const source = fixture().input();
     const v1 = materializeServiceRoleEventMapV1(source);
     if (!v1.bundle || !v1.map) throw new Error("test_v1_materialization_incomplete");
-    return {
-      source,
-      v1,
-      v2: materializeServiceRoleEventMapV2({
-        shadowInput: { ...source.shadowInput, eventRoleMap: null },
-        sourceMap: v1.map,
-        evidenceBundle: v1.bundle
-      })
-    };
+    return { source, v1 };
+  }
+
+  function completeV2() {
+    const complete = completeV1();
+    return { ...complete, v2: materializeServiceRoleEventMapV2({
+      shadowInput: { ...complete.source.shadowInput, eventRoleMap: null },
+      sourceMap: complete.v1.map!,
+      evidenceBundle: complete.v1.bundle!
+    }) };
   }
 
   it("wraps one complete V1 pair with the exact 100+100 sampled ID set", () => {
@@ -333,6 +338,128 @@ describe("service role map materialization", () => {
     ]) {
       expect(invalid).toThrow("service_role_event_role_map_v2_materialization_invalid");
     }
+  });
+
+  it("rejects hash-consistent extra V1 root and entry keys", () => {
+    const { source, v1 } = completeV1();
+    const call = (map: unknown, bundle: unknown) => materializeServiceRoleEventMapV2({
+      shadowInput: { ...source.shadowInput, eventRoleMap: null },
+      sourceMap: {
+        sha256: fingerprintCanonicalArtifact(map),
+        artifact: map as ServiceRoleShadowEventRoleMapV1
+      },
+      evidenceBundle: {
+        sha256: fingerprintCanonicalArtifact(bundle),
+        artifact: bundle as ServiceRoleEventEvidenceBundleV1
+      }
+    });
+    const extraMap = { ...v1.map!.artifact, unexpected: true };
+    const extraMapEntry = {
+      ...v1.map!.artifact,
+      entries: v1.map!.artifact.entries.map((entry, index) => index === 0
+        ? { ...entry, unexpected: true }
+        : entry)
+    };
+    const extraBundle = { ...v1.bundle!.artifact, unexpected: true };
+    const extraBundleSha256 = fingerprintCanonicalArtifact(extraBundle);
+    const mapForExtraBundle = {
+      ...v1.map!.artifact,
+      entries: v1.map!.artifact.entries.map((entry) => ({
+        ...entry,
+        evidenceSha256: extraBundleSha256
+      }))
+    };
+    const extraBundleEntry = {
+      ...v1.bundle!.artifact,
+      entries: v1.bundle!.artifact.entries.map((entry, index) => index === 0
+        ? { ...entry, unexpected: true }
+        : entry)
+    };
+    const extraBundleEntrySha256 = fingerprintCanonicalArtifact(extraBundleEntry);
+    const mapForExtraBundleEntry = {
+      ...v1.map!.artifact,
+      entries: v1.map!.artifact.entries.map((entry) => ({
+        ...entry,
+        evidenceSha256: extraBundleEntrySha256
+      }))
+    };
+
+    for (const invalid of [
+      () => call(extraMap, v1.bundle!.artifact),
+      () => call(extraMapEntry, v1.bundle!.artifact),
+      () => call(mapForExtraBundle, extraBundle),
+      () => call(mapForExtraBundleEntry, extraBundleEntry)
+    ]) expect(invalid).toThrow("service_role_event_role_map_v2_materialization_invalid");
+  });
+
+  it("rejects V1 root and entry accessors or non-plain prototypes", () => {
+    const { source, v1 } = completeV1();
+    const call = (artifact: unknown) => () => materializeServiceRoleEventMapV2({
+      shadowInput: { ...source.shadowInput, eventRoleMap: null },
+      sourceMap: {
+        sha256: v1.map!.sha256,
+        artifact: artifact as ServiceRoleShadowEventRoleMapV1
+      },
+      evidenceBundle: v1.bundle!
+    });
+    const accessorRoot = { ...v1.map!.artifact };
+    Object.defineProperty(accessorRoot, "runId", { enumerable: true, get: () => RUN_ID });
+    const accessorEntry = { ...v1.map!.artifact.entries[0]! };
+    Object.defineProperty(accessorEntry, "role", { enumerable: true, get: () => "ordinary" });
+    const accessorEntries = [accessorEntry, ...v1.map!.artifact.entries.slice(1)];
+    const nonPlainRoot = Object.assign(Object.create({ inherited: true }), v1.map!.artifact);
+    const nonPlainEntry = Object.assign(Object.create({ inherited: true }), v1.map!.artifact.entries[0]!);
+    const nonPlainEntries = [nonPlainEntry, ...v1.map!.artifact.entries.slice(1)];
+
+    for (const invalid of [
+      call(accessorRoot),
+      call({ ...v1.map!.artifact, entries: accessorEntries }),
+      call(nonPlainRoot),
+      call({ ...v1.map!.artifact, entries: nonPlainEntries })
+    ]) expect(invalid).toThrow("service_role_event_role_map_v2_materialization_invalid");
+  });
+
+  it("rejects sparse, decorated, or subclassed V1 entry arrays", () => {
+    const { source, v1 } = completeV1();
+    const call = (entries: readonly unknown[]) => () => materializeServiceRoleEventMapV2({
+      shadowInput: { ...source.shadowInput, eventRoleMap: null },
+      sourceMap: {
+        sha256: v1.map!.sha256,
+        artifact: { ...v1.map!.artifact, entries } as ServiceRoleShadowEventRoleMapV1
+      },
+      evidenceBundle: v1.bundle!
+    });
+    const sparse = [...v1.map!.artifact.entries];
+    delete sparse[199];
+    const decorated = [...v1.map!.artifact.entries] as
+      NonNullable<typeof v1.map>["artifact"]["entries"] & { extra?: boolean };
+    decorated.extra = true;
+    class EntryArray extends Array<ServiceRoleShadowEventRoleMapV1["entries"][number]> {}
+    const subclassed = EntryArray.from(v1.map!.artifact.entries);
+
+    for (const invalid of [
+      call(sparse),
+      call(decorated),
+      call(subclassed)
+    ]) expect(invalid).toThrow("service_role_event_role_map_v2_materialization_invalid");
+  });
+
+  it("rejects a Proxy that presents an accessor only through descriptor inspection", () => {
+    const { source, v1 } = completeV1();
+    const artifact = new Proxy(v1.map!.artifact, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "runId") {
+          return { configurable: true, enumerable: true, get: () => RUN_ID };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      }
+    });
+
+    expect(() => materializeServiceRoleEventMapV2({
+      shadowInput: { ...source.shadowInput, eventRoleMap: null },
+      sourceMap: { sha256: fingerprintCanonicalArtifact(v1.map!.artifact), artifact },
+      evidenceBundle: v1.bundle!
+    })).toThrow("service_role_event_role_map_v2_materialization_invalid");
   });
 
   it("materializes exactly 200 ordinary roles with one shared evidence-bundle hash", () => {

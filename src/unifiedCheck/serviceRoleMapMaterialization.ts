@@ -312,6 +312,148 @@ export function materializeServiceRoleEventMapV1(input: {
   };
 }
 
+function exactDataRecord(value: unknown, expectedKeys: readonly string[]): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("invalid_record");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("invalid_record");
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor | undefined>;
+  const keys = Reflect.ownKeys(descriptors);
+  const expectedKeySet = new Set(expectedKeys);
+  if (keys.length !== expectedKeys.length ||
+    keys.some((key) => typeof key !== "string" || !expectedKeySet.has(key))) {
+    throw new TypeError("invalid_record");
+  }
+  const entries = expectedKeys.map((key): [string, unknown] => {
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) {
+      throw new TypeError("invalid_record");
+    }
+    return [key, descriptor.value];
+  });
+  return Object.fromEntries(entries);
+}
+
+function exactDenseArray(value: unknown, length: number): readonly unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new TypeError("invalid_array");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor | undefined>;
+  const keys = Reflect.ownKeys(descriptors);
+  const expectedKeys = [...Array.from({ length }, (_, index) => String(index)), "length"];
+  const expectedKeySet = new Set(expectedKeys);
+  if (keys.length !== expectedKeys.length ||
+    keys.some((key) => typeof key !== "string" || !expectedKeySet.has(key))) {
+    throw new TypeError("invalid_array");
+  }
+  const lengthDescriptor = descriptors.length;
+  if (!lengthDescriptor || !("value" in lengthDescriptor) || lengthDescriptor.value !== length ||
+    lengthDescriptor.enumerable !== false) {
+    throw new TypeError("invalid_array");
+  }
+  return Array.from({ length }, (_, index) => {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) {
+      throw new TypeError("invalid_array");
+    }
+    return descriptor.value;
+  });
+}
+
+function exactServiceRole(value: unknown): ServiceRoleShadowEventRoleV1 {
+  if (typeof value !== "string" || !ROLES.includes(value as ServiceRoleShadowEventRoleV1)) {
+    throw new TypeError("invalid_role");
+  }
+  return value as ServiceRoleShadowEventRoleV1;
+}
+
+function parseExactServiceRoleEventRoleMapV1(value: unknown): ServiceRoleShadowEventRoleMapV1 {
+  const root = exactDataRecord(value, [
+    "schemaVersion", "runId", "snapshotHash", "addressHistoryManifestSha256", "entries"
+  ]);
+  if (root.schemaVersion !== "service-role-shadow-event-role-map-v1" ||
+    typeof root.runId !== "string" || root.runId.length === 0 ||
+    typeof root.snapshotHash !== "string" || !HASH.test(root.snapshotHash) ||
+    typeof root.addressHistoryManifestSha256 !== "string" || !HASH.test(root.addressHistoryManifestSha256)) {
+    throw new TypeError("invalid_map");
+  }
+  const entries = exactDenseArray(root.entries, 200).map((value) => {
+    const entry = exactDataRecord(value, ["canonicalEventId", "role", "authority", "evidenceSha256"]);
+    if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
+      entry.authority !== "existing_hash_bound_economic_role_v1" ||
+      typeof entry.evidenceSha256 !== "string" || !HASH.test(entry.evidenceSha256)) {
+      throw new TypeError("invalid_map");
+    }
+    return Object.freeze({
+      canonicalEventId: entry.canonicalEventId,
+      role: exactServiceRole(entry.role),
+      authority: "existing_hash_bound_economic_role_v1" as const,
+      evidenceSha256: entry.evidenceSha256
+    });
+  });
+  return Object.freeze({
+    schemaVersion: "service-role-shadow-event-role-map-v1",
+    runId: root.runId,
+    snapshotHash: root.snapshotHash,
+    addressHistoryManifestSha256: root.addressHistoryManifestSha256,
+    entries: Object.freeze(entries)
+  });
+}
+
+function parseExactServiceRoleEventEvidenceBundleV1(value: unknown): ServiceRoleEventEvidenceBundleV1 {
+  const root = exactDataRecord(value, [
+    "schemaVersion", "policyVersion", "runId", "snapshotHash", "addressHistoryManifestSha256", "entries"
+  ]);
+  if (root.schemaVersion !== "service-role-event-evidence-bundle-v1" ||
+    root.policyVersion !== "existing-hash-bound-economic-role-v1" ||
+    typeof root.runId !== "string" || root.runId.length === 0 ||
+    typeof root.snapshotHash !== "string" || !HASH.test(root.snapshotHash) ||
+    typeof root.addressHistoryManifestSha256 !== "string" || !HASH.test(root.addressHistoryManifestSha256)) {
+    throw new TypeError("invalid_bundle");
+  }
+  const entries = exactDenseArray(root.entries, 200).map((value) => {
+    const entry = exactDataRecord(value, [
+      "canonicalEventId", "transactionInfoEvidenceId", "transactionInfoPayloadSha256",
+      "transactionInfoFinalityWitnessSha256", "poisoningDispositionSha256",
+      "providerRiskDispositionSha256", "role"
+    ]);
+    if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
+      typeof entry.transactionInfoEvidenceId !== "string" || entry.transactionInfoEvidenceId.length === 0 ||
+      typeof entry.transactionInfoPayloadSha256 !== "string" || !HASH.test(entry.transactionInfoPayloadSha256) ||
+      typeof entry.transactionInfoFinalityWitnessSha256 !== "string" || !HASH.test(entry.transactionInfoFinalityWitnessSha256) ||
+      typeof entry.poisoningDispositionSha256 !== "string" || !HASH.test(entry.poisoningDispositionSha256) ||
+      typeof entry.providerRiskDispositionSha256 !== "string" || !HASH.test(entry.providerRiskDispositionSha256)) {
+      throw new TypeError("invalid_bundle");
+    }
+    return Object.freeze({
+      canonicalEventId: entry.canonicalEventId,
+      transactionInfoEvidenceId: entry.transactionInfoEvidenceId,
+      transactionInfoPayloadSha256: entry.transactionInfoPayloadSha256,
+      transactionInfoFinalityWitnessSha256: entry.transactionInfoFinalityWitnessSha256,
+      poisoningDispositionSha256: entry.poisoningDispositionSha256,
+      providerRiskDispositionSha256: entry.providerRiskDispositionSha256,
+      role: exactServiceRole(entry.role)
+    });
+  });
+  return Object.freeze({
+    schemaVersion: "service-role-event-evidence-bundle-v1",
+    policyVersion: "existing-hash-bound-economic-role-v1",
+    runId: root.runId,
+    snapshotHash: root.snapshotHash,
+    addressHistoryManifestSha256: root.addressHistoryManifestSha256,
+    entries: Object.freeze(entries)
+  });
+}
+
+function parseExactBoundArtifact<T>(value: unknown, parser: (artifact: unknown) => T): BoundArtifact<T> {
+  const bound = exactDataRecord(value, ["sha256", "artifact"]);
+  if (typeof bound.sha256 !== "string" || !HASH.test(bound.sha256)) throw new TypeError("invalid_hash");
+  const artifact = parser(bound.artifact);
+  if (fingerprintCanonicalArtifact(artifact) !== bound.sha256) throw new TypeError("invalid_hash");
+  return Object.freeze({ sha256: bound.sha256, artifact });
+}
+
 export function materializeServiceRoleEventMapV2(input: {
   shadowInput: Parameters<typeof maybeBuildServiceRoleShadowArtifactV1>[0];
   sourceMap: BoundArtifact<ServiceRoleShadowEventRoleMapV1>;
@@ -322,24 +464,19 @@ export function materializeServiceRoleEventMapV2(input: {
   sha256: string;
 } {
   try {
-    const { shadowInput, sourceMap, evidenceBundle } = input;
+    const shadowInput = input.shadowInput;
+    const sourceMap = parseExactBoundArtifact(input.sourceMap, parseExactServiceRoleEventRoleMapV1);
+    const evidenceBundle = parseExactBoundArtifact(input.evidenceBundle, parseExactServiceRoleEventEvidenceBundleV1);
     const map = sourceMap.artifact;
     const bundle = evidenceBundle.artifact;
     const manifestSha256 = shadowInput.acceptedHistory.manifestSha256;
     if (shadowInput.mode !== "service-role-shadow-100-plus-100-v1" ||
-      !HASH.test(sourceMap.sha256) || fingerprintCanonicalArtifact(map) !== sourceMap.sha256 ||
-      !HASH.test(evidenceBundle.sha256) || fingerprintCanonicalArtifact(bundle) !== evidenceBundle.sha256 ||
-      map.schemaVersion !== "service-role-shadow-event-role-map-v1" ||
-      bundle.schemaVersion !== "service-role-event-evidence-bundle-v1" ||
-      bundle.policyVersion !== "existing-hash-bound-economic-role-v1" ||
       typeof shadowInput.runId !== "string" || shadowInput.runId.length === 0 ||
       !HASH.test(shadowInput.snapshotHash) || !HASH.test(manifestSha256) ||
       map.runId !== shadowInput.runId || bundle.runId !== shadowInput.runId ||
       map.snapshotHash !== shadowInput.snapshotHash || bundle.snapshotHash !== shadowInput.snapshotHash ||
       map.addressHistoryManifestSha256 !== manifestSha256 ||
-      bundle.addressHistoryManifestSha256 !== manifestSha256 ||
-      !Array.isArray(map.entries) || !Array.isArray(bundle.entries) ||
-      map.entries.length !== 200 || bundle.entries.length !== 200) {
+      bundle.addressHistoryManifestSha256 !== manifestSha256) {
       throw new TypeError("invalid_root");
     }
 
@@ -354,21 +491,14 @@ export function materializeServiceRoleEventMapV2(input: {
     const sampledIdSet = new Set(sampledIds);
     const mapById = new Map<string, ServiceRoleShadowEventRoleV1>();
     for (const entry of map.entries) {
-      if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
-        !ROLES.includes(entry.role) || entry.authority !== "existing_hash_bound_economic_role_v1" ||
-        entry.evidenceSha256 !== evidenceBundle.sha256 || mapById.has(entry.canonicalEventId)) {
+      if (entry.evidenceSha256 !== evidenceBundle.sha256 || mapById.has(entry.canonicalEventId)) {
         throw new TypeError("invalid_map");
       }
       mapById.set(entry.canonicalEventId, entry.role);
     }
     const bundleById = new Map<string, ServiceRoleShadowEventRoleV1>();
     for (const entry of bundle.entries) {
-      if (typeof entry.canonicalEventId !== "string" || entry.canonicalEventId.length === 0 ||
-        typeof entry.transactionInfoEvidenceId !== "string" || entry.transactionInfoEvidenceId.length === 0 ||
-        !HASH.test(entry.transactionInfoPayloadSha256) ||
-        !HASH.test(entry.transactionInfoFinalityWitnessSha256) ||
-        !HASH.test(entry.poisoningDispositionSha256) || !HASH.test(entry.providerRiskDispositionSha256) ||
-        !ROLES.includes(entry.role) || bundleById.has(entry.canonicalEventId)) {
+      if (bundleById.has(entry.canonicalEventId)) {
         throw new TypeError("invalid_bundle");
       }
       bundleById.set(entry.canonicalEventId, entry.role);

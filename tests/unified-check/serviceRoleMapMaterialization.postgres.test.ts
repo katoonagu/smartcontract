@@ -973,6 +973,151 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       await dispose(test);
     }
   }, 30_000);
+
+  it("rejects a matching materialized artifact that already has an attempt reference", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const command = {
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill
+      };
+      const materialized = await runServiceRoleMapMaterialization(test.db, { mode: "materialize", ...command });
+      const before = (await test.client.query(
+        `select sha256,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows;
+      expect(before).toHaveLength(3);
+      const traversalTaskId = (await test.client.query(
+        "select id from unified_check_tasks where run_id=$1 and kind='traversal'",
+        [fixture.runId]
+      )).rows[0].id;
+      await test.client.query(
+        `insert into unified_check_attempts (id,task_id,attempt,artifact_sha256,completed_at)
+         values ($1,$2,1,$3,now())`,
+        [randomUUID(), traversalTaskId, materialized.eventRoleMapV2Sha256]
+      );
+
+      await expect(runServiceRoleMapMaterialization(test.db, { mode: "audit", ...command }))
+        .rejects.toThrow("service_role_materialization_artifact_referenced");
+      expect((await test.client.query(
+        `select sha256,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows).toEqual(before);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("rejects an otherwise matching trio row owned by another run", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      const other = await seedFixture(test, 0);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const command = {
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill
+      };
+      const materialized = await runServiceRoleMapMaterialization(test.db, { mode: "materialize", ...command });
+      await test.client.query("alter table unified_check_artifacts disable trigger unified_check_artifacts_immutable");
+      try {
+        await test.client.query(
+          "update unified_check_artifacts set created_by_run_id=$1 where sha256=$2",
+          [other.runId, materialized.eventRoleMapV2Sha256]
+        );
+      } finally {
+        await test.client.query("alter table unified_check_artifacts enable trigger unified_check_artifacts_immutable");
+      }
+      const seeded = (await test.client.query(
+        `select sha256,created_by_run_id,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows;
+      expect(seeded).toHaveLength(3);
+
+      await expect(runServiceRoleMapMaterialization(test.db, { mode: "audit", ...command }))
+        .rejects.toThrow("service_role_materialization_artifact_invalid");
+      expect((await test.client.query(
+        `select sha256,created_by_run_id,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows).toEqual(seeded);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("rejects a matching wrapper stored under an unknown schema version", async () => {
+    const test = await harness();
+    try {
+      const fixture = await seedFixture(test, 200);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const command = {
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill
+      };
+      const materialized = await runServiceRoleMapMaterialization(test.db, { mode: "materialize", ...command });
+      await test.client.query("alter table unified_check_artifacts disable trigger unified_check_artifacts_immutable");
+      try {
+        await test.client.query(
+          "update unified_check_artifacts set schema_version='3' where sha256=$1",
+          [materialized.eventRoleMapV2Sha256]
+        );
+      } finally {
+        await test.client.query("alter table unified_check_artifacts enable trigger unified_check_artifacts_immutable");
+      }
+      const seeded = (await test.client.query(
+        `select sha256,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows;
+      expect(seeded).toHaveLength(3);
+
+      await expect(runServiceRoleMapMaterialization(test.db, { mode: "materialize", ...command }))
+        .rejects.toThrow("service_role_materialization_existing_map_conflict");
+      expect((await test.client.query(
+        `select sha256,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where artifact_json->>'runId'=$1
+            and artifact_json->>'addressHistoryManifestSha256'=$2
+            and kind in ('service_role_event_evidence_bundle','service_role_event_role_map')
+          order by kind,schema_version`,
+        [fixture.runId, fixture.manifestSha256]
+      )).rows).toEqual(seeded);
+    } finally {
+      await dispose(test);
+    }
+  }, 30_000);
 });
 
 describe("service role map materializer CLI boundary", () => {
