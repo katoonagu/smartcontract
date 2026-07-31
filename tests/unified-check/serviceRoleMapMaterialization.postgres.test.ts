@@ -640,11 +640,44 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         ["service_role_event_role_map", "1"],
         ["service_role_event_role_map", "2"]
       ]);
+      const bundleRow = beforeRetry.find((row) =>
+        row.kind === "service_role_event_evidence_bundle" && row.schema_version === "1");
+      const mapV1Row = beforeRetry.find((row) =>
+        row.kind === "service_role_event_role_map" && row.schema_version === "1");
       const wrapperRow = beforeRetry.find((row) => row.kind === "service_role_event_role_map" && row.schema_version === "2");
+      expect(bundleRow.sha256).toBe(materialized.evidenceBundleSha256);
+      expect(mapV1Row.sha256).toBe(materialized.eventRoleMapSha256);
+      expect(fingerprintCanonicalArtifact(bundleRow.artifact_json)).toBe(bundleRow.sha256);
+      expect(fingerprintCanonicalArtifact(mapV1Row.artifact_json)).toBe(mapV1Row.sha256);
+      expect(bundleRow.artifact_json).toMatchObject({
+        schemaVersion: "service-role-event-evidence-bundle-v1",
+        policyVersion: "existing-hash-bound-economic-role-v1",
+        runId: fixture.runId,
+        snapshotHash: fixture.snapshotHash,
+        addressHistoryManifestSha256: fixture.manifestSha256
+      });
+      expect(mapV1Row.artifact_json).toMatchObject({
+        schemaVersion: "service-role-shadow-event-role-map-v1",
+        runId: fixture.runId,
+        snapshotHash: fixture.snapshotHash,
+        addressHistoryManifestSha256: fixture.manifestSha256
+      });
+      expect(bundleRow.artifact_json.entries).toHaveLength(200);
+      expect(mapV1Row.artifact_json.entries).toHaveLength(200);
+      const bundleRoles = new Map(bundleRow.artifact_json.entries.map((entry: any) => [entry.canonicalEventId, entry.role]));
+      const mapRoles = new Map(mapV1Row.artifact_json.entries.map((entry: any) => [entry.canonicalEventId, entry.role]));
+      expect(bundleRoles.size).toBe(200);
+      expect(mapRoles.size).toBe(200);
+      expect([...mapRoles.keys()].sort()).toEqual([...bundleRoles.keys()].sort());
+      for (const entry of mapV1Row.artifact_json.entries) {
+        expect(entry.authority).toBe("existing_hash_bound_economic_role_v1");
+        expect(entry.evidenceSha256).toBe(bundleRow.sha256);
+        expect(entry.role).toBe(bundleRoles.get(entry.canonicalEventId));
+      }
       expect(wrapperRow.sha256).toBe(materialized.eventRoleMapV2Sha256);
       expect(wrapperRow.artifact_json).toMatchObject({
-        sourceEventRoleMapV1Sha256: materialized.eventRoleMapSha256,
-        evidenceBundleSha256: materialized.evidenceBundleSha256,
+        sourceEventRoleMapV1Sha256: mapV1Row.sha256,
+        evidenceBundleSha256: bundleRow.sha256,
         exactCoverage: { recent: 100, historical: 100, total: 200 },
         productionEffect: false
       });
