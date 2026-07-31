@@ -43,8 +43,8 @@ Plan target: `master` at design commit `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca
 - `src/unifiedCheck/productionWorker.ts::createPostgresUnifiedTaskCycleRepository` receives the full row from `checkpointUnifiedTask` and currently reduces it to two booleans.
 - `src/unifiedCheck/productionRuntime.ts::createUnifiedProductionRuntime` owns traversal assembly, generic artifact persistence, analysis worker cycles, and the PostgreSQL transaction host.
 - `src/unifiedCheck/serviceRoleShadow.ts::maybeBuildServiceRoleShadowArtifactV1` is the existing pure accepted-history `100 + 100` builder. Its profile bytes and V1 map remain immutable.
-- `src/unifiedCheck/serviceRoleMapMaterialization.ts` and `scripts/materializeServiceRoleEventMap.ts` atomically persist the unreferenced V1 evidence bundle and V1 role map.
-- `src/config.ts` has no `UNIFIED_SERVICE_ROLE_SHADOW_POLICY` parser.
+- `src/unifiedCheck/serviceRoleMapMaterialization.ts` and `scripts/materializeServiceRoleEventMap.ts` can atomically persist the unreferenced V1 evidence bundle, V1 role map and additive V2 wrapper; the real PostgreSQL gate remains unverified.
+- `src/config.ts` strictly parses `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`, but the enabled literal remains unwired into runtime.
 - `insertUnifiedArtifact` already provides content-addressed, immutable, run-owned storage. C1 needs no table, column, index, or migration.
 - The frozen source run `5417cbf6-7cef-4b91-8367-d266eaf3857e` is `FAILED_TECHNICAL`; its traversal task is `CANCELLED`, has no accepted traversal attempt, and belongs to an older runtime commit. Its graph has 888 planned entries and 100 ready entries. It is valid accepted-history provenance but is not a runnable current-worker lifecycle and must never be cloned wholesale, resumed, or relabelled as a successful production run.
 - The frozen accepted address/direction group contains seven qualifying traversal states. C1 therefore expects seven per-state profiles but exactly one compound-group precommit receipt and one reconciled runtime receipt for admission.

@@ -293,7 +293,7 @@ Execution checkpoint on `1028c2a7bd14ddfbeb233d681bfec63f32974d13`:
   skipped`; the zero-skip DB gate and two-connection race are still required.
 - C1 Tasks 4-10 are not started. The enabled config literal is unwired and
   production still has no role-map query, traversal/finalizer/report/score
-  effect. Stage C and Stage D statuses are unchanged.
+  effect. Stage C remains incomplete; Stage D status is unchanged.
 
 ## Correctness Gate
 
