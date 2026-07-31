@@ -475,9 +475,18 @@ It authorizes no production routing, scoring, Stage D or rollout.
   The PostgreSQL file passes `18/18` with zero skips, the unit materialization
   file passes `19/19`, and typecheck passes. The committed trio contains one
   row per member and remains referenced by zero accepted attempts.
-- C1 Tasks 4-10 have not started. There is no runtime input fence, coordinator
-  hook, role-map query, traversal/finalizer/report/score effect or acceptance
-  evidence. Strict invalid-config rejection is the only product-facing config
+- C1 Task 4 is complete. The explicit, still-unwired runtime factory freezes
+  one run-wide immutable input set and one `ready | unavailable` fence, strictly
+  revalidates each run-owned V2 wrapper through its V1 map and evidence bundle,
+  and serves compound `missing | found | conflict` lookup only from that frozen
+  set. Normal preload and timeout publication use the same run-key advisory
+  fence; timeout rollback and restart never rescan later role-map population.
+  The focused unit file passes `13/13`; the real schema-037 PostgreSQL file
+  passes `4/4` with zero skips, including distinct-connection convergence and
+  run/advisory lock release evidence.
+- C1 Tasks 5-10 have not started. There is no coordinator hook, runtime/config
+  wiring, traversal/finalizer/report/score effect or C1 acceptance evidence.
+  Strict invalid-config rejection remains the only product-facing config
   contract change; the enabled literal remains unwired. Stage C is incomplete,
   Stage D remains design-only, and production stays on matrix-v4,
   `ScoreAnchorV3`, and report-only checked-subject role with no suppression or

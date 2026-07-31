@@ -26,10 +26,15 @@
   are exactly one per member, and accepted-attempt references remain zero.
   The PostgreSQL file passes `18/18` with zero skips, the unit file passes
   `19/19`, and typecheck passes. Its checklist is complete.
-- Tasks 4-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
+- Task 4 is complete. One explicit runtime factory owns the immutable run-wide
+  input set/fence and compound lookup without production wiring. The unit file
+  passes `13/13`; the real schema-037 PostgreSQL file passes `4/4` with zero
+  skips, including distinct-connection convergence, held run/advisory lock
+  deadlines, rollback, no retained C1 lock and a later authoritative write.
+- Tasks 5-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
   `AppConfig`, but the enabled literal is not wired into runtime. There is no
-  input fence, role-map runtime query, coordinator hook, traversal/finalizer/
-  report/score effect or C1 acceptance evidence.
+  coordinator hook, traversal/finalizer/report/score effect or C1 acceptance
+  evidence.
 - Guard: strict invalid-config rejection is the only product-facing contract
   change. Do not call C1 or Stage C complete; production remains matrix-v4,
   ScoreAnchorV3 and report-only checked-subject role with no suppression or
@@ -222,9 +227,9 @@ Modify:
 
 **Files:** Create `src/unifiedCheck/serviceRoleShadowRuntime.ts`, `tests/unified-check/serviceRoleShadowRuntime.test.ts`, `tests/unified-check/serviceRoleShadowRuntime.postgres.test.ts`.
 
-- [ ] **Step 1: Write failing tests** for one V2 scan on first load, empty-set caching, restart reuse of the first valid fence, source V1/bundle validation, compound `missing | found | conflict`, and a separate 1,000 ms preload deadline. Cover `SET LOCAL lock_timeout = '1000ms'` and `SET LOCAL statement_timeout = '1000ms'`, rollback before timeout publication, deterministic `malformed | conflict | preload_timeout` unavailable outcomes, two concurrent initializers converging on one content hash, and a later role-map insertion never changing a prior `ready` or `unavailable` fence.
-- [ ] **Step 2: Run the red test.** Expected: FAIL because the runtime module is absent.
-- [ ] **Step 3: Add the frozen input-set, immutable outcome-fence, and lookup contracts.**
+- [x] **Step 1: Write failing tests** for one V2 scan on first load, empty-set caching, restart reuse of the first valid fence, source V1/bundle validation, compound `missing | found | conflict`, and a separate 1,000 ms preload deadline. Cover `SET LOCAL lock_timeout = '1000ms'` and `SET LOCAL statement_timeout = '1000ms'`, rollback before timeout publication, deterministic `malformed | conflict | preload_timeout` unavailable outcomes, two concurrent initializers converging on one content hash, and a later role-map insertion never changing a prior `ready` or `unavailable` fence.
+- [x] **Step 2: Run the red test.** Expected: FAIL because the runtime module is absent.
+- [x] **Step 3: Add the frozen input-set, immutable outcome-fence, and lookup contracts.**
 
   ```ts
   export type ServiceRoleShadowInputSetV1 = {
@@ -262,10 +267,10 @@ Modify:
     | { kind: "conflict"; wrapperSha256s: readonly string[] };
   ```
 
-- [ ] **Step 4: Implement `createServiceRoleShadowRuntimeV1` around the fence, not around a retrying scan.** Cache one promise per run. The normal short transaction sets both PostgreSQL local timeouts before taking a C1 run-key advisory transaction lock and `unified_check_runs FOR UPDATE`. It first resolves the run's existing fence; exactly one strict valid fence is reused, while multiple/different fence bodies collapse to `unavailable/conflict`. With no fence, scan only run-owned kind `service_role_event_role_map`, schema `2`, validate all wrapper/source/bundle bytes, sort hashes, insert the input set, and publish the deterministic `ready` fence in the same transaction. Empty input is a valid ready set.
-- [ ] **Step 5: Publish timeout or validation failure once.** A lock/statement timeout must roll the first transaction back completely. In a separate short transaction, acquire the same C1 advisory key, re-check for an outcome published by a winner, then insert the deterministic `unavailable` fence (`observedRoleMapV2Sha256s:null` for preload timeout). Malformed/conflicting scans bind the sorted hashes actually observed. The artifact body has no wall-clock field, so concurrent publishers converge by content hash. Cache and attach rejection handlers to this final fence promise; restart loads it and never rescans.
-- [ ] **Step 6: Run unit and PostgreSQL tests.** Expected: PASS; query spy shows no per-state JSONB scan, a held run lock releases the caller within 1,000 ms plus test jitter, `pg_locks` shows no retained C1 lock, and an authoritative write proceeds after the timeout transaction rolls back.
-- [ ] **Step 7: Commit.**
+- [x] **Step 4: Implement `createServiceRoleShadowRuntimeV1` around the fence, not around a retrying scan.** Cache one promise per run. The normal short transaction sets both PostgreSQL local timeouts before taking a C1 run-key advisory transaction lock and `unified_check_runs FOR UPDATE`. It first resolves the run's existing fence; exactly one strict valid fence is reused, while multiple/different fence bodies collapse to `unavailable/conflict`. With no fence, scan only run-owned kind `service_role_event_role_map`, schema `2`, validate all wrapper/source/bundle bytes, sort hashes, insert the input set, and publish the deterministic `ready` fence in the same transaction. Empty input is a valid ready set.
+- [x] **Step 5: Publish timeout or validation failure once.** A lock/statement timeout must roll the first transaction back completely. In a separate short transaction, acquire the same C1 advisory key, re-check for an outcome published by a winner, then insert the deterministic `unavailable` fence (`observedRoleMapV2Sha256s:null` for preload timeout). Malformed/conflicting scans bind the sorted hashes actually observed. The artifact body has no wall-clock field, so concurrent publishers converge by content hash. Cache and attach rejection handlers to this final fence promise; restart loads it and never rescans.
+- [x] **Step 6: Run unit and PostgreSQL tests.** Expected: PASS; query spy shows no per-state JSONB scan, a held run lock releases the caller within 1,000 ms plus test jitter, `pg_locks` shows no retained C1 lock, and an authoritative write proceeds after the timeout transaction rolls back.
+- [x] **Step 7: Commit.**
 
   ```powershell
   git add src/unifiedCheck/serviceRoleShadowRuntime.ts tests/unified-check/serviceRoleShadowRuntime.test.ts tests/unified-check/serviceRoleShadowRuntime.postgres.test.ts

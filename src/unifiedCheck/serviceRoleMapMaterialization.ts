@@ -368,7 +368,7 @@ function exactServiceRole(value: unknown): ServiceRoleShadowEventRoleV1 {
   return value as ServiceRoleShadowEventRoleV1;
 }
 
-function parseExactServiceRoleEventRoleMapV1(value: unknown): ServiceRoleShadowEventRoleMapV1 {
+export function parseServiceRoleShadowEventRoleMapV1(value: unknown): ServiceRoleShadowEventRoleMapV1 {
   const root = exactDataRecord(value, [
     "schemaVersion", "runId", "snapshotHash", "addressHistoryManifestSha256", "entries"
   ]);
@@ -401,7 +401,7 @@ function parseExactServiceRoleEventRoleMapV1(value: unknown): ServiceRoleShadowE
   });
 }
 
-function parseExactServiceRoleEventEvidenceBundleV1(value: unknown): ServiceRoleEventEvidenceBundleV1 {
+export function parseServiceRoleEventEvidenceBundleV1(value: unknown): ServiceRoleEventEvidenceBundleV1 {
   const root = exactDataRecord(value, [
     "schemaVersion", "policyVersion", "runId", "snapshotHash", "addressHistoryManifestSha256", "entries"
   ]);
@@ -465,8 +465,8 @@ export function materializeServiceRoleEventMapV2(input: {
 } {
   try {
     const shadowInput = input.shadowInput;
-    const sourceMap = parseExactBoundArtifact(input.sourceMap, parseExactServiceRoleEventRoleMapV1);
-    const evidenceBundle = parseExactBoundArtifact(input.evidenceBundle, parseExactServiceRoleEventEvidenceBundleV1);
+    const sourceMap = parseExactBoundArtifact(input.sourceMap, parseServiceRoleShadowEventRoleMapV1);
+    const evidenceBundle = parseExactBoundArtifact(input.evidenceBundle, parseServiceRoleEventEvidenceBundleV1);
     const map = sourceMap.artifact;
     const bundle = evidenceBundle.artifact;
     const manifestSha256 = shadowInput.acceptedHistory.manifestSha256;

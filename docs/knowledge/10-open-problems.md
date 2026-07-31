@@ -127,10 +127,12 @@ signal with tests.
   control cannot be constructed honestly.
 - The former C1 Task 3 PostgreSQL gap is closed: its real database file passes
   `18/18` with zero skips, including a deterministic two-connection race that
-  converges on one atomic unreferenced bundle/V1-map/V2-wrapper trio. C1 Tasks
-  4-10, including the runtime input fence, coordinator/wiring,
-  non-interference and evidence producer, have not started. The enabled config
-  literal therefore remains unwired.
+  converges on one atomic unreferenced bundle/V1-map/V2-wrapper trio. C1 Task 4
+  is also closed: one immutable run-wide input set/fence now reuses only strict
+  run-owned wrapper/V1-map/bundle closure and its real database file passes
+  `4/4` with zero skips. C1 Tasks 5-10, including coordinator/config wiring,
+  post-checkpoint reconciliation, non-interference and the evidence producer,
+  have not started. The enabled config literal therefore remains unwired.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred
