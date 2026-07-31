@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-25
+last_verified: 2026-07-31
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -15,6 +15,7 @@ code_refs:
   - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
   - tests/telegram/forensicPresentationContract.acceptance.test.ts
   - docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md
+  - docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
 ---
@@ -23,6 +24,36 @@ supersedes:
 
 This file stores repeated agent mistakes and user corrections that future
 agents should remember.
+
+## 2026-07-31: A New Blind Set Does Not Replace The Manual Role Corpus
+
+Agent mistake:
+
+The Stage C roadmap could be read as replacing the existing service cases with
+a new blind 24 + 6.
+
+Correct rule:
+
+Preserve the 21-address manual/CSV research book plus W8SRL, TQr and TXc as the
+current 24-case service regression/admission corpus, and preserve the existing
+6 adverse cases. Manual role labels remain historical calibration, not
+production authority. The new blind 24 + 6 is separate and non-overlapping.
+
+## 2026-07-31: Intermediate Service Inference Does Not Classify The Subject
+
+Agent mistake:
+
+An intermediate high-service classifier can be treated as an automatic OTC,
+professional-operator, treasury, human-like or service classifier for the
+checked address, then used to suppress behavioral score candidates.
+
+Correct rule:
+
+Stage C excludes the checked subject. non_service_profile does not prove a
+human owner, and high_inferred_service does not identify a business subtype.
+Until a separate checked-subject blind adjudication and scoring policy exist,
+manual or inferred subject roles are report-only, do not reduce score and
+never suppress exact adverse evidence.
 
 ## 2026-07-03: Do Not Collapse Check Modes
 

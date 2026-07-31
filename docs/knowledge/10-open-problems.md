@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-29
+last_verified: 2026-07-31
 owner_area: docs
 code_refs:
   - scripts/captureWhereLatencyReplay.ts
@@ -8,7 +8,11 @@ code_refs:
   - scripts/runUnifiedWalletCanary.ts
   - scripts/runUnifiedAdaptiveBenchmark.ts
   - src/unifiedCheck
+  - src/unifiedCheck/providerRequest.ts
+  - src/unifiedCheck/serviceRoleShadow.ts
+  - src/forensics/chronologicalProportionalLedger.ts
   - docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md
+  - docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md
 ---
 
 # Open Problems
@@ -107,6 +111,38 @@ feedback control for analysis/finalization is not justified until then.
 transition holds the last otherwise-fillable provider slot. Do not reconstruct
 that explanation after the fact; add it only when the runtime emits the direct
 signal with tests.
+
+## Stage C And Stage D Authority Acquisition
+
+- Current account metadata does not prove EOA status at a historical anchor.
+  Stage C needs either a block-bound historical account-state witness or a
+  complete account-role timeline. If no provider can supply one, inferred
+  service boundary remains unavailable and traversal continues in full.
+- Accepted Unified transfer rows do not carry authoritative transactionIndex.
+  Provider row order cannot replace transaction position inside a block.
+- Current snapshots do not provide an independent pinned USDT balance witness.
+  Until exact transaction order, complete history and that balance witness are
+  available together, the production cashflow adapter must return typed
+  unavailable.
+- Only one of 3 745 accepted histories currently has a complete 200/200
+  role-map binding. Runtime shadow must treat missing maps as expected
+  coverage, avoid one database row per skip and avoid presenting the historical
+  map as authority for a different runtime commit or anchor.
+- The current role-map V1 has no route-anchor or sampled-event-set binding, and
+  no post-checkpoint reconciliation proves that a precommit shadow observation
+  corresponds to committed traversal state. The artifact table also has no
+  run/kind lookup index, so C1 must use an additive anchor-bound wrapper and one
+  frozen run-wide input-set load rather than per-state scans.
+- The existing 21-address manual research workbook must receive an immutable
+  canonical export with its original source hash. The current runtime fixture
+  preserves addresses, vectors and source hashes but not every manual
+  explanation field.
+- No new non-overlapping, deterministically sampled blind 24 + 6 corpus with
+  mandatory subject/contract/incomplete negative strata, two-review lock,
+  adjudication or acceptance receipt exists yet.
+- Matrix-v5 exact numeric rows do not exist. They must be adjudicated after
+  Stage C closure and cannot be selected opportunistically during
+  implementation.
 
 ## Product Follow-Ups
 

@@ -25,6 +25,7 @@ code_refs:
   - docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
+  - docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md
 ---
 
 # Current Decisions
@@ -436,6 +437,47 @@ separate implementation and acceptance.
 The detailed correction is
 `docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md`.
 It authorizes no production routing, scoring, Stage D or rollout.
+
+## Approved Stage C Completion And Stage D Scoring Roadmap — Design Only
+
+- Stage C remains entirely score-neutral. Its runtime shadow, physical service
+  profile, EOA-at-anchor proof, adverse receipt, blind review and cashflow
+  shadow do not create AML facts or change production output.
+- The current 24 service cases are preserved as 21 manual/CSV research cases
+  plus W8SRL, TQr and TXc. Together with the existing 6 adverse cases they
+  remain a mandatory 24/24 + 6/6 regression/admission corpus. A future blind
+  24 + 6 must be new and non-overlapping.
+- Manual fields, probable/service-like/professional-operator/human-like labels
+  and research-group notes remain historical calibration, not production
+  authority. The executable classifier continues to expose only C/B/G/H/R/X
+  and high_inferred_service, non_service_profile, insufficient_data or
+  role_conflict.
+- non_service_profile is not proof of human control. Exact service identity is
+  a separate event-time-valid authority path.
+- The intermediate Stage C classifier continues to exclude the checked
+  subject. A future checked-subject role is report-only until a separate blind
+  adjudication and scoring policy explicitly authorize candidate suppression.
+  Manual or inferred subject roles do not reduce score or suppress exact
+  adverse evidence.
+- Stage D may change real score only through accepted exact adverse facts with
+  complete subject/direct-or-exact-bound-path binding. The first atomic D2
+  policy excludes cashflow-mediated scored rows because the Stage C cashflow
+  shadow has no accepted EvidenceBundleV2 hash-path. Service inference,
+  boundary action, coverage and unresolved states have zero direct points.
+- snapshot-closure-v3 and scoring-signal-matrix-v5 form one versioned policy
+  pair. EvidenceBundleV2, CanonicalFactV2, the locked V1 parity mapping,
+  cross-origin occurrence reconciliation, Stage D closure receipt,
+  ScoreAnchorV4 and report-v2 are part of the same atomic finalization chain.
+  Reconciliation permits exactly one primary scoring candidate per exact risk
+  occurrence. Historical v1/v2 and matrix-v4 results are not recalculated.
+- Matrix-v5 numeric rows require separate blind scoring review and
+  adjudication. Without new Stage D scored facts, v5 must preserve the numeric
+  v4 score, decision and semantic selected row.
+
+The complete approved design is
+docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md.
+It authorizes no implementation, canary, rollout or production activation by
+itself.
 
 ## Telegram And Admin
 

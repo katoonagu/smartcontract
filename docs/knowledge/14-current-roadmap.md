@@ -21,6 +21,7 @@ code_refs:
   - docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md
   - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
   - docs/superpowers/specs/2026-07-30-forensic-model-completion-roadmap-and-exact-role-capture-design.md
+  - docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md
   - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
   - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
   - docs/superpowers/plans/2026-07-29-lean-forensic-model-validation.md
@@ -40,21 +41,34 @@ implementation plans do not override the status recorded here.
 3. Preserve the admitted real Stage C evidence and Task 2 proof: one frozen
    `200/200` role map exists and the prerequisite audit passes, with no runtime
    hook.
-4. Write and execute a separate plan for Stage C disabled runtime shadow with
-   exact enabled/disabled byte non-interference. Only then freeze a separate
-   blind set, complete two reviews, and adjudicate it without retuning the
-   accepted version.
-5. Keep the accepted 7/7 cashflow ledger foundation offline-only while a
-   production-owned authority producer and a first `current_balance` selector
-   are separately proven. Add cashflow runtime shadow only after real complete
-   and unresolved controls exist.
-6. Keep bounded subject-service mode, Stage D, production boundary action,
-   canary, rollout and `500 + 100` outside the immediate plan. Reopen
-   `500 + 100` only when a real frozen ambiguous case demonstrates the need;
-   write the Stage D plan only after the Stage C shadow and blind gates.
-7. Run the full post-model knowledge/code conformance cleanup; factual
-   contradictions already proven are corrected immediately, not deferred.
-8. Build recipient wallet precheck before signing or broadcasting.
+4. Approve a separate C0-C6 implementation plan. Implement the independent
+   Stage C disabled runtime shadow with anchor-bound role-map input,
+   post-commit reconciliation and exact enabled/disabled byte
+   non-interference; unavailable cashflow authority does not block this slice.
+5. In parallel, prove the missing authority sources, then build physical
+   100 + 100 evidence, EOAAtAnchor and a complete adverse
+   receipt, then validate a new non-overlapping blind 24 + 6 with two reviews
+   and adjudication. Preserve the existing manual 24/24 plus adverse 6/6 as a
+   separate mandatory regression corpus. Current-only account type, provider
+   row order and an unpinned balance are not acceptable authority substitutes.
+6. Keep the accepted 7/7 cashflow ledger foundation offline-only while a
+   production-owned authority producer, current_balance selector and runtime
+   shadow are proven with real complete and unresolved controls.
+7. Close Stage C with one acceptance receipt and human approval. The checked
+   subject remains excluded from intermediate inference; any subject role is
+   report-only and cannot suppress score or exact adverse evidence.
+8. Only then, after separate human approval, build the atomic
+   snapshot-closure-v3 plus
+   scoring-signal-matrix-v5 chain. Stage D score changes require accepted exact
+   adverse facts, a separately adjudicated locked v5 matrix, CanonicalFactV2,
+   cross-origin occurrence reconciliation, EvidenceBundleV2, ScoreAnchorV4
+   and report-v2.
+9. Keep production activation, bounded subject-service suppression, canary,
+   rollout and 500 + 100 outside Stage C. Reopen 500 + 100 only when a real
+   frozen ambiguous case demonstrates the need.
+10. Run the full post-model knowledge/code conformance cleanup; factual
+    contradictions already proven are corrected immediately, not deferred.
+11. Build recipient wallet precheck before signing or broadcasting.
 
 Unified TQr latency is a separate diagnostic track. It is not Stage B release
 evidence and does not change the order above.
@@ -77,11 +91,11 @@ paths from owning automatic output for the same chat/address pair.
 | Stage A | Code-complete; user default remains V1 | Isolated V2 replay/canary and a separate default decision |
 | Stage B | Runtime/evidence tooling complete; real PostgreSQL gate passed; genuine replay/deployment/observer evidence unavailable; repository default remains 1 | Park rollout at 1; reopen only when the missing real evidence exists |
 | Ordinary wallet-check contract | Target subject, direct-neighbor, second-hop, cashflow, adverse-disposition and service-boundary responsibilities are recorded in `02-check-modes.md`; current production does not yet implement that contract | Validate the cashflow/service pieces offline without assigning the contract to Fast or changing traversal |
-| Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; `SUBJECT_EVENT_CAP` is unapproved | Freeze explicit selection/cap policy and canonical positive/negative fixtures before an implementation plan |
+| Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Real evidence admission and preserved Task 2 proof are complete: the frozen accepted history has one exact `200/200` role map, the prerequisite audit exits `0`, and the standalone artifacts have zero accepted-attempt references. No runtime hook exists | Write a separate disabled-shadow plan and prove enabled/disabled byte non-interference before blind review |
-| Stage D | Design-only and explicitly outside the immediate plan | Reconsider only after offline validation and blind review; write a separate disabled-by-default V3 plan if accepted |
+| Stage C | Real evidence admission and preserved Task 2 proof are complete: the frozen accepted history has one exact 200/200 role map, the prerequisite audit exits 0, and the standalone artifacts have zero accepted-attempt references. No runtime hook, physical-page authority, EOAAtAnchor, new blind set or cashflow shadow exists | Approve an implementation plan, then execute C0-C6 from the 2026-07-31 design: independent runtime shadow plus authority feasibility, physical/adverse proof, separate blind 24 + 6, cashflow bridge and final acceptance receipt |
+| Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
 | Post A-D product | Not started | Recipient precheck design |
