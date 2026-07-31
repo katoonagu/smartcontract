@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-31
+last_verified: 2026-08-01
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -43,11 +43,11 @@ implementation plans do not override the status recorded here.
    `200/200` role map exists and the prerequisite audit passes, with no runtime
    hook.
 4. Continue the approved C0-C6 implementation plan suite. Do not advance C0a
-   or C2-C4 past the blocked physical-population Task 3, and do not call C1
-   Task 3 complete until its zero-skip PostgreSQL gate and real two-connection
-   race pass. The runtime input fence, coordinator, wiring and acceptance work
-   remain unstarted; unavailable cashflow authority does not block that later
-   C1 slice.
+   or C2-C4 past the blocked physical-population Task 3. C1 Task 3 is complete
+   after its zero-skip PostgreSQL gate and real two-connection race passed;
+   continue with the still-unstarted runtime input fence, coordinator, wiring
+   and acceptance work. Unavailable cashflow authority does not block that
+   later C1 slice.
 5. In parallel, prove the missing authority sources, then build physical
    100 + 100 evidence, EOAAtAnchor and a complete adverse
    receipt, then validate a new non-overlapping blind 24 + 6 with two reviews
@@ -97,7 +97,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-2 are implemented/reviewed; C1 Task 3 has passing unit proof but its PostgreSQL diagnostic is `1 passed / 16 skipped`, so it is not complete or accepted. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b and C1 Tasks 4-10 have not started. There is still no runtime hook, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Amend and review C0 source schemas/real producers before C0a/C2-C4; run the C1 Task 3 zero-skip PostgreSQL and two-connection race gate; then continue C1 runtime fencing/wiring without score effect |
+| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-3 are implemented/reviewed; C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips, including the deterministic two-connection convergence race, plus `19/19` unit tests and typecheck. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b and C1 Tasks 4-10 have not started. There is still no runtime hook, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Amend and review C0 source schemas/real producers before C0a/C2-C4; continue C1 Tasks 4-10 with runtime fencing/wiring and no score effect |
 | Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -256,9 +256,10 @@ traversal, finalization, scoring, report and delivery behavior remains
 unchanged; strict invalid-config rejection is the only product-facing config
 contract change. Real evidence admission and the preserved prerequisite are
 complete. Execution has started only on additive foundations: C0 Tasks 1-2
-and C1 Tasks 1-2 are
-implemented/reviewed, while C1 Task 3 remains unaccepted after a skipped
-PostgreSQL gate. The Stage C runtime shadow remains absent/disabled.
+and C1 Tasks 1-3 are implemented/reviewed. Task 3's real PostgreSQL file passes
+`18/18` with zero skips, including independent two-connection convergence on
+one atomic unreferenced trio. The Stage C runtime shadow remains
+absent/disabled.
 
 ## Stage C C0-C6 Execution Plan — 2026-07-31
 
@@ -278,7 +279,7 @@ plan for each C0-C6 slice. Planning completion changes no runtime or score:
   later Stage D decision and may transport only separately accepted exact facts
   through the future v5/V2/V4 chain.
 
-Execution checkpoint on `1028c2a7bd14ddfbeb233d681bfec63f32974d13`:
+Execution checkpoint after C1 Task 3 acceptance:
 
 - C0 Tasks 1-2 landed in `009c5c60`, `65b6dc59`, `3ae832ba` and
   `472b59f9`; frozen V1 plus the additive V2 builder/cache/provenance pass the
@@ -289,9 +290,10 @@ Execution checkpoint on `1028c2a7bd14ddfbeb233d681bfec63f32974d13`:
   and C2-C4 wait for a separately reviewed amendment. C0b is not started and
   the order/balance blockers remain.
 - C1 Tasks 1-2 landed through `28ecd6f3`; strict config and frozen-V1/additive-V2
-  binding tests pass `19/19`. Task 3 landed through `1028c2a7` and its unit
-  suite passes `19/19`, but the PostgreSQL diagnostic is `1 passed | 16
-  skipped`; the zero-skip DB gate and two-connection race are still required.
+  binding tests pass `19/19`. Task 3 landed through `1028c2a7`; its acceptance
+  follow-up proves two independent PostgreSQL materializers converge on the
+  same atomic bundle/V1-map/V2-wrapper trio. The real database file passes
+  `18/18` with zero skips, its unit suite passes `19/19`, and typecheck passes.
 - C1 Tasks 4-10 are not started. The enabled config literal is unwired and
   production still has no role-map query, traversal/finalizer/report/score
   effect. Stage C remains incomplete; Stage D status is unchanged.

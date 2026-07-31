@@ -56,7 +56,8 @@ import {
   parseServiceRoleMaterializationArgs,
   readServiceRoleLocalEvidenceBackfill,
   type ServiceRoleLocalEvidenceBackfillV1,
-  type ServiceRoleMaterializationDatabase
+  type ServiceRoleMaterializationDatabase,
+  type ServiceRoleMaterializationQueryable
 } from "../../scripts/materializeServiceRoleEventMap.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -703,6 +704,137 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       )).rows;
       expect(afterRetry).toEqual(beforeRetry);
     } finally {
+      await dispose(test);
+    }
+  }, 30_000);
+
+  it("converges two independent materializers without exposing a partial trio", async () => {
+    const test = await harness();
+    const participants: pg.Client[] = [];
+    let releaseFirstWriter!: () => void;
+    const firstWriterMayFinish = new Promise<void>((resolve) => {
+      releaseFirstWriter = resolve;
+    });
+    let reportFirstInsert!: () => void;
+    const firstInsertFinished = new Promise<void>((resolve) => {
+      reportFirstInsert = resolve;
+    });
+    let releaseInsertBarrier!: () => void;
+    const insertBarrier = new Promise<void>((resolve) => {
+      releaseInsertBarrier = resolve;
+    });
+    let insertBarrierCount = 0;
+    const firstAttemptTransactions: Array<{ backendPid: number; transactionId: string }> = [];
+    try {
+      const fixture = await seedFixture(test, 200);
+      const backfill = await seedCompletedCapture(test, fixture);
+      const command = {
+        mode: "materialize" as const,
+        runId: fixture.runId,
+        manifestSha256: fixture.manifestSha256,
+        anchor: fixture.anchor,
+        backfill
+      };
+      const participant = async (): Promise<ServiceRoleMaterializationDatabase> => {
+        const client = new pg.Client({ connectionString });
+        await client.connect();
+        participants.push(client);
+        await client.query(`set search_path to "${test.schema}"`);
+        let transactionAttempt = 0;
+        return {
+          query: (sql, values) => client.query(sql, values as unknown[] | undefined),
+          async transaction<T>(
+            mode: "read_only" | "read_write",
+            work: (tx: ServiceRoleMaterializationQueryable) => Promise<T>
+          ): Promise<T> {
+            transactionAttempt += 1;
+            await client.query(mode === "read_only"
+              ? "begin isolation level repeatable read read only"
+              : "begin isolation level serializable read write");
+            try {
+              const identity = await client.query(
+                "select pg_backend_pid()::int backend_pid, txid_current()::text transaction_id"
+              );
+              if (transactionAttempt === 1) {
+                firstAttemptTransactions.push({
+                  backendPid: Number(identity.rows[0]!.backend_pid),
+                  transactionId: String(identity.rows[0]!.transaction_id)
+                });
+              }
+              let pausedAfterFirstInsert = false;
+              const value = await work({
+                query: async (sql: string, values?: readonly unknown[]) => {
+                  const isTrioInsert = transactionAttempt === 1 &&
+                    sql.includes("insert into unified_check_artifacts");
+                  if (isTrioInsert && !pausedAfterFirstInsert) {
+                    insertBarrierCount += 1;
+                    if (insertBarrierCount === 2) releaseInsertBarrier();
+                    await insertBarrier;
+                  }
+                  const result = await client.query(sql, values as unknown[] | undefined);
+                  if (isTrioInsert && !pausedAfterFirstInsert) {
+                    pausedAfterFirstInsert = true;
+                    reportFirstInsert();
+                    await firstWriterMayFinish;
+                  }
+                  return result;
+                }
+              });
+              await client.query("commit");
+              return value;
+            } catch (error) {
+              await client.query("rollback").catch(() => undefined);
+              throw error;
+            }
+          }
+        };
+      };
+      const firstDb = await participant();
+      const secondDb = await participant();
+      const firstRun = runServiceRoleMapMaterialization(firstDb, command);
+      const secondRun = runServiceRoleMapMaterialization(secondDb, command);
+
+      await firstInsertFinished;
+      try {
+        expect((await test.client.query(
+          `select count(*)::int count from unified_check_artifacts
+           where kind in ('service_role_event_role_map','service_role_event_evidence_bundle')
+             and artifact_json->>'runId'=$1
+             and artifact_json->>'addressHistoryManifestSha256'=$2`,
+          [fixture.runId, fixture.manifestSha256]
+        )).rows[0].count).toBe(0);
+      } finally {
+        releaseFirstWriter();
+      }
+
+      const [first, second] = await Promise.all([firstRun, secondRun]);
+      expect(first).toEqual(second);
+      expect(first.classification).toBe("complete");
+      expect(new Set(firstAttemptTransactions.map((item) => item.backendPid)).size).toBe(2);
+      expect(new Set(firstAttemptTransactions.map((item) => item.transactionId)).size).toBe(2);
+      const trioHashes = [
+        first.evidenceBundleSha256,
+        first.eventRoleMapSha256,
+        first.eventRoleMapV2Sha256
+      ];
+      expect(trioHashes.every((sha256) => typeof sha256 === "string")).toBe(true);
+      const rows = (await test.client.query(
+        `select sha256,kind,schema_version from unified_check_artifacts
+         where sha256=any($1::text[]) order by kind,schema_version`,
+        [trioHashes]
+      )).rows;
+      expect(rows.map((row) => [row.sha256, row.kind, row.schema_version])).toEqual([
+        [first.evidenceBundleSha256, "service_role_event_evidence_bundle", "1"],
+        [first.eventRoleMapSha256, "service_role_event_role_map", "1"],
+        [first.eventRoleMapV2Sha256, "service_role_event_role_map", "2"]
+      ]);
+      expect((await test.client.query(
+        "select count(*)::int count from unified_check_attempts where artifact_sha256=any($1::text[])",
+        [trioHashes]
+      )).rows[0].count).toBe(0);
+    } finally {
+      releaseFirstWriter();
+      await Promise.all(participants.map((client) => client.end().catch(() => undefined)));
       await dispose(test);
     }
   }, 30_000);

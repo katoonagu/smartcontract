@@ -885,7 +885,7 @@ export async function runServiceRoleMapMaterialization(
   const initial = await buildMaterialization(db, command, false);
   await assertExistingArtifacts(db, command, initial);
   if (initial.bundle === null || initial.map === null || initial.mapV2 === null) return resultOf(initial);
-  return db.transaction("read_write", async (tx) => {
+  const materialize = () => db.transaction("read_write", async (tx) => {
     const current = await buildMaterialization(tx, command, true);
     if (fingerprintCanonicalArtifact(current.coverage) !== fingerprintCanonicalArtifact(initial.coverage) ||
       current.bundle?.sha256 !== initial.bundle?.sha256 || current.map?.sha256 !== initial.map?.sha256 ||
@@ -925,6 +925,18 @@ export async function runServiceRoleMapMaterialization(
     if (Number(referenced.rows[0]?.count) !== 0) fail("service_role_materialization_artifact_referenced");
     return resultOf(current);
   });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await materialize();
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: unknown }).code
+        : null;
+      // ponytail: one retry covers the accepted two-materializer gate; use keyed serialization before allowing wider fan-in.
+      if (attempt === 0 && code === "40001") continue;
+      throw error;
+    }
+  }
 }
 
 function pgDatabase(pool: pg.Pool): ServiceRoleMaterializationDatabase {

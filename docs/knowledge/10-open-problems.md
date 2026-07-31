@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-31
+last_verified: 2026-08-01
 owner_area: docs
 code_refs:
   - scripts/captureWhereLatencyReplay.ts
@@ -125,12 +125,12 @@ signal with tests.
 - C0b has not started. Accepted history still lacks authoritative transaction
   order and an independent pinned USDT balance witness, so its available-real
   control cannot be constructed honestly.
-- C1 Task 3 has unit proof but not its PostgreSQL acceptance gate. The local
-  diagnostic is `1 passed | 16 skipped` because `TEST_DATABASE_URL` and local
-  PostgreSQL are absent; the required zero-skip materialization run and the
-  real two-connection race remain open. Tasks 4-10, including the runtime input
-  fence, coordinator/wiring, non-interference and evidence producer, have not
-  started. The enabled config literal therefore remains unwired.
+- The former C1 Task 3 PostgreSQL gap is closed: its real database file passes
+  `18/18` with zero skips, including a deterministic two-connection race that
+  converges on one atomic unreferenced bundle/V1-map/V2-wrapper trio. C1 Tasks
+  4-10, including the runtime input fence, coordinator/wiring,
+  non-interference and evidence producer, have not started. The enabled config
+  literal therefore remains unwired.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

@@ -10,7 +10,7 @@
 
 ---
 
-## Execution checkpoint — 2026-07-31
+## Execution checkpoint — 2026-08-01
 
 - On `1028c2a7bd14ddfbeb233d681bfec63f32974d13`, Tasks 1-2 are
   implemented and reviewed. Strict configuration landed in `d6bb5f2d` and
@@ -18,13 +18,14 @@
   `28ecd6f3`. The focused binding suite is `19/19` and typecheck passes. V1
   profile bytes remain compatible; V2 owns the deep-frozen parser, compound
   key and exact `100 + 100` binding.
-- Task 3 code is implemented and reviewed in `9c0f1b3d`, `abb81add` and
-  `1028c2a7`. Strict owned V1 sources, the additive V2 wrapper and atomic trio
-  materialization pass `19/19` unit tests. Task 3 is not complete or accepted:
-  its PostgreSQL diagnostic is `1 passed | 16 skipped` because
-  `TEST_DATABASE_URL` and a local PostgreSQL instance are absent. The mandatory
-  zero-skip database gate and the real two-connection race remain open. Its
-  checklist stays unchecked.
+- Task 3 is complete. Code landed in `9c0f1b3d`, `abb81add` and `1028c2a7`;
+  the acceptance follow-up adds one whole-transaction retry for PostgreSQL
+  serialization failure and a deterministic race between two independent
+  connections. Both callers converge on one content-addressed bundle, V1 map
+  and V2 wrapper, a third connection observes no partial trio, the final rows
+  are exactly one per member, and accepted-attempt references remain zero.
+  The PostgreSQL file passes `18/18` with zero skips, the unit file passes
+  `19/19`, and typecheck passes. Its checklist is complete.
 - Tasks 4-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
   `AppConfig`, but the enabled literal is not wired into runtime. There is no
   input fence, role-map runtime query, coordinator hook, traversal/finalizer/
@@ -43,7 +44,7 @@ Plan target: `master` at design commit `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca
 - `src/unifiedCheck/productionWorker.ts::createPostgresUnifiedTaskCycleRepository` receives the full row from `checkpointUnifiedTask` and currently reduces it to two booleans.
 - `src/unifiedCheck/productionRuntime.ts::createUnifiedProductionRuntime` owns traversal assembly, generic artifact persistence, analysis worker cycles, and the PostgreSQL transaction host.
 - `src/unifiedCheck/serviceRoleShadow.ts::maybeBuildServiceRoleShadowArtifactV1` is the existing pure accepted-history `100 + 100` builder. Its profile bytes and V1 map remain immutable.
-- `src/unifiedCheck/serviceRoleMapMaterialization.ts` and `scripts/materializeServiceRoleEventMap.ts` can atomically persist the unreferenced V1 evidence bundle, V1 role map and additive V2 wrapper; the real PostgreSQL gate remains unverified.
+- `src/unifiedCheck/serviceRoleMapMaterialization.ts` and `scripts/materializeServiceRoleEventMap.ts` atomically persist the unreferenced V1 evidence bundle, V1 role map and additive V2 wrapper; the real PostgreSQL gate and two-connection convergence race pass.
 - `src/config.ts` strictly parses `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`, but the enabled literal remains unwired into runtime.
 - `insertUnifiedArtifact` already provides content-addressed, immutable, run-owned storage. C1 needs no table, column, index, or migration.
 - The frozen source run `5417cbf6-7cef-4b91-8367-d266eaf3857e` is `FAILED_TECHNICAL`; its traversal task is `CANCELLED`, has no accepted traversal attempt, and belongs to an older runtime commit. Its graph has 888 planned entries and 100 ready entries. It is valid accepted-history provenance but is not a runnable current-worker lifecycle and must never be cloned wholesale, resumed, or relabelled as a successful production run.
@@ -187,17 +188,17 @@ Modify:
 
 **Files:** Modify `src/unifiedCheck/serviceRoleMapMaterialization.ts`, `scripts/materializeServiceRoleEventMap.ts`; test both existing materialization test files.
 
-- [ ] **Step 1: Add failing tests** for a complete V1 bundle/map producing one wrapper, exact evidence-bundle cardinality, source V1 hash tamper, bundle hash tamper, anchor/sample collision, idempotent re-run, and zero accepted-attempt references.
-- [ ] **Step 2: Run the red tests.**
+- [x] **Step 1: Add failing tests** for a complete V1 bundle/map producing one wrapper, exact evidence-bundle cardinality, source V1 hash tamper, bundle hash tamper, anchor/sample collision, idempotent re-run, and zero accepted-attempt references.
+- [x] **Step 2: Run the red tests.**
 
   Run: `npm test -- tests/unified-check/serviceRoleMapMaterialization.test.ts`
 
   Expected: FAIL because the materialization result has no V2 wrapper.
 
-- [ ] **Step 3: Add `materializeServiceRoleEventMapV2`.** It must require the V1 map entries and V1 evidence-bundle entries to cover exactly the same 200 sampled IDs, require every V1 map entry to cite the bundle hash, derive the binding through Task 2, and return canonical artifact bytes plus SHA-256.
-- [ ] **Step 4: Extend `ServiceRoleMaterializationRunResult`** with `eventRoleMapV2Sha256: string | null`; in materialize mode insert the wrapper as kind `service_role_event_role_map`, DB schema version `"2"`, in the same read-write transaction as the existing pair. Preserve existing V1 rows.
-- [ ] **Step 5: Run unit tests.** Expected: PASS.
-- [ ] **Step 6: Run PostgreSQL materialization tests with a real test database.**
+- [x] **Step 3: Add `materializeServiceRoleEventMapV2`.** It must require the V1 map entries and V1 evidence-bundle entries to cover exactly the same 200 sampled IDs, require every V1 map entry to cite the bundle hash, derive the binding through Task 2, and return canonical artifact bytes plus SHA-256.
+- [x] **Step 4: Extend `ServiceRoleMaterializationRunResult`** with `eventRoleMapV2Sha256: string | null`; in materialize mode insert the wrapper as kind `service_role_event_role_map`, DB schema version `"2"`, in the same read-write transaction as the existing pair. Preserve existing V1 rows.
+- [x] **Step 5: Run unit tests.** Expected: PASS.
+- [x] **Step 6: Run PostgreSQL materialization tests with a real test database.**
 
   ```powershell
   if (-not $env:TEST_DATABASE_URL) { throw "TEST_DATABASE_URL is required" }
@@ -206,7 +207,11 @@ Modify:
   ```
 
   Expected: the file executes, all tests pass, skipped count is zero, and the complete case stores one bundle plus V1 and V2 maps with no attempt reference.
-- [ ] **Step 7: Commit.**
+
+  Acceptance: `18/18` passed with zero skips, including a deterministic
+  two-connection race with a third observer proving no partial trio is visible.
+
+- [x] **Step 7: Commit.**
 
   ```powershell
   git add src/unifiedCheck/serviceRoleMapMaterialization.ts scripts/materializeServiceRoleEventMap.ts tests/unified-check/serviceRoleMapMaterialization.test.ts tests/unified-check/serviceRoleMapMaterialization.postgres.test.ts

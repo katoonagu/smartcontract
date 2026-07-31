@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-31
+last_verified: 2026-08-01
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -440,7 +440,7 @@ It authorizes no production routing, scoring, Stage D or rollout.
 
 ## Approved Stage C Completion And Stage D Scoring Roadmap — Design Only
 
-### Execution checkpoint — 2026-07-31
+### Execution checkpoint — 2026-08-01
 
 - On commit `1028c2a7bd14ddfbeb233d681bfec63f32974d13`, C0 Tasks 1-2
   are implemented and reviewed. Commits `009c5c60`, `65b6dc59`, `3ae832ba`
@@ -467,12 +467,14 @@ It authorizes no production routing, scoring, Stage D or rollout.
   is not wired into runtime. V1 profile bytes remain frozen; V2 adds an owned,
   deep-frozen parser, compound binding and exact `100 + 100` sample binding.
   Its focused suite is `19/19` and typecheck passes.
-- C1 Task 3 code is implemented and reviewed in `9c0f1b3d`, `abb81add` and
-  `1028c2a7`: strict owned V1 sources, the V2 wrapper and atomic trio
-  materialization have `19/19` unit coverage. It is not complete or accepted:
-  the PostgreSQL diagnostic reports `1 passed | 16 skipped` because
-  `TEST_DATABASE_URL` and a local PostgreSQL instance are absent. The required
-  zero-skip database gate and the real two-connection race proof remain open.
+- C1 Task 3 is complete. Code landed in `9c0f1b3d`, `abb81add` and
+  `1028c2a7`; the acceptance follow-up adds a deterministic race between two
+  independent PostgreSQL connections. Both materializers converge on the same
+  content-addressed bundle, V1 map and V2 wrapper after one whole-transaction
+  serialization retry, while an independent observer sees no partial trio.
+  The PostgreSQL file passes `18/18` with zero skips, the unit materialization
+  file passes `19/19`, and typecheck passes. The committed trio contains one
+  row per member and remains referenced by zero accepted attempts.
 - C1 Tasks 4-10 have not started. There is no runtime input fence, coordinator
   hook, role-map query, traversal/finalizer/report/score effect or acceptance
   evidence. Strict invalid-config rejection is the only product-facing config
