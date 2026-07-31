@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg from "pg";
@@ -4673,20 +4674,37 @@ const postgresAddressPoisoningDescribe = process.env.TEST_DATABASE_URL ? describ
 
 postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () => {
   let pgDb: pg.Pool;
-  const telegramUserId = "codex-address-poisoning-pg-user";
-  const walletId = "codex-address-poisoning-pg-wallet";
-  const txPrefix = "codex-address-poisoning-pg-";
+  let fixtureLockClient: pg.PoolClient | undefined;
+  // ponytail: This describe exercises global claim APIs with destructive cleanup, so an advisory lock isolates Vitest processes; use dedicated databases for concurrent DDL suites.
+  const fixtureLockKey = [20_260_731, 31] as const;
+  const fixtureNamespace = randomUUID().replaceAll("-", "");
+  const telegramUserId = `address-poisoning-pg-user-${fixtureNamespace}`;
+  const walletId = `address-poisoning-pg-wallet-${fixtureNamespace}`;
+  const txPrefix = `address-poisoning-pg-${fixtureNamespace}-`;
+  const alertFingerprint = createHash("sha256").update(`address-poisoning-alert:${fixtureNamespace}`).digest("hex");
   const walletAddress = "TWallet111111111111111111111111111111";
   const sender = "TSuspicious1111111111111111111111111";
   const eventAt = new Date("2026-07-12T12:00:00.000Z");
 
-  beforeAll(() => {
+  beforeAll(async () => {
     pgDb = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    fixtureLockClient = await pgDb.connect();
+    await fixtureLockClient.query("select pg_advisory_lock($1, $2)", [...fixtureLockKey]);
   });
 
   afterAll(async () => {
-    await cleanupReservedRows();
-    await pgDb.end();
+    try {
+      await cleanupReservedRows();
+    } finally {
+      try {
+        if (fixtureLockClient) {
+          await fixtureLockClient.query("select pg_advisory_unlock($1, $2)", [...fixtureLockKey]);
+        }
+      } finally {
+        fixtureLockClient?.release();
+        await pgDb.end();
+      }
+    }
   });
 
   async function cleanupReservedRows(): Promise<void> {
@@ -4907,7 +4925,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     }))[0];
     const sentInput = {
       candidateId: candidate.id,
-      fingerprint: "c".repeat(64),
+      fingerprint: alertFingerprint,
       telegramChatId: "42",
       telegramMessageId: "1001",
       sentAt: new Date(eventAt.getTime() + 200_001),
@@ -5224,7 +5242,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       now: new Date(renewedAt.getTime() + 1)
     })).resolves.toBeNull();
 
-    const fingerprint = "b".repeat(64);
+    const fingerprint = alertFingerprint;
     expect(await markAddressPoisoningAlertSent(pgDb as unknown as Db, {
       candidateId: candidate.id,
       fingerprint,
