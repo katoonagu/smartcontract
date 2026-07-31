@@ -17,6 +17,9 @@ import {
   type
   UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository";
+import {
+  normalizeUnifiedSemanticReadiness
+} from "./postgresSemanticReadiness";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 if (process.env.UNIFIED_RELEASE_GATE_MODE === "1" && !connectionString) {
@@ -27,6 +30,96 @@ const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
 
 postgresDescribe("Unified production runtime restart acceptance", () => {
+  it("normalizes only future queued semantic tasks in the selected run", async () => {
+    const pool = new pg.Pool({ connectionString, max: 1 });
+    const client = await pool.connect();
+    const schema = `unifiedsemantic_${randomUUID().replaceAll("-", "")}`;
+    const frozenClockIso = "2026-07-23T13:00:00.000Z";
+    try {
+      await client.query("begin");
+      await client.query(`create schema "${schema}"`);
+      await client.query(`set local search_path to "${schema}"`);
+      await client.query(
+        await readFile("migrations/033_unified_wallet_check.sql", "utf8")
+      );
+      await client.query(
+        `insert into unified_check_runs (
+           id, analysis_key_sha256, subject_address, status, run_purpose,
+           side_effect_policy, analysis_manifest_sha256
+         ) values
+           ('selected-run',$1,$2,'RUNNING','synthetic_test','isolated',$3),
+           ('unrelated-run',$4,$5,'RUNNING','synthetic_test','isolated',$6)`,
+        [
+          "1".repeat(64),
+          SUBJECT,
+          "2".repeat(64),
+          "3".repeat(64),
+          SOURCE,
+          "4".repeat(64)
+        ]
+      );
+      const fixture = [
+        ["future-queued", "selected-run", "QUEUED", "future-queued",
+          "2026-07-23T13:01:00.000Z"],
+        ["future-retry", "selected-run", "WAITING_RETRY", "future-retry",
+          "2026-07-23T13:02:00.000Z"],
+        ["already-ready", "selected-run", "QUEUED", "already-ready",
+          "2026-07-23T12:59:00.000Z"],
+        ["unrelated", "unrelated-run", "QUEUED", "unrelated",
+          "2026-07-23T13:03:00.000Z"],
+        ["leased", "selected-run", "LEASED", "leased",
+          "2026-07-23T13:04:00.000Z"],
+        ["completed", "selected-run", "COMPLETED", "completed",
+          "2026-07-23T13:05:00.000Z"]
+      ] as const;
+      for (const [id, runId, status, logicalKey, readyAt] of fixture) {
+        const leased = status === "LEASED";
+        await client.query(
+          `insert into unified_check_tasks (
+             id, run_id, kind, status, priority_lane, logical_key, ready_at,
+             lease_owner, lease_token, lease_expires_at
+           ) values (
+             $1,$2,'semantic_fixture',$3,'interactive',$4,$5,$6,$7,$8
+           )`,
+          [
+            id,
+            runId,
+            status,
+            logicalKey,
+            readyAt,
+            leased ? "fixture-worker" : null,
+            leased ? "fixture-lease" : null,
+            leased ? "2026-07-23T14:00:00.000Z" : null
+          ]
+        );
+      }
+
+      await normalizeUnifiedSemanticReadiness(client, {
+        runId: "selected-run",
+        frozenClockIso
+      });
+
+      const readyAtById = new Map((await client.query(
+        "select id, ready_at from unified_check_tasks order by id"
+      )).rows.map((row) => [
+        String(row.id),
+        new Date(row.ready_at).toISOString()
+      ]));
+      expect(readyAtById).toEqual(new Map([
+        ["already-ready", "2026-07-23T12:59:00.000Z"],
+        ["completed", "2026-07-23T13:05:00.000Z"],
+        ["future-queued", frozenClockIso],
+        ["future-retry", frozenClockIso],
+        ["leased", "2026-07-23T13:04:00.000Z"],
+        ["unrelated", "2026-07-23T13:03:00.000Z"]
+      ]));
+    } finally {
+      await client.query("rollback").catch(() => undefined);
+      client.release();
+      await pool.end();
+    }
+  });
+
   it("resumes direct history, runs all branches and creates exactly one delivery", async () => {
     const pool = new pg.Pool({ connectionString, max: 2 });
     const client = await pool.connect();
@@ -82,13 +175,22 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         [labelDatasetSha256, JSON.stringify(labelDataset)]
       );
       const requestStore = createPostgresUnifiedRequestStore(db);
+      const mainFrozenClockIso = "2026-07-23T13:00:00.000Z";
+      const initialTaskKinds = [
+        "direct_history",
+        "deep_direct",
+        "traversal",
+        "fast",
+        "where",
+        "deep"
+      ] as const;
       const intake = await intakeUnifiedCheck({
         store: requestStore,
         snapshotSource: {
           latestConfirmedBlock: async () => ({
             number: "100",
             hash: "a".repeat(64),
-            timestamp: "2026-07-23T13:00:00.000Z"
+            timestamp: mainFrozenClockIso
           }),
           snapshotBalances: async () => ({
             usdtRaw: null,
@@ -108,16 +210,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           sideEffectPolicy: "authoritative"
         },
         candidateRunId: "run-1",
-        initialTasks: (
-          [
-            "direct_history",
-            "deep_direct",
-            "traversal",
-            "fast",
-            "where",
-            "deep"
-          ] as const
-        ).map((kind) => ({
+        initialTasks: initialTaskKinds.map((kind) => ({
           id: `task-${kind}`,
           kind,
           priorityLane: "interactive",
@@ -131,7 +224,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           runtimeCommit: "candidate",
           schemaVersion: 36
         },
-        now: () => new Date("2026-07-23T13:00:00.000Z")
+        now: () => new Date(mainFrozenClockIso)
       });
       expect(intake.kind).toBe("attached");
       const raw = {
@@ -202,7 +295,36 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         loadCounterpartyLabels: async () => new Map(),
         loadHardEvidence: async () => ({})
       };
-      const firstProcess = createUnifiedProductionRuntime(runtimeInput);
+      const createSemanticRuntime = (
+        input: Parameters<typeof createUnifiedProductionRuntime>[0],
+        readiness: {
+          readonly runId: string;
+          readonly frozenClockIso: string;
+        }
+      ) => {
+        const active = createUnifiedProductionRuntime(input);
+        return {
+          ...active,
+          async runProviderCycle(
+            ...args: Parameters<typeof active.runProviderCycle>
+          ) {
+            await normalizeUnifiedSemanticReadiness(db, readiness);
+            return active.runProviderCycle(...args);
+          },
+          async runAnalysisCycle() {
+            await normalizeUnifiedSemanticReadiness(db, readiness);
+            return active.runAnalysisCycle();
+          }
+        };
+      };
+      const mainReadiness = {
+        runId: "run-1",
+        frozenClockIso: mainFrozenClockIso
+      } as const;
+      const firstProcess = createSemanticRuntime(
+        runtimeInput,
+        mainReadiness
+      );
       await expect(firstProcess.runAnalysisCycle()).resolves.toMatchObject({
         outcome: "idle"
       });
@@ -226,10 +348,21 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         version: "unified-direct-history-checkpoint-v2"
       });
 
-      const restartedProcess = createUnifiedProductionRuntime(runtimeInput);
+      const restartedProcess = createSemanticRuntime(
+        runtimeInput,
+        mainReadiness
+      );
       await expect(restartedProcess.runProviderCycle()).resolves.toMatchObject({
         outcome: "completed"
       });
+      const forcedFuture = await query(
+        `update unified_check_tasks
+            set ready_at = statement_timestamp() + interval '2 seconds'
+          where run_id = 'run-1'
+            and status in ('QUEUED','WAITING_RETRY')
+          returning id`
+      );
+      expect(forcedFuture.rowCount).toBe(initialTaskKinds.length - 1);
       for (let index = 0; index < 16; index += 1) {
         await restartedProcess.runAnalysisCycle();
         await restartedProcess.runProviderCycle();
@@ -333,7 +466,10 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         report_sha256: run.report_sha256
       };
 
-      const completedRestart = createUnifiedProductionRuntime(runtimeInput);
+      const completedRestart = createSemanticRuntime(
+        runtimeInput,
+        mainReadiness
+      );
       await expect(completedRestart.runProviderCycle())
         .resolves.toMatchObject({ outcome: "idle" });
       await expect(completedRestart.runAnalysisCycle())
@@ -467,13 +603,14 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         ).rows[0]?.count)
       ).toBe(2);
 
+      const canaryFrozenClockIso = "2026-07-23T13:03:00.000Z";
       const canary = await intakeUnifiedCheck({
         store: requestStore,
         snapshotSource: {
           latestConfirmedBlock: async () => ({
             number: "101",
             hash: "c".repeat(64),
-            timestamp: "2026-07-23T13:03:00.000Z"
+            timestamp: canaryFrozenClockIso
           }),
           snapshotBalances: async () => ({
             usdtRaw: null,
@@ -516,7 +653,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           runtimeCommit: "candidate",
           schemaVersion: 36
         },
-        now: () => new Date("2026-07-23T13:03:00.000Z")
+        now: () => new Date(canaryFrozenClockIso)
       });
       expect(canary).toMatchObject({
         kind: "attached",
@@ -565,10 +702,16 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       });
       await expect(oldCandidateRuntime.runProviderCycle())
         .resolves.toMatchObject({ outcome: "idle" });
-      const canaryRuntime = createUnifiedProductionRuntime({
-        ...runtimeInput,
-        runPurpose: "release_canary"
-      });
+      const canaryRuntime = createSemanticRuntime(
+        {
+          ...runtimeInput,
+          runPurpose: "release_canary"
+        },
+        {
+          runId: "run-canary",
+          frozenClockIso: canaryFrozenClockIso
+        }
+      );
       for (let index = 0; index < 16; index += 1) {
         await canaryRuntime.runAnalysisCycle();
         await canaryRuntime.runProviderCycle();

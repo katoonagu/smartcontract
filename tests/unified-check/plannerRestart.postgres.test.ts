@@ -33,6 +33,9 @@ import {
 import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
 import { buildFrozenLabelRecord } from "../../src/unifiedCheck/labelCatalog";
 import type { UnifiedTraversalPolicyVersion } from "../../src/unifiedCheck/contracts";
+import {
+  normalizeUnifiedSemanticReadiness
+} from "./postgresSemanticReadiness";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -47,22 +50,6 @@ type PlannerTransitionRow =
   UnifiedPlannerPrefixEntry & {
     readonly acceptedAttemptId: string | null;
   };
-
-async function normalizeScenarioReadiness(
-  client: pg.PoolClient,
-  runId: string,
-  frozenClockIso: string
-): Promise<void> {
-  // ponytail: this suite tests restart/planner semantics; scheduling/backoff readiness is covered separately.
-  await client.query(
-    `update unified_check_tasks
-        set ready_at = $2::timestamptz
-      where run_id = $1
-        and status in ('QUEUED','WAITING_RETRY')
-        and ready_at is distinct from $2::timestamptz`,
-    [runId, frozenClockIso]
-  );
-}
 
 function transactionHost(
   client: pg.PoolClient
@@ -349,19 +336,17 @@ async function withScenario<T>(
         async runProviderCycle(
           ...args: Parameters<typeof active.runProviderCycle>
         ) {
-          await normalizeScenarioReadiness(
-            client,
-            "run-restart",
-            snapshot.timestamp
-          );
+          await normalizeUnifiedSemanticReadiness(client, {
+            runId: "run-restart",
+            frozenClockIso: snapshot.timestamp
+          });
           return active.runProviderCycle(...args);
         },
         async runAnalysisCycle() {
-          await normalizeScenarioReadiness(
-            client,
-            "run-restart",
-            snapshot.timestamp
-          );
+          await normalizeUnifiedSemanticReadiness(client, {
+            runId: "run-restart",
+            frozenClockIso: snapshot.timestamp
+          });
           return active.runAnalysisCycle();
         }
       };
@@ -947,11 +932,10 @@ postgresDescribe("Unified planner restart resume", () => {
           returning id`
       );
       expect(forced.rowCount).toBe(1);
-      await normalizeScenarioReadiness(
-        client,
-        "run-restart",
-        "2026-07-23T13:00:00.000Z"
-      );
+      await normalizeUnifiedSemanticReadiness(client, {
+        runId: "run-restart",
+        frozenClockIso: "2026-07-23T13:00:00.000Z"
+      });
       const claimed = await claimUnifiedTask(client, {
         workerId: "provider-before-loss",
         leaseToken: "lease-before-loss",

@@ -63,6 +63,9 @@ import {
   createPostgresUnifiedRequestStore,
   intakeUnifiedCheck
 } from "../../src/unifiedCheck/requestService";
+import {
+  normalizeUnifiedSemanticReadiness
+} from "./postgresSemanticReadiness";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -1085,23 +1088,6 @@ function productionProviderPage(
   };
 }
 
-async function normalizeProductionOracleReadiness(
-  client: pg.PoolClient,
-  runId: string,
-  frozenClockIso: string
-): Promise<void> {
-  // ponytail: this oracle intentionally bypasses scheduling-time semantics;
-  // scheduler and backoff behavior have separate tests.
-  await client.query(
-    `update unified_check_tasks
-        set ready_at = $2::timestamptz
-      where run_id = $1
-        and status in ('QUEUED','WAITING_RETRY')
-        and ready_at is distinct from $2::timestamptz`,
-    [runId, frozenClockIso]
-  );
-}
-
 async function productionOracleFacts(input: {
   readonly client: pg.PoolClient;
   readonly replay: UnifiedProviderReplayV1;
@@ -1257,17 +1243,15 @@ async function productionOracleFacts(input: {
   let restarted = false;
   let completed = false;
   for (let guard = 0; guard < 128; guard += 1) {
-    await normalizeProductionOracleReadiness(
-      input.client,
-      RUN_ID,
-      input.replay.frozenClockIso
-    );
+    await normalizeUnifiedSemanticReadiness(input.client, {
+      runId: RUN_ID,
+      frozenClockIso: input.replay.frozenClockIso
+    });
     await runtime.runAnalysisCycle();
-    await normalizeProductionOracleReadiness(
-      input.client,
-      RUN_ID,
-      input.replay.frozenClockIso
-    );
+    await normalizeUnifiedSemanticReadiness(input.client, {
+      runId: RUN_ID,
+      frozenClockIso: input.replay.frozenClockIso
+    });
     await runtime.runProviderCycle(0);
     if (!restarted) {
       const durableProgress = Number((await input.client.query(
@@ -1330,18 +1314,16 @@ async function productionOracleFacts(input: {
     [RUN_ID]
   )).rows[0]!;
   const completedRestart = makeRuntime();
-  await normalizeProductionOracleReadiness(
-    input.client,
-    RUN_ID,
-    input.replay.frozenClockIso
-  );
+  await normalizeUnifiedSemanticReadiness(input.client, {
+    runId: RUN_ID,
+    frozenClockIso: input.replay.frozenClockIso
+  });
   await expect(completedRestart.runProviderCycle())
     .resolves.toMatchObject({ outcome: "idle" });
-  await normalizeProductionOracleReadiness(
-    input.client,
-    RUN_ID,
-    input.replay.frozenClockIso
-  );
+  await normalizeUnifiedSemanticReadiness(input.client, {
+    runId: RUN_ID,
+    frozenClockIso: input.replay.frozenClockIso
+  });
   await expect(completedRestart.runAnalysisCycle())
     .resolves.toMatchObject({ outcome: "idle" });
   await expect(completedRestart.runFinalizationCycle())
