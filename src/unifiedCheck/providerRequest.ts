@@ -96,6 +96,10 @@ export type ProviderFetchResult = {
   readonly provenance: Readonly<Record<string, unknown>>;
 };
 
+export type ProviderFetchResultV2 = Omit<ProviderFetchResult, "cursor"> & {
+  readonly pageOffset: number;
+};
+
 export type ProviderPageDiagnostic = {
   readonly source: "network" | "cache" | "inflight";
 };
@@ -273,8 +277,14 @@ export function buildProviderRequestIdentityV2(
   };
 }
 
+type BuiltProviderRequestIdentity<TIdentity> = {
+  readonly identity: TIdentity;
+  readonly canonicalJson: string;
+  readonly sha256: string;
+};
+
 function validateStored(
-  expected: { identity: ProviderRequestIdentity; sha256: string },
+  expected: { identity: { snapshotBlockHash: string }; sha256: string },
   record: ProviderPageRecord
 ): ProviderPageRecord {
   if (
@@ -288,6 +298,33 @@ function validateStored(
     throw new Error("unified_provider_page_cache_mismatch");
   }
   timestamp(record.fetchedAt);
+  return record;
+}
+
+function validateStoredV2(
+  expected: BuiltProviderRequestIdentity<ProviderRequestIdentityV2>,
+  record: ProviderPageRecord
+): ProviderPageRecord {
+  validateStored(expected, record);
+  const persistedIdentity = record.provenance.requestIdentity;
+  let rebuilt: BuiltProviderRequestIdentity<ProviderRequestIdentityV2>;
+  try {
+    rebuilt = buildProviderRequestIdentityV2(
+      persistedIdentity as ProviderRequestIdentityV2Input
+    );
+    if (
+      canonicalizeArtifactJson(persistedIdentity) !== rebuilt.canonicalJson ||
+      rebuilt.canonicalJson !== expected.canonicalJson ||
+      rebuilt.sha256 !== expected.sha256 ||
+      record.provenance.requestIdentityCanonicalJson !== expected.canonicalJson ||
+      record.provenance.requestIdentitySha256 !== expected.sha256 ||
+      record.provenance.pageOffset !== expected.identity.pageOffset
+    ) {
+      throw new Error("unified_provider_page_cache_mismatch");
+    }
+  } catch {
+    throw new Error("unified_provider_page_cache_mismatch");
+  }
   return record;
 }
 
@@ -334,22 +371,82 @@ function validateFetched(
   };
 }
 
+function validateFetchedV2(
+  expected: BuiltProviderRequestIdentity<ProviderRequestIdentityV2>,
+  fetched: ProviderFetchResultV2
+): ProviderPageRecord {
+  const identity = expected.identity;
+  if (
+    fetched.snapshotBlockNumber !== identity.snapshotBlockNumber ||
+    fetched.snapshotBlockHash !== identity.snapshotBlockHash ||
+    fetched.pageOffset !== identity.pageOffset ||
+    fetched.providerFamily !== identity.providerFamily ||
+    fetched.endpoint !== identity.endpoint ||
+    fetched.apiSchemaVersion !== identity.apiSchemaVersion
+  ) {
+    throw new Error("unified_provider_page_identity_mismatch");
+  }
+  if (
+    !fetched.provenance ||
+    typeof fetched.provenance !== "object" ||
+    Array.isArray(fetched.provenance)
+  ) {
+    throw new Error("unified_provider_page_provenance_missing");
+  }
+  const {
+    routeAnchorEventId: ignoredRouteAnchorEventId,
+    classifierStatus: ignoredClassifierStatus,
+    samplingDecision: ignoredSamplingDecision,
+    behaviorClass: ignoredBehaviorClass,
+    ...providerProvenance
+  } = fetched.provenance;
+  void ignoredRouteAnchorEventId;
+  void ignoredClassifierStatus;
+  void ignoredSamplingDecision;
+  void ignoredBehaviorClass;
+  const provenance = {
+    ...providerProvenance,
+    requestIdentity: identity,
+    requestIdentityCanonicalJson: expected.canonicalJson,
+    requestIdentitySha256: expected.sha256,
+    pageOffset: identity.pageOffset
+  };
+  canonicalizeArtifactJson(provenance);
+  return {
+    requestIdentitySha256: expected.sha256,
+    snapshotBlockHash: identity.snapshotBlockHash,
+    payloadSha256: fingerprintCanonicalArtifact(fetched.payload),
+    payload: fetched.payload,
+    fetchedAt: timestamp(fetched.fetchedAt),
+    provenance
+  };
+}
+
 const inFlightByStore = new WeakMap<
   ProviderPageStore,
   Map<string, Promise<ProviderPageRecord>>
 >();
 
-export async function loadOrFetchProviderPage(input: {
-  identity: ProviderRequestIdentityInput;
-  store: ProviderPageStore;
-  fetchPage: () => Promise<ProviderFetchResult>;
-  onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
-}): Promise<ProviderPageRecord> {
-  const expected = buildProviderRequestIdentity(input.identity);
+async function loadOrFetchProviderPageByIdentity<TIdentity, TFetched>(
+  expected: BuiltProviderRequestIdentity<TIdentity>,
+  input: {
+    readonly store: ProviderPageStore;
+    readonly fetchPage: () => Promise<TFetched>;
+    readonly onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
+  },
+  validateStoredResult: (
+    expected: BuiltProviderRequestIdentity<TIdentity>,
+    record: ProviderPageRecord
+  ) => ProviderPageRecord,
+  validateFetchedResult: (
+    expected: BuiltProviderRequestIdentity<TIdentity>,
+    fetched: TFetched
+  ) => ProviderPageRecord
+): Promise<ProviderPageRecord> {
   const stored = await input.store.get(expected.sha256);
   if (stored) {
     emitDiagnostic(input.onDiagnostic, { source: "cache" });
-    return validateStored(expected, stored);
+    return validateStoredResult(expected, stored);
   }
 
   let inFlight = inFlightByStore.get(input.store);
@@ -364,13 +461,41 @@ export async function loadOrFetchProviderPage(input: {
   }
   emitDiagnostic(input.onDiagnostic, { source: "network" });
   const pending = (async () => {
-    const fetched = validateFetched(expected, await input.fetchPage());
-    return validateStored(expected, await input.store.put(fetched));
+    const fetched = validateFetchedResult(expected, await input.fetchPage());
+    return validateStoredResult(expected, await input.store.put(fetched));
   })().finally(() => {
     inFlight?.delete(expected.sha256);
   });
   inFlight.set(expected.sha256, pending);
   return pending;
+}
+
+export async function loadOrFetchProviderPage(input: {
+  identity: ProviderRequestIdentityInput;
+  store: ProviderPageStore;
+  fetchPage: () => Promise<ProviderFetchResult>;
+  onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
+}): Promise<ProviderPageRecord> {
+  return loadOrFetchProviderPageByIdentity(
+    buildProviderRequestIdentity(input.identity),
+    input,
+    validateStored,
+    validateFetched
+  );
+}
+
+export async function loadOrFetchProviderPageV2(input: {
+  identity: ProviderRequestIdentityV2Input;
+  store: ProviderPageStore;
+  fetchPage: () => Promise<ProviderFetchResultV2>;
+  onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
+}): Promise<ProviderPageRecord> {
+  return loadOrFetchProviderPageByIdentity(
+    buildProviderRequestIdentityV2(input.identity),
+    input,
+    validateStoredV2,
+    validateFetchedV2
+  );
 }
 
 function databaseRecord(row: Record<string, unknown>): ProviderPageRecord {

@@ -3,9 +3,11 @@ import {
   buildProviderRequestIdentity,
   buildProviderRequestIdentityV2,
   loadOrFetchProviderPage,
+  loadOrFetchProviderPageV2,
   type ProviderPageRecord,
   type ProviderPageStore,
   type ProviderRequestIdentityInput,
+  type ProviderRequestIdentityV2,
   type ProviderRequestIdentityV2Input
 } from "../../src/unifiedCheck/providerRequest";
 
@@ -58,6 +60,20 @@ function response(identity = base, cursor = identity.cursor) {
     snapshotBlockNumber: identity.snapshotBlockNumber,
     snapshotBlockHash: identity.snapshotBlockHash,
     cursor,
+    providerFamily: identity.providerFamily,
+    endpoint: identity.endpoint,
+    apiSchemaVersion: identity.apiSchemaVersion,
+    fetchedAt: "2026-07-23T13:00:00.000Z",
+    provenance: { provider: identity.providerFamily, requestId: "provider-request-1" }
+  };
+}
+
+function responseV2(identity: ProviderRequestIdentityV2Input = baseV2) {
+  return {
+    payload: { data: [{ transaction_id: "tx-1" }] },
+    snapshotBlockNumber: identity.snapshotBlockNumber,
+    snapshotBlockHash: identity.snapshotBlockHash,
+    pageOffset: identity.pageOffset,
     providerFamily: identity.providerFamily,
     endpoint: identity.endpoint,
     apiSchemaVersion: identity.apiSchemaVersion,
@@ -221,6 +237,214 @@ describe("Unified provider request identity", () => {
         order: "random"
       } as unknown as ProviderRequestIdentityV2Input)
     ).toThrowError(new TypeError("unified_invalid_provider_order"));
+  });
+
+  it("loads provider-request-identity-v2 pages through network, inflight, and cache sources", async () => {
+    const store = new MemoryPages();
+    const fetchPage = vi.fn(async () => responseV2());
+    const sources: string[] = [];
+    const [first, concurrent] = await Promise.all([
+      loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage,
+        onDiagnostic: ({ source }) => sources.push(source)
+      }),
+      loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage,
+        onDiagnostic: ({ source }) => sources.push(source)
+      })
+    ]);
+
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(concurrent).toEqual(first);
+    expect(sources.sort()).toEqual(["inflight", "network"]);
+
+    const cacheFetch = vi.fn(async () => responseV2());
+    const cached = await loadOrFetchProviderPageV2({
+      identity: baseV2,
+      store,
+      fetchPage: cacheFetch,
+      onDiagnostic: ({ source }) => sources.push(source)
+    });
+    expect(cached).toEqual(first);
+    expect(cacheFetch).not.toHaveBeenCalled();
+    expect(sources.at(-1)).toBe("cache");
+    expect(store.rows).toHaveLength(1);
+
+    const expected = buildProviderRequestIdentityV2(baseV2);
+    expect(first.provenance).toEqual({
+      provider: "tronscan",
+      requestId: "provider-request-1",
+      requestIdentity: expected.identity,
+      requestIdentityCanonicalJson: expected.canonicalJson,
+      requestIdentitySha256: expected.sha256,
+      pageOffset: 0
+    });
+  });
+
+  it("loads provider-request-identity-v2 pages by HTTP identity rather than probe anchors", async () => {
+    const store = new MemoryPages();
+    const firstProbe = {
+      ...baseV2,
+      routeAnchorEventId: "route-anchor-a",
+      classifierStatus: "unclassified",
+      samplingDecision: "subject",
+      behaviorClass: "adverse"
+    };
+    const secondProbe = {
+      ...baseV2,
+      routeAnchorEventId: "route-anchor-b",
+      classifierStatus: "classified",
+      samplingDecision: "control",
+      behaviorClass: "clean"
+    };
+    const firstFetch = vi.fn(async () => ({
+      ...responseV2(),
+      provenance: {
+        ...responseV2().provenance,
+        routeAnchorEventId: firstProbe.routeAnchorEventId,
+        classifierStatus: firstProbe.classifierStatus,
+        samplingDecision: firstProbe.samplingDecision,
+        behaviorClass: firstProbe.behaviorClass
+      }
+    }));
+    const secondFetch = vi.fn(async () => responseV2());
+
+    const first = await loadOrFetchProviderPageV2({
+      identity: firstProbe,
+      store,
+      fetchPage: firstFetch
+    });
+    const second = await loadOrFetchProviderPageV2({
+      identity: secondProbe,
+      store,
+      fetchPage: secondFetch
+    });
+
+    expect(second).toEqual(first);
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
+    expect(store.rows).toHaveLength(1);
+    for (const forbidden of [
+      "routeAnchorEventId",
+      "classifierStatus",
+      "samplingDecision",
+      "behaviorClass"
+    ]) {
+      expect(first.provenance).not.toHaveProperty(forbidden);
+      expect(first.provenance.requestIdentity).not.toHaveProperty(forbidden);
+    }
+  });
+
+  it("loads provider-request-identity-v2 pages into distinct window and offset rows", async () => {
+    const store = new MemoryPages();
+    const identities: ProviderRequestIdentityV2Input[] = [
+      baseV2,
+      { ...baseV2, windowKind: "historical" },
+      { ...baseV2, pageOffset: 50 }
+    ];
+    const records = [];
+    for (const identity of identities) {
+      records.push(await loadOrFetchProviderPageV2({
+        identity,
+        store,
+        fetchPage: async () => responseV2(identity)
+      }));
+    }
+
+    expect(new Set(records.map(({ requestIdentitySha256 }) => requestIdentitySha256)))
+      .toHaveLength(3);
+    expect(store.rows).toHaveLength(3);
+  });
+
+  it("loads provider-request-identity-v2 pages only from fully validated provenance", async () => {
+    const expected = buildProviderRequestIdentityV2(baseV2);
+    const originalStore = new MemoryPages();
+    const original = await loadOrFetchProviderPageV2({
+      identity: baseV2,
+      store: originalStore,
+      fetchPage: async () => responseV2()
+    });
+    const identityTampering: ReadonlyArray<
+      readonly [keyof ProviderRequestIdentityV2, unknown]
+    > = [
+      ["version", "provider-request-identity-v1"],
+      ["chain", "ethereum"],
+      ["providerFamily", "trongrid"],
+      ["endpoint", "/v1/accounts/transfers"],
+      ["apiSchemaVersion", "tronscan-v2"],
+      ["address", "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"],
+      ["tokenContract", "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn"],
+      ["blockStart", "1"],
+      ["blockEnd", "84713572"],
+      ["direction", "outgoing"],
+      ["order", "desc"],
+      ["pageSize", 100],
+      ["snapshotBlockNumber", "84713574"],
+      ["snapshotBlockHash", "b".repeat(64)],
+      ["confirmationPolicy", "confirmed-20"],
+      ["windowKind", "historical"],
+      ["timestampStartInclusiveMs", "1785427200001"],
+      ["timestampEndInclusiveMs", "1785430800001"],
+      ["pageOffset", 50]
+    ];
+
+    for (const [field, value] of identityTampering) {
+      const store = new MemoryPages();
+      store.rows.set(expected.sha256, {
+        ...original,
+        provenance: {
+          ...original.provenance,
+          requestIdentity: { ...expected.identity, [field]: value }
+        }
+      });
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => responseV2()
+      }), field).rejects.toThrow("unified_provider_page_cache_mismatch");
+    }
+
+    for (const provenance of [
+      { ...original.provenance, requestIdentityCanonicalJson: `${expected.canonicalJson} ` },
+      { ...original.provenance, requestIdentitySha256: "b".repeat(64) },
+      { ...original.provenance, pageOffset: 1 }
+    ]) {
+      const store = new MemoryPages();
+      store.rows.set(expected.sha256, { ...original, provenance });
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => responseV2()
+      })).rejects.toThrow("unified_provider_page_cache_mismatch");
+    }
+
+    for (const record of [
+      { ...original, snapshotBlockHash: "b".repeat(64) },
+      { ...original, payload: { data: [] } },
+      { ...original, fetchedAt: "not-an-iso-timestamp" }
+    ]) {
+      const store = new MemoryPages();
+      store.rows.set(expected.sha256, record);
+      await expect(loadOrFetchProviderPageV2({
+        identity: baseV2,
+        store,
+        fetchPage: async () => responseV2()
+      })).rejects.toThrow();
+    }
+  });
+
+  it("rejects mismatched provider-request-identity-v2 fetched offsets", async () => {
+    const store = new MemoryPages();
+    await expect(loadOrFetchProviderPageV2({
+      identity: baseV2,
+      store,
+      fetchPage: async () => responseV2({ ...baseV2, pageOffset: 50 })
+    })).rejects.toThrow("unified_provider_page_identity_mismatch");
+    expect(store.rows).toHaveLength(0);
   });
 
   it("uses every semantic field and ignores credential selection", () => {
