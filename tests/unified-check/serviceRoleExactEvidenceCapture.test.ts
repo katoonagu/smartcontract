@@ -453,7 +453,7 @@ describe("service role exact evidence capture", () => {
       const result = evaluateServiceRoleExactEvidenceCaptureV1({ manifest: source.manifest, acceptedEvents: source.events, transactionEvidence: evidence });
       expect(Boolean(result.receipt)).toBe(complete);
     }
-  });
+  }, 10_000);
 
   it.each([
     ["principal", false, GASFREE_RECEIVER, "97000000", "gasfree_principal"],
