@@ -229,8 +229,9 @@ there are `4` data gaps. The separate ledger-only gate passes `7/7`; the real
 PacGy case remains `unresolved` / `history_incomplete_before_anchor`.
 
 This is no production activation. Stage D remains deferred and not approved;
-production routing, scoring, traversal, configuration and delivery are
-unchanged.
+production routing, scoring, traversal and delivery are unchanged. The later
+C1 foundation adds only strict invalid-value rejection for
+`UNIFIED_SERVICE_ROLE_SHADOW_POLICY`; its enabled literal remains unwired.
 
 ## Stage C Real Evidence Admission — 2026-07-31
 
