@@ -10,6 +10,30 @@
 
 ---
 
+## Execution checkpoint — 2026-07-31
+
+- On `1028c2a7bd14ddfbeb233d681bfec63f32974d13`, Tasks 1-2 are
+  implemented and reviewed. Strict configuration landed in `d6bb5f2d` and
+  `485456a4`; binding/parser work landed in `00ab51ae`, `5abc62b3` and
+  `28ecd6f3`. The focused binding suite is `19/19` and typecheck passes. V1
+  profile bytes remain compatible; V2 owns the deep-frozen parser, compound
+  key and exact `100 + 100` binding.
+- Task 3 code is implemented and reviewed in `9c0f1b3d`, `abb81add` and
+  `1028c2a7`. Strict owned V1 sources, the additive V2 wrapper and atomic trio
+  materialization pass `19/19` unit tests. Task 3 is not complete or accepted:
+  its PostgreSQL diagnostic is `1 passed | 16 skipped` because
+  `TEST_DATABASE_URL` and a local PostgreSQL instance are absent. The mandatory
+  zero-skip database gate and the real two-connection race remain open. Its
+  checklist stays unchecked.
+- Tasks 4-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
+  `AppConfig`, but the enabled literal is not wired into runtime. There is no
+  input fence, role-map runtime query, coordinator hook, traversal/finalizer/
+  report/score effect or C1 acceptance evidence.
+- Guard: strict invalid-config rejection is the only product-facing contract
+  change. Do not call C1 or Stage C complete; production remains matrix-v4,
+  ScoreAnchorV3 and report-only checked-subject role with no suppression or
+  score effect.
+
 ## Verified code truth
 
 Plan target: `master` at design commit `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca` in the dedicated `stage-c-roadmap-design` worktree.
@@ -69,14 +93,14 @@ Modify:
 
 **Files:** Modify `src/config.ts`; test `tests/config/config.test.ts`.
 
-- [ ] **Step 1: Write failing config cases** for unset, both valid literals, and `""`, `"true"`, `"false"`, `"1"`, and an unknown version. Assert unset is `disabled` and every invalid value throws with `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`.
-- [ ] **Step 2: Run the red test.**
+- [x] **Step 1: Write failing config cases** for unset, both valid literals, and `""`, `"true"`, `"false"`, `"1"`, and an unknown version. Assert unset is `disabled` and every invalid value throws with `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`.
+- [x] **Step 2: Run the red test.**
 
   Run: `npm test -- tests/config/config.test.ts`
 
   Expected: FAIL because `unifiedServiceRoleShadowPolicy` does not exist.
 
-- [ ] **Step 3: Add the exact config contract.**
+- [x] **Step 3: Add the exact config contract.**
 
   ```ts
   function parseUnifiedServiceRoleShadowPolicy(
@@ -93,8 +117,8 @@ Modify:
 
   Add `unifiedServiceRoleShadowPolicy: ServiceRoleShadowMode` to `AppConfig` and parse the raw environment value without trimming/default substitution. Runtime wiring is deliberately deferred to Task 6 so this commit remains typecheck-clean.
 
-- [ ] **Step 4: Run the green test.** Expected: PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Run the green test.** Expected: PASS.
+- [x] **Step 5: Commit.**
 
   ```powershell
   git add src/config.ts tests/config/config.test.ts
@@ -105,14 +129,14 @@ Modify:
 
 **Files:** Modify `src/unifiedCheck/serviceRoleShadow.ts`; test `tests/unified-check/serviceRoleShadow.test.ts`.
 
-- [ ] **Step 1: Write failing tests** proving exact anchor fields, lexically sorted recent/historical ID sets, stable sample hash, wrong anchor collision, different sampled set collision, V1 rejection at the V2 parser, duplicate sample rejection, and unchanged V1 profile hash.
-- [ ] **Step 2: Run the red test.**
+- [x] **Step 1: Write failing tests** proving exact anchor fields, lexically sorted recent/historical ID sets, stable sample hash, wrong anchor collision, different sampled set collision, V1 rejection at the V2 parser, duplicate sample rejection, and unchanged V1 profile hash.
+- [x] **Step 2: Run the red test.**
 
   Run: `npm test -- tests/unified-check/serviceRoleShadow.test.ts`
 
   Expected: FAIL on missing `deriveServiceRoleShadowAcceptedHistoryBindingV1` and V2 types.
 
-- [ ] **Step 3: Add these contracts without changing `ServiceRoleShadowArtifactV1`.**
+- [x] **Step 3: Add these contracts without changing `ServiceRoleShadowArtifactV1`.**
 
   ```ts
   export type ServiceRoleShadowAnchorBindingV1 = {
@@ -150,9 +174,9 @@ Modify:
 
   Refactor the existing canonical/anchor/window selection into one private primitive used by both `maybeBuildServiceRoleShadowArtifactV1` and exported `deriveServiceRoleShadowAcceptedHistoryBindingV1`. The binding sorts copies of the two ID sets before hashing; the existing profile retains its original event order and byte shape.
 
-- [ ] **Step 4: Add strict `parseServiceRoleShadowEventRoleMapV2` and `serviceRoleShadowCompoundBindingKeyV1`.** Require exact keys, canonical body hash supplied by the caller, `100/100/200`, disjoint unique IDs, and the frozen anchor authority.
-- [ ] **Step 5: Run the test.** Expected: PASS with the old V1 hash assertion unchanged.
-- [ ] **Step 6: Commit.**
+- [x] **Step 4: Add strict `parseServiceRoleShadowEventRoleMapV2` and `serviceRoleShadowCompoundBindingKeyV1`.** Require exact keys, canonical body hash supplied by the caller, `100/100/200`, disjoint unique IDs, and the frozen anchor authority.
+- [x] **Step 5: Run the test.** Expected: PASS with the old V1 hash assertion unchanged.
+- [x] **Step 6: Commit.**
 
   ```powershell
   git add src/unifiedCheck/serviceRoleShadow.ts tests/unified-check/serviceRoleShadow.test.ts

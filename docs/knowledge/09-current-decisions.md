@@ -440,6 +440,47 @@ It authorizes no production routing, scoring, Stage D or rollout.
 
 ## Approved Stage C Completion And Stage D Scoring Roadmap — Design Only
 
+### Execution checkpoint — 2026-07-31
+
+- On commit `1028c2a7bd14ddfbeb233d681bfec63f32974d13`, C0 Tasks 1-2
+  are implemented and reviewed. Commits `009c5c60`, `65b6dc59`, `3ae832ba`
+  and `472b59f9` freeze V1 provider-request identity bytes and add only the
+  collision-safe V2 builder, immutable cache reuse and strict V2 provenance
+  validation. The focused provider/cache regression is `20/20` and typecheck
+  passes. No production caller selects V2, and no configuration, traversal,
+  finalization, scoring or report path changed.
+- C0 stopped before Task 3 created files, tests or a commit. Its nine required
+  physical-source query literals and nine artifact-kind literals exist only in
+  the plan; there are no owning schema versions, codecs, fixtures or real
+  producers. The plan also does not freeze exact inventory/leaf rows,
+  joins/eligibility/candidate derivation, provider exhaustion, or historical
+  EOA, transaction-order, economic-role, subject/control and adverse-witness
+  formats. Implementers must not invent private codecs or synthetic complete
+  authority. C0a and dependent C2-C4 remain blocked until a separately reviewed
+  amendment defines the exact owning schemas and real producers. C0b has not
+  started; authoritative order and independent pinned-balance blockers remain.
+- C1 Tasks 1-2 are implemented and reviewed in `d6bb5f2d`, `485456a4`,
+  `00ab51ae`, `5abc62b3` and `28ecd6f3`. The config parser accepts only unset
+  or exact `disabled` as disabled and exact
+  `service-role-shadow-100-plus-100-v1` as enabled; whitespace, case variants,
+  booleans and unknown values fail. The property is required in `AppConfig` but
+  is not wired into runtime. V1 profile bytes remain frozen; V2 adds an owned,
+  deep-frozen parser, compound binding and exact `100 + 100` sample binding.
+  Its focused suite is `19/19` and typecheck passes.
+- C1 Task 3 code is implemented and reviewed in `9c0f1b3d`, `abb81add` and
+  `1028c2a7`: strict owned V1 sources, the V2 wrapper and atomic trio
+  materialization have `19/19` unit coverage. It is not complete or accepted:
+  the PostgreSQL diagnostic reports `1 passed | 16 skipped` because
+  `TEST_DATABASE_URL` and a local PostgreSQL instance are absent. The required
+  zero-skip database gate and the real two-connection race proof remain open.
+- C1 Tasks 4-10 have not started. There is no runtime input fence, coordinator
+  hook, role-map query, traversal/finalizer/report/score effect or acceptance
+  evidence. Strict invalid-config rejection is the only product-facing config
+  contract change; the enabled literal remains unwired. Stage C is incomplete,
+  Stage D remains design-only, and production stays on matrix-v4,
+  `ScoreAnchorV3`, and report-only checked-subject role with no suppression or
+  score effect.
+
 - Stage C remains entirely score-neutral. Its runtime shadow, physical service
   profile, EOA-at-anchor proof, adverse receipt, blind review and cashflow
   shadow do not create AML facts or change production output.

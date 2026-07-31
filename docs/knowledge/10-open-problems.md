@@ -114,6 +114,23 @@ signal with tests.
 
 ## Stage C And Stage D Authority Acquisition
 
+- C0 physical-population Task 3 stopped before files, tests or a commit. The
+  nine required query literals and nine artifact-kind literals currently exist
+  only in its plan; no exact owning schema versions, codecs, fixtures or real
+  producers define their inventory/leaf rows, joins, eligibility/candidate
+  derivation, provider exhaustion, or EOA/order/role/control/adverse-witness
+  formats. Do not implement private codecs or synthesize complete authority.
+  C0a and C2-C4 remain blocked until a separately reviewed amendment freezes
+  those schemas and connects them to real producers.
+- C0b has not started. Accepted history still lacks authoritative transaction
+  order and an independent pinned USDT balance witness, so its available-real
+  control cannot be constructed honestly.
+- C1 Task 3 has unit proof but not its PostgreSQL acceptance gate. The local
+  diagnostic is `1 passed | 16 skipped` because `TEST_DATABASE_URL` and local
+  PostgreSQL are absent; the required zero-skip materialization run and the
+  real two-connection race remain open. Tasks 4-10, including the runtime input
+  fence, coordinator/wiring, non-interference and evidence producer, have not
+  started. The enabled config literal therefore remains unwired.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

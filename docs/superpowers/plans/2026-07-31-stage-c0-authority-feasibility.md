@@ -10,6 +10,28 @@
 
 ---
 
+## Execution checkpoint — 2026-07-31
+
+- On `1028c2a7bd14ddfbeb233d681bfec63f32974d13`, Tasks 1-2 are
+  implemented and reviewed in `009c5c60`, `65b6dc59`, `3ae832ba` and
+  `472b59f9`. V1 identity bytes remain frozen; the additive V2 builder,
+  immutable cache reuse and strict provenance schema pass the focused `20/20`
+  provider/cache regression and typecheck. No production caller, configuration,
+  traversal, finalization, report or score path uses V2.
+- Execution stopped before Task 3 created files, tests or a commit. All nine
+  required source-query literals and nine artifact-kind literals below exist
+  only in this plan. There are no exact owning schema versions, codecs,
+  fixtures or real producers for inventory/leaf rows, joins/eligibility/
+  candidate derivation, provider exhaustion, or historical EOA, transaction
+  order, role, subject/control and adverse-witness formats.
+- Guard: do not invent private codecs, caller-authored source graphs or
+  synthetic complete authority. C0a and C2-C4 remain blocked until a separately
+  reviewed amendment freezes the exact owning schemas and connects real
+  producers. C0b has not started; authoritative order and independent pinned
+  balance remain unavailable.
+- C0 and Stage C are not complete or accepted. Current production remains
+  matrix-v4/ScoreAnchorV3 with no traversal, scoring or delivery effect.
+
 ## Verified truth and scope
 
 - Baseline commit for the approved design is `4ec5cabbd63aba71fa9cc160692057d462476c83`; the design commit is `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca`.
@@ -341,11 +363,11 @@ The cashflow builder and CLI resolve every referenced hash through strict local 
 - Modify: `tests/unified-check/providerRequest.test.ts`
 - Modify: `src/unifiedCheck/providerRequest.ts`
 
-- [ ] **Step 1: Add a failing frozen V1 compatibility test**
+- [x] **Step 1: Add a failing frozen V1 compatibility test**
 
 Use the existing `base` fixture and assert both exact canonical JSON and the current SHA-256. First print the current values once from the unmodified builder, paste them as literals, then remove the print. Also assert the V1 object has no V2 keys.
 
-- [ ] **Step 2: Run the V1 test before editing production code**
+- [x] **Step 2: Run the V1 test before editing production code**
 
 Run:
 
@@ -355,11 +377,11 @@ npm test -- tests/unified-check/providerRequest.test.ts -t "keeps provider-reque
 
 Expected: PASS on the baseline. Abort if it fails; do not redefine the baseline from a changed tree.
 
-- [ ] **Step 3: Add failing V2 validation and collision tests**
+- [x] **Step 3: Add failing V2 validation and collision tests**
 
 Cover distinct hashes for `windowKind`, `timestampEndInclusiveMs`, and `pageOffset`; equal hashes when only `apiKey/apiKeyIndex` or a route-anchor value outside the identity changes; invalid decimal bounds, reversed time, negative/non-integer offset, and unknown window kind.
 
-- [ ] **Step 4: Run the new V2 tests**
+- [x] **Step 4: Run the new V2 tests**
 
 Run:
 
@@ -369,11 +391,11 @@ npm test -- tests/unified-check/providerRequest.test.ts -t "provider-request-ide
 
 Expected: FAIL because `buildProviderRequestIdentityV2` is not exported.
 
-- [ ] **Step 5: Implement the minimal V2 builder**
+- [x] **Step 5: Implement the minimal V2 builder**
 
 Reuse the current address/text/raw/hash validation helpers. Add a safe offset validator and build a new object literal in the exact field order defined by the contract. Do not route V1 through V2.
 
-- [ ] **Step 6: Run the complete provider identity file**
+- [x] **Step 6: Run the complete provider identity file**
 
 Run:
 
@@ -383,7 +405,7 @@ npm test -- tests/unified-check/providerRequest.test.ts
 
 Expected: all tests PASS, including the frozen V1 literal.
 
-- [ ] **Step 7: Commit the identity contract**
+- [x] **Step 7: Commit the identity contract**
 
 ```powershell
 git add src/unifiedCheck/providerRequest.ts tests/unified-check/providerRequest.test.ts
@@ -396,11 +418,11 @@ git commit -m "feat: add Stage C provider request identity v2"
 - Modify: `tests/unified-check/providerRequest.test.ts`
 - Modify: `src/unifiedCheck/providerRequest.ts`
 
-- [ ] **Step 1: Add failing V2 cache tests**
+- [x] **Step 1: Add failing V2 cache tests**
 
 Test one network call for concurrent identical V2 requests, a later cache hit, distinct storage rows for recent/historical and offsets, and one shared cache row for two different probe anchors that produce identical HTTP identity bytes. Require provenance to preserve the full credential-free V2 identity object plus its canonical JSON/hash; tampering any identity field while retaining the old hash must reject the cache row.
 
-- [ ] **Step 2: Prove the tests fail**
+- [x] **Step 2: Prove the tests fail**
 
 Run:
 
@@ -410,11 +432,11 @@ npm test -- tests/unified-check/providerRequest.test.ts -t "loads provider-reque
 
 Expected: FAIL because `loadOrFetchProviderPageV2` is missing.
 
-- [ ] **Step 3: Extract only the version-neutral cache core**
+- [x] **Step 3: Extract only the version-neutral cache core**
 
 Add a private helper receiving `{ identity, canonicalJson, sha256 }` and a version-specific fetched-result validator. Keep the public V1 implementation and diagnostics unchanged. V2 stores the complete credential-free `ProviderRequestIdentityV2`, its canonical JSON/hash, and `pageOffset` in provenance; `validateStoredV2` reparses the identity and recomputes the hash before accepting raw payload bytes. Route anchor and classifier fields remain absent.
 
-- [ ] **Step 4: Run cache and V1 regression tests**
+- [x] **Step 4: Run cache and V1 regression tests**
 
 ```powershell
 npm test -- tests/unified-check/providerRequest.test.ts tests/unified-check/productionAddressHistory.test.ts
@@ -422,7 +444,7 @@ npm test -- tests/unified-check/providerRequest.test.ts tests/unified-check/prod
 
 Expected: both files PASS and production direct history continues to call V1.
 
-- [ ] **Step 5: Commit cache reuse**
+- [x] **Step 5: Commit cache reuse**
 
 ```powershell
 git add src/unifiedCheck/providerRequest.ts tests/unified-check/providerRequest.test.ts
@@ -434,6 +456,14 @@ git commit -m "feat: cache Stage C provider pages by v2 identity"
 **Files:**
 - Create: `tests/forensics/stageCAuthorityFeasibility.test.ts`
 - Create: `src/forensics/stageCAuthorityFeasibility.ts`
+
+> **Execution blocker — stop before Step 1:** The nine required query literals
+> and nine artifact-kind literals in this plan have no exact owning schema
+> versions, codecs, fixtures or real producers. The plan also leaves
+> inventory/leaf rows, joins/eligibility/candidate derivation, exhaustion and
+> EOA/order/role/control/adverse-witness formats unfrozen. Do not create private
+> codecs or synthetic complete authority. Resume only after a separately
+> reviewed amendment defines those contracts and their real producers.
 
 - [ ] **Step 1: Write failing quota and forbidden-field tests**
 
