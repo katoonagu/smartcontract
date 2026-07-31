@@ -725,6 +725,10 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
     });
     let insertBarrierCount = 0;
     const firstAttemptTransactions: Array<{ backendPid: number; transactionId: string }> = [];
+    let materializerRuns: [
+      ReturnType<typeof runServiceRoleMapMaterialization>,
+      ReturnType<typeof runServiceRoleMapMaterialization>
+    ] | null = null;
     try {
       const fixture = await seedFixture(test, 200);
       const backfill = await seedCompletedCapture(test, fixture);
@@ -791,10 +795,12 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
       };
       const firstDb = await participant();
       const secondDb = await participant();
-      const firstRun = runServiceRoleMapMaterialization(firstDb, command);
-      const secondRun = runServiceRoleMapMaterialization(secondDb, command);
+      materializerRuns = [
+        runServiceRoleMapMaterialization(firstDb, command),
+        runServiceRoleMapMaterialization(secondDb, command)
+      ];
 
-      await firstInsertFinished;
+      await Promise.race([firstInsertFinished, ...materializerRuns]);
       try {
         expect((await test.client.query(
           `select count(*)::int count from unified_check_artifacts
@@ -807,7 +813,7 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         releaseFirstWriter();
       }
 
-      const [first, second] = await Promise.all([firstRun, secondRun]);
+      const [first, second] = await Promise.all(materializerRuns);
       expect(first).toEqual(second);
       expect(first.classification).toBe("complete");
       expect(new Set(firstAttemptTransactions.map((item) => item.backendPid)).size).toBe(2);
@@ -833,7 +839,9 @@ postgresDescribe("service role map materialization (PostgreSQL)", () => {
         [trioHashes]
       )).rows[0].count).toBe(0);
     } finally {
+      releaseInsertBarrier();
       releaseFirstWriter();
+      await Promise.allSettled(materializerRuns ?? []);
       await Promise.all(participants.map((client) => client.end().catch(() => undefined)));
       await dispose(test);
     }
