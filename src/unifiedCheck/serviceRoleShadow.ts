@@ -276,12 +276,23 @@ export function deriveServiceRoleShadowAcceptedHistoryBindingV1(input: {
   state: TraversalStateV1;
   acceptedHistoryEvents: readonly IndexedTronUsdtTransfer[];
 }): ServiceRoleShadowAcceptedHistoryBindingV1 {
+  if (typeof input.state.address !== "string" || input.state.address.length === 0) {
+    throw new TypeError("service_role_shadow_binding_profiled_address_invalid");
+  }
+  if (input.state.direction !== "backward" && input.state.direction !== "forward") {
+    throw new TypeError("service_role_shadow_binding_direction_invalid");
+  }
   const selection = selectAcceptedHistoryWindowV1(input);
   if (!selection.ok) {
     throw new TypeError(`service_role_shadow_binding_${selection.bindingReason}`);
   }
   if (!Number.isSafeInteger(selection.anchor.event.eventIndex) || selection.anchor.event.eventIndex < 0) {
     throw new TypeError("service_role_shadow_binding_anchor_event_index_invalid");
+  }
+  if (typeof selection.anchor.event.txHash !== "string" || selection.anchor.event.txHash.length === 0 ||
+    selection.sampled.some(({ event }) => typeof event.txHash !== "string" || event.txHash.length === 0 ||
+      !Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0)) {
+    throw new TypeError("service_role_shadow_binding_sample_event_invalid");
   }
   const sampledIds = new Set(selection.sampled.map(({ id }) => id));
   if ([...selection.duplicateCanonicalEventIds].some((id) => sampledIds.has(id))) {
@@ -323,28 +334,41 @@ function exactRecord(value: unknown, expectedKeys: readonly string[]): Record<st
     keys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))) {
     throw new TypeError("invalid_record");
   }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (expectedKeys.some((key) => {
-    const descriptor = descriptors[key];
-    return !descriptor || !("value" in descriptor) || !descriptor.enumerable;
-  })) {
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor | undefined>;
+  const descriptorKeys = Reflect.ownKeys(descriptors);
+  if (descriptorKeys.length !== expectedKeys.length ||
+    descriptorKeys.some((key) => typeof key !== "string" || !expectedKeys.includes(key)) ||
+    expectedKeys.some((key) => {
+      const descriptor = descriptors[key];
+      return !descriptor || !("value" in descriptor) || !descriptor.enumerable;
+    })) {
     throw new TypeError("invalid_record");
   }
-  return value as Record<string, unknown>;
+  return Object.fromEntries(
+    expectedKeys.map((key) => [key, descriptors[key]!.value])
+  ) as Record<string, unknown>;
 }
 
 function exactSortedEventIds(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length !== 100) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
     throw new TypeError("invalid_event_ids");
   }
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== value.length + 1 || keys.some((key) => key !== "length" &&
-    (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key) || Number(key) >= value.length))) {
+  if (keys.length !== 101 || keys.some((key) => key !== "length" &&
+    (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key) || Number(key) >= 100))) {
     throw new TypeError("invalid_event_ids");
   }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor | undefined>;
+  const descriptorKeys = Reflect.ownKeys(descriptors);
+  const lengthDescriptor = descriptors.length;
+  if (descriptorKeys.length !== 101 ||
+    descriptorKeys.some((key) => key !== "length" &&
+      (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key) || Number(key) >= 100)) ||
+    !lengthDescriptor || !("value" in lengthDescriptor) || lengthDescriptor.value !== 100) {
+    throw new TypeError("invalid_event_ids");
+  }
   const ids: string[] = [];
-  for (let index = 0; index < value.length; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     const descriptor = descriptors[String(index)];
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable ||
       typeof descriptor.value !== "string" || descriptor.value.length === 0) {
@@ -425,10 +449,45 @@ function parseServiceRoleShadowEventRoleMapV2Unchecked(input: {
   if (coverage.recent !== 100 || coverage.historical !== 100 || coverage.total !== 200) {
     throw new TypeError("invalid_coverage");
   }
-  if (fingerprintCanonicalArtifact(input.artifact) !== input.expectedSha256) {
+  const anchorBinding: ServiceRoleShadowAnchorBindingV1 = Object.freeze({
+    canonicalEventId: anchor.canonicalEventId as string,
+    blockNumber: anchor.blockNumber as number,
+    timestamp: anchor.timestamp as string,
+    eventIndex: anchor.eventIndex as number,
+    orderAuthority: "unique_block"
+  });
+  const sampledCanonicalEventIds = Object.freeze({
+    recent: Object.freeze([...recent]),
+    historical: Object.freeze([...historical])
+  });
+  const ownedBinding: ServiceRoleShadowAcceptedHistoryBindingV1 = Object.freeze({
+    profiledAddress: binding.profiledAddress as string,
+    direction: binding.direction as TraversalStateV1["direction"],
+    anchorBinding,
+    sampledCanonicalEventIds,
+    sampledEventIdsSha256: binding.sampledEventIdsSha256 as string
+  });
+  const exactCoverage: ServiceRoleShadowEventRoleMapV2["exactCoverage"] = Object.freeze({
+    recent: 100,
+    historical: 100,
+    total: 200
+  });
+  const ownedArtifact: ServiceRoleShadowEventRoleMapV2 = Object.freeze({
+    schemaVersion: "service-role-shadow-event-role-map-v2",
+    policyVersion: "service-role-shadow-100-plus-100-v1",
+    runId: artifact.runId,
+    snapshotHash: artifact.snapshotHash,
+    addressHistoryManifestSha256: artifact.addressHistoryManifestSha256,
+    sourceEventRoleMapV1Sha256: artifact.sourceEventRoleMapV1Sha256,
+    evidenceBundleSha256: artifact.evidenceBundleSha256,
+    binding: ownedBinding,
+    exactCoverage,
+    productionEffect: false
+  } as ServiceRoleShadowEventRoleMapV2);
+  if (fingerprintCanonicalArtifact(ownedArtifact) !== input.expectedSha256) {
     throw new TypeError("invalid_hash");
   }
-  return input.artifact as ServiceRoleShadowEventRoleMapV2;
+  return ownedArtifact;
 }
 
 export function parseServiceRoleShadowEventRoleMapV2(input: {
