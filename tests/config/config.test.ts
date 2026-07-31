@@ -655,6 +655,9 @@ describe("loadConfig", () => {
     "true",
     "false",
     "1",
+    " disabled",
+    "disabled ",
+    "DISABLED",
     "service-role-shadow-500-plus-100-v1"
   ])("rejects invalid Unified service role shadow policy %j", (value) => {
     setRequiredEnv({ UNIFIED_SERVICE_ROLE_SHADOW_POLICY: value });
