@@ -429,7 +429,7 @@ function eventsFromPages(input: {
       page.runId !== input.history.runId || page.manifestKey !== input.history.manifest.key ||
       !HASH.test(String(page.providerPageHash)) || !Number.isSafeInteger(page.rawRowCount) ||
       page.rawRowCount < 0 || !Array.isArray(page.events) ||
-      page.rawRowCount !== page.events.length
+      page.rawRowCount < page.events.length
     ) return null;
     rawRowCount += page.rawRowCount;
     for (const value of page.events) {

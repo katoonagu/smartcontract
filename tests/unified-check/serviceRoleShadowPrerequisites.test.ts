@@ -331,6 +331,35 @@ function appendDuplicateEvent(
   return manifestSha256;
 }
 
+function bindPhysicalRowCount(
+  rows: ReturnType<typeof fixture>["rows"],
+  rawRowCount: number,
+  duplicateCount: number
+): string {
+  const page = rows.pages[0]!.artifact_json;
+  page.rawRowCount = rawRowCount;
+  const pageSha256 = fingerprintCanonicalArtifact(page);
+  rows.pages[0]!.sha256 = pageSha256;
+  const exhaustion = rows.exhaustions[0]!.artifact_json;
+  exhaustion.pageArtifactHashes = [pageSha256];
+  const exhaustionSha256 = fingerprintCanonicalArtifact(exhaustion);
+  rows.exhaustions[0]!.sha256 = exhaustionSha256;
+  const manifest = rows.accepted[0]!.manifest_json as unknown as {
+    pageArtifactHashes: string[];
+    rawRowCount: number;
+    duplicateCount: number;
+    exhaustion: { evidenceSha256: string };
+  };
+  manifest.pageArtifactHashes = [pageSha256];
+  manifest.rawRowCount = rawRowCount;
+  manifest.duplicateCount = duplicateCount;
+  manifest.exhaustion.evidenceSha256 = exhaustionSha256;
+  const manifestSha256 = fingerprintCanonicalArtifact(manifest);
+  rows.accepted[0]!.attempt_artifact_sha256 = manifestSha256;
+  rows.accepted[0]!.manifest_sha256 = manifestSha256;
+  return manifestSha256;
+}
+
 function replaceAnalysisManifest(
   rows: ReturnType<typeof fixture>["rows"],
   analysisManifest: Record<string, unknown>
@@ -652,6 +681,31 @@ describe("service role shadow prerequisite audit", () => {
       .toMatchObject({
         reconstructedHistories: 0,
         fullyRoleBoundHistories: 0,
+        failures: [{ manifestSha256, reason: "source_binding_invalid" }]
+      });
+  });
+
+  it("accepts filtered physical rows omitted from canonical event inventory", async () => {
+    const { db, rows } = fixture(null);
+    const manifestSha256 = bindPhysicalRowCount(rows, 201, 1);
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        acceptedHistories: 1,
+        reconstructedHistories: 1,
+        sampledEvents: 200,
+        failures: [{ manifestSha256, reason: "role_map_missing" }]
+      });
+  });
+
+  it("rejects a physical row count below the filtered event inventory", async () => {
+    const { db, rows } = fixture(null);
+    const manifestSha256 = bindPhysicalRowCount(rows, 199, 0);
+
+    await expect(runServiceRoleShadowPrerequisiteAuditReadOnly(db)).resolves
+      .toMatchObject({
+        reconstructedHistories: 0,
+        sampledEvents: 0,
         failures: [{ manifestSha256, reason: "source_binding_invalid" }]
       });
   });
