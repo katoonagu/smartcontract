@@ -22,6 +22,7 @@ code_refs:
   - docs/superpowers/specs/2026-07-30-subject-service-and-cashflow-query-amendment-design.md
   - docs/superpowers/specs/2026-07-30-forensic-model-completion-roadmap-and-exact-role-capture-design.md
   - docs/superpowers/specs/2026-07-31-stage-c-runtime-blind-and-stage-d-exact-scoring-design.md
+  - docs/superpowers/plans/2026-07-31-stage-c-execution-index.md
   - docs/superpowers/plans/2026-07-28-authority-temporal-correctness-gate.md
   - docs/superpowers/plans/2026-07-28-stage-b-release-evidence-closure.md
   - docs/superpowers/plans/2026-07-29-lean-forensic-model-validation.md
@@ -41,8 +42,8 @@ implementation plans do not override the status recorded here.
 3. Preserve the admitted real Stage C evidence and Task 2 proof: one frozen
    `200/200` role map exists and the prerequisite audit passes, with no runtime
    hook.
-4. Approve a separate C0-C6 implementation plan. Implement the independent
-   Stage C disabled runtime shadow with anchor-bound role-map input,
+4. Execute the approved C0-C6 implementation plan suite, starting with the
+   independent Stage C disabled runtime shadow with anchor-bound role-map input,
    post-commit reconciliation and exact enabled/disabled byte
    non-interference; unavailable cashflow authority does not block this slice.
 5. In parallel, prove the missing authority sources, then build physical
@@ -94,7 +95,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Real evidence admission and preserved Task 2 proof are complete: the frozen accepted history has one exact 200/200 role map, the prerequisite audit exits 0, and the standalone artifacts have zero accepted-attempt references. No runtime hook, physical-page authority, EOAAtAnchor, new blind set or cashflow shadow exists | Approve an implementation plan, then execute C0-C6 from the 2026-07-31 design: independent runtime shadow plus authority feasibility, physical/adverse proof, separate blind 24 + 6, cashflow bridge and final acceptance receipt |
+| Stage C | Real evidence admission and preserved Task 2 proof are complete: the frozen accepted history has one exact 200/200 role map, the prerequisite audit exits 0, and the standalone artifacts have zero accepted-attempt references. The detailed C0-C6 execution suite is approved as plan-only. No runtime hook, physical-page authority, EOAAtAnchor, new blind set or cashflow shadow exists yet | Execute the C0-C6 index in dependency order: independent runtime shadow plus authority feasibility, physical/adverse proof, separate blind 24 + 6, cashflow bridge and final independent acceptance receipt |
 | Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -249,8 +250,27 @@ The prerequisite audit exits `0` with
 `fullyRoleBoundHistories=1` and `roleBoundSampledEvents=200`. These are
 standalone offline artifacts referenced by zero accepted attempts. Production
 runtime/config paths remain byte-unmodified from the pre-plan baseline. Real
-evidence admission and the preserved Task 2 prerequisite are complete; Stage C
-runtime shadow is the next separate design/plan and remains disabled.
+evidence admission and the preserved Task 2 prerequisite are complete. The
+separate C0-C6 implementation plan now exists; execution has not started and
+the Stage C runtime shadow remains absent/disabled.
+
+## Stage C C0-C6 Execution Plan — 2026-07-31
+
+The approved execution index is
+`docs/superpowers/plans/2026-07-31-stage-c-execution-index.md`, with one detailed
+plan for each C0-C6 slice. Planning completion changes no runtime or score:
+
+- C1 is independently runnable against accepted-history replay;
+- C0a gates C2-C4 physical/adverse/blind work, while C0b separately gates C5;
+- the retained manual `24/24 + 6/6` regression remains mandatory and distinct
+  from the future blind `24 + 6`;
+- checked-subject role remains report-only/non-authoritative and cannot suppress
+  behavioral candidates, exact adverse evidence, or score;
+- C6 requires immutable receipts, zero PostgreSQL skips, non-interference, and
+  an independent human acceptance;
+- current production remains matrix-v4/ScoreAnchorV3. A real score change is a
+  later Stage D decision and may transport only separately accepted exact facts
+  through the future v5/V2/V4 chain.
 
 ## Correctness Gate
 
