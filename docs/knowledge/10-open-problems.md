@@ -148,11 +148,13 @@ signal with tests.
   unproved candidate-delta ancestry remain unreconciled. Process-local tokens
   are now bounded to 512 attempt buckets for twice the configured lease,
   retired on every post-durable outcome, and backed by 500 ms transaction-local
-  lock/statement deadlines. Expired, overflowed and crash-window durable
-  precommits deliberately remain unreconciled until Task 7's bounded startup
-  sweep. C1 Tasks 7-10 still
-  must add bounded startup recovery, terminal summary, non-interference proof
-  and the acceptance producer.
+  lock/statement deadlines. Task 7 closes the expired/overflow/crash-window gap
+  with one enabled-runtime startup sweep bounded at 1,000 ms and strict durable
+  precommit plus current commit revalidation. It also publishes the deterministic
+  terminal summary and allows a later complete summary to follow an immutable
+  earlier incomplete snapshot after recovery. C1 Tasks 8-10 still must prove
+  authoritative-byte non-interference and produce/admit the C1 acceptance
+  evidence; Task 7 artifacts alone are not admission.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

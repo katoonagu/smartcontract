@@ -2,6 +2,13 @@ import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../forensics/canonicalJson";
+import { canonicalTronUsdtEventKey } from "../forensics/tronAddressAllTimeIndex";
+import type { IndexedTronUsdtTransfer } from "../types";
+import {
+  addressHistoryManifestKey,
+  buildAddressHistoryManifest,
+  type AddressHistoryManifestV1
+} from "./addressHistory";
 import { parseAnalysisManifestV1 } from "./contracts";
 import {
   parseServiceRoleEventEvidenceBundleV1,
@@ -18,6 +25,8 @@ import {
   type ServiceRoleShadowEventRoleMapV2
 } from "./serviceRoleShadow";
 import type { AcceptedAddressHistoryShadowGroupInput } from "./productionTraversalCoordinator";
+import type { UnifiedAddressHistoryPageArtifactV1 } from "./productionAddressHistory";
+import type { UnifiedTraversalArtifactV1 } from "./productionTraversal";
 import type {
   UnifiedCheckpointCommitResult,
   UnifiedChunkOutcome,
@@ -123,6 +132,35 @@ export type ServiceRoleShadowRuntimeReceiptV1 = {
   }[];
   readonly profiles: ServiceRoleShadowPrecommitReceiptV1["profiles"];
   readonly commitStatus: "reconciled";
+  readonly productionEffect: false;
+};
+
+export type ServiceRoleShadowRunSummaryV1 = {
+  readonly schemaVersion: "service-role-shadow-run-summary-v1";
+  readonly policyVersion: "service-role-shadow-100-plus-100-v1";
+  readonly runId: string;
+  readonly snapshotHash: string;
+  readonly runtimeCommit: string;
+  readonly inputFenceSha256: string;
+  readonly acceptedTraversal: {
+    readonly taskId: string;
+    readonly acceptedAttemptId: string;
+    readonly artifactSha256: string;
+  };
+  readonly groupReceiptSha256s: readonly string[];
+  readonly counts: {
+    readonly missing: number;
+    readonly conflict: number;
+    readonly malformed: number;
+    readonly eligibleGroup: number;
+    readonly eligibleProfile: number;
+    readonly reconciledGroup: number;
+    readonly reconciledProfile: number;
+    readonly unreconciledGroup: number;
+    readonly profileOrphan: number;
+    readonly precommitOrphan: number;
+  };
+  readonly complete: boolean;
   readonly productionEffect: false;
 };
 
@@ -763,6 +801,145 @@ export function buildServiceRoleShadowRuntimeReceiptV1(input: Omit<
     productionEffect: false as const
   };
   const parsed = parseServiceRoleShadowRuntimeReceiptV1({
+    artifact: candidate,
+    expectedSha256: fingerprintCanonicalArtifact(candidate)
+  });
+  return boundArtifact(parsed);
+}
+
+const SUMMARY_COUNT_KEYS = [
+  "missing",
+  "conflict",
+  "malformed",
+  "eligibleGroup",
+  "eligibleProfile",
+  "reconciledGroup",
+  "reconciledProfile",
+  "unreconciledGroup",
+  "profileOrphan",
+  "precommitOrphan"
+] as const;
+
+function parseRunSummaryUnchecked(input: {
+  readonly artifact: unknown;
+  readonly expectedSha256: string;
+}): ServiceRoleShadowRunSummaryV1 {
+  if (!HASH.test(input.expectedSha256)) throw new TypeError("invalid_hash");
+  const root = exactRecord(input.artifact, [
+    "schemaVersion",
+    "policyVersion",
+    "runId",
+    "snapshotHash",
+    "runtimeCommit",
+    "inputFenceSha256",
+    "acceptedTraversal",
+    "groupReceiptSha256s",
+    "counts",
+    "complete",
+    "productionEffect"
+  ]);
+  if (
+    root.schemaVersion !== "service-role-shadow-run-summary-v1" ||
+    root.policyVersion !== POLICY_VERSION ||
+    !validRootText(root.runId) ||
+    !validRootText(root.runtimeCommit) ||
+    typeof root.snapshotHash !== "string" ||
+    !HASH.test(root.snapshotHash) ||
+    typeof root.inputFenceSha256 !== "string" ||
+    !HASH.test(root.inputFenceSha256) ||
+    typeof root.complete !== "boolean" ||
+    root.productionEffect !== false
+  ) {
+    throw new TypeError("invalid_root");
+  }
+  const traversal = exactRecord(root.acceptedTraversal, [
+    "taskId", "acceptedAttemptId", "artifactSha256"
+  ]);
+  if (
+    !validRootText(traversal.taskId) ||
+    !validRootText(traversal.acceptedAttemptId) ||
+    typeof traversal.artifactSha256 !== "string" ||
+    !HASH.test(traversal.artifactSha256)
+  ) {
+    throw new TypeError("invalid_traversal");
+  }
+  const groupReceiptSha256s = ownedSortedStrings(
+    root.groupReceiptSha256s,
+    true
+  );
+  const rawCounts = exactRecord(root.counts, SUMMARY_COUNT_KEYS);
+  const counts = Object.freeze(Object.fromEntries(SUMMARY_COUNT_KEYS.map((key) => {
+    const value = rawCounts[key];
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new TypeError("invalid_count");
+    }
+    return [key, value];
+  })) as ServiceRoleShadowRunSummaryV1["counts"]);
+  if (
+    counts.reconciledGroup > counts.eligibleGroup ||
+    counts.reconciledProfile > counts.eligibleProfile ||
+    counts.reconciledGroup + counts.unreconciledGroup !== counts.eligibleGroup ||
+    groupReceiptSha256s.length !== counts.reconciledGroup
+  ) {
+    throw new TypeError("invalid_count_relation");
+  }
+  const complete = counts.reconciledGroup >= 1 &&
+    counts.reconciledGroup === counts.eligibleGroup &&
+    counts.reconciledProfile === counts.eligibleProfile &&
+    counts.missing === 0 &&
+    counts.conflict === 0 &&
+    counts.malformed === 0 &&
+    counts.unreconciledGroup === 0 &&
+    counts.profileOrphan === 0 &&
+    counts.precommitOrphan === 0;
+  if (root.complete !== complete) throw new TypeError("invalid_complete");
+  const artifact = Object.freeze({
+    schemaVersion: "service-role-shadow-run-summary-v1" as const,
+    policyVersion: POLICY_VERSION,
+    runId: root.runId,
+    snapshotHash: root.snapshotHash,
+    runtimeCommit: root.runtimeCommit,
+    inputFenceSha256: root.inputFenceSha256,
+    acceptedTraversal: Object.freeze({
+      taskId: traversal.taskId,
+      acceptedAttemptId: traversal.acceptedAttemptId,
+      artifactSha256: traversal.artifactSha256
+    }),
+    groupReceiptSha256s,
+    counts,
+    complete,
+    productionEffect: false as const
+  });
+  if (fingerprintCanonicalArtifact(artifact) !== input.expectedSha256) {
+    throw new TypeError("invalid_hash");
+  }
+  return artifact;
+}
+
+export function parseServiceRoleShadowRunSummaryV1(input: {
+  readonly artifact: unknown;
+  readonly expectedSha256: string;
+}): ServiceRoleShadowRunSummaryV1 {
+  try {
+    return parseRunSummaryUnchecked(input);
+  } catch {
+    throw new TypeError("service_role_shadow_run_summary_v1_invalid");
+  }
+}
+
+export function buildServiceRoleShadowRunSummaryV1(input: Omit<
+  ServiceRoleShadowRunSummaryV1,
+  "schemaVersion" | "policyVersion" | "productionEffect"
+>): BoundArtifact<ServiceRoleShadowRunSummaryV1> {
+  const candidate = {
+    schemaVersion: "service-role-shadow-run-summary-v1" as const,
+    policyVersion: POLICY_VERSION,
+    ...input,
+    groupReceiptSha256s: [...new Set(input.groupReceiptSha256s)]
+      .sort(compareCodeUnits),
+    productionEffect: false as const
+  };
+  const parsed = parseServiceRoleShadowRunSummaryV1({
     artifact: candidate,
     expectedSha256: fingerprintCanonicalArtifact(candidate)
   });
@@ -1482,6 +1659,626 @@ async function setReconciliationDeadlines(
   );
 }
 
+type CommittedPlannerEntryV1 = ServiceRoleShadowRuntimeReceiptV1[
+  "committedEntries"
+][number];
+
+function validateCommittedEntries(
+  value: readonly CommittedPlannerEntryV1[]
+): readonly CommittedPlannerEntryV1[] | null {
+  const entries = [...value];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (
+      !Number.isSafeInteger(entry.canonicalSequence) ||
+      entry.canonicalSequence < 0 ||
+      !validRootText(entry.taskId) ||
+      !validRootText(entry.acceptedAttemptId) ||
+      !HASH.test(entry.artifactSha256) ||
+      (index > 0 && entries[index - 1]!.canonicalSequence >=
+        entry.canonicalSequence)
+    ) return null;
+  }
+  return entries;
+}
+
+async function loadCommittedPlannerInventoryV1(
+  client: UnifiedQueryable,
+  runId: string
+): Promise<{
+  readonly rows: readonly Record<string, unknown>[];
+  readonly entries: readonly CommittedPlannerEntryV1[];
+} | null> {
+  const rows = (await client.query(
+    `select planner.canonical_sequence,
+            task.id as task_id,
+            task.kind as task_kind,
+            task.logical_key,
+            task.accepted_attempt_id,
+            attempt.artifact_sha256
+       from unified_check_planner_entries planner
+       join unified_check_tasks task
+         on task.run_id = planner.run_id
+        and task.id = planner.task_id
+       join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+        and attempt.task_id = task.id
+      where planner.run_id = $1
+        and planner.planner_state = 'committed'
+        and task.status = 'COMPLETED'
+        and task.cancellation_requested_at is null
+      order by planner.canonical_sequence`,
+    [runId]
+  )).rows;
+  const entries = validateCommittedEntries(rows.map((row) => ({
+    canonicalSequence: Number(row.canonical_sequence),
+    taskId: String(row.task_id),
+    acceptedAttemptId: String(row.accepted_attempt_id),
+    artifactSha256: String(row.artifact_sha256)
+  })));
+  return entries === null ? null : { rows, entries };
+}
+
+async function isReachableTraversalDeltaV1(input: {
+  readonly client: UnifiedQueryable;
+  readonly runId: string;
+  readonly headSha256: string;
+  readonly candidateSha256: string;
+  readonly signal: AbortSignal;
+}): Promise<boolean> {
+  if (!HASH.test(input.headSha256) || !HASH.test(input.candidateSha256)) {
+    return false;
+  }
+  let cursor: string | null = input.headSha256;
+  const visited = new Set<string>();
+  // ponytail: the hash-indexed walk is bounded by the caller's 500 ms DB
+  // deadline; add an ancestry index only if measured recovery chains need it.
+  while (cursor !== null && !visited.has(cursor)) {
+    if (input.signal.aborted) return false;
+    visited.add(cursor);
+    const [deltaRow] = await loadArtifactsByHashes(
+      input.client,
+      input.runId,
+      [cursor]
+    );
+    if (
+      !deltaRow ||
+      deltaRow.kind !== "traversal_delta" ||
+      deltaRow.schemaVersion !== "1" ||
+      fingerprintCanonicalArtifact(deltaRow.artifact) !== cursor ||
+      deltaRow.artifact === null ||
+      typeof deltaRow.artifact !== "object" ||
+      Array.isArray(deltaRow.artifact) ||
+      (deltaRow.artifact as { version?: unknown }).version !==
+        "unified-traversal-delta-v1"
+    ) return false;
+    const previous = (
+      deltaRow.artifact as { previousDeltaHash?: unknown }
+    ).previousDeltaHash;
+    if (previous !== null &&
+      (typeof previous !== "string" || !HASH.test(previous))) return false;
+    if (cursor === input.candidateSha256) return true;
+    cursor = previous as string | null;
+  }
+  return false;
+}
+
+async function reconcileDurablePrecommitV1(input: {
+  readonly client: UnifiedQueryable;
+  readonly runtimeCommit: string;
+  readonly runId: string;
+  readonly traversalTaskId: string;
+  readonly traversalAttempt: number;
+  readonly precommitSha256: string;
+  readonly committedCheckpoint: unknown;
+  readonly committedEntries: readonly CommittedPlannerEntryV1[];
+  readonly signal: AbortSignal;
+}): Promise<string | null> {
+  if (input.signal.aborted) return null;
+  const checkpoint = input.committedCheckpoint;
+  if (checkpoint === null || typeof checkpoint !== "object" ||
+    Array.isArray(checkpoint)) return null;
+  const committedDeltaHeadSha256 = (
+    checkpoint as { deltaHeadSha256?: unknown }
+  ).deltaHeadSha256;
+  if (typeof committedDeltaHeadSha256 !== "string" ||
+    !HASH.test(committedDeltaHeadSha256)) return null;
+  const committedEntries = validateCommittedEntries(input.committedEntries);
+  if (committedEntries === null) return null;
+  const [precommitRow] = await loadArtifactsByHashes(
+    input.client,
+    input.runId,
+    [input.precommitSha256]
+  );
+  if (
+    !precommitRow ||
+    precommitRow.kind !== "service_role_shadow_precommit_receipt" ||
+    precommitRow.schemaVersion !== "1"
+  ) return null;
+  const precommit = parseServiceRoleShadowPrecommitReceiptV1({
+    artifact: precommitRow.artifact,
+    expectedSha256: input.precommitSha256
+  });
+  if (precommit.runId !== input.runId) return null;
+  const matchingEntries = committedEntries.filter((entry) =>
+    entry.artifactSha256 === precommit.manifestSha256
+  );
+  if (matchingEntries.length !== 1 || input.signal.aborted) return null;
+  const expectedHashes = [...new Set([
+    precommit.inputFenceSha256,
+    precommit.inputSetSha256,
+    ...precommit.profiles.map((profile) => profile.profileSha256)
+  ])].sort(compareCodeUnits);
+  const rows = await loadArtifactsByHashes(
+    input.client,
+    input.runId,
+    expectedHashes
+  );
+  if (rows.length !== expectedHashes.length) return null;
+  const byHash = new Map(rows.map((row) => [row.sha256, row]));
+  const fenceRow = byHash.get(precommit.inputFenceSha256);
+  const inputSetRow = byHash.get(precommit.inputSetSha256);
+  if (
+    !fenceRow ||
+    fenceRow.kind !== "service_role_shadow_input_fence" ||
+    fenceRow.schemaVersion !== "1" ||
+    !inputSetRow ||
+    inputSetRow.kind !== "service_role_shadow_input_set" ||
+    inputSetRow.schemaVersion !== "1"
+  ) return null;
+  const fence = parseServiceRoleShadowInputFenceV1({
+    artifact: fenceRow.artifact,
+    expectedSha256: precommit.inputFenceSha256
+  });
+  const inputSet = parseServiceRoleShadowInputSetV1({
+    artifact: inputSetRow.artifact,
+    expectedSha256: precommit.inputSetSha256
+  });
+  if (
+    fence.runId !== input.runId ||
+    fence.snapshotHash !== precommit.snapshotHash ||
+    fence.runtimeCommit !== input.runtimeCommit ||
+    fence.outcome.kind !== "ready" ||
+    fence.outcome.inputSetSha256 !== precommit.inputSetSha256 ||
+    inputSet.runId !== input.runId ||
+    inputSet.snapshotHash !== precommit.snapshotHash
+  ) return null;
+  for (const profile of precommit.profiles) {
+    const row = byHash.get(profile.profileSha256);
+    if (
+      !row ||
+      row.kind !== "service_role_shadow_profile" ||
+      row.schemaVersion !== "1" ||
+      fingerprintCanonicalArtifact(row.artifact) !== profile.profileSha256
+    ) return null;
+  }
+
+  if (!await isReachableTraversalDeltaV1({
+    client: input.client,
+    runId: input.runId,
+    headSha256: committedDeltaHeadSha256,
+    candidateSha256: precommit.candidateDeltaSha256,
+    signal: input.signal
+  }) || input.signal.aborted) return null;
+  const receipt = buildServiceRoleShadowRuntimeReceiptV1({
+    runId: precommit.runId,
+    snapshotHash: precommit.snapshotHash,
+    runtimeCommit: input.runtimeCommit,
+    traversalTaskId: input.traversalTaskId,
+    traversalAttempt: input.traversalAttempt,
+    inputFenceSha256: precommit.inputFenceSha256,
+    inputSetSha256: precommit.inputSetSha256,
+    compoundBindingKey: precommit.compoundBindingKey,
+    precommitSha256: input.precommitSha256,
+    manifestKey: precommit.manifestKey,
+    manifestSha256: precommit.manifestSha256,
+    acceptedPageArtifactHashes: precommit.acceptedPageArtifactHashes,
+    candidateCheckpointSha256: precommit.candidateCheckpointSha256,
+    candidateDeltaSha256: precommit.candidateDeltaSha256,
+    committedCheckpointSha256: fingerprintCanonicalArtifact(checkpoint),
+    committedDeltaHeadSha256,
+    committedEntries,
+    profiles: precommit.profiles
+  });
+  await insertServiceRoleArtifact(input.client, {
+    sha256: receipt.sha256,
+    createdByRunId: input.runId,
+    kind: "service_role_shadow_runtime_receipt",
+    schemaVersion: "1",
+    artifact: receipt.artifact
+  });
+  if (input.signal.aborted) {
+    throw new Error("service_role_shadow_reconciliation_aborted");
+  }
+  return receipt.sha256;
+}
+
+type AcceptedTraversalInventoryV1 = {
+  readonly taskId: string;
+  readonly acceptedAttemptId: string;
+  readonly artifactSha256: string;
+  readonly analysisManifestSha256: string;
+  readonly subjectAddress: string;
+  readonly snapshotHash: string;
+  readonly states: readonly Parameters<typeof traversalStateId>[0][];
+};
+
+function parseAcceptedTraversalInventoryV1(input: {
+  readonly row: Record<string, unknown>;
+  readonly runId: string;
+}): AcceptedTraversalInventoryV1 {
+  if (
+    !validRootText(input.row.task_id) ||
+    !validRootText(input.row.accepted_attempt_id) ||
+    typeof input.row.artifact_sha256 !== "string" ||
+    !HASH.test(input.row.artifact_sha256) ||
+    typeof input.row.analysis_manifest_sha256 !== "string" ||
+    !HASH.test(input.row.analysis_manifest_sha256) ||
+    !validRootText(input.row.subject_address)
+  ) throw new TypeError("service_role_shadow_traversal_authority_invalid");
+  const artifact = exactRecord(input.row.artifact_json, [
+    "version",
+    "schemaVersion",
+    "runId",
+    "analysisManifestHash",
+    "snapshotHash",
+    "visitedStates",
+    "frontier",
+    "terminalStates",
+    "supersededStateIds",
+    "eligibleEventIds",
+    "eligibleEventCount",
+    "directionCount",
+    "fundingEpisodeCount",
+    "expandedStateCount",
+    "allocatedInputRaw",
+    "terminalRaw",
+    "residualRaw",
+    "backwardCoverage",
+    "forwardCoverage",
+    "closed"
+  ]);
+  if (
+    artifact.version !== "unified-traversal-artifact-v1" ||
+    artifact.schemaVersion !== 1 ||
+    artifact.runId !== input.runId ||
+    artifact.analysisManifestHash !== input.row.analysis_manifest_sha256 ||
+    typeof artifact.snapshotHash !== "string" ||
+    !HASH.test(artifact.snapshotHash) ||
+    artifact.closed !== true ||
+    exactDenseArray(artifact.frontier).length !== 0 ||
+    fingerprintCanonicalArtifact(input.row.artifact_json) !==
+      input.row.artifact_sha256
+  ) throw new TypeError("service_role_shadow_traversal_artifact_invalid");
+  const states = exactDenseArray(artifact.visitedStates).map((value) => {
+    const state = exactRecord(value, [
+      "address",
+      "direction",
+      "anchorTimestamp",
+      "fundingEpisodeId",
+      "allocatedAmountRaw",
+      "sourceEventIds"
+    ]);
+    if (
+      !validRootText(state.address) ||
+      (state.direction !== "backward" && state.direction !== "forward") ||
+      !validRootText(state.anchorTimestamp) ||
+      !validRootText(state.fundingEpisodeId) ||
+      typeof state.allocatedAmountRaw !== "string" ||
+      !/^(0|[1-9][0-9]*)$/u.test(state.allocatedAmountRaw)
+    ) throw new TypeError("service_role_shadow_traversal_state_invalid");
+    const sourceEventIds = exactDenseArray(state.sourceEventIds).map((id) => {
+      if (!validRootText(id)) {
+        throw new TypeError("service_role_shadow_traversal_state_invalid");
+      }
+      return id;
+    });
+    if (new Set(sourceEventIds).size !== sourceEventIds.length) {
+      throw new TypeError("service_role_shadow_traversal_state_invalid");
+    }
+    const parsed = Object.freeze({
+      address: state.address,
+      direction: state.direction,
+      anchorTimestamp: state.anchorTimestamp,
+      fundingEpisodeId: state.fundingEpisodeId,
+      allocatedAmountRaw: state.allocatedAmountRaw,
+      sourceEventIds: Object.freeze([...sourceEventIds])
+    });
+    traversalStateId(parsed);
+    return parsed;
+  });
+  if (new Set(states.map(traversalStateId)).size !== states.length) {
+    throw new TypeError("service_role_shadow_traversal_state_duplicate");
+  }
+  return Object.freeze({
+    taskId: input.row.task_id,
+    acceptedAttemptId: input.row.accepted_attempt_id,
+    artifactSha256: input.row.artifact_sha256,
+    analysisManifestSha256: input.row.analysis_manifest_sha256,
+    subjectAddress: input.row.subject_address,
+    snapshotHash: artifact.snapshotHash,
+    states: Object.freeze(states)
+  });
+}
+
+type AcceptedHistoryInventoryV1 = {
+  readonly entry: CommittedPlannerEntryV1;
+  readonly manifestKey: string;
+  readonly manifestSha256: string;
+  readonly pageArtifactHashes: readonly string[];
+  readonly address: string;
+  readonly events: readonly IndexedTronUsdtTransfer[];
+};
+
+async function loadAcceptedHistoryInventoryV1(input: {
+  readonly client: UnifiedQueryable;
+  readonly runId: string;
+  readonly snapshotHash: string;
+  readonly row: Record<string, unknown>;
+}): Promise<AcceptedHistoryInventoryV1> {
+  const entry: CommittedPlannerEntryV1 = {
+    canonicalSequence: Number(input.row.canonical_sequence),
+    taskId: String(input.row.task_id),
+    acceptedAttemptId: String(input.row.accepted_attempt_id),
+    artifactSha256: String(input.row.artifact_sha256)
+  };
+  if (validateCommittedEntries([entry]) === null ||
+    !validRootText(input.row.logical_key)) {
+    throw new TypeError("service_role_shadow_history_authority_invalid");
+  }
+  const [manifestRow] = await loadArtifactsByHashes(
+    input.client,
+    input.runId,
+    [entry.artifactSha256]
+  );
+  if (
+    !manifestRow ||
+    manifestRow.kind !== "address_history_manifest" ||
+    manifestRow.schemaVersion !== "1" ||
+    fingerprintCanonicalArtifact(manifestRow.artifact) !== entry.artifactSha256
+  ) throw new TypeError("service_role_shadow_history_manifest_invalid");
+  const manifest = manifestRow.artifact as Partial<AddressHistoryManifestV1>;
+  if (
+    manifest.version !== "unified-address-history-manifest-v1" ||
+    manifest.schemaVersion !== 1 ||
+    manifest.chain !== "tron" ||
+    manifest.snapshotHash !== input.snapshotHash ||
+    typeof manifest.tokenContract !== "string" ||
+    typeof manifest.address !== "string" ||
+    typeof manifest.providerRequestVersion !== "string" ||
+    typeof manifest.key !== "string" ||
+    manifest.key !== input.row.logical_key ||
+    !Array.isArray(manifest.pageArtifactHashes) ||
+    typeof manifest.rawRowCount !== "number" ||
+    typeof manifest.duplicateCount !== "number" ||
+    manifest.exhaustion === undefined
+  ) throw new TypeError("service_role_shadow_history_manifest_invalid");
+  const pageHashes = manifest.pageArtifactHashes;
+  const pageRows = await loadArtifactsByHashes(
+    input.client,
+    input.runId,
+    pageHashes
+  );
+  if (pageRows.length !== pageHashes.length) {
+    throw new TypeError("service_role_shadow_history_page_invalid");
+  }
+  const pagesByHash = new Map(pageRows.map((row) => [row.sha256, row]));
+  const byEventId = new Map<string, IndexedTronUsdtTransfer>();
+  let rawRowCount = 0;
+  for (const pageSha256 of pageHashes) {
+    const row = pagesByHash.get(pageSha256);
+    if (
+      !row ||
+      row.kind !== "address_history_page" ||
+      row.schemaVersion !== "1" ||
+      fingerprintCanonicalArtifact(row.artifact) !== pageSha256
+    ) throw new TypeError("service_role_shadow_history_page_invalid");
+    const page = row.artifact as Partial<UnifiedAddressHistoryPageArtifactV1>;
+    if (
+      page.version !== "unified-address-history-page-v1" ||
+      page.schemaVersion !== 1 ||
+      page.runId !== input.runId ||
+      page.manifestKey !== manifest.key ||
+      typeof page.providerPageHash !== "string" ||
+      !HASH.test(page.providerPageHash) ||
+      !Number.isSafeInteger(page.rawRowCount) ||
+      (page.rawRowCount ?? -1) < 0 ||
+      !Array.isArray(page.events)
+    ) throw new TypeError("service_role_shadow_history_page_invalid");
+    rawRowCount += page.rawRowCount as number;
+    for (const serialized of page.events) {
+      const blockTimestamp = new Date(serialized.blockTimestamp);
+      if (Number.isNaN(blockTimestamp.getTime()) ||
+        blockTimestamp.toISOString() !== serialized.blockTimestamp) {
+        throw new TypeError("service_role_shadow_history_page_invalid");
+      }
+      const event = { ...serialized, blockTimestamp } as IndexedTronUsdtTransfer;
+      const eventId = canonicalTronUsdtEventKey(event);
+      const prior = byEventId.get(eventId);
+      if (prior && fingerprintCanonicalArtifact(prior) !==
+        fingerprintCanonicalArtifact(event)) {
+        throw new TypeError("service_role_shadow_history_event_conflict");
+      }
+      byEventId.set(eventId, event);
+    }
+  }
+  const eventEntries = [...byEventId.entries()].sort(([left], [right]) =>
+    compareCodeUnits(left, right)
+  );
+  const rebuilt = buildAddressHistoryManifest({
+    chain: "tron",
+    snapshotHash: input.snapshotHash,
+    tokenContract: manifest.tokenContract,
+    address: manifest.address,
+    providerRequestVersion: manifest.providerRequestVersion,
+    pageArtifactHashes: pageHashes,
+    canonicalEventIds: eventEntries.map(([eventId]) => eventId),
+    rawRowCount,
+    duplicateCount: manifest.duplicateCount,
+    exhaustion: manifest.exhaustion
+  });
+  if (
+    addressHistoryManifestKey(rebuilt) !== manifest.key ||
+    fingerprintCanonicalArtifact(rebuilt) !== entry.artifactSha256
+  ) throw new TypeError("service_role_shadow_history_manifest_invalid");
+  return Object.freeze({
+    entry,
+    manifestKey: rebuilt.key,
+    manifestSha256: entry.artifactSha256,
+    pageArtifactHashes: Object.freeze([...rebuilt.pageArtifactHashes]),
+    address: rebuilt.address,
+    events: Object.freeze(eventEntries.map(([, event]) => event))
+  });
+}
+
+async function validateRuntimeReceiptClosureV1(input: {
+  readonly client: UnifiedQueryable;
+  readonly runtimeCommit: string;
+  readonly runId: string;
+  readonly traversalTaskId: string;
+  readonly traversalAttempt: number;
+  readonly currentCheckpoint: unknown;
+  readonly currentEntries: readonly CommittedPlannerEntryV1[];
+  readonly receiptRow: StoredArtifactRow;
+  readonly precommitSha256?: string;
+  readonly signal: AbortSignal;
+}): Promise<ServiceRoleShadowRuntimeReceiptV1 | null> {
+  try {
+    if (
+      input.receiptRow.kind !== "service_role_shadow_runtime_receipt" ||
+      input.receiptRow.schemaVersion !== "1" ||
+      fingerprintCanonicalArtifact(input.receiptRow.artifact) !==
+        input.receiptRow.sha256
+    ) return null;
+    const receipt = parseServiceRoleShadowRuntimeReceiptV1({
+      artifact: input.receiptRow.artifact,
+      expectedSha256: input.receiptRow.sha256
+    });
+    if (
+      receipt.runId !== input.runId ||
+      receipt.runtimeCommit !== input.runtimeCommit ||
+      receipt.traversalTaskId !== input.traversalTaskId ||
+      receipt.traversalAttempt !== input.traversalAttempt ||
+      (input.precommitSha256 !== undefined &&
+        receipt.precommitSha256 !== input.precommitSha256)
+    ) return null;
+    const checkpoint = input.currentCheckpoint;
+    if (checkpoint === null || typeof checkpoint !== "object" ||
+      Array.isArray(checkpoint)) return null;
+    const currentHead = (checkpoint as { deltaHeadSha256?: unknown })
+      .deltaHeadSha256;
+    if (typeof currentHead !== "string" || !HASH.test(currentHead)) return null;
+    const currentEntries = new Map(input.currentEntries.map((entry) => [
+      entry.canonicalSequence,
+      entry
+    ]));
+    if (!receipt.committedEntries.every((entry) =>
+      canonicalizeArtifactJson(currentEntries.get(entry.canonicalSequence)) ===
+        canonicalizeArtifactJson(entry)
+    )) return null;
+    const [precommitRow] = await loadArtifactsByHashes(
+      input.client,
+      input.runId,
+      [receipt.precommitSha256]
+    );
+    if (
+      !precommitRow ||
+      precommitRow.kind !== "service_role_shadow_precommit_receipt" ||
+      precommitRow.schemaVersion !== "1"
+    ) return null;
+    const precommit = parseServiceRoleShadowPrecommitReceiptV1({
+      artifact: precommitRow.artifact,
+      expectedSha256: receipt.precommitSha256
+    });
+    if (
+      precommit.runId !== input.runId ||
+      receipt.snapshotHash !== precommit.snapshotHash ||
+      receipt.inputFenceSha256 !== precommit.inputFenceSha256 ||
+      receipt.inputSetSha256 !== precommit.inputSetSha256 ||
+      receipt.compoundBindingKey !== precommit.compoundBindingKey ||
+      receipt.manifestKey !== precommit.manifestKey ||
+      receipt.manifestSha256 !== precommit.manifestSha256 ||
+      receipt.candidateCheckpointSha256 !==
+        precommit.candidateCheckpointSha256 ||
+      receipt.candidateDeltaSha256 !== precommit.candidateDeltaSha256 ||
+      canonicalizeArtifactJson(receipt.acceptedPageArtifactHashes) !==
+        canonicalizeArtifactJson(precommit.acceptedPageArtifactHashes) ||
+      canonicalizeArtifactJson(receipt.profiles) !==
+        canonicalizeArtifactJson(precommit.profiles) ||
+      receipt.committedEntries.filter((entry) =>
+        entry.artifactSha256 === precommit.manifestSha256
+      ).length !== 1
+    ) return null;
+    const closureHashes = [...new Set([
+      precommit.inputFenceSha256,
+      precommit.inputSetSha256,
+      ...precommit.acceptedPageArtifactHashes,
+      ...precommit.profiles.map((profile) => profile.profileSha256)
+    ])].sort(compareCodeUnits);
+    const closureRows = await loadArtifactsByHashes(
+      input.client,
+      input.runId,
+      closureHashes
+    );
+    if (closureRows.length !== closureHashes.length) return null;
+    const closureByHash = new Map(closureRows.map((row) => [row.sha256, row]));
+    const fenceRow = closureByHash.get(precommit.inputFenceSha256);
+    const inputSetRow = closureByHash.get(precommit.inputSetSha256);
+    if (
+      !fenceRow ||
+      fenceRow.kind !== "service_role_shadow_input_fence" ||
+      fenceRow.schemaVersion !== "1" ||
+      !inputSetRow ||
+      inputSetRow.kind !== "service_role_shadow_input_set" ||
+      inputSetRow.schemaVersion !== "1"
+    ) return null;
+    const fence = parseServiceRoleShadowInputFenceV1({
+      artifact: fenceRow.artifact,
+      expectedSha256: precommit.inputFenceSha256
+    });
+    const inputSet = parseServiceRoleShadowInputSetV1({
+      artifact: inputSetRow.artifact,
+      expectedSha256: precommit.inputSetSha256
+    });
+    if (
+      fence.runId !== input.runId ||
+      fence.snapshotHash !== precommit.snapshotHash ||
+      fence.runtimeCommit !== input.runtimeCommit ||
+      fence.outcome.kind !== "ready" ||
+      fence.outcome.inputSetSha256 !== precommit.inputSetSha256 ||
+      inputSet.runId !== input.runId ||
+      inputSet.snapshotHash !== precommit.snapshotHash ||
+      !precommit.profiles.every((profile) => {
+        const row = closureByHash.get(profile.profileSha256);
+        return row?.kind === "service_role_shadow_profile" &&
+          row.schemaVersion === "1" &&
+          fingerprintCanonicalArtifact(row.artifact) === profile.profileSha256;
+      })
+    ) return null;
+    if (!await isReachableTraversalDeltaV1({
+      client: input.client,
+      runId: input.runId,
+      headSha256: currentHead,
+      candidateSha256: receipt.committedDeltaHeadSha256,
+      signal: input.signal
+    })) return null;
+    if (!await isReachableTraversalDeltaV1({
+      client: input.client,
+      runId: input.runId,
+      headSha256: receipt.committedDeltaHeadSha256,
+      candidateSha256: receipt.candidateDeltaSha256,
+      signal: input.signal
+    })) return null;
+    if (
+      currentHead === receipt.committedDeltaHeadSha256 &&
+      fingerprintCanonicalArtifact(checkpoint) !== receipt.committedCheckpointSha256
+    ) return null;
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
 async function convergeUnavailable(
   db: UnifiedTransactionalQueryable,
   input: {
@@ -1551,6 +2348,13 @@ export function createServiceRoleShadowRuntimeV1(input: {
     readonly task: UnifiedWorkerTask;
     readonly result: Extract<UnifiedChunkOutcome, { kind: "checkpoint" }>;
     readonly checkpointCommit: UnifiedCheckpointCommitResult;
+    readonly signal: AbortSignal;
+  }): Promise<void>;
+  summarizeRun(summary: {
+    readonly runId: string;
+    readonly signal: AbortSignal;
+  }): Promise<BoundArtifact<ServiceRoleShadowRunSummaryV1> | null>;
+  reconcileCommittedServiceRoleShadowRunsV1(input: {
     readonly signal: AbortSignal;
   }): Promise<void>;
 } {
@@ -1677,6 +2481,395 @@ export function createServiceRoleShadowRuntimeV1(input: {
     });
   };
 
+  const summarizeRun = async (summaryInput: {
+    readonly runId: string;
+    readonly signal: AbortSignal;
+  }): Promise<BoundArtifact<ServiceRoleShadowRunSummaryV1> | null> => {
+    if (!validRootText(summaryInput.runId)) {
+      throw new TypeError("service_role_shadow_summary_run_id_invalid");
+    }
+    if (summaryInput.signal.aborted) return null;
+    return input.db.transaction(async (client) => {
+      await setReconciliationDeadlines(client);
+      if (summaryInput.signal.aborted) return null;
+      const traversalRows = (await client.query(
+        `select task.id as task_id,
+                task.attempt as traversal_attempt,
+                task.accepted_attempt_id,
+                task.checkpoint_json,
+                attempt.artifact_sha256,
+                run.analysis_manifest_sha256,
+                run.subject_address,
+                artifact.artifact_json
+           from unified_check_tasks task
+           join unified_check_runs run on run.id = task.run_id
+           join unified_check_attempts attempt
+             on attempt.id = task.accepted_attempt_id
+            and attempt.task_id = task.id
+            and attempt.attempt = task.attempt
+           join unified_check_artifacts artifact
+             on artifact.sha256 = attempt.artifact_sha256
+            and artifact.created_by_run_id = task.run_id
+            and artifact.kind = 'traversal_result'
+            and artifact.schema_version = '1'
+          where task.run_id = $1
+            and task.kind = 'traversal'
+            and task.status = 'COMPLETED'
+            and task.cancellation_requested_at is null`,
+        [summaryInput.runId]
+      )).rows;
+      if (traversalRows.length !== 1) return null;
+      const traversal = parseAcceptedTraversalInventoryV1({
+        row: traversalRows[0]!,
+        runId: summaryInput.runId
+      });
+      await validateRunSnapshot(client, {
+        runId: summaryInput.runId,
+        snapshotHash: traversal.snapshotHash
+      }, false);
+      const fenceResolution = await resolveExistingFence(client, {
+        runId: summaryInput.runId,
+        snapshotHash: traversal.snapshotHash,
+        runtimeCommit: input.runtimeCommit
+      });
+      if (fenceResolution.kind !== "reuse") return null;
+      const runtimeState = fenceResolution.state;
+      const fence = runtimeState.fence;
+
+      const shadowRows = (await client.query(
+        `select sha256,created_by_run_id,kind,schema_version,artifact_json
+           from unified_check_artifacts
+          where created_by_run_id = $1
+            and kind in (
+              'service_role_shadow_profile',
+              'service_role_shadow_precommit_receipt',
+              'service_role_shadow_runtime_receipt'
+            )
+          order by kind,sha256`,
+        [summaryInput.runId]
+      )).rows.map(storedArtifactRow);
+      const planner = await loadCommittedPlannerInventoryV1(
+        client,
+        summaryInput.runId
+      );
+      if (planner === null) return null;
+      const { rows: plannerRows, entries: committedEntries } = planner;
+
+      let missing = 0;
+      let conflict = 0;
+      let malformed = 0;
+      type EligibleGroup = {
+        readonly compoundBindingKey: string;
+        readonly history: AcceptedHistoryInventoryV1;
+        readonly profiles: ServiceRoleShadowPrecommitReceiptV1["profiles"];
+      };
+      const eligibleGroups: EligibleGroup[] = [];
+      const historyRows = plannerRows.filter((row) =>
+        row.task_kind === "address_history"
+      );
+      const historiesByAddress = new Map<string, AcceptedHistoryInventoryV1[]>();
+      const malformedHistoryAddresses = new Set<string>();
+      for (const historyRow of historyRows) {
+        if (summaryInput.signal.aborted) return null;
+        try {
+          const history = await loadAcceptedHistoryInventoryV1({
+            client,
+            runId: summaryInput.runId,
+            snapshotHash: traversal.snapshotHash,
+            row: historyRow
+          });
+          const current = historiesByAddress.get(history.address) ?? [];
+          current.push(history);
+          historiesByAddress.set(history.address, current);
+        } catch {
+          const [row] = await loadArtifactsByHashes(client, summaryInput.runId, [
+            String(historyRow.artifact_sha256)
+          ]);
+          const address = row?.artifact !== null &&
+              typeof row?.artifact === "object" &&
+              !Array.isArray(row.artifact) &&
+              validRootText((row.artifact as { address?: unknown }).address)
+            ? String((row.artifact as { address: string }).address)
+            : null;
+          if (address === null) malformed += 1;
+          else malformedHistoryAddresses.add(address);
+        }
+      }
+      const statesByAddressDirection = new Map<
+        string,
+        typeof traversal.states[number][]
+      >();
+      for (const state of traversal.states) {
+        if (state.address === traversal.subjectAddress) continue;
+        const key = JSON.stringify([state.address, state.direction]);
+        const states = statesByAddressDirection.get(key) ?? [];
+        states.push(state);
+        statesByAddressDirection.set(key, states);
+      }
+      for (const [, states] of [...statesByAddressDirection]
+        .sort(([left], [right]) => compareCodeUnits(left, right))) {
+        const address = states[0]!.address;
+        if (malformedHistoryAddresses.has(address)) {
+          malformed += 1;
+          continue;
+        }
+        const histories = historiesByAddress.get(address) ?? [];
+        if (histories.length === 0) {
+          missing += 1;
+          continue;
+        }
+        if (histories.length !== 1) {
+          conflict += 1;
+          continue;
+        }
+        const history = histories[0]!;
+        const derived = new Map<string, typeof states>();
+        let groupMalformed = false;
+        for (const state of states) {
+          try {
+            const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+              state,
+              acceptedHistoryEvents: history.events
+            });
+            const key = serviceRoleShadowCompoundBindingKeyV1({
+              runId: summaryInput.runId,
+              snapshotHash: traversal.snapshotHash,
+              addressHistoryManifestSha256: history.manifestSha256,
+              binding
+            });
+            const current = derived.get(key) ?? [];
+            derived.set(key, [...current, state]);
+          } catch {
+            groupMalformed = true;
+          }
+        }
+        if (groupMalformed) malformed += 1;
+        for (const [compoundBindingKey, groupStates] of derived) {
+          if (fence.artifact.outcome.kind === "unavailable") {
+            if (fence.artifact.outcome.reason === "preload_timeout") missing += 1;
+            else if (fence.artifact.outcome.reason === "conflict") conflict += 1;
+            else malformed += 1;
+            continue;
+          }
+          const maps = runtimeState.mapsByCompoundBindingKey.get(
+            compoundBindingKey
+          ) ?? [];
+          if (maps.length === 0) {
+            missing += 1;
+            continue;
+          }
+          if (maps.length !== 1) {
+            conflict += 1;
+            continue;
+          }
+          const map = maps[0]!;
+          const profiles: Array<
+            ServiceRoleShadowPrecommitReceiptV1["profiles"][number]
+          > = [];
+          for (const state of [...groupStates].sort((left, right) =>
+            compareCodeUnits(traversalStateId(left), traversalStateId(right))
+          )) {
+            const built = maybeBuildServiceRoleShadowArtifactV1({
+              mode: POLICY_VERSION,
+              runId: summaryInput.runId,
+              snapshotHash: traversal.snapshotHash,
+              subjectAddress: traversal.subjectAddress,
+              state,
+              acceptedHistory: {
+                manifestKey: history.manifestKey,
+                manifestSha256: history.manifestSha256,
+                pageArtifactHashes: history.pageArtifactHashes,
+                events: history.events
+              },
+              eventRoleMap: {
+                sha256: map.sourceMapSha256,
+                artifact: map.sourceMap
+              }
+            });
+            if (built === null || built.artifact.result.insufficientReason !== null) {
+              continue;
+            }
+            profiles.push(Object.freeze({
+              traversalStateId: traversalStateId(state),
+              shadowStateId: built.artifact.traversalStateId,
+              profileSha256: fingerprintCanonicalArtifact(built.artifact),
+              wrapperSha256: map.wrapperSha256
+            }));
+          }
+          if (profiles.length > 0) {
+            eligibleGroups.push({
+              compoundBindingKey,
+              history,
+              profiles: Object.freeze(profiles)
+            });
+          }
+        }
+      }
+      eligibleGroups.sort((left, right) =>
+        compareCodeUnits(left.compoundBindingKey, right.compoundBindingKey)
+      );
+
+      const precommitRows = shadowRows.filter((row) =>
+        row.kind === "service_role_shadow_precommit_receipt" &&
+        row.schemaVersion === "1"
+      );
+      const precommits: Array<{
+        readonly sha256: string;
+        readonly artifact: ServiceRoleShadowPrecommitReceiptV1;
+      }> = [];
+      for (const row of precommitRows) {
+        try {
+          const artifact = parseServiceRoleShadowPrecommitReceiptV1({
+            artifact: row.artifact,
+            expectedSha256: row.sha256
+          });
+          if (artifact.runId === summaryInput.runId) {
+            precommits.push({ sha256: row.sha256, artifact });
+          }
+        } catch {
+          // Invalid post-input artifacts are neither accepted input
+          // classification nor valid orphans. The eligible group remains
+          // unreconciled unless another strict closure succeeds.
+        }
+      }
+      const receiptRows = shadowRows.filter((row) =>
+        row.kind === "service_role_shadow_runtime_receipt" &&
+        row.schemaVersion === "1"
+      );
+      const validatedReceipts: Array<{
+        readonly sha256: string;
+        readonly artifact: ServiceRoleShadowRuntimeReceiptV1;
+      }> = [];
+      for (const row of receiptRows) {
+        const artifact = await validateRuntimeReceiptClosureV1({
+          client,
+          runtimeCommit: input.runtimeCommit,
+          runId: summaryInput.runId,
+          traversalTaskId: traversal.taskId,
+          traversalAttempt: Number(traversalRows[0]!.traversal_attempt),
+          currentCheckpoint: traversalRows[0]!.checkpoint_json,
+          currentEntries: committedEntries,
+          receiptRow: row,
+          signal: summaryInput.signal
+        });
+        if (artifact !== null) {
+          validatedReceipts.push({ sha256: row.sha256, artifact });
+        }
+      }
+      const expectedProfiles = new Set(eligibleGroups.flatMap((group) =>
+        group.profiles.map((profile) => profile.profileSha256)
+      ));
+      const profileOrphan = shadowRows.filter((row) =>
+        row.kind === "service_role_shadow_profile" &&
+        row.schemaVersion === "1" &&
+        HASH.test(row.sha256) &&
+        fingerprintCanonicalArtifact(row.artifact) === row.sha256 &&
+        row.artifact !== null &&
+        typeof row.artifact === "object" &&
+        !Array.isArray(row.artifact) &&
+        (row.artifact as { schemaVersion?: unknown }).schemaVersion ===
+          "service-role-shadow-profile-v1" &&
+        (row.artifact as { policyVersion?: unknown }).policyVersion ===
+          POLICY_VERSION &&
+        (row.artifact as { runId?: unknown }).runId === summaryInput.runId &&
+        (row.artifact as { snapshotHash?: unknown }).snapshotHash ===
+          traversal.snapshotHash &&
+        (row.artifact as { productionEffect?: unknown }).productionEffect === false &&
+        !expectedProfiles.has(row.sha256)
+      ).length;
+      const referencedPrecommits = new Set<string>();
+      const groupReceiptSha256s: string[] = [];
+      let reconciledGroup = 0;
+      let reconciledProfile = 0;
+      let unreconciledGroup = 0;
+      for (const group of eligibleGroups) {
+        const matchingPrecommits = precommits.filter(({ artifact }) =>
+          artifact.snapshotHash === traversal.snapshotHash &&
+          artifact.inputFenceSha256 === fence.sha256 &&
+          fence.artifact.outcome.kind === "ready" &&
+          artifact.inputSetSha256 === fence.artifact.outcome.inputSetSha256 &&
+          artifact.manifestKey === group.history.manifestKey &&
+          artifact.manifestSha256 === group.history.manifestSha256 &&
+          artifact.compoundBindingKey === group.compoundBindingKey &&
+          canonicalizeArtifactJson(artifact.acceptedPageArtifactHashes) ===
+            canonicalizeArtifactJson(group.history.pageArtifactHashes) &&
+          canonicalizeArtifactJson(artifact.profiles) ===
+            canonicalizeArtifactJson(group.profiles)
+        );
+        for (const precommit of matchingPrecommits) {
+          referencedPrecommits.add(precommit.sha256);
+        }
+        const validReceipts = validatedReceipts.filter(({ artifact }) =>
+          artifact.compoundBindingKey === group.compoundBindingKey &&
+            matchingPrecommits.some((candidate) =>
+              candidate.sha256 === artifact.precommitSha256
+            ) &&
+            canonicalizeArtifactJson(artifact.profiles) ===
+              canonicalizeArtifactJson(group.profiles) &&
+            artifact.committedEntries.filter((entry) =>
+              entry.artifactSha256 === group.history.manifestSha256
+            ).length === 1
+        );
+        if (validReceipts.length === 1) {
+          reconciledGroup += 1;
+          reconciledProfile += group.profiles.length;
+          groupReceiptSha256s.push(validReceipts[0]!.sha256);
+        } else {
+          unreconciledGroup += 1;
+        }
+      }
+      const precommitOrphan = precommits.filter(({ sha256 }) =>
+        !referencedPrecommits.has(sha256)
+      ).length;
+      const counts = {
+        missing,
+        conflict,
+        malformed,
+        eligibleGroup: eligibleGroups.length,
+        eligibleProfile: expectedProfiles.size,
+        reconciledGroup,
+        reconciledProfile,
+        unreconciledGroup,
+        profileOrphan,
+        precommitOrphan
+      };
+      const complete = fence.artifact.outcome.kind === "ready" &&
+        reconciledGroup >= 1 &&
+        missing === 0 &&
+        conflict === 0 &&
+        malformed === 0 &&
+        unreconciledGroup === 0 &&
+        profileOrphan === 0 &&
+        precommitOrphan === 0 &&
+        reconciledProfile === expectedProfiles.size;
+      const summary = buildServiceRoleShadowRunSummaryV1({
+        runId: summaryInput.runId,
+        snapshotHash: traversal.snapshotHash,
+        runtimeCommit: input.runtimeCommit,
+        inputFenceSha256: fence.sha256,
+        acceptedTraversal: {
+          taskId: traversal.taskId,
+          acceptedAttemptId: traversal.acceptedAttemptId,
+          artifactSha256: traversal.artifactSha256
+        },
+        groupReceiptSha256s,
+        counts,
+        complete
+      });
+      await insertServiceRoleArtifact(client, {
+        sha256: summary.sha256,
+        createdByRunId: summaryInput.runId,
+        kind: "service_role_shadow_run_summary",
+        schemaVersion: "1",
+        artifact: summary.artifact
+      });
+      if (summaryInput.signal.aborted) {
+        throw new Error("service_role_shadow_summary_aborted");
+      }
+      return summary;
+    });
+  };
+
   const reconcileCheckpoint = async (reconciliation: {
     readonly task: UnifiedWorkerTask;
     readonly result: Extract<UnifiedChunkOutcome, { kind: "checkpoint" }>;
@@ -1706,28 +2899,6 @@ export function createServiceRoleShadowRuntimeV1(input: {
       ) {
         return;
       }
-      const checkpoint = checkpointCommit.committedCheckpoint;
-      if (checkpoint === null || typeof checkpoint !== "object" ||
-        Array.isArray(checkpoint)) return;
-      const committedDeltaHeadSha256 = (
-        checkpoint as { deltaHeadSha256?: unknown }
-      ).deltaHeadSha256;
-      if (typeof committedDeltaHeadSha256 !== "string" ||
-        !HASH.test(committedDeltaHeadSha256)) return;
-      const committedEntries = [...ordered.committedEntries];
-      for (let index = 0; index < committedEntries.length; index += 1) {
-        const entry = committedEntries[index]!;
-        if (
-          !Number.isSafeInteger(entry.canonicalSequence) ||
-          entry.canonicalSequence < 0 ||
-          !validRootText(entry.taskId) ||
-          !validRootText(entry.acceptedAttemptId) ||
-          !HASH.test(entry.artifactSha256) ||
-          (index > 0 && committedEntries[index - 1]!.canonicalSequence >=
-            entry.canonicalSequence)
-        ) return;
-      }
-      const committedCheckpointSha256 = fingerprintCanonicalArtifact(checkpoint);
       for (const pending of candidates) {
         if (signal.aborted) return;
         if (
@@ -1738,151 +2909,17 @@ export function createServiceRoleShadowRuntimeV1(input: {
         try {
           await input.db.transaction(async (client) => {
             await setReconciliationDeadlines(client);
-            if (signal.aborted) return;
-            const [precommitRow] = await loadArtifactsByHashes(
+            await reconcileDurablePrecommitV1({
               client,
-              task.runId,
-              [pending.precommitSha256]
-            );
-            if (
-              !precommitRow ||
-              precommitRow.kind !== "service_role_shadow_precommit_receipt" ||
-              precommitRow.schemaVersion !== "1"
-            ) return;
-            const persistedPrecommit = parseServiceRoleShadowPrecommitReceiptV1({
-              artifact: precommitRow.artifact,
-              expectedSha256: pending.precommitSha256
-            });
-            if (persistedPrecommit.runId !== pending.runId) return;
-            const matchingEntries = committedEntries.filter((entry) =>
-              entry.artifactSha256 === persistedPrecommit.manifestSha256
-            );
-            if (matchingEntries.length !== 1) return;
-            if (signal.aborted) return;
-            const expectedHashes = [...new Set([
-              pending.precommitSha256,
-              persistedPrecommit.inputFenceSha256,
-              persistedPrecommit.inputSetSha256,
-              ...persistedPrecommit.profiles.map((profile) =>
-                profile.profileSha256)
-            ])].sort(compareCodeUnits);
-            const rows = await loadArtifactsByHashes(
-              client,
-              task.runId,
-              expectedHashes
-            );
-            if (rows.length !== expectedHashes.length) return;
-            const byHash = new Map(rows.map((row) => [row.sha256, row]));
-            const fenceRow = byHash.get(persistedPrecommit.inputFenceSha256);
-            const inputSetRow = byHash.get(persistedPrecommit.inputSetSha256);
-            if (
-              !fenceRow ||
-              fenceRow.kind !== "service_role_shadow_input_fence" ||
-              fenceRow.schemaVersion !== "1" ||
-              !inputSetRow ||
-              inputSetRow.kind !== "service_role_shadow_input_set" ||
-              inputSetRow.schemaVersion !== "1"
-            ) return;
-            const fence = parseServiceRoleShadowInputFenceV1({
-              artifact: fenceRow.artifact,
-              expectedSha256: persistedPrecommit.inputFenceSha256
-            });
-            const inputSet = parseServiceRoleShadowInputSetV1({
-              artifact: inputSetRow.artifact,
-              expectedSha256: persistedPrecommit.inputSetSha256
-            });
-            if (
-              fence.runId !== task.runId ||
-              fence.snapshotHash !== persistedPrecommit.snapshotHash ||
-              fence.runtimeCommit !== input.runtimeCommit ||
-              fence.outcome.kind !== "ready" ||
-              fence.outcome.inputSetSha256 !==
-                persistedPrecommit.inputSetSha256 ||
-              inputSet.runId !== task.runId ||
-              inputSet.snapshotHash !== persistedPrecommit.snapshotHash
-            ) return;
-            for (const profile of persistedPrecommit.profiles) {
-              const row = byHash.get(profile.profileSha256);
-              if (
-                !row ||
-                row.kind !== "service_role_shadow_profile" ||
-                row.schemaVersion !== "1" ||
-                fingerprintCanonicalArtifact(row.artifact) !==
-                  profile.profileSha256
-              ) return;
-            }
-
-            let cursor: string | null = committedDeltaHeadSha256;
-            const visited = new Set<string>();
-            let candidateReachable = false;
-            // ponytail: reconciliation walks one hash-indexed delta chain
-            // under a 500ms DB deadline; a persisted ancestry index is the
-            // upgrade only if measured chains make this bounded read costly.
-            while (cursor !== null && !visited.has(cursor)) {
-              if (signal.aborted) return;
-              visited.add(cursor);
-              const [deltaRow] = await loadArtifactsByHashes(
-                client,
-                task.runId,
-                [cursor]
-              );
-              if (
-                !deltaRow ||
-                deltaRow.kind !== "traversal_delta" ||
-                deltaRow.schemaVersion !== "1" ||
-                fingerprintCanonicalArtifact(deltaRow.artifact) !== cursor ||
-                deltaRow.artifact === null ||
-                typeof deltaRow.artifact !== "object" ||
-                Array.isArray(deltaRow.artifact) ||
-                (deltaRow.artifact as { version?: unknown }).version !==
-                  "unified-traversal-delta-v1"
-              ) return;
-              const previous = (
-                deltaRow.artifact as { previousDeltaHash?: unknown }
-              ).previousDeltaHash;
-              if (previous !== null &&
-                (typeof previous !== "string" || !HASH.test(previous))) {
-                return;
-              }
-              if (cursor === persistedPrecommit.candidateDeltaSha256) {
-                candidateReachable = true;
-                break;
-              }
-              cursor = previous as string | null;
-            }
-            if (!candidateReachable || signal.aborted) return;
-            const receipt = buildServiceRoleShadowRuntimeReceiptV1({
-              runId: persistedPrecommit.runId,
-              snapshotHash: persistedPrecommit.snapshotHash,
               runtimeCommit: input.runtimeCommit,
+              runId: task.runId,
               traversalTaskId: task.id,
               traversalAttempt: task.attempt,
-              inputFenceSha256: persistedPrecommit.inputFenceSha256,
-              inputSetSha256: persistedPrecommit.inputSetSha256,
-              compoundBindingKey: persistedPrecommit.compoundBindingKey,
               precommitSha256: pending.precommitSha256,
-              manifestKey: persistedPrecommit.manifestKey,
-              manifestSha256: persistedPrecommit.manifestSha256,
-              acceptedPageArtifactHashes:
-                persistedPrecommit.acceptedPageArtifactHashes,
-              candidateCheckpointSha256:
-                persistedPrecommit.candidateCheckpointSha256,
-              candidateDeltaSha256: persistedPrecommit.candidateDeltaSha256,
-              committedCheckpointSha256,
-              committedDeltaHeadSha256,
-              committedEntries,
-              profiles: persistedPrecommit.profiles
+              committedCheckpoint: checkpointCommit.committedCheckpoint,
+              committedEntries: ordered.committedEntries,
+              signal
             });
-            await insertServiceRoleArtifact(client, {
-              sha256: receipt.sha256,
-              createdByRunId: task.runId,
-              kind: "service_role_shadow_runtime_receipt",
-              schemaVersion: "1",
-              artifact: receipt.artifact
-            });
-            if (signal.aborted) {
-              throw new Error("service_role_shadow_reconciliation_aborted");
-            }
           });
         } catch (error) {
           if (error instanceof TypeError) continue;
@@ -1891,6 +2928,106 @@ export function createServiceRoleShadowRuntimeV1(input: {
       }
     } finally {
       retirePendingAttempt(attemptKey);
+    }
+  };
+
+  const reconcileCommittedServiceRoleShadowRunsV1 = async (recoveryInput: {
+    readonly signal: AbortSignal;
+  }): Promise<void> => {
+    if (recoveryInput.signal.aborted) return;
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort();
+    recoveryInput.signal.addEventListener("abort", relayAbort, { once: true });
+    const timeout = setTimeout(() => controller.abort(), 1_000);
+    timeout.unref?.();
+    const completedRunIds = new Set<string>();
+    try {
+      await input.db.transaction(async (client) => {
+        await setReconciliationDeadlines(client);
+        if (controller.signal.aborted) return;
+        // One run-level query selects possible durable crash-window work. The
+        // artifact table has no kind index; Task 7 deliberately does not add a
+        // migration for a bounded once-at-startup shadow sweep.
+        const candidates = (await client.query(
+          `select task.id as task_id,
+                  task.run_id,
+                  task.status,
+                  task.attempt,
+                  task.checkpoint_json,
+                  precommit.sha256 as precommit_sha256
+             from unified_check_tasks task
+             join unified_check_artifacts precommit
+               on precommit.created_by_run_id = task.run_id
+              and precommit.kind = 'service_role_shadow_precommit_receipt'
+              and precommit.schema_version = '1'
+            where task.kind = 'traversal'
+              and task.status in ('QUEUED','COMPLETED')
+              and task.cancellation_requested_at is null
+            order by task.run_id,precommit.sha256`,
+          []
+        )).rows;
+        for (const candidate of candidates) {
+          if (controller.signal.aborted) return;
+          const runId = String(candidate.run_id);
+          if (candidate.status === "COMPLETED") {
+            completedRunIds.add(runId);
+          }
+          const planner = await loadCommittedPlannerInventoryV1(client, runId);
+          if (planner === null) continue;
+          const committedEntries = planner.entries;
+          const receiptRows = (await client.query(
+            `select sha256,created_by_run_id,kind,schema_version,artifact_json
+               from unified_check_artifacts
+              where created_by_run_id = $1
+                and kind = 'service_role_shadow_runtime_receipt'
+                and schema_version = '1'
+              order by sha256`,
+            [runId]
+          )).rows.map(storedArtifactRow);
+          let alreadyReconciled = false;
+          for (const receiptRow of receiptRows) {
+            const valid = await validateRuntimeReceiptClosureV1({
+              client,
+              runtimeCommit: input.runtimeCommit,
+              runId,
+              traversalTaskId: String(candidate.task_id),
+              traversalAttempt: Number(candidate.attempt),
+              currentCheckpoint: candidate.checkpoint_json,
+              currentEntries: committedEntries,
+              receiptRow,
+              precommitSha256: String(candidate.precommit_sha256),
+              signal: controller.signal
+            });
+            if (valid !== null) {
+              alreadyReconciled = true;
+              break;
+            }
+          }
+          if (alreadyReconciled) continue;
+          try {
+            await reconcileDurablePrecommitV1({
+              client,
+              runtimeCommit: input.runtimeCommit,
+              runId,
+              traversalTaskId: String(candidate.task_id),
+              traversalAttempt: Number(candidate.attempt),
+              precommitSha256: String(candidate.precommit_sha256),
+              committedCheckpoint: candidate.checkpoint_json,
+              committedEntries,
+              signal: controller.signal
+            });
+          } catch (error) {
+            if (!(error instanceof TypeError)) throw error;
+          }
+        }
+      });
+      for (const runId of [...completedRunIds].sort(compareCodeUnits)) {
+        if (controller.signal.aborted) return;
+        await summarizeRun({ runId, signal: controller.signal });
+      }
+    } finally {
+      clearTimeout(timeout);
+      recoveryInput.signal.removeEventListener("abort", relayAbort);
     }
   };
 
@@ -1904,6 +3041,8 @@ export function createServiceRoleShadowRuntimeV1(input: {
     },
     lookupMap,
     reconcileCheckpoint,
+    summarizeRun,
+    reconcileCommittedServiceRoleShadowRunsV1,
     async observeAcceptedAddressHistoryGroup(group) {
       if (
         !validRootText(group.taskId) ||

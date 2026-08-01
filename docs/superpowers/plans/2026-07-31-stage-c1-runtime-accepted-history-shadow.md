@@ -49,9 +49,11 @@
   500 ms local lock/statement deadlines. Relevant unit tests pass `95/95`;
   shadow-runtime and ordered-commit PostgreSQL pass `8/8 + 18/18` with zero
   skips.
-- Tasks 7-10 have not started. Completion carries `checkpointCommit:null` but
-  intentionally has no summary stub; Task 7 owns terminal summary and bounded
-  recovery. There is no finalizer/report/score effect or C1 acceptance evidence.
+- Task 7 is complete in code. Completion carries `checkpointCommit:null` into
+  the real current-closure summary path; enabled startup performs one bounded
+  recovery sweep. Relevant unit tests pass `96/96`; shadow-runtime and
+  ordered-commit PostgreSQL pass `18/18 + 18/18` with zero skips. Tasks 8-10
+  remain, with no finalizer/report/score effect or C1 acceptance evidence.
 - Guard: strict invalid-config rejection is the only product-facing contract
   change. Do not call C1 or Stage C complete; production remains matrix-v4,
   ScoreAnchorV3 and report-only checked-subject role with no suppression or
@@ -84,8 +86,7 @@ Baseline already passed before this plan: `npm run typecheck`; full `npm test` w
   precommit insert settles and before the transaction callback returns rolls
   back every subgroup row. If every check passed and COMMIT was already ordered
   before a later timer abort, the durable precommit is complete, has no local
-  pending token, and is eligible only for Task 7's bounded crash-window
-  recovery.
+  pending token, and is eligible for Task 7's bounded crash-window recovery.
 - A run's first valid `service-role-shadow-input-fence-v1` outcome is immutable. `ready` binds the complete sorted V2 input set; `unavailable` binds `preload_timeout | malformed | conflict`. Restart reuses that outcome and never rescans a later role-map population.
 - A returned checkpoint row is not sufficient authority: `CANCELLED`, claim-loss, an absent/mismatched ordered-entry commit, or a candidate delta not reachable from the committed head produces no runtime receipt.
 - Acceptance generation is forbidden from a dirty tree. Producer, owning serializer/parser, and tests must already exist in a clean `testedSourceCommit`; replay input, identity, and receipt all bind that exact commit.
@@ -391,7 +392,7 @@ Modify:
   lease, and cap the shadow-only fallback at 512 attempt buckets. The first
   post-durable reconciliation retires the complete matching bucket in `finally`
   for success, cancellation, missing/unapplied/duplicate/unproved authority and
-  database failure; Task 7 recovers any durable precommit that no longer has a
+  database failure; Task 7 recovers a durable precommit that no longer has a
   local token. Before every reconciliation authority query, set transaction-
   local lock and statement timeouts to 500 ms. Unit regression covers expiry,
   ceiling, newest-attempt retention and every terminal outcome; a real
@@ -402,14 +403,14 @@ Modify:
 
 ### Task 7: Build one deterministic terminal run summary
 
-**Files:** Modify runtime module and its two tests.
+**Files:** Modify runtime module, production startup/lifecycle wiring, and tests.
 
-- [ ] **Step 1: Add failing tests** for final accepted-history inventory replay, sorted group receipt hashes, seven-profile/one-group cardinality, orphan profile/precommit counts, ready and unavailable fences, restart-stable hash, duplicate summary idempotence, and all process failures represented only as `unreconciled`.
-- [ ] **Step 2: Implement `service-role-shadow-run-summary-v1`.** Load the accepted traversal result after completion, group final visited states by accepted manifest/address/direction/compound binding, rederive bindings from hash-valid pages and the immutable fence, validate reconciled group receipts, and compute `missing`, `conflict`, `malformed`, `eligibleGroup`, `eligibleProfile`, `reconciledGroup`, `reconciledProfile`, `unreconciledGroup`, `profileOrphan`, and `precommitOrphan` counts. `complete` requires a ready fence, at least one reconciled group, and zero conflict/malformed/unreconciled/orphan; real-data admission is checked separately in Task 9 by frozen identities.
-- [ ] **Step 3: Add one bounded startup recovery sweep outside the finalizer.** `reconcileCommittedServiceRoleShadowRunsV1({ signal })` is called once from enabled runtime startup in `src/index.ts`, never from `productionFinalizer`, and is also reused for the exact post-commit group. One run-level query finds non-cancelled `QUEUED | COMPLETED` traversal rows with durable group precommit receipts but missing runtime receipts; only `COMPLETED` rows are additionally eligible for a missing terminal summary. For each candidate it re-reads the committed checkpoint/delta chain and committed planner-entry identities and reconciles only an exact match. The whole startup sweep aborts at 1,000 ms, does not retain a DB lock, does not poll, and cannot delay or mutate task lifecycle.
-- [ ] **Step 4: Preserve the evidence boundary during recovery.** Reconstruct a lost process-local token only from an immutable group precommit plus the authoritative non-cancelled commit. Never fabricate a precommit receipt after commit; a profile-only partial write or a group with no durable precommit remains `unreconciled`. A `CANCELLED` row is never recoverable even if its checkpoint JSON resembles the candidate. Summary publication happens only for a terminal completed replay/run.
-- [ ] **Step 5: Run tests.** Expected: PASS and identical summary SHA after a new runtime instance; a simulated process loss after checkpoint is reconciled by one startup call, while a cancelled checkpoint, missing precommit, and a hanging recovery sweep write no runtime receipt.
-- [ ] **Step 6: Commit.**
+- [x] **Step 1: Add failing tests** for final accepted-history inventory replay, sorted group receipt hashes, seven-profile/one-group cardinality, orphan profile/precommit counts, ready and unavailable fences, restart-stable hash, duplicate summary idempotence, and all process failures represented only as `unreconciled`.
+- [x] **Step 2: Implement `service-role-shadow-run-summary-v1`.** Load the accepted traversal result after completion, group final visited states by accepted manifest/address/direction/compound binding, rederive bindings from hash-valid pages and the immutable fence, validate reconciled group receipts, and compute `missing`, `conflict`, `malformed`, `eligibleGroup`, `eligibleProfile`, `reconciledGroup`, `reconciledProfile`, `unreconciledGroup`, `profileOrphan`, and `precommitOrphan` counts. `complete` requires a ready fence, at least one reconciled group, and zero missing/conflict/malformed/unreconciled/orphan. Recompute current closure on each publication: unchanged evidence is hash-idempotent, while recovery can append a complete summary after an earlier incomplete immutable snapshot. Real-data admission is checked separately in Task 9 by frozen identities.
+- [x] **Step 3: Add one bounded startup recovery sweep outside the finalizer.** `reconcileCommittedServiceRoleShadowRunsV1({ signal })` is called once from enabled runtime startup in `src/index.ts`, never from `productionFinalizer`, and reuses the same strict durable-precommit reconciler as the exact post-commit group. One run-level query finds non-cancelled `QUEUED | COMPLETED` traversal rows with durable group precommit receipts; corrupt or mismatched runtime-receipt bodies cannot suppress recovery. Only `COMPLETED` rows are additionally summarized. For each candidate it re-reads the committed checkpoint/delta chain and committed planner-entry identities and reconciles only an exact match. The whole startup sweep aborts at 1,000 ms, does not retain a DB lock, does not poll, and cannot delay or mutate task lifecycle.
+- [x] **Step 4: Preserve the evidence boundary during recovery.** Reconstruct a lost process-local token only from an immutable group precommit plus the authoritative non-cancelled commit. Never fabricate a precommit receipt after commit; a profile-only partial write or a group with no durable precommit remains `unreconciled`. A `CANCELLED` row is never recoverable even if its checkpoint JSON resembles the candidate. Summary publication happens only for a terminal completed replay/run.
+- [x] **Step 5: Run tests.** PASS: identical current summary SHA after a new runtime instance; a simulated process loss is recovered once; stale incomplete summary evolves to a distinct complete hash; cancelled, missing-precommit, corrupt-artifact and hanging-sweep cases fail closed. Relevant unit tests pass `96/96`; shadow-runtime plus ordered-commit PostgreSQL pass `18/18 + 18/18` with zero skips; typecheck and diff check pass.
+- [x] **Step 6: Commit.**
 
   ```powershell
   git add src/unifiedCheck/serviceRoleShadowRuntime.ts tests/unified-check/serviceRoleShadowRuntime.test.ts tests/unified-check/serviceRoleShadowRuntime.postgres.test.ts

@@ -61,7 +61,7 @@ insufficient is not qualifying and persists neither. Abort observed before the
 final receipt insert settles and before the transaction callback returns rolls
 back the whole subgroup. If all checks passed and PostgreSQL already ordered
 COMMIT before a later timer abort, that receipt is complete but has no local
-token and is eligible only for Task 7's crash-window recovery. No checkpoint
+token and is eligible for Task 7's bounded crash-window recovery. No checkpoint
 lifecycle, finalizer, score, report, delivery, or production runtime wiring
 changes in this task.
 
@@ -81,9 +81,8 @@ unrelated entries in the same valid atomic prefix are retained in the runtime
 receipt, while zero or duplicate matches fail closed. The runtime independently
 walks hash-valid run-owned traversal deltas backward from the exact committed
 checkpoint head to the candidate delta before writing one idempotent standalone
-receipt. Completion summary and crash-window recovery remain Task 7 work;
-completion is intentionally a no-op at the shadow runtime in Task 6. This path
-remains score/report/finalizer/delivery neutral.
+receipt. Task 7 now routes completed traversal lifecycle through the real
+summary operation; this path remains score/report/finalizer/delivery neutral.
 
 The process-local handoff is bounded by task-attempt lifecycle. It retains only
 the exact run/task/attempt identity and durable precommit hash, groups dense
@@ -97,6 +96,28 @@ authority: they remain Task 7 startup-recovery inputs. Every reconciliation
 transaction sets local lock and statement timeouts to 500 ms before its first
 authority read, leaving rollback and pool-release headroom inside the worker's
 1,000 ms outer observer deadline.
+
+C1 Task 7 adds one enabled-runtime startup sweep, called once from process
+startup and never from the finalizer or a poller. Its own abort deadline is
+1,000 ms and each recovery/summary transaction retains the 500 ms local database
+deadlines. It considers only non-cancelled `QUEUED | COMPLETED` traversal work,
+reconstructs no process token, and writes a runtime receipt only from a durable
+strict precommit plus current committed planner/checkpoint/delta authority.
+`CANCELLED`, profile-only partial state, or a missing precommit is never
+recovered. Only `COMPLETED` traversal work is summarized.
+
+`service-role-shadow-run-summary-v1` replays the accepted completed traversal,
+hash-valid accepted manifests/pages, immutable fence/maps, profiles,
+precommits, runtime receipts, and current committed closure. Its counts are
+`missing`, `conflict`, `malformed`, `eligibleGroup`, `eligibleProfile`,
+`reconciledGroup`, `reconciledProfile`, `unreconciledGroup`, `profileOrphan`,
+and `precommitOrphan`. Accepted-input/fence/map/history defects alone populate
+the first three; post-input loss stays `unreconciled`, and only valid artifacts
+outside the rederived inventory are orphans. `complete` requires a ready fence,
+at least one reconciled group, and zero missing, conflict, malformed,
+unreconciled, or orphan counts. Publication recomputes current durable closure:
+unchanged evidence reuses the same content hash, while later recovery appends a
+new complete summary without deleting the earlier immutable incomplete record.
 
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the

@@ -732,6 +732,13 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   return {
+    reconcileCommittedServiceRoleShadowRunsV1:
+      serviceRoleShadowRuntime === null
+        ? null
+        : (signal: AbortSignal) =>
+            serviceRoleShadowRuntime.reconcileCommittedServiceRoleShadowRunsV1({
+              signal
+            }),
     runProviderCycle(
       slotId = 0,
       claimPermit?: UnifiedProviderClaimPermit,
@@ -828,18 +835,28 @@ export function createUnifiedProductionRuntime(input: {
       onProviderWorkAvailable: input.onProviderWorkAvailable,
       ...(serviceRoleShadowRuntime === null ? {} : {
         async onLifecyclePersisted(lifecycle) {
+          if (lifecycle.task.kind !== "traversal") return;
           if (
-            lifecycle.task.kind !== "traversal" ||
-            lifecycle.result.kind !== "checkpoint" ||
+            lifecycle.result.kind === "checkpoint" &&
+            lifecycle.checkpointCommit !== null
+          ) {
+            await serviceRoleShadowRuntime.reconcileCheckpoint({
+              task: lifecycle.task,
+              result: lifecycle.result,
+              checkpointCommit: lifecycle.checkpointCommit,
+              signal: lifecycle.signal
+            });
+            return;
+          }
+          if (
+            lifecycle.result.kind === "completed" &&
             lifecycle.checkpointCommit === null
-          ) return;
-          await serviceRoleShadowRuntime.reconcileCheckpoint({
-            task: lifecycle.task,
-            result: lifecycle.result,
-            checkpointCommit: lifecycle.checkpointCommit,
-            signal: lifecycle.signal
-          });
-          // Terminal traversal summary is owned and wired by Task 7.
+          ) {
+            await serviceRoleShadowRuntime.summarizeRun({
+              runId: lifecycle.task.runId,
+              signal: lifecycle.signal
+            });
+          }
         }
       })
     }),

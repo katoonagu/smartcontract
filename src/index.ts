@@ -974,6 +974,15 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     }
   }
 });
+if (unifiedProductionRuntime.reconcileCommittedServiceRoleShadowRunsV1 !== null) {
+  void unifiedProductionRuntime
+    .reconcileCommittedServiceRoleShadowRunsV1(new AbortController().signal)
+    .catch((error) => {
+      logger.warn("service_role_shadow_startup_recovery_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+}
 const unifiedRepairServiceTracker = createUnifiedRepairServiceTracker({
   repairMaxWaitChunks: config.unifiedRepairMaxWaitChunks,
   onWaitViolation: (event) =>

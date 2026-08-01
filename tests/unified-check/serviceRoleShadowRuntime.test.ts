@@ -7,10 +7,12 @@ import {
   buildServiceRoleShadowPrecommitReceiptV1,
   buildServiceRoleShadowInputFenceV1,
   buildServiceRoleShadowInputSetV1,
+  buildServiceRoleShadowRunSummaryV1,
   createServiceRoleShadowRuntimeV1,
   parseServiceRoleShadowInputFenceV1,
   parseServiceRoleShadowInputSetV1,
   parseServiceRoleShadowPrecommitReceiptV1,
+  parseServiceRoleShadowRunSummaryV1,
   type ServiceRoleShadowInputFenceV1
 } from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 import {
@@ -30,6 +32,69 @@ const RUN_ID = "00000000-0000-4000-8000-000000000001";
 const SNAPSHOT_HASH = "a".repeat(64);
 const RUNTIME_COMMIT = "task-4-test-runtime";
 const SUBJECT = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
+
+describe("service role shadow terminal summary artifact", () => {
+  const summaryInput = {
+    runId: RUN_ID,
+    snapshotHash: SNAPSHOT_HASH,
+    runtimeCommit: RUNTIME_COMMIT,
+    inputFenceSha256: "b".repeat(64),
+    acceptedTraversal: {
+      taskId: "task-traversal",
+      acceptedAttemptId: "attempt-traversal",
+      artifactSha256: "c".repeat(64)
+    },
+    groupReceiptSha256s: ["e".repeat(64), "d".repeat(64)],
+    counts: {
+      missing: 0,
+      conflict: 0,
+      malformed: 0,
+      eligibleGroup: 2,
+      eligibleProfile: 14,
+      reconciledGroup: 2,
+      reconciledProfile: 14,
+      unreconciledGroup: 0,
+      profileOrphan: 0,
+      precommitOrphan: 0
+    },
+    complete: true
+  } as const;
+
+  it("owns exact deterministic bytes and sorts unique group receipt hashes", () => {
+    const built = buildServiceRoleShadowRunSummaryV1(summaryInput);
+    expect(built.artifact).toEqual({
+      schemaVersion: "service-role-shadow-run-summary-v1",
+      policyVersion: "service-role-shadow-100-plus-100-v1",
+      ...summaryInput,
+      groupReceiptSha256s: ["d".repeat(64), "e".repeat(64)],
+      productionEffect: false
+    });
+    expect(parseServiceRoleShadowRunSummaryV1({
+      artifact: structuredClone(built.artifact),
+      expectedSha256: built.sha256
+    })).toEqual(built.artifact);
+    expect(Object.isFrozen(built.artifact)).toBe(true);
+    expect(Object.isFrozen(built.artifact.acceptedTraversal)).toBe(true);
+    expect(Object.isFrozen(built.artifact.groupReceiptSha256s)).toBe(true);
+    expect(Object.isFrozen(built.artifact.counts)).toBe(true);
+  });
+
+  it("rejects extra keys, duplicate hashes, invalid counts, hashes, and complete lies", () => {
+    const built = buildServiceRoleShadowRunSummaryV1(summaryInput);
+    for (const artifact of [
+      { ...built.artifact, extra: true },
+      { ...built.artifact, groupReceiptSha256s: ["d".repeat(64), "d".repeat(64)] },
+      { ...built.artifact, inputFenceSha256: "not-a-hash" },
+      { ...built.artifact, counts: { ...built.artifact.counts, missing: -1 } },
+      { ...built.artifact, complete: false }
+    ]) {
+      expect(() => parseServiceRoleShadowRunSummaryV1({
+        artifact,
+        expectedSha256: fingerprintCanonicalArtifact(artifact)
+      })).toThrow("service_role_shadow_run_summary_v1_invalid");
+    }
+  });
+});
 
 function postgresError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });

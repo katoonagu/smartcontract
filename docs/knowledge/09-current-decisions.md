@@ -531,13 +531,33 @@ It authorizes no production routing, scoring, Stage D or rollout.
   consumed in `finally` by its first post-durable reconciliation outcome. Each
   reconciliation transaction sets 500 ms local lock and statement timeouts
   before authority reads. Durable precommits left by expiry, overflow or process
-  loss remain Task 7 recovery authority. Completion passes `null` checkpoint
-  authority but intentionally creates no summary until Task 7 owns that
-  implementation. The current relevant unit set passes `95/95`; the shadow
+  loss became Task 7 recovery authority. Completion passes `null` checkpoint
+  authority to the lifecycle seam. The Task 6 relevant unit set passed `95/95`;
+  the shadow
   runtime PostgreSQL file passes `8/8` and ordered-commit PostgreSQL passes
   `18/18`, both with zero skips.
-- C1 Tasks 7-10 have not started. There is no startup recovery, terminal
-  summary, non-interference proof, or C1 acceptance evidence. Stage C is
+- C1 Task 7 is complete in code. The strict
+  `service-role-shadow-run-summary-v1` replays only one non-cancelled completed
+  accepted traversal and its current committed manifest/page/fence/map/profile/
+  precommit/runtime closure. It records ten deterministic inventory,
+  reconciliation, and valid-orphan counts. `complete` additionally requires a
+  ready fence, at least one reconciled group, and zero missing, conflict,
+  malformed, unreconciled, profile-orphan, or precommit-orphan count. Invalid
+  post-input artifacts do not inflate accepted-input `malformed` or valid-orphan
+  counts; they leave the eligible group unreconciled unless another strict
+  closure succeeds. Summary publication recomputes current evidence, so
+  unchanged restart is hash-idempotent while later recovery may append a new
+  complete immutable summary after an earlier incomplete one.
+- The exact enabled runtime exposes one once-at-startup, 1,000 ms bounded
+  recovery sweep outside the finalizer. It reads non-cancelled
+  `QUEUED | COMPLETED` traversal candidates with durable precommits, revalidates
+  current planner/checkpoint/delta authority, and creates only missing strict
+  runtime receipts; only `COMPLETED` candidates are summarized. It does not
+  poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
+  Task 5-7 unit set passes `96/96`; shadow-runtime plus ordered-commit
+  PostgreSQL pass `18/18 + 18/18` with zero skips, and typecheck passes.
+- C1 Tasks 8-10 have not started. There is no non-interference proof or C1
+  acceptance evidence. Stage C is
   incomplete, Stage D remains design-only, and production stays on matrix-v4,
   `ScoreAnchorV3`, and report-only checked-subject role with no suppression or
   score effect.

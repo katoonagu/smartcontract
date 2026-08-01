@@ -3,6 +3,7 @@ import {
   createUnifiedProductionRuntime
 } from "../../src/unifiedCheck/productionRuntime";
 import * as shadowRuntimeModule from "../../src/unifiedCheck/serviceRoleShadowRuntime";
+import * as workerModule from "../../src/unifiedCheck/worker";
 
 function runtimeInput() {
   return {
@@ -63,5 +64,64 @@ describe("Unified production runtime configuration", () => {
       ...runtimeInput(),
       serviceRoleShadowPolicy: "enabled" as never
     })).toThrow("unified_production_service_role_shadow_policy_invalid");
+  });
+
+  it("exposes enabled startup recovery and summarizes only completed traversal", async () => {
+    const reconcileCheckpoint = vi.fn();
+    const summarizeRun = vi.fn();
+    const recover = vi.fn();
+    const create = vi.spyOn(
+      shadowRuntimeModule,
+      "createServiceRoleShadowRuntimeV1"
+    ).mockReturnValue({
+      loadInputFence: vi.fn(),
+      lookupMap: vi.fn(),
+      observeAcceptedAddressHistoryGroup: vi.fn(),
+      reconcileCheckpoint,
+      summarizeRun,
+      reconcileCommittedServiceRoleShadowRunsV1: recover
+    });
+    const runCycle = vi.spyOn(workerModule, "runUnifiedTaskCycle")
+      .mockImplementation(async (cycle) => {
+        const signal = new AbortController().signal;
+        await cycle.onLifecyclePersisted?.({
+          task: {
+            id: "task-traversal",
+            runId: "run-1",
+            kind: "traversal",
+            attempt: 1,
+            checkpoint: {},
+            cancellationRequestedAt: null
+          },
+          result: {
+            kind: "completed",
+            artifactSha256: "b".repeat(64)
+          },
+          checkpointCommit: null,
+          signal
+        });
+        return { claimed: false, taskId: null, outcome: "idle" };
+      });
+    try {
+      const disabled = createUnifiedProductionRuntime(runtimeInput());
+      expect(disabled.reconcileCommittedServiceRoleShadowRunsV1).toBeNull();
+
+      const enabled = createUnifiedProductionRuntime({
+        ...runtimeInput(),
+        serviceRoleShadowPolicy: "service-role-shadow-100-plus-100-v1"
+      });
+      const startupSignal = new AbortController().signal;
+      await enabled.reconcileCommittedServiceRoleShadowRunsV1!(startupSignal);
+      expect(recover).toHaveBeenCalledWith({ signal: startupSignal });
+      await enabled.runAnalysisCycle();
+      expect(summarizeRun).toHaveBeenCalledWith({
+        runId: "run-1",
+        signal: expect.any(AbortSignal)
+      });
+      expect(reconcileCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      runCycle.mockRestore();
+      create.mockRestore();
+    }
   });
 });
