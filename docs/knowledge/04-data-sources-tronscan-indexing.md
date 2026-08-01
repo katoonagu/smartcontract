@@ -221,7 +221,10 @@ only the null-rooted source delta prefix through the uniquely identified
 seven-state target delta. The separately embedded final cancelled checkpoint
 records lifecycle identity and compaction binding only; it neither proves a
 final-head-to-target ancestry link nor imports the later failed-run delta suffix
-as replay work. This is isolated proof tooling, not a new
+as replay work. Replaying that exact predecessor prefix necessarily restores
+its 888 unresolved history groups; proof tooling validates their planner rows
+and the target's one consequent group but executes no provider worker. This is
+isolated proof tooling, not a new
 production indexing or provider path.
 
 Traversal now enumerates the complete distinct mandatory address-history set

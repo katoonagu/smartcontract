@@ -51,7 +51,9 @@ implementation plans do not override the status recorded here.
    authoritative post-checkpoint reconciliation; Task 7 adds bounded startup
    recovery and current-closure summary evolution. Task 8 proves real
    PostgreSQL non-interference; Task 9 implements the strict acceptance
-   producer/parser and isolated one-group replay. Continue with Task 10 to
+   producer/parser and isolated one-group replay, including the exact
+   predecessor's 888 inherited planned groups and one consequent group under a
+   capacity-one barrier. Continue with Task 10 to
    generate and admit the three real-history evidence files from the clean
    tested commit. Unavailable cashflow authority does not block that C1 slice.
 5. In parallel, prove the missing authority sources, then build physical
@@ -274,7 +276,7 @@ Task 7 adds the bounded recovery of durable crash-window precommits and the
 strict current-closure terminal summary without changing lifecycle or score.
 Task 8 proves disabled/enabled authoritative-byte non-interference on real
 PostgreSQL. Task 9 adds the strict source-to-replay producer, two-schema
-one-cycle runtime proof and self-contained C6 root parser; Task 10 has not yet
+bounded two-cycle runtime proof and self-contained C6 root parser; Task 10 has not yet
 generated or admitted the real-history files.
 
 ## Stage C C0-C6 Execution Plan — 2026-07-31
@@ -367,11 +369,13 @@ Execution checkpoint after C1 Task 9 implementation:
   cardinality and bounded lock/hang containment.
 - C1 Task 9 implements the exact source-input/identity/root contracts, strict
   CLI and Git/filesystem guards, deterministic replay translations, and two
-  disposable schema-037 variants. One normal production cycle commits the
-  uniquely selected seven-state source target delta, writes `7/1/1` profile/
-  precommit/runtime evidence only when enabled, makes zero provider calls, and
-  leaves the real traversal plus one consequent provider task queued with zero
-  terminal summaries. The acceptance root is self-contained and resolves
+  disposable schema-037 variants. At most two normal production cycles first
+  plan the exact predecessor's 888 unresolved history groups and then commit
+  the uniquely selected seven-state source target delta. The target adds one
+  consequent group; capacity-one admits/reserves only the first of 889 planned
+  rows. Enabled writes `7/1/1` profile/precommit/runtime evidence, both variants
+  make zero provider calls, and the traversal remains queued with zero terminal
+  summaries. The acceptance root is self-contained and resolves
   planner, task, attempt, artifact, checkpoint and delta authority from their
   real storage boundaries. Task 10 remains required to generate and admit the
   real-history input, identity and root from the clean tested commit.

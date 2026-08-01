@@ -147,12 +147,14 @@ clock PostgreSQL tape: disabled and enabled authoritative projections remain
 byte-identical, provider/cache behavior is unchanged, and no shadow hash is
 referenced by an attempt or final artifact. Task 9 adds a separate isolated
 acceptance runner. It creates deterministic replay-local direct-history,
-accepted-history and traversal rows, runs exactly one normal production
-analysis cycle, and requires the accepted planner entry to commit with the
-source target delta while the traversal returns to `QUEUED`. The seven newly
-generated frontier states create exactly one planned `address_history`
-continuation; the runner executes no provider worker or second cycle and
-publishes no terminal run summary. Its equality contract compares exact raw
+accepted-history and traversal rows, runs at most two normal production
+analysis cycles, and requires the accepted planner entry to commit with the
+source target delta while the traversal returns to `QUEUED`. The first cycle
+may durably plan the 888 unresolved history groups already present in the exact
+predecessor frontier; the second commits the ready target group and plans its
+one consequent group. The capacity-one barrier admits and reserves only the
+first of the resulting 889 planned rows. The runner executes no provider
+worker and publishes no terminal run summary. Its equality contract compares exact raw
 schema-037 rows; Task 8 separately owns the full Admin-DAG non-interference
 proof. The referenced one-second observer timer remains ref'ed so its deadline
 also fires while a PostgreSQL driver call is the only other pending handle. Its

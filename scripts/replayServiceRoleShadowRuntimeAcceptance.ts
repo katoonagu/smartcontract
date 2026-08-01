@@ -1700,7 +1700,23 @@ async function runPostgresServiceRoleShadowReplayVariant(input: {
       loadFrozenLabelDataset: async () => frozenLabels.dataset,
       loadHardEvidence: async () => ({})
     });
-    const lifecycle = await productionRuntime.runAnalysisCycle();
+    const lifecycles = [];
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      const lifecycle = await productionRuntime.runAnalysisCycle();
+      lifecycles.push(lifecycle);
+      const state = (await pool.query(
+        `select task.checkpoint_json->>'deltaHeadSha256' delta_head_sha256,
+                planner.planner_state
+           from unified_check_tasks task
+           join unified_check_planner_entries planner
+             on planner.run_id=task.run_id and planner.task_id=$2
+          where task.id=$1`,
+        [input.replayIdentity.replay.traversalTaskId, mapped.taskId]
+      )).rows[0];
+      if (state?.delta_head_sha256 === input.replayIdentity.sourceTargetDeltaSha256 &&
+        state?.planner_state === "committed") break;
+    }
+    const lifecycle = lifecycles.at(-1)!;
     const taskRow = (await pool.query(
       `select attempt,status,accepted_attempt_id,checkpoint_json,to_jsonb(task) task_json
          from unified_check_tasks task where id=$1`,
@@ -1726,16 +1742,20 @@ async function runPostgresServiceRoleShadowReplayVariant(input: {
       [runId]
     )).rows[0]?.count ?? -1);
     if (
-      lifecycle.claimed !== true || lifecycle.outcome !== "checkpointed" ||
+      lifecycles.length === 0 || lifecycles.length > 2 ||
+      lifecycles.some((item) =>
+        item.claimed !== true || item.outcome !== "checkpointed") ||
       plannerState !== "committed" || taskRow?.status !== "QUEUED" ||
-      taskRow?.accepted_attempt_id !== null || continuation.length !== 1 ||
-      continuation[0]?.status !== "QUEUED" ||
-      continuation[0]?.accepted_attempt_id !== null ||
-      continuation[0]?.planner_state !== "planned" ||
+      taskRow?.accepted_attempt_id !== null ||
+      taskRow?.checkpoint_json?.deltaHeadSha256 !==
+        input.replayIdentity.sourceTargetDeltaSha256 ||
+      continuation.length === 0 || continuation.some((row) =>
+        row.status !== "QUEUED" || row.accepted_attempt_id !== null ||
+        row.planner_state !== "planned") ||
       providerCalls !== 0 || summaries !== 0
     ) throw new Error(`service_role_shadow_runtime_acceptance_lifecycle_incomplete:${
       canonicalizeArtifactJson({
-        lifecycle,
+        lifecycles,
         plannerState,
         task: taskRow === undefined ? null : {
           attempt: taskRow.attempt,

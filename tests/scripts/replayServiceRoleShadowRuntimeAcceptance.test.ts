@@ -136,6 +136,14 @@ function acceptanceFixture() {
     allocatedAmountRaw: String(index + 1),
     sourceEventIds: [canonicalTronUsdtEventKey(events[0]!)]
   }));
+  const inheritedState: TraversalStateV1 = {
+    address: "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
+    direction: "backward",
+    anchorTimestamp: anchor,
+    fundingEpisodeId: "inherited-unresolved-episode",
+    allocatedAmountRaw: "1",
+    sourceEventIds: [canonicalTronUsdtEventKey(events[0]!)]
+  };
   const stateIds = sourceStates.map(traversalStateId).sort();
   const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
     state: sourceStates[0]!,
@@ -221,7 +229,7 @@ function acceptanceFixture() {
     analysisManifestHash: sourceAnalysisManifestSha256,
     snapshotHash: SNAPSHOT_HASH,
     sourceCheckpointSha256: "f".repeat(64),
-    frontier: sourceStates,
+    frontier: [...sourceStates, inheritedState],
     visited: [],
     terminals: [],
     supersededStateIds: [],
@@ -240,10 +248,10 @@ function acceptanceFixture() {
     compactionSha256: sourceCompactionSha256,
     counters: { expanded: 0, terminal: 0, superseded: 0 },
     operational: {
-      frontierCount: 7,
-      frontierPeak: 7,
-      uniqueAddresses: 1,
-      fundingEpisodes: 7
+      frontierCount: 8,
+      frontierPeak: 8,
+      uniqueAddresses: 2,
+      fundingEpisodes: 8
     },
     recentDiagnostics: []
   };
@@ -275,10 +283,10 @@ function acceptanceFixture() {
     addedExpandedStateKeys: sourceStates.map(traversalExpansionKey),
     counterDeltas: { expanded: 7, terminal: 0, superseded: 0 },
     operational: {
-      frontierCount: 7,
-      frontierPeak: 7,
-      uniqueAddresses: 2,
-      fundingEpisodes: 7
+      frontierCount: 8,
+      frontierPeak: 8,
+      uniqueAddresses: 3,
+      fundingEpisodes: 8
     },
     diagnostic: { at: anchor, code: "address-group:backward" }
   });
@@ -661,6 +669,23 @@ function acceptanceFixture() {
     logicalKey: addressHistoryManifestKey(continuationCheckpoint.identity),
     checkpointJson: continuationCheckpoint
   });
+  const inheritedContinuationTaskId = "replay-inherited-continuation-task";
+  const inheritedContinuationCheckpoint = {
+    ...continuationCheckpoint,
+    identity: {
+      ...continuationCheckpoint.identity,
+      address: inheritedState.address
+    }
+  };
+  const inheritedContinuationTaskRow = storedTask({
+    id: inheritedContinuationTaskId,
+    kind: "address_history",
+    status: "QUEUED",
+    attempt: 0,
+    acceptedAttemptId: null,
+    logicalKey: addressHistoryManifestKey(inheritedContinuationCheckpoint.identity),
+    checkpointJson: inheritedContinuationCheckpoint
+  });
   const projection = {
     provider: { callCount: 0, calls: [], cacheDecisions: [] },
     requests: [{
@@ -706,7 +731,7 @@ function acceptanceFixture() {
       traversal_closure_sha256: null,
       updated_at: storedAt
     }],
-    tasks: [historyTaskRow, continuationTaskRow, directTaskRow, traversalTaskRow],
+    tasks: [historyTaskRow, inheritedContinuationTaskRow, continuationTaskRow, directTaskRow, traversalTaskRow],
     checkpoints: [{
       taskId: replayIdentity.replay.traversalTaskId,
       traversalAttempt: 1,
@@ -737,6 +762,18 @@ function acceptanceFixture() {
         planner_state: "planned",
         ready_at: null,
         reserved_bytes: 1_048_576,
+        result_bytes: null,
+        run_id: REPLAY_RUN_ID,
+        task_id: inheritedContinuationTaskId
+      },
+      {
+        admitted_at: null,
+        canonical_sequence: committedEntry.canonicalSequence + 2,
+        committed_at: null,
+        planned_at: storedAt,
+        planner_state: "planned",
+        ready_at: null,
+        reserved_bytes: null,
         result_bytes: null,
         run_id: REPLAY_RUN_ID,
         task_id: continuationTaskId

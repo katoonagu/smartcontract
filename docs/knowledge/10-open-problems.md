@@ -157,7 +157,10 @@ signal with tests.
   terminal summary and allows a later complete summary to follow an immutable
   earlier incomplete snapshot after recovery. Task 8 now proves authoritative-
   byte non-interference, and Task 9 supplies the tested one-group replay and
-  self-contained parser. Task 10 still must generate the three exact
+  self-contained parser. Its real-data correction preserves the exact 1,498-
+  delta predecessor prefix: 888 inherited unresolved history groups plus the
+  target's one consequent group remain planned, capacity-one admits only the
+  first, and no provider worker runs. Task 10 still must generate the three exact
   real-history files from the clean tested commit and admit their acceptance
   root; code/tests or Task 7-9 artifacts alone are not admission.
 - Current account metadata does not prove EOA status at a historical anchor.

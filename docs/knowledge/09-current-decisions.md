@@ -591,10 +591,13 @@ It authorizes no production routing, scoring, Stage D or rollout.
   compaction provenance only and does not prove a final-head-to-target ancestry
   link or become the target predecessor. Accepted pages,
   analysis, compaction, checkpoint and role inputs permit only their explicit
-  replay-bound identity/hash translations. One real production cycle commits
-  the target group, writes seven profiles plus one precommit and one runtime
-  receipt, leaves the traversal and one consequent provider task queued, makes
-  zero provider calls, and creates zero run summaries. Task 7-8 separately
+  replay-bound identity/hash translations. At most two normal production
+  cycles first plan the exact predecessor's 888 unresolved history groups and
+  then commit the ready target group. The target adds one consequent group;
+  both projections retain the same 889 planned rows, with only the first
+  admitted/reserved by the capacity-one barrier. Enabled writes seven profiles
+  plus one precommit and one runtime receipt, makes zero provider calls, and
+  creates zero run summaries. Task 7-8 separately
   prove summary behavior for genuinely completed runs. No real-history input,
   identity, or acceptance file is generated or admitted until Task 10.
 - Stage C is incomplete, Stage D remains design-only, and production stays on

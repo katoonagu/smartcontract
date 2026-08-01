@@ -2241,9 +2241,9 @@ function parseServiceRoleShadowAuthorityProjectionV1(value: unknown): {
   if (
     requests.length !== 1 ||
     runs.length !== 1 ||
-    tasks.length !== 4 ||
+    tasks.length < 4 ||
     checkpoints.length !== 1 ||
-    planner.length !== 2 ||
+    planner.length < 2 ||
     attempts.length !== 2 ||
     labelDatasets.length !== 1 ||
     exactDenseArray(root.reports).length !== 0 ||
@@ -2527,6 +2527,50 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       committedEntry.artifactSha256 !== mappedEntry.artifactSha256
     ) throw new TypeError("invalid_receipt_entry");
 
+    const replayManifest = replayIdentity.translatedAcceptedHistory.manifest
+      .artifactJson as Record<string, unknown>;
+    const sourceCompaction = sourceDerivation.sourceCompaction
+      .artifactJson as TraversalCompactionArtifactV2;
+    const prefixState = replayTraversalDeltas(
+      sourceDerivation.prefixDeltas.map((row) =>
+        row.artifactJson as TraversalDeltaArtifactV1),
+      {
+        frontier: sourceCompaction.frontier,
+        visited: sourceCompaction.visited,
+        terminals: sourceCompaction.terminals,
+        supersededStateIds: sourceCompaction.supersededStateIds,
+        expandedStateIds: sourceCompaction.expandedStateIds,
+        eligibleEventIds: sourceCompaction.eligibleEventIds,
+        expandedStateKeys: sourceCompaction.expandedStateKeys,
+        counters: {
+          expanded: sourceCompaction.expandedStateIds.length,
+          terminal: sourceCompaction.terminals.length,
+          superseded: sourceCompaction.supersededStateIds.length
+        }
+      }
+    );
+    const historyKey = (address: string) => addressHistoryManifestKey({
+      chain: replayManifest.chain as "tron",
+      snapshotHash: String(replayManifest.snapshotHash),
+      tokenContract: String(replayManifest.tokenContract),
+      address,
+      providerRequestVersion: String(replayManifest.providerRequestVersion)
+    });
+    const targetDelta = sourceDerivation.sourceTargetDelta
+      .artifactJson as TraversalDeltaArtifactV1;
+    const consequentContinuationKeys = [...new Set(
+      targetDelta.addedFrontier.map((state) => historyKey(state.address))
+    )].sort(compareCodeUnits);
+    const expectedContinuationKeys = [...new Set([
+      ...prefixState.frontier.map((state) => historyKey(state.address)),
+      ...consequentContinuationKeys
+    ].filter((key) => key !== mappedEntry.manifestKey))].sort(compareCodeUnits);
+    if (
+      consequentContinuationKeys.length !== 1 ||
+      consequentContinuationKeys[0] === mappedEntry.manifestKey ||
+      expectedContinuationKeys.length === 0
+    ) throw new TypeError("invalid_provider_continuation_source");
+
     const sourceDatabaseTimestamp = replayInput.sourceAnchor.endsWith(".000Z")
       ? `${replayInput.sourceAnchor.slice(0, -5)}+00:00`
       : `${replayInput.sourceAnchor.slice(0, -1)}+00:00`;
@@ -2598,13 +2642,13 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       directTaskRows.length !== 1 ||
       historyTaskRows.length !== 1 ||
       traversalTaskRows.length !== 1 ||
-      continuationTaskRows.length !== 1 ||
-      new Set(taskRows.map((row) => row.id)).size !== 4
+      continuationTaskRows.length !== expectedContinuationKeys.length ||
+      new Set(taskRows.map((row) => row.id)).size !==
+        3 + expectedContinuationKeys.length
     ) throw new TypeError("invalid_task_projection");
     const [directTaskRow] = directTaskRows;
     const [historyTaskRow] = historyTaskRows;
     const [traversalTaskRow] = traversalTaskRows;
-    const [continuationTaskRow] = continuationTaskRows;
     const exactTaskState = (
       row: Record<string, unknown>,
       expected: {
@@ -2657,18 +2701,18 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       }) ||
       fingerprintCanonicalArtifact(traversalTaskRow!.checkpoint_json) !==
         receipt.committedCheckpointSha256 ||
-      !exactTaskState(continuationTaskRow!, {
+      continuationTaskRows.some((row) => !exactTaskState(row, {
         kind: "address_history",
         status: "QUEUED",
         attempt: 0,
         acceptedAttemptId: null,
-        logicalKey: String(continuationTaskRow!.logical_key)
-      })
+        logicalKey: String(row.logical_key)
+      }))
     ) throw new TypeError("invalid_task_projection");
 
-    const continuationCheckpoint = exactRecord(
-      continuationTaskRow!.checkpoint_json,
-      [
+    const continuationByKey = new Map<string, Record<string, unknown>>();
+    for (const taskRow of continuationTaskRows) {
+      const checkpoint = exactRecord(taskRow.checkpoint_json, [
         "version",
         "identity",
         "history",
@@ -2676,57 +2720,54 @@ export function parseServiceRoleShadowC1AcceptanceV1(
         "chunkCount",
         "pageCount",
         "rawRowCount"
-      ]
-    );
-    const continuationIdentity = exactRecord(continuationCheckpoint.identity, [
-      "chain",
-      "snapshotHash",
-      "tokenContract",
-      "address",
-      "providerRequestVersion"
-    ]);
-    const replayManifest = replayIdentity.translatedAcceptedHistory.manifest.artifactJson as
-      Record<string, unknown>;
-    const targetDelta = sourceDerivation.sourceTargetDelta.artifactJson as
-      Record<string, unknown>;
-    const targetAddresses = new Set(exactDenseArray(targetDelta.addedFrontier).map((state) =>
-      exactRecord(state, Object.keys(state as Record<string, unknown>)).address
-    ));
-    if (
-      continuationCheckpoint.version !== "unified-address-history-checkpoint-v2" ||
-      continuationCheckpoint.history !== null ||
-      continuationCheckpoint.chunkHeadSha256 !== null ||
-      continuationCheckpoint.chunkCount !== 0 ||
-      continuationCheckpoint.pageCount !== 0 ||
-      continuationCheckpoint.rawRowCount !== 0 ||
-      continuationIdentity.chain !== replayManifest.chain ||
-      continuationIdentity.snapshotHash !== replayInput.sourceSnapshotHash ||
-      continuationIdentity.tokenContract !== replayManifest.tokenContract ||
-      continuationIdentity.providerRequestVersion !== replayManifest.providerRequestVersion ||
-      targetAddresses.size !== 1 ||
-      !targetAddresses.has(continuationIdentity.address) ||
-      continuationTaskRow!.logical_key !== addressHistoryManifestKey({
-        chain: continuationIdentity.chain as "tron",
-        snapshotHash: String(continuationIdentity.snapshotHash),
-        tokenContract: String(continuationIdentity.tokenContract),
-        address: String(continuationIdentity.address),
-        providerRequestVersion: String(continuationIdentity.providerRequestVersion)
-      })
-    ) throw new TypeError("invalid_provider_continuation_projection");
+      ]);
+      const identity = exactRecord(checkpoint.identity, [
+        "chain",
+        "snapshotHash",
+        "tokenContract",
+        "address",
+        "providerRequestVersion"
+      ]);
+      const logicalKey = historyKey(String(identity.address));
+      if (
+        checkpoint.version !== "unified-address-history-checkpoint-v2" ||
+        checkpoint.history !== null ||
+        checkpoint.chunkHeadSha256 !== null ||
+        checkpoint.chunkCount !== 0 ||
+        checkpoint.pageCount !== 0 ||
+        checkpoint.rawRowCount !== 0 ||
+        identity.chain !== replayManifest.chain ||
+        identity.snapshotHash !== replayInput.sourceSnapshotHash ||
+        identity.tokenContract !== replayManifest.tokenContract ||
+        identity.providerRequestVersion !== replayManifest.providerRequestVersion ||
+        taskRow.logical_key !== logicalKey ||
+        continuationByKey.has(logicalKey)
+      ) throw new TypeError("invalid_provider_continuation_projection");
+      continuationByKey.set(logicalKey, taskRow);
+    }
+    if (canonicalizeArtifactJson([...continuationByKey.keys()].sort(compareCodeUnits)) !==
+      canonicalizeArtifactJson(expectedContinuationKeys)) {
+      throw new TypeError("invalid_provider_continuation_projection");
+    }
 
     const mappedPlannerRows = enabledParsedProjection.planner.filter((row) =>
       row.task_id === mappedEntry.taskId);
+    const continuationTaskIds = new Set(continuationTaskRows.map((row) => row.id));
     const continuationPlannerRows = enabledParsedProjection.planner.filter((row) =>
-      row.task_id === continuationTaskRow!.id);
+      continuationTaskIds.has(row.task_id));
     const mappedResultBytes = Buffer.byteLength(
       canonicalizeArtifactJson(
         replayIdentity.translatedAcceptedHistory.manifest.artifactJson
       ),
       "utf8"
     );
+    const orderedContinuationPlannerRows = [...continuationPlannerRows]
+      .sort((left, right) =>
+        Number(left.canonical_sequence) - Number(right.canonical_sequence));
     if (
       mappedPlannerRows.length !== 1 ||
-      continuationPlannerRows.length !== 1 ||
+      continuationPlannerRows.length !== expectedContinuationKeys.length ||
+      enabledParsedProjection.planner.length !== expectedContinuationKeys.length + 1 ||
       mappedPlannerRows[0]!.run_id !== replayIdentity.replay.runId ||
       mappedPlannerRows[0]!.canonical_sequence !== mappedEntry.canonicalSequence ||
       mappedPlannerRows[0]!.planner_state !== "committed" ||
@@ -2736,15 +2777,28 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       !isSourceAnchor(mappedPlannerRows[0]!.admitted_at) ||
       !isSourceAnchor(mappedPlannerRows[0]!.ready_at) ||
       !isSourceAnchor(mappedPlannerRows[0]!.committed_at) ||
-      continuationPlannerRows[0]!.run_id !== replayIdentity.replay.runId ||
-      continuationPlannerRows[0]!.canonical_sequence !== mappedEntry.canonicalSequence + 1 ||
-      continuationPlannerRows[0]!.planner_state !== "planned" ||
-      continuationPlannerRows[0]!.result_bytes !== null ||
-      continuationPlannerRows[0]!.reserved_bytes !== 1_048_576 ||
-      !isSourceAnchor(continuationPlannerRows[0]!.planned_at) ||
-      !isSourceAnchor(continuationPlannerRows[0]!.admitted_at) ||
-      continuationPlannerRows[0]!.ready_at !== null ||
-      continuationPlannerRows[0]!.committed_at !== null
+      continuationPlannerRows.some((row) =>
+        row.run_id !== replayIdentity.replay.runId ||
+        row.planner_state !== "planned" ||
+        row.result_bytes !== null ||
+        !isSourceAnchor(row.planned_at) ||
+        row.ready_at !== null ||
+        row.committed_at !== null
+      ) ||
+      orderedContinuationPlannerRows[0]!.reserved_bytes !== 1_048_576 ||
+      !isSourceAnchor(orderedContinuationPlannerRows[0]!.admitted_at) ||
+      orderedContinuationPlannerRows.slice(1).some((row) =>
+        row.reserved_bytes !== null || row.admitted_at !== null) ||
+      canonicalizeArtifactJson(orderedContinuationPlannerRows
+        .map((row) => row.canonical_sequence)) !==
+        canonicalizeArtifactJson(Array.from(
+          { length: expectedContinuationKeys.length },
+          (_, index) => mappedEntry.canonicalSequence + index + 1
+        )) ||
+      continuationPlannerRows.find((row) => row.task_id ===
+        continuationByKey.get(consequentContinuationKeys[0]!)!.id)
+        ?.canonical_sequence !== mappedEntry.canonicalSequence +
+          expectedContinuationKeys.length
     ) throw new TypeError("invalid_planner_projection");
 
     const directAttemptRows = enabledParsedProjection.attempts.filter((row) =>
@@ -2995,15 +3049,16 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       (record.runId === replayIdentity.replay.runId ||
         record.run_id === replayIdentity.replay.runId)
     );
-    const continuation = plannedEntries.length === 1
-      ? projectionRecords.find((record) =>
-          record.id === (plannedEntries[0]!.taskId ?? plannedEntries[0]!.task_id) &&
-          record.kind === "address_history"
-        )
-      : undefined;
     if (
-      continuation?.status !== "QUEUED" ||
-      (continuation.acceptedAttemptId ?? continuation.accepted_attempt_id) !== null
+      plannedEntries.length !== expectedContinuationKeys.length ||
+      plannedEntries.some((entry) => {
+        const continuation = projectionRecords.find((record) =>
+          record.id === (entry.taskId ?? entry.task_id) &&
+          record.kind === "address_history"
+        );
+        return continuation?.status !== "QUEUED" ||
+          (continuation.acceptedAttemptId ?? continuation.accepted_attempt_id) !== null;
+      })
     ) throw new TypeError("invalid_provider_continuation_projection");
     if (projectionRecords.some((record) =>
       record.kind === "traversal_result" || record.artifactKind === "traversal_result"
