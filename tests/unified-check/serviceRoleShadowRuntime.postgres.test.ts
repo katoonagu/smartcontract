@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../../src/forensics/canonicalJson.js";
+import { projectUnifiedRunDag } from "../../src/admin/forensicsGraph.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser.js";
 import {
@@ -15,11 +19,22 @@ import {
 } from "../../src/unifiedCheck/addressHistory.js";
 import {
   createUnifiedPoolTransactionHost,
+  listUnifiedWatchdogRuns,
   type UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository.js";
 import {
   createUnifiedProductionRuntime
 } from "../../src/unifiedCheck/productionRuntime.js";
+import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels.js";
+import {
+  createPostgresUnifiedDeliveryRepository,
+  runUnifiedDeliveryCycle
+} from "../../src/unifiedCheck/delivery.js";
+import {
+  createPostgresUnifiedRequestStore,
+  intakeUnifiedCheck
+} from "../../src/unifiedCheck/requestService.js";
+import { inspectUnifiedRuns } from "../../src/unifiedCheck/watchdog.js";
 import {
   buildServiceRoleShadowInputFenceV1,
   buildServiceRoleShadowPrecommitReceiptV1,
@@ -42,6 +57,15 @@ const postgresDescribe = connectionString && releaseGate ? describe : describe.s
 const SUBJECT = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const RUNTIME_COMMIT = "task-4-postgres-runtime";
 const LOCK_STATE_BARRIER_DEADLINE_MS = 10_000;
+const FROZEN_CLOCK_ISO = "2026-07-31T12:00:00.000Z";
+const SHADOW_ARTIFACT_KINDS = [
+  "service_role_shadow_input_set",
+  "service_role_shadow_input_fence",
+  "service_role_shadow_profile",
+  "service_role_shadow_precommit_receipt",
+  "service_role_shadow_runtime_receipt",
+  "service_role_shadow_run_summary"
+] as const;
 
 type Harness = {
   admin: pg.Client;
@@ -83,7 +107,19 @@ async function createHarness(): Promise<Harness> {
   await admin.connect();
   const schema = `shadow_runtime_${randomUUID().replaceAll("-", "")}`;
   await admin.query(`create schema "${schema}"`);
-  await admin.query(`set search_path to "${schema}"`);
+  await admin.query(`set search_path to "${schema}", pg_catalog`);
+  for (const functionName of [
+    "now",
+    "statement_timestamp",
+    "transaction_timestamp",
+    "clock_timestamp"
+  ]) {
+    await admin.query(
+      `create function "${schema}".${functionName}()
+       returns timestamptz language sql immutable
+       as 'select timestamptz ''${FROZEN_CLOCK_ISO}'''`
+    );
+  }
   for (const migration of [
     "003_risk_observation_foundation.sql",
     "033_unified_wallet_check.sql",
@@ -97,7 +133,7 @@ async function createHarness(): Promise<Harness> {
   const poolConfig = {
     connectionString,
     max: 1,
-    options: `-c search_path=${schema}`
+    options: `-c search_path=${schema},pg_catalog`
   };
   return {
     admin,
@@ -829,6 +865,583 @@ async function insertDuplicateAcceptedHistory(
   );
 }
 
+type NoninterferenceVariant = "normal" | "preload_lock" | "post_commit_hang";
+
+type NoninterferenceTapeResult = {
+  readonly projectionBytes: string;
+  readonly providerCalls: readonly {
+    readonly address: string;
+    readonly cursor: string | null;
+    readonly source: "network";
+  }[];
+  readonly shadowCounts: Readonly<Record<string, number>>;
+  readonly shadowHashes: readonly string[];
+  readonly shadowArtifacts: readonly {
+    readonly kind: string;
+    readonly artifact: unknown;
+  }[];
+  readonly acceptedCheckpointElapsedMs: number;
+};
+
+function deterministicIds() {
+  let sequence = 0;
+  return () => `stage-c1-runtime-id-${String(++sequence).padStart(4, "0")}`;
+}
+
+function acceptedHistoryRawRows(
+  events: readonly IndexedTronUsdtTransfer[]
+) {
+  return events.map((event) => ({
+    transaction_id: event.txHash,
+    from_address: event.fromAddress,
+    to_address: event.toAddress,
+    quant: event.amountRaw,
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    confirmed: true,
+    contractRet: "SUCCESS",
+    block_ts: event.blockTimestamp.getTime(),
+    block: event.blockNumber,
+    event_index: event.eventIndex
+  }));
+}
+
+function traversalCheckpointFor(
+  states: readonly TraversalStateV1[]
+) {
+  return {
+    version: "unified-production-traversal-checkpoint-v1",
+    frontier: states,
+    visitedStates: [],
+    expandedStateIds: [],
+    terminals: [],
+    supersededStateIds: [],
+    active: null,
+    eligibleEventIds: [],
+    expandedStateKeys: [],
+    selectedBackwardRaw: states.reduce(
+      (sum, state) => sum + BigInt(state.allocatedAmountRaw),
+      0n
+    ).toString(),
+    selectedForwardRaw: "0"
+  };
+}
+
+function postCommitHangingHost(pool: pg.Pool): {
+  readonly db: UnifiedTransactionalQueryable;
+  arm(): void;
+  waitForRelease(): Promise<void>;
+} {
+  const base = createUnifiedPoolTransactionHost(pool);
+  let armed = false;
+  let triggered = false;
+  let released = Promise.resolve();
+  return {
+    db: {
+      query: base.query,
+      async transaction<T>(
+        work: Parameters<UnifiedTransactionalQueryable["transaction"]>[0]
+      ): Promise<T> {
+        const result = await base.transaction(work) as T;
+        const orderedCommit = result !== null && typeof result === "object"
+          ? (result as { orderedCommit?: { applied?: unknown } }).orderedCommit
+          : undefined;
+        if (armed && !triggered && orderedCommit?.applied === true) {
+          triggered = true;
+          const blocker = await pool.connect();
+          released = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              blocker.release();
+              resolve();
+            }, 1_250);
+          });
+        }
+        return result;
+      }
+    } as UnifiedTransactionalQueryable,
+    arm() {
+      armed = true;
+    },
+    waitForRelease: () => released
+  };
+}
+
+async function projectionRows(
+  harness: Harness,
+  sql: string,
+  values: readonly unknown[] = []
+): Promise<readonly unknown[]> {
+  return (await harness.admin.query(sql, values as unknown[])).rows.map(
+    (row) => row.value
+  );
+}
+
+async function authoritativeProjection(input: {
+  readonly harness: Harness;
+  readonly runId: string;
+  readonly providerCalls: NoninterferenceTapeResult["providerCalls"];
+}): Promise<string> {
+  const requests = await projectionRows(
+    input.harness,
+    `select to_jsonb(request) value
+       from unified_check_requests request
+      where request.run_id=$1
+      order by request.id`,
+    [input.runId]
+  );
+  const runs = await projectionRows(
+    input.harness,
+    `select to_jsonb(run) value
+       from unified_check_runs run
+      where run.id=$1
+      order by run.id`,
+    [input.runId]
+  );
+  const tasks = await projectionRows(
+    input.harness,
+    `select to_jsonb(task) value
+       from unified_check_tasks task
+      where task.run_id=$1
+      order by task.kind,task.logical_key,task.id`,
+    [input.runId]
+  );
+  const planner = await projectionRows(
+    input.harness,
+    `select to_jsonb(entry) value
+       from unified_check_planner_entries entry
+      where entry.run_id=$1
+      order by entry.canonical_sequence`,
+    [input.runId]
+  );
+  const attempts = await projectionRows(
+    input.harness,
+    `select to_jsonb(attempt_row) value
+       from unified_check_attempts attempt_row
+       join unified_check_tasks task on task.id=attempt_row.task_id
+      where task.run_id=$1
+      order by attempt_row.task_id,attempt_row.attempt,attempt_row.id`,
+    [input.runId]
+  );
+  const artifacts = await projectionRows(
+    input.harness,
+    `select to_jsonb(artifact) value
+       from unified_check_artifacts artifact
+      where artifact.created_by_run_id=$1
+        and artifact.kind <> all($2::text[])
+      order by artifact.kind,artifact.schema_version,artifact.sha256`,
+    [input.runId, SHADOW_ARTIFACT_KINDS]
+  );
+  const deliveries = await projectionRows(
+    input.harness,
+    `select to_jsonb(delivery) value
+       from unified_check_deliveries delivery
+       join unified_check_requests request on request.id=delivery.request_id
+      where request.run_id=$1
+      order by delivery.id`,
+    [input.runId]
+  );
+  const providerPages = await projectionRows(
+    input.harness,
+    `select to_jsonb(page) value
+       from unified_provider_pages page
+      order by page.request_identity_sha256`
+  );
+  const labelDatasets = await projectionRows(
+    input.harness,
+    `select to_jsonb(dataset) value
+       from unified_label_datasets dataset
+      order by dataset.sha256`
+  );
+  const generationFence = await projectionRows(
+    input.harness,
+    `select to_jsonb(fence) value
+       from unified_check_generation_fence fence
+      order by fence.generation_id`
+  );
+  const deliveryOwnership = await projectionRows(
+    input.harness,
+    `select to_jsonb(ownership) value
+       from unified_wallet_delivery_ownership ownership
+      order by ownership.subject_address,ownership.chat_id`
+  );
+  const runtimeInstances = await projectionRows(
+    input.harness,
+    `select to_jsonb(runtime) value
+       from unified_runtime_instances runtime
+      order by runtime.instance_id`
+  );
+  const notifications = await projectionRows(
+    input.harness,
+    `select to_jsonb(notification) value
+       from unified_check_notifications notification
+       join unified_check_requests request on request.id=notification.request_id
+      where request.run_id=$1
+      order by notification.id`,
+    [input.runId]
+  );
+  const [watchdogRun] = await listUnifiedWatchdogRuns(
+    input.harness.admin,
+    { runIds: [input.runId] }
+  );
+  if (!watchdogRun) throw new Error("service_role_shadow_watchdog_run_missing");
+  const [adminRun] = inspectUnifiedRuns([watchdogRun], {
+    now: new Date(FROZEN_CLOCK_ISO),
+    staleHeartbeatMs: 120_000
+  });
+  if (!adminRun) throw new Error("service_role_shadow_admin_run_missing");
+  const projection = JSON.parse(JSON.stringify({
+    provider: {
+      callCount: input.providerCalls.length,
+      calls: input.providerCalls,
+      cacheDecisions: input.providerCalls.map(({ address, cursor, source }) => ({
+        address,
+        cursor,
+        source
+      }))
+    },
+    requests,
+    runs,
+    tasks,
+    checkpoints: tasks.map((task) => ({
+      id: (task as { id: string }).id,
+      checkpointJson: (task as { checkpoint_json: unknown }).checkpoint_json
+    })),
+    planner,
+    attempts,
+    artifacts,
+    reports: artifacts.filter((artifact) =>
+      (artifact as { kind: string }).kind === "unified_wallet_report"
+    ),
+    presentations: artifacts.filter((artifact) =>
+      [
+        "presentation_manifest",
+        "presentation_artifact",
+        "presentation_completeness_receipt",
+        "presentation_envelope",
+        "delivery_intent"
+      ].includes((artifact as { kind: string }).kind)
+    ),
+    deliveries,
+    providerPages,
+    labelDatasets,
+    generationFence,
+    deliveryOwnership,
+    runtimeInstances,
+    notifications,
+    adminDag: projectUnifiedRunDag(adminRun)
+  }));
+  return canonicalizeArtifactJson(projection);
+}
+
+async function runAuthoritativeNoninterferenceTape(input: {
+  readonly policy: "disabled" | "service-role-shadow-100-plus-100-v1";
+  readonly variant: NoninterferenceVariant;
+}): Promise<NoninterferenceTapeResult> {
+  const performanceNow = vi.spyOn(performance, "now").mockReturnValue(1_000);
+  const harness = await createHarness();
+  const runId = "stage-c1-noninterference-run";
+  const requestId = "stage-c1-noninterference-request";
+  let frozenLabels: ReturnType<typeof buildFrozenLabelDataset> | null = null;
+  const providerCalls: Array<{
+    address: string;
+    cursor: string | null;
+    source: "network";
+  }> = [];
+  const hangingHost = postCommitHangingHost(harness.poolA);
+  const db = hangingHost.db;
+  let preloadHolder: pg.Client | null = null;
+  let preloadRelease: Promise<void> = Promise.resolve();
+  try {
+    const intake = await intakeUnifiedCheck({
+      store: createPostgresUnifiedRequestStore(db),
+      snapshotSource: {
+        latestConfirmedBlock: async () => ({
+          number: "20000",
+          hash: "a".repeat(64),
+          timestamp: FROZEN_CLOCK_ISO
+        }),
+        snapshotBalances: async () => ({
+          usdtRaw: null,
+          trxSun: null,
+          source: "fixture",
+          consistency: "unavailable"
+        })
+      },
+      request: {
+        id: requestId,
+        requestCorrelationId: "stage-c1-noninterference-correlation",
+        subjectAddress: SUBJECT,
+        chatId: "stage-c1-chat",
+        messageThreadId: "",
+        locale: "ru",
+        runPurpose: "user_check",
+        sideEffectPolicy: "authoritative"
+      },
+      candidateRunId: runId,
+      freezeLabelDataset: async ({ snapshotHash, frozenAt }) => {
+        frozenLabels = buildFrozenLabelDataset({
+          frozenAt,
+          snapshotHash,
+          labels: [],
+          legacyRows: []
+        });
+        return frozenLabels;
+      },
+      initialTasks: [
+        ["task-01-direct", "direct_history"],
+        ["task-02-traversal", "traversal"],
+        ["task-90-fast", "fast"],
+        ["task-91-where", "where"],
+        ["task-92-deep", "deep"],
+        ["task-93-deep-direct", "deep_direct"]
+      ].map(([id, kind]) => ({
+        id: id!,
+        kind: kind!,
+        priorityLane: "interactive" as const,
+        logicalKey: "main"
+      })),
+      versions: {
+        labelDatasetSha256: "f".repeat(64),
+        scoringPolicyVersion: "scoring-signal-matrix-v4",
+        attributionPolicyVersion: "selected-attribution-policy-v1",
+        traversalPolicyVersion: "snapshot-closure-v1",
+        runtimeCommit: RUNTIME_COMMIT,
+        schemaVersion: 37
+      },
+      now: () => new Date(FROZEN_CLOCK_ISO)
+    });
+    expect(intake).toMatchObject({
+      kind: "attached",
+      reused: false,
+      run: { id: runId }
+    });
+    const manifestRow = (await harness.admin.query(
+      `select artifact.artifact_json
+         from unified_check_runs run
+         join unified_check_artifacts artifact
+           on artifact.sha256=run.analysis_manifest_sha256
+        where run.id=$1`,
+      [runId]
+    )).rows[0];
+    const snapshotHash = String(manifestRow.artifact_json.snapshotHash);
+    const accepted = acceptedHistoryFixture({ runId, snapshotHash });
+    await harness.admin.query(
+      `update unified_check_tasks
+          set checkpoint_json=$2::jsonb
+        where id='task-02-traversal' and run_id=$1`,
+      [runId, JSON.stringify(traversalCheckpointFor(accepted.states))]
+    );
+
+    const ids = deterministicIds();
+    const runtime = createUnifiedProductionRuntime({
+      db,
+      ...(input.policy === "disabled" ? {} : {
+        serviceRoleShadowRecoveryDb:
+          createUnifiedPoolTransactionHost(harness.poolB)
+      }),
+      runtimeCommit: RUNTIME_COMMIT,
+      providerConfigurationSha256: "e".repeat(64),
+      serviceRoleShadowPolicy: input.policy,
+      addressHistoryPagesPerChunk: 4,
+      now: () => new Date(FROZEN_CLOCK_ISO),
+      createId: ids,
+      async loadProviderPage({ address, cursor, onDiagnostic }) {
+        onDiagnostic?.({ source: "network" });
+        providerCalls.push({ address: address ?? SUBJECT, cursor, source: "network" });
+        if (address === accepted.states[0]!.address) {
+          const content = {
+            kind: "page" as const,
+            cursor,
+            nextCursor: null,
+            transfers: acceptedHistoryRawRows(accepted.events),
+            reachedAccountCreation: true,
+            provider: "tronscan" as const
+          };
+          return { ...content, pageHash: fingerprintCanonicalArtifact(content) };
+        }
+        const content = {
+          kind: "page" as const,
+          cursor,
+          nextCursor: null,
+          transfers: [],
+          reachedAccountCreation: true,
+          provider: "tronscan" as const
+        };
+        return { ...content, pageHash: fingerprintCanonicalArtifact(content) };
+      },
+      loadFrozenLabelDataset: async () => {
+        if (frozenLabels === null) {
+          throw new Error("service_role_shadow_frozen_labels_missing");
+        }
+        return frozenLabels.dataset;
+      },
+      loadCounterpartyLabels: async () => new Map(),
+      loadHardEvidence: async () => ({})
+    });
+    if (runtime.reconcileCommittedServiceRoleShadowRunsV1) {
+      await runtime.reconcileCommittedServiceRoleShadowRunsV1(
+        new AbortController().signal
+      );
+    }
+
+    await expect(runtime.runProviderCycle()).resolves.toMatchObject({
+      outcome: "completed",
+      taskId: "task-01-direct"
+    });
+    await expect(runtime.runAnalysisCycle()).resolves.toMatchObject({
+      outcome: "checkpointed",
+      taskId: "task-02-traversal"
+    });
+    let historyTask = (await harness.admin.query(
+      `select task.id,task.logical_key
+         from unified_check_tasks task
+        where task.run_id=$1 and task.kind='address_history'`,
+      [runId]
+    )).rows[0];
+    expect(historyTask).toBeTruthy();
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      await runtime.runProviderCycle();
+      historyTask = (await harness.admin.query(
+        `select task.id,task.logical_key,task.status,attempt.artifact_sha256
+           from unified_check_tasks task
+           left join unified_check_attempts attempt
+             on attempt.id=task.accepted_attempt_id
+          where task.run_id=$1 and task.kind='address_history'`,
+        [runId]
+      )).rows[0];
+      if (historyTask?.status === "COMPLETED") break;
+    }
+    expect(historyTask).toMatchObject({ status: "COMPLETED" });
+    const acceptedManifestSha256 = String(historyTask.artifact_sha256);
+    const exactInputs = acceptedHistoryFixture({
+      runId,
+      snapshotHash,
+      manifestSha256: acceptedManifestSha256
+    });
+    for (const artifact of exactInputs.artifacts) {
+      await insertArtifact({ harness, runId, ...artifact });
+    }
+
+    if (input.variant === "preload_lock" && input.policy !== "disabled") {
+      preloadHolder = new pg.Client({
+        connectionString,
+        options: `-c search_path=${harness.schema},pg_catalog`
+      });
+      await preloadHolder.connect();
+      await preloadHolder.query(
+        "select pg_advisory_lock(hashtextextended($1::text,0))",
+        [`service-role-shadow-input-fence-v1:${runId}`]
+      );
+      preloadRelease = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void preloadHolder!.query(
+            "select pg_advisory_unlock(hashtextextended($1::text,0))",
+            [`service-role-shadow-input-fence-v1:${runId}`]
+          ).finally(resolve);
+        }, 1_250);
+      });
+    }
+    if (input.variant === "post_commit_hang" && input.policy !== "disabled") {
+      hangingHost.arm();
+    }
+    let acceptedCheckpointElapsedMs = -1;
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const checkpointStartedAt = Date.now();
+      const result = await runtime.runAnalysisCycle();
+      if (
+        result.taskId === "task-02-traversal" &&
+        result.outcome === "checkpointed"
+      ) {
+        acceptedCheckpointElapsedMs = Date.now() - checkpointStartedAt;
+        break;
+      }
+    }
+    expect(acceptedCheckpointElapsedMs).toBeGreaterThanOrEqual(0);
+    await Promise.all([preloadRelease, hangingHost.waitForRelease()]);
+    await harness.poolA.query("select 1");
+
+    for (let cycle = 0; cycle < 40; cycle += 1) {
+      const outstanding = Number((await harness.admin.query(
+        `select count(*)::int count
+           from unified_check_tasks
+          where run_id=$1 and status <> 'COMPLETED'`,
+        [runId]
+      )).rows[0].count);
+      if (outstanding === 0) break;
+      await runtime.runAnalysisCycle();
+      await runtime.runProviderCycle();
+    }
+    expect(Number((await harness.admin.query(
+      `select count(*)::int count
+         from unified_check_tasks
+        where run_id=$1 and status <> 'COMPLETED'`,
+      [runId]
+    )).rows[0].count)).toBe(0);
+    await expect(runtime.runFinalizationCycle()).resolves.toMatchObject({
+      finalized: true,
+      runId
+    });
+    await expect(runUnifiedDeliveryCycle({
+      repository: createPostgresUnifiedDeliveryRepository(harness.poolA, {
+        runtimeCommit: RUNTIME_COMMIT
+      }),
+      now: () => new Date(FROZEN_CLOCK_ISO),
+      leaseToken: () => "stage-c1-delivery-lease",
+      leaseMs: 60_000,
+      limit: 1,
+      sendTelegram: async () => ({
+        kind: "confirmed" as const,
+        telegramMessageId: "stage-c1-message"
+      })
+    })).resolves.toMatchObject({ claimed: 1, settled: 1 });
+
+    const shadowRows = (await harness.admin.query(
+      `select sha256,kind,artifact_json
+         from unified_check_artifacts
+        where created_by_run_id=$1 and kind=any($2::text[])
+        order by kind,sha256`,
+      [runId, SHADOW_ARTIFACT_KINDS]
+    )).rows;
+    const shadowCounts = Object.fromEntries(SHADOW_ARTIFACT_KINDS.map(
+      (kind) => [kind, shadowRows.filter((row) => row.kind === kind).length]
+    ));
+    const projectionBytes = await authoritativeProjection({
+      harness,
+      runId,
+      providerCalls
+    });
+    const shadowHashes = shadowRows.map((row) => String(row.sha256));
+    const attemptedShadowReferences = Number((await harness.admin.query(
+      `select count(*)::int count
+         from unified_check_attempts attempt
+         join unified_check_tasks task on task.id=attempt.task_id
+         join unified_check_artifacts artifact on artifact.sha256=attempt.artifact_sha256
+        where task.run_id=$1 and artifact.kind=any($2::text[])`,
+      [runId, SHADOW_ARTIFACT_KINDS]
+    )).rows[0].count);
+    expect(attemptedShadowReferences).toBe(0);
+    for (const hash of shadowHashes) expect(projectionBytes).not.toContain(hash);
+    return {
+      projectionBytes,
+      providerCalls,
+      shadowCounts,
+      shadowHashes,
+      shadowArtifacts: shadowRows.map((row) => ({
+        kind: String(row.kind),
+        artifact: row.artifact_json
+      })),
+      acceptedCheckpointElapsedMs
+    };
+  } finally {
+    performanceNow.mockRestore();
+    if (preloadHolder) {
+      await preloadHolder.query("select pg_advisory_unlock_all()")
+        .catch(() => undefined);
+      await preloadHolder.end().catch(() => undefined);
+    }
+    await dispose(harness);
+  }
+}
+
 postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
   let harness: Harness;
 
@@ -839,6 +1452,81 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
   afterAll(async () => {
     await dispose(harness);
   }, 60_000);
+
+  it("keeps the complete production authority byte-identical when shadow observation is enabled", async () => {
+    const disabled = await runAuthoritativeNoninterferenceTape({
+      policy: "disabled",
+      variant: "normal"
+    });
+    const enabled = await runAuthoritativeNoninterferenceTape({
+      policy: "service-role-shadow-100-plus-100-v1",
+      variant: "normal"
+    });
+    expect(enabled.projectionBytes).toBe(disabled.projectionBytes);
+    expect(enabled.providerCalls).toEqual(disabled.providerCalls);
+    expect(enabled.providerCalls).toHaveLength(2);
+    expect(disabled.shadowHashes).toEqual([]);
+    expect(enabled.shadowCounts).toEqual({
+      service_role_shadow_input_set: 1,
+      service_role_shadow_input_fence: 1,
+      service_role_shadow_profile: 7,
+      service_role_shadow_precommit_receipt: 1,
+      service_role_shadow_runtime_receipt: 1,
+      service_role_shadow_run_summary: 1
+    });
+    expect(enabled.shadowArtifacts.find(({ kind }) =>
+      kind === "service_role_shadow_input_fence"
+    )?.artifact).toMatchObject({ outcome: { kind: "ready" } });
+    expect(enabled.shadowArtifacts.find(({ kind }) =>
+      kind === "service_role_shadow_input_set"
+    )?.artifact).toMatchObject({
+      roleMapV2Sha256s: [expect.any(String)]
+    });
+    const precommit = enabled.shadowArtifacts.find(({ kind }) =>
+      kind === "service_role_shadow_precommit_receipt"
+    )?.artifact as { profiles?: readonly unknown[] } | undefined;
+    expect(precommit).toMatchObject({
+      commitStatus: "unconfirmed",
+      profiles: expect.any(Array)
+    });
+    expect(precommit?.profiles).toHaveLength(7);
+    expect(enabled.shadowArtifacts.find(({ kind }) =>
+      kind === "service_role_shadow_runtime_receipt"
+    )?.artifact).toMatchObject({ commitStatus: "reconciled" });
+    const summaryArtifact = enabled.shadowArtifacts.find(({ kind }) =>
+      kind === "service_role_shadow_run_summary"
+    )?.artifact;
+    expect(summaryArtifact).toMatchObject({
+      complete: true,
+      counts: {
+        eligibleGroup: 1,
+        eligibleProfile: 7,
+        reconciledGroup: 1,
+        reconciledProfile: 7,
+        unreconciledGroup: 0
+      }
+    });
+
+    for (const variant of ["preload_lock", "post_commit_hang"] as const) {
+      const disabledDeadline = await runAuthoritativeNoninterferenceTape({
+        policy: "disabled",
+        variant
+      });
+      const enabledDeadline = await runAuthoritativeNoninterferenceTape({
+        policy: "service-role-shadow-100-plus-100-v1",
+        variant
+      });
+      expect(enabledDeadline.projectionBytes).toBe(
+        disabledDeadline.projectionBytes
+      );
+      expect(enabledDeadline.providerCalls).toEqual(
+        disabledDeadline.providerCalls
+      );
+      expect(enabledDeadline.acceptedCheckpointElapsedMs)
+        .toBeGreaterThanOrEqual(900);
+      expect(enabledDeadline.acceptedCheckpointElapsedMs).toBeLessThan(2_500);
+    }
+  }, 120_000);
 
   it("uses schema 037 and converges two real connections on one empty ready fence", async () => {
     expect((await harness.admin.query(
