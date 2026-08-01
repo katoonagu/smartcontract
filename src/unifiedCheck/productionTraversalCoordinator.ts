@@ -1148,7 +1148,6 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
             controller.abort();
             resolve();
           }, 1_000);
-          timeout.unref?.();
         });
         try {
           await Promise.race([observer, deadline]);

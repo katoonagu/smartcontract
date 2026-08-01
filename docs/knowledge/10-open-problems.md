@@ -155,9 +155,11 @@ signal with tests.
   runtime receipt, while every non-cancelled completed traversal is summarized
   even if no precommit exists. It also publishes the deterministic
   terminal summary and allows a later complete summary to follow an immutable
-  earlier incomplete snapshot after recovery. C1 Tasks 8-10 still must prove
-  authoritative-byte non-interference and produce/admit the C1 acceptance
-  evidence; Task 7 artifacts alone are not admission.
+  earlier incomplete snapshot after recovery. Task 8 now proves authoritative-
+  byte non-interference, and Task 9 supplies the tested one-group replay and
+  self-contained parser. Task 10 still must generate the three exact
+  real-history files from the clean tested commit and admit their acceptance
+  root; code/tests or Task 7-9 artifacts alone are not admission.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

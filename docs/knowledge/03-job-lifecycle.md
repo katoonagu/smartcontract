@@ -142,6 +142,33 @@ unreconciled, or orphan counts. Publication recomputes current durable closure:
 unchanged evidence reuses the same content hash, while later recovery appends a
 new complete summary without deleting the earlier immutable incomplete record.
 
+C1 Task 8 proves the enabled observer is lifecycle-neutral with a real frozen-
+clock PostgreSQL tape: disabled and enabled authoritative projections remain
+byte-identical, provider/cache behavior is unchanged, and no shadow hash is
+referenced by an attempt or final artifact. Task 9 adds a separate isolated
+acceptance runner. It creates deterministic replay-local direct-history,
+accepted-history and traversal rows, runs exactly one normal production
+analysis cycle, and requires the accepted planner entry to commit with the
+source target delta while the traversal returns to `QUEUED`. The seven newly
+generated frontier states create exactly one planned `address_history`
+continuation; the runner executes no provider worker or second cycle and
+publishes no terminal run summary. Its equality contract compares exact raw
+schema-037 rows; Task 8 separately owns the full Admin-DAG non-interference
+proof. The referenced one-second observer timer remains ref'ed so its deadline
+also fires while a PostgreSQL driver call is the only other pending handle. Its
+abort signal is carried into first-load initialization: after a preload timeout
+the initializer yields to an already-due observer timer and does not begin the
+independent unavailable-publication retries for an observer that has expired;
+the rejected cache entry is evicted for a later caller. Normal explicit fence
+loads retain the original two one-second publication attempts.
+The once-at-startup sweep includes existing summary rows in its one candidate
+query: a hash-valid complete summary retires that run from later startup work,
+and a hash-valid incomplete summary skips only an unchanged no-precommit
+publication. A durable precommit still reopens recovery; malformed summary
+bodies never suppress it. This keeps the same 700 ms internal/one-second public
+budget as the test schema accumulates terminal runs.
+Real-history admission remains pending Task 10.
+
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the
 worker aborts selective enrichment, starts no later candidate, and cannot

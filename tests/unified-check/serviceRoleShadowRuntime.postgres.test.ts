@@ -2372,6 +2372,12 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       }],
       ["service_role_shadow_profile", {
         malformed: "profile"
+      }],
+      ["service_role_shadow_run_summary", {
+        runId: prepared.seeded.runId,
+        runtimeCommit: RUNTIME_COMMIT,
+        complete: true,
+        malformed: "summary"
       }]
     ] as const) {
       await insertArtifact({
@@ -2395,7 +2401,8 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     const summary = (await harness.admin.query(
       `select artifact_json from unified_check_artifacts
         where created_by_run_id=$1
-          and kind='service_role_shadow_run_summary'`,
+          and kind='service_role_shadow_run_summary'
+          and artifact_json ? 'counts'`,
       [prepared.seeded.runId]
     )).rows[0].artifact_json;
     expect(summary.counts).toMatchObject({

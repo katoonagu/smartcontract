@@ -577,11 +577,29 @@ It authorizes no production routing, scoring, Stage D or rollout.
   PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck passes. The
   saturated-pool regression proves acquisition rejects below one second with
   no queued waiter or late transaction/write after the held client is released.
-- C1 Tasks 8-10 have not started. There is no non-interference proof or C1
-  acceptance evidence. Stage C is
-  incomplete, Stage D remains design-only, and production stays on matrix-v4,
-  `ScoreAnchorV3`, and report-only checked-subject role with no suppression or
-  score effect.
+- C1 Task 8 is complete in `006a30b6` with hardening through `90f4b428`.
+  Its frozen-clock real PostgreSQL tape compares the full production
+  authority for disabled/enabled runs, proves equal bytes and provider/cache
+  behavior, zero accepted/final shadow references, exact completed-run
+  `1/1/7/1/1/1` shadow cardinality, and bounded preload/post-commit failure
+  containment.
+- C1 Task 9 implements the strict four-command acceptance producer, exact-key
+  replay/input/root parsers, Git/file guards, deterministic two-schema replay,
+  and the one-root C6 verification contract. The source input contains only
+  the verified null-rooted delta prefix through the unique seven-state target;
+  the separately embedded final cancelled checkpoint records lifecycle and
+  compaction provenance only and does not prove a final-head-to-target ancestry
+  link or become the target predecessor. Accepted pages,
+  analysis, compaction, checkpoint and role inputs permit only their explicit
+  replay-bound identity/hash translations. One real production cycle commits
+  the target group, writes seven profiles plus one precommit and one runtime
+  receipt, leaves the traversal and one consequent provider task queued, makes
+  zero provider calls, and creates zero run summaries. Task 7-8 separately
+  prove summary behavior for genuinely completed runs. No real-history input,
+  identity, or acceptance file is generated or admitted until Task 10.
+- Stage C is incomplete, Stage D remains design-only, and production stays on
+  matrix-v4, `ScoreAnchorV3`, and report-only checked-subject role with no
+  suppression or score effect.
 
 - Stage C remains entirely score-neutral. Its runtime shadow, physical service
   profile, EOA-at-anchor proof, adverse receipt, blind review and cashflow

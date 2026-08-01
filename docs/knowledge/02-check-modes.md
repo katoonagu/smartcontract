@@ -39,6 +39,17 @@ production check mode. One frozen accepted history now has one standalone
 referenced by no accepted attempt and changes no production traversal, score,
 report, delivery, configuration, or runtime hook.
 
+The C1 accepted-history observer is implemented behind the exact disabled-by-
+default `service-role-shadow-100-plus-100-v1` policy. When enabled it writes
+only standalone input/fence/profile/precommit/runtime/summary evidence after
+ordinary production history acceptance and durable checkpoint authority; it
+cannot stop traversal or change scoring, reports, delivery, the finalizer, or
+the authoritative Admin DAG. The isolated acceptance path executes one real seven-state
+group, retains the consequent `QUEUED` traversal and planned provider work,
+and therefore expects seven profiles, one group precommit, one runtime receipt,
+and zero terminal summaries. Its producer/parser is implemented, but the
+real-history acceptance root is not admitted until C1 Task 10.
+
 ## Unified Wallet Check
 
 Unified Wallet Check keeps the same three analytical questions—Fast, Where,

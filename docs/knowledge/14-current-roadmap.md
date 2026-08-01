@@ -44,14 +44,16 @@ implementation plans do not override the status recorded here.
    observation, reconciliation, startup recovery, and summary only behind the
    exact disabled-by-default flag.
 4. Continue the approved C0-C6 implementation plan suite. Do not advance C0a
-   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-7 are
+   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-9 are
    complete after their zero-skip PostgreSQL gates; Task 4 freezes one run-wide
    input set/fence and exact compound lookup; Task 5 adds the bounded optional
    group observer and strict precommit path; Task 6 adds runtime wiring and
    authoritative post-checkpoint reconciliation; Task 7 adds bounded startup
-   recovery and current-closure summary evolution. Continue with C1 Tasks 8-10:
-   non-interference and acceptance work. Unavailable cashflow authority does
-   not block that later C1 slice.
+   recovery and current-closure summary evolution. Task 8 proves real
+   PostgreSQL non-interference; Task 9 implements the strict acceptance
+   producer/parser and isolated one-group replay. Continue with Task 10 to
+   generate and admit the three real-history evidence files from the clean
+   tested commit. Unavailable cashflow authority does not block that C1 slice.
 5. In parallel, prove the missing authority sources, then build physical
    100 + 100 evidence, EOAAtAnchor and a complete adverse
    receipt, then validate a new non-overlapping blind 24 + 6 with two reviews
@@ -101,7 +103,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-7 are implemented. C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips plus `19/19` unit tests; Task 4 passes `7/7` real PostgreSQL tests with zero skips plus `24/24` unit tests, and the combined Task 3+4 PostgreSQL gate passes `25/25`. Task 5-7 relevant unit files pass `98/98`; Task 7 adds once-at-startup bounded recovery and an evolving current-closure summary, and its shadow-runtime plus ordered-commit PostgreSQL files pass `22/22 + 18/18` with zero skips. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b and C1 Tasks 8-10 have not started. There is still no authoritative-byte non-interference proof, C1 acceptance root, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Amend and review C0 source schemas/real producers before C0a/C2-C4; continue C1 Tasks 8-10 with non-interference/acceptance and no score effect |
+| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-9 are implemented. C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips plus `19/19` unit tests; Task 4 passes `7/7` real PostgreSQL tests with zero skips plus `24/24` unit tests, and the combined Task 3+4 PostgreSQL gate passes `25/25`. Task 5-7 relevant unit files pass `98/98`; Task 7 adds once-at-startup bounded recovery and an evolving current-closure summary, and its shadow-runtime plus ordered-commit PostgreSQL files pass `22/22 + 18/18` with zero skips. Task 8 proves full real-PostgreSQL authoritative-byte non-interference. Task 9 adds the tested deterministic one-group replay and self-contained acceptance parser, but generates no audit evidence. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b has not started. There is still no admitted C1 real-history root, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Generate and admit C1 Task 10 evidence; separately amend/review C0 source schemas and real producers before C0a/C2-C4; keep all Stage C work score-neutral |
 | Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -261,7 +263,7 @@ traversal, finalization, scoring, report and delivery behavior remains
 unchanged; strict invalid-config rejection is the only product-facing config
 contract change. Real evidence admission and the preserved prerequisite are
 complete. Execution has started only on additive foundations: C0 Tasks 1-2
-and C1 Tasks 1-7 are implemented. Task 3's real PostgreSQL file passes
+and C1 Tasks 1-9 are implemented. Task 3's real PostgreSQL file passes
 `18/18` with zero skips, including independent two-connection convergence on
 one atomic unreferenced trio. Task 4's file passes `7/7` with zero skips and
 freezes the run-wide input set/fence behind an explicit unwired factory. Task 5
@@ -270,6 +272,10 @@ path. Task 6 wires it behind the exact disabled-by-default policy and writes a
 runtime receipt only from exact ordered checkpoint and delta-chain authority.
 Task 7 adds the bounded recovery of durable crash-window precommits and the
 strict current-closure terminal summary without changing lifecycle or score.
+Task 8 proves disabled/enabled authoritative-byte non-interference on real
+PostgreSQL. Task 9 adds the strict source-to-replay producer, two-schema
+one-cycle runtime proof and self-contained C6 root parser; Task 10 has not yet
+generated or admitted the real-history files.
 
 ## Stage C C0-C6 Execution Plan — 2026-07-31
 
@@ -289,7 +295,7 @@ plan for each C0-C6 slice. Planning completion changes no runtime or score:
   later Stage D decision and may transport only separately accepted exact facts
   through the future v5/V2/V4 chain.
 
-Execution checkpoint after C1 Task 5 implementation:
+Execution checkpoint after C1 Task 9 implementation:
 
 - C0 Tasks 1-2 landed in `009c5c60`, `65b6dc59`, `3ae832ba` and
   `472b59f9`; frozen V1 plus the additive V2 builder/cache/provenance pass the
@@ -353,8 +359,22 @@ Execution checkpoint after C1 Task 5 implementation:
   snapshot. Current Task 5-7 unit regressions pass `98/98`; shadow runtime plus
   ordered commit PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck
   passes. A saturated-pool regression proves there is no queued waiter, late
-  transaction, or late write after acquisition timeout. C1 Tasks 8-10 remain:
-  non-interference and acceptance are absent.
+  transaction, or late write after acquisition timeout.
+- C1 Task 8 is complete in `006a30b6` with correctness/deadline follow-ups
+  through `90f4b428`. The real frozen-clock PostgreSQL tape proves equal
+  disabled/enabled authoritative projections, unchanged provider/cache
+  behavior, no accepted/final shadow reference, exact completed-run shadow
+  cardinality and bounded lock/hang containment.
+- C1 Task 9 implements the exact source-input/identity/root contracts, strict
+  CLI and Git/filesystem guards, deterministic replay translations, and two
+  disposable schema-037 variants. One normal production cycle commits the
+  uniquely selected seven-state source target delta, writes `7/1/1` profile/
+  precommit/runtime evidence only when enabled, makes zero provider calls, and
+  leaves the real traversal plus one consequent provider task queued with zero
+  terminal summaries. The acceptance root is self-contained and resolves
+  planner, task, attempt, artifact, checkpoint and delta authority from their
+  real storage boundaries. Task 10 remains required to generate and admit the
+  real-history input, identity and root from the clean tested commit.
   Traversal finalizer, report and score remain unchanged.
 
 ## Correctness Gate

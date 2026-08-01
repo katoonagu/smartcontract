@@ -212,6 +212,18 @@ transaction also performs the planner `planned -> ready` transition. Its hash
 and `result_bytes` come from the same canonical UTF-8 serialization, so the
 manifest is not pre-persisted or counted twice.
 
+The C1 acceptance replay does not reuse an accepted page artifact under a new
+run. It revalidates the exact source manifest/pages, changes only each page's
+run ID and the consequent page/manifest/accepted-entry hashes, and preserves
+provider-page hashes, canonical events, inventory, counts, exhaustion,
+snapshot, address, token and provider version. Its embedded traversal input is
+only the null-rooted source delta prefix through the uniquely identified
+seven-state target delta. The separately embedded final cancelled checkpoint
+records lifecycle identity and compaction binding only; it neither proves a
+final-head-to-target ancestry link nor imports the later failed-run delta suffix
+as replay work. This is isolated proof tooling, not a new
+production indexing or provider path.
+
 Traversal now enumerates the complete distinct mandatory address-history set
 from the current canonical frontier, persists one capacity-independent planner
 batch, and uses head-only barrier admission. Accepted manifests may finish in
