@@ -563,8 +563,13 @@ It authorizes no production routing, scoring, Stage D or rollout.
   receipt recovery and unions every non-cancelled `COMPLETED` traversal for
   terminal summary, even with no precommit. It revalidates current planner/
   checkpoint/delta authority and creates only missing strict runtime receipts.
+  A terminal summary may reuse a runtime receipt from an earlier checkpoint
+  attempt only when the same task's DB-authored bounded `recentAttempts`
+  contains exactly one matching `CHECKPOINTED` record; current/future,
+  nonexistent, other-task and other-run identities still fail closed, and the
+  current committed checkpoint head plus both delta ancestries remain required.
   It does not poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
-  Task 5-7 unit set passes `97/97`; shadow-runtime plus ordered-commit
+  Task 5-7 unit set passes `98/98`; shadow-runtime plus ordered-commit
   PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck passes. The
   saturated-pool regression proves acquisition rejects below one second with
   no queued waiter or late transaction/write after the held client is released.

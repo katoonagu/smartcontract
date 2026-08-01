@@ -2415,6 +2415,63 @@ async function loadAcceptedHistoryInventoryV1(input: {
   });
 }
 
+// ponytail: task checkpoints retain the last eight DB-authored attempt records;
+// older receipts stay unreconciled until lifecycle owns immutable checkpoint history.
+function hasHistoricalCheckpointAttemptAuthorityV1(input: {
+  readonly checkpoint: Record<string, unknown>;
+  readonly currentAttempt: number;
+  readonly receiptAttempt: number;
+}): boolean {
+  if (
+    !Number.isSafeInteger(input.currentAttempt) ||
+    input.currentAttempt < 1 ||
+    !Number.isSafeInteger(input.receiptAttempt) ||
+    input.receiptAttempt < 1 ||
+    input.receiptAttempt >= input.currentAttempt
+  ) return false;
+  try {
+    const seen = new Set<number>();
+    let matchingCheckpointedAttempt = 0;
+    for (const value of exactDenseArray(input.checkpoint.recentAttempts)) {
+      const attempt = exactRecord(value, [
+        "attempt", "startedAt", "completedAt", "durationMs", "outcome"
+      ]);
+      if (
+        !Number.isSafeInteger(attempt.attempt) ||
+        (attempt.attempt as number) < 1 ||
+        seen.has(attempt.attempt as number) ||
+        typeof attempt.startedAt !== "string" ||
+        !Number.isFinite(Date.parse(attempt.startedAt)) ||
+        typeof attempt.completedAt !== "string" ||
+        !Number.isFinite(Date.parse(attempt.completedAt)) ||
+        Date.parse(attempt.completedAt) < Date.parse(attempt.startedAt) ||
+        typeof attempt.durationMs !== "number" ||
+        !Number.isFinite(attempt.durationMs) ||
+        attempt.durationMs < 0 ||
+        ![
+          "QUEUED",
+          "CHECKPOINTED",
+          "WAITING_FOR_PROVIDER",
+          "WAITING_RETRY",
+          "COMPLETED",
+          "FAILED_TECHNICAL",
+          "CANCELLED",
+          "BLOCKED_ADMIN",
+          "LEASE_EXPIRED"
+        ].includes(attempt.outcome as string)
+      ) return false;
+      seen.add(attempt.attempt as number);
+      if (
+        attempt.attempt === input.receiptAttempt &&
+        attempt.outcome === "CHECKPOINTED"
+      ) matchingCheckpointedAttempt += 1;
+    }
+    return matchingCheckpointedAttempt === 1;
+  } catch {
+    return false;
+  }
+}
+
 async function validateRuntimeReceiptClosureV1(input: {
   readonly client: UnifiedQueryable;
   readonly runtimeCommit: string;
@@ -2442,7 +2499,6 @@ async function validateRuntimeReceiptClosureV1(input: {
       receipt.runId !== input.runId ||
       receipt.runtimeCommit !== input.runtimeCommit ||
       receipt.traversalTaskId !== input.traversalTaskId ||
-      receipt.traversalAttempt !== input.traversalAttempt ||
       (input.precommitSha256 !== undefined &&
         receipt.precommitSha256 !== input.precommitSha256)
     ) return null;
@@ -2553,10 +2609,14 @@ async function validateRuntimeReceiptClosureV1(input: {
       candidateSha256: receipt.candidateDeltaSha256,
       signal: input.signal
     })) return null;
-    if (
-      currentHead === receipt.committedDeltaHeadSha256 &&
-      fingerprintCanonicalArtifact(checkpoint) !== receipt.committedCheckpointSha256
-    ) return null;
+    if (receipt.traversalAttempt === input.traversalAttempt) {
+      if (fingerprintCanonicalArtifact(checkpoint) !==
+        receipt.committedCheckpointSha256) return null;
+    } else if (!hasHistoricalCheckpointAttemptAuthorityV1({
+      checkpoint: checkpoint as Record<string, unknown>,
+      currentAttempt: input.traversalAttempt,
+      receiptAttempt: receipt.traversalAttempt
+    })) return null;
     return receipt;
   } catch {
     return null;

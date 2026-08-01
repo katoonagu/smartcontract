@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import * as shadowRuntimeModule from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
+import {
+  addressHistoryManifestKey,
+  buildAddressHistoryManifest
+} from "../../src/unifiedCheck/addressHistory.js";
 import {
   buildServiceRoleShadowPrecommitReceiptV1,
   buildServiceRoleShadowInputFenceV1,
@@ -228,7 +233,9 @@ function roleArtifacts(runId = RUN_ID, seed = "one") {
   };
 }
 
-function acceptedHistoryGroup() {
+function acceptedHistoryGroup(
+  manifestSha256 = "d".repeat(64)
+) {
   const address = "TG2B2Jb7PXbyKzhJ61yGpyFxqbGBL2cZUH";
   const anchorMs = Date.parse("2026-07-01T00:00:00.000Z");
   const makeEvent = (index: number, timestampMs: number): IndexedTronUsdtTransfer => ({
@@ -287,7 +294,7 @@ function acceptedHistoryGroup() {
     policyVersion: "existing-hash-bound-economic-role-v1",
     runId: RUN_ID,
     snapshotHash: SNAPSHOT_HASH,
-    addressHistoryManifestSha256: "d".repeat(64),
+    addressHistoryManifestSha256: manifestSha256,
     entries: ids.map((canonicalEventId, index) => ({
       canonicalEventId,
       transactionInfoEvidenceId: `accepted-evidence-${index}`,
@@ -303,7 +310,7 @@ function acceptedHistoryGroup() {
     schemaVersion: "service-role-shadow-event-role-map-v1",
     runId: RUN_ID,
     snapshotHash: SNAPSHOT_HASH,
-    addressHistoryManifestSha256: "d".repeat(64),
+    addressHistoryManifestSha256: manifestSha256,
     entries: ids.map((canonicalEventId) => ({
       canonicalEventId,
       role: "ordinary",
@@ -317,7 +324,7 @@ function acceptedHistoryGroup() {
     policyVersion: "service-role-shadow-100-plus-100-v1",
     runId: RUN_ID,
     snapshotHash: SNAPSHOT_HASH,
-    addressHistoryManifestSha256: "d".repeat(64),
+    addressHistoryManifestSha256: manifestSha256,
     sourceEventRoleMapV1Sha256: sourceMapSha256,
     evidenceBundleSha256: bundleSha256,
     binding,
@@ -363,6 +370,8 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
   artifactLoadErrorOnce: Error | null = null;
   winnerFenceOnUnavailableTimeout: ArtifactRow | null = null;
   fatalWrapperScanOnce = false;
+  summaryTraversalRows: Array<Record<string, unknown>> = [];
+  summaryPlannerRows: Array<Record<string, unknown>> = [];
   private transactionNumber = 0;
   private artifacts = new Map<string, ArtifactRow>();
   private readonly manifests = new Map<string, { subject: string; sha256: string; artifact: unknown }>();
@@ -398,6 +407,25 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
       const normalized = sql.replaceAll(/\s+/gu, " ").trim().toLowerCase();
       if (normalized.startsWith("set local ") || normalized.includes("pg_advisory_xact_lock")) {
         return { rows: [] };
+      }
+      if (normalized.includes("artifact.kind = 'traversal_result'")) {
+        return { rows: structuredClone(this.summaryTraversalRows) };
+      }
+      if (normalized.includes("from unified_check_planner_entries planner")) {
+        return { rows: structuredClone(this.summaryPlannerRows) };
+      }
+      if (normalized.includes("from unified_check_artifacts") &&
+        normalized.includes("'service_role_shadow_runtime_receipt'")) {
+        const runId = String(values[0]);
+        const kinds = new Set([
+          "service_role_shadow_profile",
+          "service_role_shadow_precommit_receipt",
+          "service_role_shadow_runtime_receipt"
+        ]);
+        return { rows: [...staged.values()].filter((row) =>
+          row.created_by_run_id === runId && kinds.has(row.kind)
+        ).sort((left, right) => left.kind.localeCompare(right.kind) ||
+          left.sha256.localeCompare(right.sha256)) };
       }
       if (normalized.includes("from unified_check_runs") && normalized.includes("analysis_manifest")) {
         const runId = String(values[0]);
@@ -2110,5 +2138,248 @@ describe("service role shadow checkpoint reconciliation", () => {
       "SET LOCAL statement_timeout = '500ms'"
     ]);
     expect(transactionCalls[2]!.sql).toContain("sha256 = any");
+  });
+
+  it("summarizes a receipt only from a recorded historical checkpoint attempt", async () => {
+    const initial = acceptedHistoryGroup();
+    const manifestIdentity = {
+      chain: "tron" as const,
+      snapshotHash: SNAPSHOT_HASH,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      address: initial.states[0]!.address,
+      providerRequestVersion: "service-role-shadow-test-v1"
+    };
+    const manifestKey = addressHistoryManifestKey(manifestIdentity);
+    const page = {
+      version: "unified-address-history-page-v1" as const,
+      schemaVersion: 1 as const,
+      runId: RUN_ID,
+      manifestKey,
+      providerPageHash: fingerprintCanonicalArtifact(["provider-page"]),
+      rawRowCount: initial.events.length,
+      events: initial.events.map((event) => ({
+        ...event,
+        blockTimestamp: event.blockTimestamp.toISOString()
+      }))
+    };
+    const pageSha256 = fingerprintCanonicalArtifact(page);
+    const manifest = buildAddressHistoryManifest({
+      ...manifestIdentity,
+      pageArtifactHashes: [pageSha256],
+      canonicalEventIds: initial.events.map((event) =>
+        canonicalTronUsdtEventKey(event)
+      ),
+      rawRowCount: initial.events.length,
+      duplicateCount: 0,
+      exhaustion: {
+        kind: "provider_exhausted",
+        evidenceSha256: fingerprintCanonicalArtifact(["exhaustion"])
+      }
+    });
+    const manifestSha256 = fingerprintCanonicalArtifact(manifest);
+    const accepted = acceptedHistoryGroup(manifestSha256);
+    const db = new MemoryDatabase();
+    seedRoleArtifacts(db, accepted);
+    db.put(artifactRow(
+      RUN_ID,
+      "address_history_page",
+      "1",
+      page,
+      pageSha256
+    ));
+    db.put(artifactRow(
+      RUN_ID,
+      "address_history_manifest",
+      "1",
+      manifest,
+      manifestSha256
+    ));
+    const candidate = delta(null, "historical-attempt-candidate");
+    const candidateSha256 = fingerprintCanonicalArtifact(candidate);
+    const committed = delta(candidateSha256, "historical-attempt-committed");
+    const committedSha256 = fingerprintCanonicalArtifact(committed);
+    db.put(artifactRow(
+      RUN_ID,
+      "traversal_delta",
+      "1",
+      candidate,
+      candidateSha256
+    ));
+    db.put(artifactRow(
+      RUN_ID,
+      "traversal_delta",
+      "1",
+      committed,
+      committedSha256
+    ));
+    const runtime = createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    });
+    await runtime.observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 2,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey,
+      manifestSha256,
+      acceptedPageArtifactHashes: [pageSha256],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: candidateSha256 } as never,
+      candidateDeltaSha256: candidateSha256,
+      signal: new AbortController().signal
+    });
+    const attemptTwoCheckpoint = {
+      version: "unified-production-traversal-checkpoint-v2",
+      deltaHeadSha256: committedSha256,
+      timingSummary: { attemptCount: 2 }
+    };
+    await runtime.reconcileCheckpoint({
+      task: {
+        id: "task-traversal",
+        runId: RUN_ID,
+        kind: "traversal",
+        attempt: 2,
+        checkpoint: {},
+        cancellationRequestedAt: null
+      },
+      result: { kind: "checkpoint", checkpoint: attemptTwoCheckpoint },
+      checkpointCommit: {
+        checkpointed: true,
+        providerWorkAvailable: false,
+        committedTaskStatus: "QUEUED",
+        committedCheckpoint: attemptTwoCheckpoint,
+        orderedCommit: {
+          applied: true,
+          runId: RUN_ID,
+          committedEntries: [{
+            canonicalSequence: 1,
+            taskId: "task-history",
+            acceptedAttemptId: "attempt-history",
+            artifactSha256: manifestSha256
+          }]
+        }
+      },
+      signal: new AbortController().signal
+    });
+
+    const currentCheckpoint = {
+      ...attemptTwoCheckpoint,
+      timingSummary: { attemptCount: 3 },
+      recentAttempts: [{
+        attempt: 2,
+        startedAt: "2026-07-31T11:59:58.000Z",
+        completedAt: "2026-07-31T11:59:59.000Z",
+        durationMs: 1_000,
+        outcome: "CHECKPOINTED"
+      }, {
+        attempt: 3,
+        startedAt: "2026-07-31T11:59:59.000Z",
+        completedAt: "2026-07-31T12:00:00.000Z",
+        durationMs: 1_000,
+        outcome: "COMPLETED"
+      }]
+    };
+    const analysis = analysisManifest(RUN_ID, SNAPSHOT_HASH);
+    const traversalArtifact = {
+      version: "unified-traversal-artifact-v1",
+      schemaVersion: 1,
+      runId: RUN_ID,
+      analysisManifestHash: fingerprintCanonicalArtifact(analysis),
+      snapshotHash: SNAPSHOT_HASH,
+      visitedStates: accepted.states,
+      frontier: [],
+      terminalStates: [],
+      supersededStateIds: [],
+      eligibleEventIds: [],
+      eligibleEventCount: 0,
+      directionCount: 1,
+      fundingEpisodeCount: accepted.states.length,
+      expandedStateCount: accepted.states.length,
+      allocatedInputRaw: "28",
+      terminalRaw: "28",
+      residualRaw: "0",
+      backwardCoverage: {},
+      forwardCoverage: {},
+      closed: true
+    };
+    const traversalSha256 = fingerprintCanonicalArtifact(traversalArtifact);
+    const traversalRow = {
+      task_id: "task-traversal",
+      traversal_attempt: 3,
+      accepted_attempt_id: "attempt-traversal-3",
+      checkpoint_json: {
+        ...currentCheckpoint,
+        recentAttempts: currentCheckpoint.recentAttempts.slice(1)
+      },
+      artifact_sha256: traversalSha256,
+      analysis_manifest_sha256: fingerprintCanonicalArtifact(analysis),
+      subject_address: SUBJECT,
+      artifact_json: traversalArtifact
+    };
+    db.summaryTraversalRows = [traversalRow];
+    db.summaryPlannerRows = [{
+      canonical_sequence: 1,
+      task_id: "task-history",
+      task_kind: "address_history",
+      logical_key: manifestKey,
+      accepted_attempt_id: "attempt-history",
+      artifact_sha256: manifestSha256
+    }];
+
+    const expectUnreconciled = async (
+      row: Record<string, unknown>
+    ): Promise<void> => {
+      db.summaryTraversalRows = [row];
+      const summary = await runtime.summarizeRun({
+        runId: RUN_ID,
+        signal: new AbortController().signal
+      });
+      expect(summary?.artifact).toMatchObject({
+        complete: false,
+        counts: {
+          reconciledGroup: 0,
+          unreconciledGroup: 1
+        }
+      });
+    };
+    await expectUnreconciled(traversalRow);
+    await expectUnreconciled({
+      ...traversalRow,
+      traversal_attempt: 1,
+      accepted_attempt_id: "attempt-traversal-1",
+      checkpoint_json: currentCheckpoint
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      task_id: "task-other",
+      checkpoint_json: currentCheckpoint
+    });
+
+    db.summaryTraversalRows = [{
+      ...traversalRow,
+      checkpoint_json: currentCheckpoint
+    }];
+    const summary = await runtime.summarizeRun({
+      runId: RUN_ID,
+      signal: new AbortController().signal
+    });
+
+    expect(summary?.artifact.counts).toEqual({
+      missing: 0,
+      conflict: 0,
+      malformed: 0,
+      eligibleGroup: 1,
+      eligibleProfile: 7,
+      reconciledGroup: 1,
+      reconciledProfile: 7,
+      unreconciledGroup: 0,
+      profileOrphan: 0,
+      precommitOrphan: 0
+    });
+    expect(summary?.artifact.complete).toBe(true);
+    expect(summary?.artifact.productionEffect).toBe(false);
   });
 });
