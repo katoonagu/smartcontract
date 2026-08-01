@@ -130,9 +130,12 @@ signal with tests.
   converges on one atomic unreferenced bundle/V1-map/V2-wrapper trio. C1 Task 4
   is also closed: one immutable run-wide input set/fence now reuses only strict
   run-owned wrapper/V1-map/bundle closure, treats corrupt non-hash wrapper keys
-  as malformed without placing them in strict observed hashes, and passes
-  `22/22` unit plus `6/6` real PostgreSQL tests with zero skips. Together Tasks
-  3+4 pass `24/24` PostgreSQL tests. The preload ceiling is one normal plus at
+  as malformed without placing them in strict observed hashes only on an
+  initial no-fence scan, and deterministically publishes or reuses conflict
+  when a pre-existing ready fence has a non-reusable closure. The first such
+  restart stabilizes the fence row set. Task 4 passes `24/24` unit plus `7/7`
+  real PostgreSQL tests with zero skips. Together Tasks 3+4 pass `25/25`
+  PostgreSQL tests. The preload ceiling is one normal plus at
   most two publication attempts with separate 1,000 ms deadlines, or about
   3,000 ms plus jitter under an indefinitely held external lock. Exhaustion
   evicts the rejected cache entry; a later caller can retry and rescan only

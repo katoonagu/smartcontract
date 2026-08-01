@@ -110,17 +110,11 @@ function exactDenseArray(value: unknown): readonly unknown[] {
     PropertyDescriptor | undefined
   >;
   const length = value.length;
-  const expectedKeys = [
-    ...Array.from({ length }, (_, index) => String(index)),
-    "length"
-  ];
-  const expected = new Set(expectedKeys);
   const keys = Reflect.ownKeys(descriptors);
   const lengthDescriptor = descriptors.length;
   if (
     !Number.isSafeInteger(length) ||
-    keys.length !== expectedKeys.length ||
-    keys.some((key) => typeof key !== "string" || !expected.has(key)) ||
+    keys.length !== length + 1 ||
     !lengthDescriptor ||
     !("value" in lengthDescriptor) ||
     lengthDescriptor.value !== length ||
@@ -128,11 +122,24 @@ function exactDenseArray(value: unknown): readonly unknown[] {
   ) {
     throw new TypeError("invalid_array");
   }
-  return Array.from({ length }, (_, index) => {
-    const descriptor = descriptors[String(index)];
-    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+  for (const key of keys) {
+    if (key === "length") continue;
+    const index = typeof key === "string" ? Number(key) : Number.NaN;
+    const descriptor = typeof key === "string" ? descriptors[key] : undefined;
+    if (
+      !Number.isSafeInteger(index) ||
+      index < 0 ||
+      index >= length ||
+      String(index) !== key ||
+      !descriptor ||
+      !("value" in descriptor) ||
+      !descriptor.enumerable
+    ) {
       throw new TypeError("invalid_array");
     }
+  }
+  return Array.from({ length }, (_, index) => {
+    const descriptor = descriptors[String(index)]!;
     return descriptor.value;
   });
 }
@@ -455,7 +462,9 @@ function indexMaps(
   return new Map([...mutable].map(([key, values]) => [
     key,
     Object.freeze([...values].sort((left, right) =>
-      left.wrapperSha256.localeCompare(right.wrapperSha256)))
+      left.wrapperSha256 < right.wrapperSha256
+        ? -1
+        : left.wrapperSha256 > right.wrapperSha256 ? 1 : 0))
   ]));
 }
 
@@ -845,7 +854,7 @@ async function resolveExistingFence(
     if (timeoutError(error) || !(error instanceof TypeError)) throw error;
     return {
       kind: "unavailable",
-      reason: "malformed",
+      reason: "conflict",
       observedRoleMapV2Sha256s
     };
   }

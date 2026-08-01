@@ -479,8 +479,13 @@ It authorizes no production routing, scoring, Stage D or rollout.
   one run-wide immutable input set and one `ready | unavailable` fence, strictly
   revalidates each run-owned V2 wrapper through its V1 map and evidence bundle,
   and serves compound `missing | found | conflict` lookup only from that frozen
-  set. A non-hash wrapper row is malformed, but only sorted unique lowercase
-  SHA-256 wrapper keys enter the unavailable fence. The normal attempt and up
+  set. Only an initial V2 scan with no fence may classify a non-hash wrapper
+  row or invalid source closure as malformed, and only sorted unique lowercase
+  SHA-256 wrapper keys enter that unavailable fence. A pre-existing `ready`
+  fence whose input-set/wrapper/source closure cannot be reused instead
+  deterministically publishes or reuses `unavailable/conflict`; the first such
+  restart stabilizes the row set, so later restarts neither change reason nor
+  proliferate fences. The normal attempt and up
   to two fresh publication attempts use the same run-key advisory fence and
   separate 1,000 ms local deadlines, so an indefinitely held external lock can
   consume about 3,000 ms plus scheduling jitter. The first publication timeout
@@ -488,8 +493,8 @@ It authorizes no production routing, scoring, Stage D or rollout.
   attempts evicts the rejected cache entry so a later caller may retry and
   rescan only because no fence was published; a durable fence is restart-stable
   and prevents later role-map population from being scanned. The focused unit
-  file passes `22/22`; the real schema-037 PostgreSQL file passes `6/6` with
-  zero skips, and the combined Task 3+4 PostgreSQL gate passes `24/24`.
+  file passes `24/24`; the real schema-037 PostgreSQL file passes `7/7` with
+  zero skips, and the combined Task 3+4 PostgreSQL gate passes `25/25`.
 - C1 Tasks 5-10 have not started. There is no coordinator hook, runtime/config
   wiring, traversal/finalizer/report/score effect or C1 acceptance evidence.
   Strict invalid-config rejection remains the only product-facing config

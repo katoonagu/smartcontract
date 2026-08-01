@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import {
   buildServiceRoleShadowInputFenceV1,
@@ -439,6 +439,39 @@ describe("service role shadow runtime contracts", () => {
     })).toThrow("service_role_shadow_input_fence_v1_invalid");
     expect(accesses).toBe(0);
   });
+
+  it("rejects a huge sparse hash array before attempting a length-sized allocation", () => {
+    const inputSet = buildServiceRoleShadowInputSetV1({
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      roleMapV2Sha256s: []
+    });
+    const sparseHashes: string[] = [];
+    sparseHashes.length = 1_000_000_000;
+    let attemptedLengthSizedAllocation = false;
+    const originalFrom = Array.from;
+    const arrayFrom = vi.spyOn(Array, "from").mockImplementation(((value: unknown) => {
+      if (
+        value !== null &&
+        typeof value === "object" &&
+        "length" in value &&
+        (value as { length: unknown }).length === sparseHashes.length
+      ) {
+        attemptedLengthSizedAllocation = true;
+        throw new Error("length_sized_allocation_attempted");
+      }
+      return originalFrom(value as ArrayLike<unknown>);
+    }) as typeof Array.from);
+    try {
+      expect(() => parseServiceRoleShadowInputSetV1({
+        artifact: { ...inputSet.artifact, roleMapV2Sha256s: sparseHashes },
+        expectedSha256: "f".repeat(64)
+      })).toThrow("service_role_shadow_input_set_v1_invalid");
+      expect(attemptedLengthSizedAllocation).toBe(false);
+    } finally {
+      arrayFrom.mockRestore();
+    }
+  });
 });
 
 describe("service role shadow runtime fence", () => {
@@ -588,6 +621,35 @@ describe("service role shadow runtime fence", () => {
       kind: "conflict",
       wrapperSha256s: [first.wrapperSha256, second.wrapperSha256].sort()
     });
+  });
+
+  it("orders conflict hashes by code unit without locale collation", async () => {
+    const db = new MemoryDatabase();
+    const first = roleArtifacts(RUN_ID, "locale-first");
+    const second = roleArtifacts(RUN_ID, "locale-second");
+    seedRoleArtifacts(db, first);
+    seedRoleArtifacts(db, second);
+    const localeCompare = vi.spyOn(String.prototype, "localeCompare")
+      .mockImplementation(function (this: string, that: string) {
+        return String(this) < that ? 1 : String(this) > that ? -1 : 0;
+      });
+    try {
+      const runtime = createServiceRoleShadowRuntimeV1({
+        db,
+        runtimeCommit: RUNTIME_COMMIT
+      });
+      await runtime.loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+      await expect(runtime.lookupMap({
+        runId: RUN_ID,
+        snapshotHash: SNAPSHOT_HASH,
+        compoundBindingKey: first.compoundBindingKey
+      })).resolves.toEqual({
+        kind: "conflict",
+        wrapperSha256s: [first.wrapperSha256, second.wrapperSha256].sort()
+      });
+    } finally {
+      localeCompare.mockRestore();
+    }
   });
 
   it("uses the exact 1000ms local deadlines and rolls normal writes back before timeout publication", async () => {

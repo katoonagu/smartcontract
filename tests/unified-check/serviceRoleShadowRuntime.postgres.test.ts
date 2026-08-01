@@ -7,6 +7,7 @@ import {
   createUnifiedPoolTransactionHost
 } from "../../src/unifiedCheck/repository.js";
 import {
+  buildServiceRoleShadowInputFenceV1,
   createServiceRoleShadowRuntimeV1
 } from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 
@@ -268,6 +269,50 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       { kind: "service_role_shadow_input_set", count: 1 }
     ]);
     await expectNoRuntimeAdvisoryLocks(harness, [pidA, pidB]);
+  }, 30_000);
+
+  it("publishes and reuses one conflict when an existing ready closure is missing", async () => {
+    const seeded = await seedRun(harness);
+    const ready = buildServiceRoleShadowInputFenceV1({
+      ...seeded,
+      runtimeCommit: RUNTIME_COMMIT,
+      outcome: {
+        kind: "ready",
+        inputSetSha256: "f".repeat(64),
+        roleMapV2Sha256s: []
+      }
+    });
+    await harness.admin.query(
+      `insert into unified_check_artifacts
+         (sha256,created_by_run_id,kind,schema_version,artifact_json)
+       values ($1,$2,'service_role_shadow_input_fence','1',$3::jsonb)`,
+      [ready.sha256, seeded.runId, JSON.stringify(ready.artifact)]
+    );
+
+    const firstConflict = await runtime(harness.poolA).loadInputFence(seeded);
+    expect(firstConflict.artifact.outcome).toEqual({
+      kind: "unavailable",
+      reason: "conflict",
+      observedRoleMapV2Sha256s: []
+    });
+    const countAfterFirstConflict = Number((await harness.admin.query(
+      `select count(*)::int count
+         from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind='service_role_shadow_input_fence'`,
+      [seeded.runId]
+    )).rows[0].count);
+    expect(countAfterFirstConflict).toBe(2);
+
+    const secondConflict = await runtime(harness.poolB).loadInputFence(seeded);
+    expect(secondConflict).toEqual(firstConflict);
+    expect(Number((await harness.admin.query(
+      `select count(*)::int count
+         from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind='service_role_shadow_input_fence'`,
+      [seeded.runId]
+    )).rows[0].count)).toBe(countAfterFirstConflict);
   }, 30_000);
 
   it("keeps a ready fence unchanged after a later wrapper insertion and restart", async () => {
