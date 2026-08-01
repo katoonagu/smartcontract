@@ -6,16 +6,17 @@ import type {
   RiskConfidence,
   RiskReport,
   RiskSeverity,
-  RiskSignalGroup,
+  ScoringRiskSignalGroup,
   RiskSignalObservationInput
 } from "../types";
 
 export const CURRENT_RISK_POLICY_VERSION = "2026-05-21-v1";
 export const DEFAULT_CHAIN = "tron";
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const criticalLabels = new Set(["scam", "reported_scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
+const contextOnlyLabels = new Set(["victim"]);
 
 export type RiskEvaluationContext = {
   subjectAddress: string;
@@ -44,23 +45,19 @@ type ReasonMetadata = {
   confidence: RiskConfidence;
   severity: RiskSeverity;
   evidenceRef: string | null;
-  signalGroup: RiskSignalGroup;
+  signalGroup: ScoringRiskSignalGroup;
 };
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
-function labelScoreImpact(label: string): number {
-  if (mitigatingLabels.has(label)) return -40;
-  if (highRiskLabels.has(label)) return 80;
-  return criticalLabels.has(label) ? 90 : 35;
-}
-
-function labelSeverity(label: string): RiskSeverity {
-  if (mitigatingLabels.has(label)) return "info";
-  if (highRiskLabels.has(label)) return "high";
-  return criticalLabels.has(label) ? "critical" : "medium";
+function labelSeverity(label: AddressLabel): RiskSeverity {
+  if (label.label === "approval_drain_proximity") return "high";
+  if (contextOnlyLabels.has(label.label)) return "info";
+  if (mitigatingLabels.has(label.label)) return "info";
+  if (highRiskLabels.has(label.label)) return "high";
+  return criticalLabels.has(label.label) ? "critical" : "medium";
 }
 
 function labelConfidence(label: AddressLabel): RiskConfidence {
@@ -68,7 +65,7 @@ function labelConfidence(label: AddressLabel): RiskConfidence {
   return label.source === "service_admin" ? "high" : "medium";
 }
 
-function inferSignalGroup(signal: RiskSignal, fallback: RiskSignalGroup): RiskSignalGroup {
+function inferSignalGroup(signal: RiskSignal, fallback: ScoringRiskSignalGroup): ScoringRiskSignalGroup {
   if (signal.source?.startsWith("graph")) return "graph";
   if (signal.source?.startsWith("aml")) return "provider";
   if (signal.source?.startsWith("provider")) return "provider";
@@ -83,7 +80,7 @@ function buildSignalMetadata(
   amlSignals: RiskSignal[]
 ): Map<string, ReasonMetadata> {
   const metadata = new Map<string, ReasonMetadata>();
-  const add = (signal: RiskSignal, signalGroup: RiskSignalGroup) => {
+  const add = (signal: RiskSignal, signalGroup: ScoringRiskSignalGroup) => {
     metadata.set(signal.code, {
       source: signal.source ?? signalGroup,
       confidence: signal.confidence ?? "medium",
@@ -120,7 +117,7 @@ function enrichReportReasons(input: {
     labelMetadata.set(code, {
       source: label.source,
       confidence: labelConfidence(label),
-      severity: labelSeverity(label.label),
+      severity: labelSeverity(label),
       evidenceRef,
       signalGroup: "internal_label"
     });
@@ -181,7 +178,7 @@ function rawEvidenceFromLabels(input: {
 
 function observationFromReason(input: {
   reason: RiskReport["reasons"][number];
-  signalGroup: RiskSignalGroup;
+  signalGroup: ScoringRiskSignalGroup;
   context: Required<Pick<RiskEvaluationContext, "subjectAddress">> & RiskEvaluationContext;
   chain: string;
   policyVersion: string;
@@ -212,7 +209,7 @@ function observationFromReason(input: {
   };
 }
 
-function groupForReason(reason: RiskReport["reasons"][number], metadata: Map<string, ReasonMetadata>): RiskSignalGroup {
+function groupForReason(reason: RiskReport["reasons"][number], metadata: Map<string, ReasonMetadata>): ScoringRiskSignalGroup {
   if (reason.code.startsWith("internal_label_")) return "internal_label";
   return metadata.get(reason.code)?.signalGroup ?? "behavior";
 }

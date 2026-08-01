@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { runForensicAddressExposureSearch, runForensicRouteSearch } from "../../src/forensics/routeSearch";
+import { createIndexedTronUsdtTransferClient } from "../../src/forensics/localTronUsdtIndex";
+import { normalizeTransfer, runForensicAddressExposureSearch, runForensicRouteSearch } from "../../src/forensics/routeSearch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
+import type { IndexedTronUsdtTransfer } from "../../src/types";
 
 const source = "TSource111111111111111111111111111111";
 const hop = "THop1111111111111111111111111111111";
@@ -25,6 +27,51 @@ function transfer(overrides: Partial<RawTronscanTrc20Transfer> = {}): RawTronsca
 }
 
 describe("forensic route search", () => {
+  it("keeps same-tuple indexed events distinct while deduplicating repeated provider branches", async () => {
+    const indexedEvents: IndexedTronUsdtTransfer[] = [7, 8].map((eventIndex) => ({
+      transferId: `tronscan:same-tuple:${eventIndex}`,
+      txHash: "same-tuple",
+      blockNumber: 100,
+      blockTimestamp: new Date("2026-05-05T10:00:00.000Z"),
+      eventIndex,
+      provider: "tronscan",
+      providerRowOrdinalInTx: eventIndex,
+      fromAddress: source,
+      toAddress: target,
+      amountRaw: "320000000000",
+      method: "transfer",
+      callerAddress: source,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      reverted: false,
+      confirmed: true
+    }));
+    const client = createIndexedTronUsdtTransferClient(async () => [...indexedEvents, indexedEvents[0]]);
+
+    const report = await runForensicRouteSearch({
+      sourceAddress: source,
+      targetAddress: target,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5
+    });
+
+    expect(report.paths).toHaveLength(2);
+    expect(report.paths.map((path) => path.edges[0]?.eventIndex).sort()).toEqual([7, 8]);
+  });
+
+  it("keeps a valid live edge without raw movement identity", () => {
+    const edge = normalizeTransfer(transfer({ transaction_id: "live-no-event-identity" }));
+
+    expect(edge).toMatchObject({ txHash: "live-no-event-identity", contractAddress: TRON_USDT_CONTRACT_ADDRESS });
+    expect(edge?.transferId).toBeUndefined();
+    expect(edge?.eventIndex).toBeUndefined();
+  });
+
   it("builds direct and hop candidate paths while filtering failed and non-USDT transfers", async () => {
     const client = {
       listRelatedTrc20Transfers: vi.fn(async (address: string) => {
@@ -221,6 +268,52 @@ describe("forensic route search", () => {
     expect(report.rawEvidence.some((item) => item.id === exposureObservation?.rawEvidenceId)).toBe(true);
   });
 
+  it("uses latest historical transfers for sparse source windows in address exposure", async () => {
+    const bridge = "TBridge111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (_address: string, options?: { minTimestamp?: number }) => {
+        if (options?.minTimestamp !== undefined) return [];
+        return [
+          transfer({
+            transaction_id: "old-source-bridge",
+            from_address: source,
+            to_address: bridge,
+            block_ts: Date.parse("2026-03-01T10:00:00.000Z")
+          })
+        ];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      recentFallbackMinTransferCount: 10,
+      recentFallbackTransferLimit: 60,
+      getAddressMetadata: async (address) => address === bridge
+        ? {
+            address,
+            name: "Allbridge Bridge",
+            tag: "Allbridge:Cross-chain Bridge",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([, options]) => options?.minTimestamp === undefined)).toBe(true);
+    expect(report.serviceExposureProfiles[0]).toMatchObject({
+      dominantCategory: "bridge",
+      exposureScore: expect.any(Number)
+    });
+    expect(report.missingChecks.some((check) => check.includes("sparse-wallet context"))).toBe(true);
+  });
+
   it("stops expansion at service boundaries while allowing routes to reach them through forward edges", async () => {
     const bridgePool = target;
     const client = {
@@ -286,6 +379,50 @@ describe("forensic route search", () => {
     expect(report.paths.map((path) => path.pathAddresses)).toContainEqual([source, hop, bridgePool]);
     expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === bridgePool)).toBe(false);
     expect(report.missingChecks).toContain(`Expansion stopped at service boundary ${bridgePool} (bridge_pool)`);
+  });
+
+  it("expands through a GasFree Account but stops at the registered pooled provider", async () => {
+    const gasFreeAccount = "TGasFreeHop111111111111111111111111";
+    const tronLinkProvider = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({ transaction_id: "source-gasfree", from_address: source, to_address: gasFreeAccount, quant: "100000000" }),
+            transfer({ transaction_id: "source-provider", from_address: source, to_address: tronLinkProvider, quant: "100000000" })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === gasFreeAccount
+        ? {
+            address,
+            name: "CreatedByContract",
+            tag: "GasFree Account",
+            isContract: true,
+            verified: false
+          }
+        : null
+    });
+
+    expect(report.fastCounterpartyTopsProfile?.topOutgoingCounterparties.map((row) => row.address)).toEqual(
+      expect.arrayContaining([gasFreeAccount, tronLinkProvider])
+    );
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === gasFreeAccount)).toBe(true);
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === tronLinkProvider)).toBe(false);
+    expect(report.missingChecks).not.toContain(`Expansion stopped at service boundary ${gasFreeAccount} (service)`);
+    expect(report.missingChecks).toContain(`Expansion stopped at service boundary ${tronLinkProvider} (service)`);
   });
 
   it("does not complete a route by traversing beyond an intermediate service boundary", async () => {
@@ -482,9 +619,69 @@ describe("forensic route search", () => {
       sourceTxCount: 4,
       serviceTxCount: 1
     });
-    expect(report.rawEvidence).toHaveLength(2);
+    expect(report.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: source,
+      outgoingBoundaryVolumeRaw: "311851000000",
+      twoHopBoundaryTxCount: 4,
+      contextScore: 15
+    });
+    expect(report.walletRoleProfiles?.[0]).toBeDefined();
+    expect(report.rawEvidence.some((item) => "boundaryExposureProfile" in item.evidenceJson)).toBe(true);
+    expect(report.rawEvidence.some((item) => "walletRoleProfile" in item.evidenceJson)).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_service_exposure")).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_address_behavior")).toBe(true);
+    expect(report.observations.some((item) => item.code === "forensic_boundary_exposure_context")).toBe(true);
+  });
+
+  it("returns fast counterparty tops for address exposure reports", async () => {
+    const sender = "TSender111111111111111111111111111111";
+    const bridgePool = "TPool111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({ transaction_id: "sender-source", from_address: sender, to_address: source, quant: "200000000" }),
+            transfer({ transaction_id: "source-bridge-pool", from_address: source, to_address: bridgePool, quant: "150000000" })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridgePool
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(report.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: source,
+      incomingVolumeRaw: "200000000",
+      outgoingVolumeRaw: "150000000",
+      topIncomingCounterparties: [
+        expect.objectContaining({ address: sender, direction: "incoming", volumeRaw: "200000000" })
+      ],
+      topOutgoingCounterparties: [
+        expect.objectContaining({ address: bridgePool, direction: "outgoing", category: "bridge_pool" })
+      ],
+      topServiceCounterparties: [
+        expect.objectContaining({ address: bridgePool, direction: "service", category: "bridge_pool" })
+      ]
+    });
   });
 
   it("caps only queued intermediate expansions in address exposure search", async () => {

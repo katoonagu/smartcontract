@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { safetyMessage } from "../../src/bot/messages";
+import {
+  addWalletPrompt,
+  analyticsMessage,
+  checkAddressPrompt,
+  checkTxPrompt,
+  dashboardMessage,
+  helpMessage,
+  homeMessage,
+  riskIntelOverviewMessage,
+  safetyMessage,
+  securityMessage,
+  settingsMessage,
+  walletAlertModeMessage
+} from "../../src/bot/messages";
 import type { WalletDashboard } from "../../src/wallet/dashboard";
 
 const now = new Date("2026-05-23T00:00:00.000Z");
@@ -114,9 +127,135 @@ function dashboard(): WalletDashboard {
   };
 }
 
+function plainTelegramText(message: { text: string } | string): string {
+  const text = typeof message === "string" ? message : message.text;
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 describe("bot messages", () => {
+  it("uses trust-building copy in home, help, and settings messages", () => {
+    const home = plainTelegramText(homeMessage(2, "ru"));
+    expect(home).toContain("Следит за входящими USDT");
+    expect(home).toContain("Проверяет адреса и транзакции");
+    expect(home).toContain("Бот только читает блокчейн");
+    expect(home).not.toContain("risk score");
+    expect(home).not.toContain("seed/private key");
+
+    const help = plainTelegramText(helpMessage("ru"));
+    expect(help).toContain("Что умеет бот");
+    expect(help).toContain("Проверка происхождения денег");
+    expect(help).toContain("Бот не хранит ключи и не подписывает транзакции");
+    expect(help).toContain("риск по правилам сервиса не всегда означает мошенничество");
+    expect(help).toContain("точное списание показываем только когда видно, кто получил разрешение и кто списал USDT");
+    expect(help).not.toContain("Limited beta");
+
+    const settings = plainTelegramText(settingsMessage([], "ru"));
+    expect(settings).toContain("Настройки");
+    expect(settings).toContain("Язык");
+    expect(settings).toContain("Админы алертов");
+    expect(settings).not.toContain("safety events");
+
+    const enHome = plainTelegramText(homeMessage(1, "en"));
+    expect(enHome).toContain("Monitors incoming USDT");
+    expect(enHome).toContain("Checks addresses and transactions");
+    expect(enHome).toContain("The bot is read-only");
+
+    const enHelp = plainTelegramText(helpMessage("en"));
+    expect(enHelp).toContain("What the bot does");
+    expect(enHelp).toContain("traces the origin of funds");
+    expect(enHelp).toContain("The bot does not store keys or sign transactions");
+
+    const enSettings = plainTelegramText(settingsMessage([], "en"));
+    expect(enSettings).toContain("Settings");
+    expect(enSettings).toContain("Language");
+    expect(enSettings).toContain("Alert admins");
+    expect(enSettings).toContain("The bot is read-only");
+  });
+
+  it("uses clear Russian prompts and wallet alert mode explanations", () => {
+    const wallet = dashboard().wallet;
+
+    expect(plainTelegramText(addWalletPrompt("ru"))).toContain("Отправьте TRON-адрес кошелька");
+    expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Отправьте TRON-адрес");
+    expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Адрес не будет добавлен в мониторинг");
+    expect(plainTelegramText(checkTxPrompt("ru"))).toContain("Отправьте hash транзакции TRON");
+    expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).toContain("Сразу: каждое входящее поступление");
+    expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).not.toContain("LOW tx пачкой");
+  });
+
+  it("uses aligned Russian copy in dashboard and analytics report screens", () => {
+    const data = dashboard();
+    data.snapshot.analyticsPartial = true;
+    data.snapshot.thirtyDayFeeSun = "50000000";
+
+    const dashboardText = plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(dashboardText).toContain("Кошелёк");
+    expect(dashboardText).toContain("Поток за 30 дней");
+    expect(dashboardText).toContain("Безопасность");
+    expect(dashboardText).toContain("Данные обновлены частично");
+    expect(dashboardText).not.toContain("Data quality");
+    expect(dashboardText).not.toContain("Analytics: partial");
+    expect(dashboardText).not.toContain("Аналитика: частичная");
+    expect(plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "en"))).not.toContain("Data quality");
+
+    const staleData = dashboard();
+    staleData.source = "stale";
+    const staleDashboardText = plainTelegramText(dashboardMessage(staleData, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(staleDashboardText).toContain("Данные дашборда: устарели");
+    expect(staleDashboardText).not.toContain("Dashboard data: stale");
+
+    const errorData = dashboard();
+    errorData.source = "error";
+    const errorDashboardText = plainTelegramText(dashboardMessage(errorData, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(errorDashboardText).toContain("Данные дашборда: недоступны");
+    expect(errorDashboardText).not.toContain("Dashboard data: unavailable");
+
+    const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(analyticsText).toContain("Данные");
+    expect(analyticsText).toContain("Транзакции");
+    expect(analyticsText).toContain("За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth.");
+    expect(analyticsText).not.toContain("Качество данных");
+    expect(analyticsText).not.toContain("Gas/fees");
+  });
+
+  it("uses aligned Russian copy in safety and risk intelligence report screens", () => {
+    const data = dashboard();
+
+    const safetyText = plainTelegramText(safetyMessage(data, "ru"));
+    expect(safetyText).toContain("Рисковые approvals");
+    expect(safetyText).toContain("Как отменить approval");
+    expect(safetyText).toContain("Бот только читает данные");
+    expect(safetyText).toContain("Нажмите кнопку «Открыть approvals» под сообщением.");
+    expect(safetyText).toContain("Найдите USDT и spender из блока «Главные approvals».");
+    expect(safetyText).not.toContain("указанного контракта");
+    expect(safetyText).not.toContain("Review/revoke");
+    expect(safetyText).not.toContain("seed/private key");
+
+    const securityText = plainTelegramText(securityMessage(data, "ru"));
+    expect(securityText).toContain("Текущий риск");
+    expect(securityText).toContain("Покрытие: ограниченное");
+    expect(securityText).not.toContain("Текущий score");
+    expect(securityText).not.toContain("Уверенность: limited beta");
+
+    const riskIntelText = plainTelegramText(riskIntelOverviewMessage("ru"));
+    expect(riskIntelText).toContain("Что проверяет бот");
+    expect(riskIntelText).toContain("Что пока ограничено");
+    expect(riskIntelText).toContain("часть проверок остаётся beta");
+    expect(riskIntelText).toContain("внешние AML-провайдеры не подключены");
+    expect(riskIntelText).not.toContain("Limited beta");
+
+    expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Risky approvals");
+    expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Revoke guide");
+  });
+
   it("shows decoded finite approval allowance in the Safety screen", () => {
-    const message = safetyMessage(dashboard());
+    const message = safetyMessage(dashboard(), "en");
     const text = message.text;
 
     expect(message.parseMode).toBe("HTML");
@@ -133,10 +272,10 @@ describe("bot messages", () => {
     expect(text).toContain("320,652.45032 USDT");
     expect(text).toContain("CRITICAL 95/100");
     expect(text).toContain("<b>Revoke guide</b>");
-    expect(text).toContain("Open TronScan approvals.");
+    expect(text).toContain("Tap “Open approvals” under this message.");
     expect(text).toContain("Connect TronLink with the watched wallet.");
-    expect(text).toContain("Find USDT approval for the spender.");
-    expect(text).toContain("Cancel approval if unexpected.");
+    expect(text).toContain("Find USDT and the spender from “Top approvals”.");
+    expect(text).toContain("Revoke approval if it is unexpected or no longer needed.");
     expect(text).toContain("Bot is read-only. It never signs transactions and never asks for seed/private key.");
   });
 
@@ -152,7 +291,7 @@ describe("bot messages", () => {
       }
     ];
 
-    const text = safetyMessage(data).text;
+    const text = safetyMessage(data, "en").text;
 
     expect(text).toContain("<b>Session</b>: linked to swap/bridge route");
     expect(text).toContain("<b>Context</b>: ✅ resolved / linked swap route");

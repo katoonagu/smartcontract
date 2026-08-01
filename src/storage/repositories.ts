@@ -1,18 +1,47 @@
+import { createHash, randomBytes } from "node:crypto";
+import type { PoolClient } from "pg";
 import type {
+  AddressPoisoningAlertStatus,
+  AddressPoisoningCandidate,
+  AddressPoisoningCandidateDelivery,
+  AddressPoisoningCandidateStatus,
+  AddressPoisoningClearReason,
+  AddressPoisoningCheckStatus,
+  AddressPoisoningCheckWorkItem,
+  AddressPoisoningClassification,
+  AddressPoisoningCoverage,
   AddressLabel,
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
+  ApprovalAllowanceStateV2,
+  ApprovalSafetyAssessmentV2,
+  BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
+  ContractDecisionEvidenceV1,
+  DeepSecondLayerContextV1,
   ForensicCaseInput,
   ForensicCaseStatus,
+  ForensicTelegramDeliveryV1,
+  RecoveredForensicDeliveryIntentPreparationErrorCode,
+  RecoveredForensicDeliveryIntentV1,
   ForensicRouteConfidence,
   ForensicRouteEdgeType,
   ForensicRoutePath,
+  TronAddressUsdtCoverageInterval,
+  TronAddressUsdtCoverageMode,
+  TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexRequestKind,
+  TronAddressUsdtIndexPage,
+  TronAddressUsdtIndexPageStatus,
+  TronAddressUsdtIndexProvider,
+  TronAddressUsdtIndexState,
+  TronAddressUsdtIndexStatus,
   IndexedTronUsdtApproval,
   IndexedTronUsdtTransfer,
   RawEvidenceInput,
   RawEvidenceSourceType,
+  PersistAddressPoisoningCandidateInput,
   RiskConfidence,
   RiskLabel,
   RiskReport,
@@ -22,11 +51,14 @@ import type {
   RiskLevel,
   RiskReason,
   TronUsdtTransferMethod,
+  TelegramDeliveryErrorCode,
   WalletApprovalSpenderType,
   TronTransferEvent,
   WalletAlertMode,
-  WatchedWallet
+  WatchedWallet,
+  WaitReconciliationResultV1
 } from "../types";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type {
   ContractActivityLevel,
   ContractCallerStat,
@@ -35,30 +67,124 @@ import type {
   ContractProviderTag,
   ContractPublicTag
 } from "../approvals/contractIntelligence";
+import type {
+  ContractLlmVerdictCacheLookup,
+  ContractLlmVerdictCacheRecord,
+  ContractLlmVerdictFingerprintCacheLookup
+} from "../forensics/contractLlmVerdict";
 import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
+import {
+  UINT256_MAX_RAW,
+  validateApprovalAllowanceStateV2
+} from "../approvals/allowanceState";
+import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
+import {
+  buildForensicRuntimeContractProjection,
+  isDeepSecondLayerContextV1
+} from "../forensics/forensicJobProgress";
+import {
+  isForensicTelegramDeliveryV1,
+  isRecoveredForensicDeliveryIntentDue,
+  isRecoveredForensicDeliveryIntentV1,
+  isTelegramDeliveryDue,
+  settleRecoveredForensicDeliveryIntentPreparation as transitionRecoveredIntentPreparation,
+  transitionTelegramDeliveryToClaimed,
+  transitionTelegramDeliveryToSettled
+} from "../forensics/telegramDelivery";
 import type { Db } from "./db";
 
 export type {
+  AddressPoisoningCandidate,
+  AddressPoisoningCandidateDelivery,
+  AddressPoisoningCheckWorkItem,
+  PersistAddressPoisoningCandidateInput,
   RawEvidenceInput,
   RiskSignalObservationInput
 } from "../types";
 
-export type UserAlertStatus = "pending" | "sending" | "sent" | "failed" | "skipped";
+export type UserAlertStatus = "pending" | "sending" | "analyzing" | "sent" | "failed" | "skipped";
 export type TelegramUserPendingAction =
   | "add_wallet"
   | "check_address"
   | "check_tx"
+  | "report_theft_tx"
+  | "report_theft_comment"
   | "add_alert_admin"
   | "add_alert_admin_all"
   | "add_alert_admin_suspicious_only"
   | "remove_alert_admin";
 export type CustomerAlertMode = "all" | "suspicious_only";
 
+export type ApprovalSafetyAuditForContractDecision = {
+  approvalTxHash: string;
+  approvalEvidenceId: string;
+  sessionEvidenceId: string | null;
+  campaignEvidence: ContractDecisionEvidenceV1[];
+  assessment: ApprovalSafetyAssessmentV2;
+};
+
 export type TelegramUserSession = {
   telegramUserId: string;
   pendingAction: TelegramUserPendingAction | null;
   selectedWalletId: string | null;
+  selectedTheftReportId: string | null;
   updatedAt: Date;
+};
+
+export type TheftReportStatus = "draft" | "awaiting_deposit" | "deposit_confirmed" | "documents_requested" | "cancelled";
+
+export type TheftReportAdminStatus =
+  | "new"
+  | "awaiting_payment"
+  | "awaiting_documents"
+  | "in_progress"
+  | "escalated"
+  | "closed"
+  | "cancelled";
+
+export type TheftReport = {
+  id: string;
+  telegramUserId: string;
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  amountUsdt: string;
+  comment: string | null;
+  status: TheftReportStatus;
+  depositAddress: string | null;
+  depositAmountUsdt: string;
+  adminStatus: TheftReportAdminStatus;
+  adminNote: string | null;
+  adminUpdatedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type TheftReportDraftInput = {
+  id?: string;
+  telegramUserId: string;
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  amountUsdt: string;
+  depositAddress: string | null;
+  depositAmountUsdt: string;
+};
+
+export type ListTheftReportsInput = {
+  limit?: number;
+  offset?: number;
+  adminStatus?: TheftReportAdminStatus;
+  botStatus?: TheftReportStatus;
+  query?: string;
+};
+
+export type UpdateTheftReportAdminStateInput = {
+  id: string;
+  adminStatus: TheftReportAdminStatus;
+  adminNote: string;
 };
 
 export type CustomerAlertRecipient = {
@@ -144,6 +270,7 @@ export type WalletApproval = {
   amountRaw: string;
   isUnlimited: boolean;
   currentAllowanceRaw: string;
+  allowanceStateV2?: ApprovalAllowanceStateV2 | null;
   spenderType: WalletApprovalSpenderType;
   status: WalletApprovalStatus;
   lastApprovalTxHash: string | null;
@@ -167,6 +294,11 @@ export type WalletApproval = {
   approvalContextDeadlineAt?: Date | null;
   approvalFinalContextAlertSentAt?: Date | null;
   updatedAt: Date;
+};
+
+export type WalletApprovalSpenderRelation = WalletApproval & {
+  watchedWalletAddress: string;
+  watchedWalletTelegramUserId: string;
 };
 
 export type WalletApprovalSummary = {
@@ -254,8 +386,26 @@ export type AddressMetadata = {
   expiresAt: Date;
 };
 
+export type TelegramUserProfile = {
+  telegramUserId: string;
+  username: string | null;
+  locale: BotLocale;
+  createdAt: Date;
+};
+
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
-export type ForensicCheckJobKind = "address_deep_check";
+export type ForensicCheckJobKind =
+  | "address_fast_check"
+  | "address_deep_check"
+  | "where_is_money_check"
+  | "incoming_deposit_check";
+export type QueueableForensicCheckJobKind = Exclude<ForensicCheckJobKind, "address_fast_check">;
+export type ForensicLaneQueueDiagnostics = {
+  kind: "where_is_money_check" | "address_deep_check";
+  runnableQueuedCount: number;
+  oldestRunnableQueuedAt: Date | null;
+  dbRunningCount: number;
+};
 
 export type ForensicCheckJob = {
   id: string;
@@ -279,7 +429,17 @@ export type ForensicCheckJob = {
   completedAt: Date | null;
 };
 
+export type ForensicTelegramDeliveryClaim = {
+  jobId: string;
+  kind: Exclude<ForensicCheckJobKind, "address_fast_check">;
+  payload: ForensicTelegramDeliveryV1["payload"];
+  effect: ForensicTelegramDeliveryV1["effect"];
+  messageFingerprint: string;
+  claim: NonNullable<ForensicTelegramDeliveryV1["claim"]>;
+};
+
 export type ForensicCheckJobInput = {
+  kind?: QueueableForensicCheckJobKind;
   subjectAddress: string;
   windowStart: Date;
   windowEnd: Date;
@@ -288,6 +448,304 @@ export type ForensicCheckJobInput = {
   messageId?: string | null;
   requestedBy?: string | null;
   progressJson?: Record<string, unknown>;
+};
+
+export type ForensicJobClaimMutation = {
+  id: string;
+  claimStartedAt: Date;
+};
+
+export type ForensicJobClaim = {
+  jobId: string;
+  claimStartedAt: Date;
+};
+
+async function lockForensicJobClaim(
+  client: PoolClient,
+  claim: ForensicJobClaim,
+  allowWaiting = false
+): Promise<boolean> {
+  const result = await client.query(
+    `select id
+     from forensic_check_jobs
+     where id = $1
+       and started_at = $2
+       and (
+         status = 'running'
+         ${allowWaiting ? "or (status = 'queued' and progress_json->>'jobPhase' = 'waiting_for_targeted_index')" : ""}
+       )
+     for update`,
+    [claim.jobId, claim.claimStartedAt]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function runClaimedForensicJobTransaction<T>(
+  db: Db,
+  claim: ForensicJobClaim,
+  work: (client: PoolClient) => Promise<T>
+): Promise<{ claimed: false } | { claimed: true; value: T }> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, claim)) {
+      await client.query("rollback");
+      return { claimed: false };
+    }
+    // ponytail: strict inline indexing holds one transaction during provider IO;
+    // upgrade to per-write claim guards if this path becomes high-throughput.
+    const value = await work(client);
+    await client.query("commit");
+    return { claimed: true, value };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type WalletIntelligenceSupportedJobKind =
+  | "address_deep_check"
+  | "where_is_money_check"
+  | "incoming_deposit_check";
+
+export type WalletIntelligenceJobStatus = Extract<ForensicCheckJobStatus, "completed" | "partial">;
+export type WalletIntelligenceIndexStatus = "indexed" | "index_failed";
+
+export type WalletIntelligenceSourceKind =
+  | "deep_direct_counterparty"
+  | "deep_second_layer"
+  | "where_origin_path"
+  | "where_source_provenance"
+  | "incoming_origin_path"
+  | "incoming_funding_bundle";
+
+export type WalletIntelligenceRole =
+  | "subject"
+  | "direct_counterparty"
+  | "second_hop"
+  | "source"
+  | "funder"
+  | "service_boundary"
+  | "contract"
+  | "unknown";
+
+export type WalletIntelligenceEdgeRole = "transfer" | "context" | "funding" | "service_boundary";
+
+export type WalletIntelligenceTag =
+  | "repeated_cross_run_address"
+  | "high_activity_wallet"
+  | "large_liquidity_wallet"
+  | "possible_service_or_exchange_like"
+  | "known_service_or_exchange"
+  | "cross_mode_seen";
+
+export type WalletIntelligenceRunInput = {
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  jobStatus: WalletIntelligenceJobStatus;
+  subjectAddress: string;
+  requestedBy: string | null;
+  chatId: string | null;
+  messageId: string | null;
+  completedAt: Date | null;
+  telegramUserId: string | null;
+  telegramUsername: string | null;
+  telegramLocale: BotLocale | null;
+  sourcePayloadHash: string;
+  indexVersion: number;
+  indexStatus: WalletIntelligenceIndexStatus;
+  indexError: string | null;
+};
+
+export type WalletIntelligenceSightingInput = {
+  id: string;
+  address: string;
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  subjectAddress: string;
+  requestedBy: string | null;
+  sourceKind: WalletIntelligenceSourceKind;
+  role: WalletIntelligenceRole;
+  depth: number | null;
+  pathId: string | null;
+  txHash: string | null;
+  amountRaw: string | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  metadataJson: Record<string, unknown>;
+};
+
+export type WalletIntelligenceEdgeInput = {
+  id: string;
+  fromAddress: string;
+  toAddress: string;
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  sourceKind: WalletIntelligenceSourceKind;
+  depth: number | null;
+  pathId: string | null;
+  txHash: string | null;
+  amountRaw: string | null;
+  timestamp: Date | null;
+  edgeRole: WalletIntelligenceEdgeRole;
+  metadataJson: Record<string, unknown>;
+};
+
+export type WalletIntelligenceAddressSummary = {
+  address: string;
+  uniqueSubjectCount: number;
+  uniqueRequesterCount: number;
+  jobCount: number;
+  completedJobCount: number;
+  partialJobCount: number;
+  occurrenceCount: number;
+  distinctTxCount: number;
+  distinctAmountRaw: string;
+  minDepth: number | null;
+  maxDepth: number | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  modes: WalletIntelligenceSupportedJobKind[];
+  tags: WalletIntelligenceTag[];
+  serviceCategories: string[];
+  labelHints: string[];
+};
+
+export type WalletIntelligenceIndexPayload = {
+  run: WalletIntelligenceRunInput;
+  sightings: WalletIntelligenceSightingInput[];
+  edges: WalletIntelligenceEdgeInput[];
+  touchedAddresses: string[];
+};
+
+export type ListWalletIntelligenceBackfillJobsInput = {
+  limit?: number;
+  offset?: number;
+};
+
+export type ListWalletIntelligenceAddressSummariesInput = {
+  limit?: number;
+  offset?: number;
+  mode?: WalletIntelligenceSupportedJobKind;
+  tag?: WalletIntelligenceTag;
+  minUniqueSubjects?: number;
+  minUniqueRequesters?: number;
+  startDate?: Date;
+  endDate?: Date;
+  addressQuery?: string;
+  addresses?: string[];
+  minDepth?: number;
+  maxDepth?: number;
+  minDistinctAmountRaw?: string;
+  maxDistinctAmountRaw?: string;
+  serviceCategory?: string;
+  requesterQuery?: string;
+  subjectAddress?: string;
+  jobStatus?: WalletIntelligenceJobStatus;
+};
+
+export type WalletIntelligenceRequesterSummary = {
+  requestedBy: string | null;
+  telegramUserId: string | null;
+  username: string | null;
+  locale: BotLocale | null;
+  chatId: string | null;
+  messageId: string | null;
+  jobCount: number;
+};
+
+export type WalletIntelligenceSourceJobSummary = {
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  jobStatus: WalletIntelligenceJobStatus;
+  subjectAddress: string;
+  completedAt: Date | null;
+};
+
+export type WalletIntelligenceSighting = WalletIntelligenceSightingInput;
+export type WalletIntelligenceEdge = WalletIntelligenceEdgeInput;
+
+export type WalletIntelligenceAddressDetail = {
+  summary: WalletIntelligenceAddressSummary;
+  requesters: WalletIntelligenceRequesterSummary[];
+  jobs: WalletIntelligenceSourceJobSummary[];
+  sightings: WalletIntelligenceSighting[];
+  edges: WalletIntelligenceEdge[];
+};
+
+export type WalletIntelligenceRunState = {
+  sourcePayloadHash: string;
+  indexVersion: number;
+  indexStatus: WalletIntelligenceIndexStatus;
+};
+
+export type ForensicJobWaitRequiredFor = "where_hop" | "incoming_hop";
+
+export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelled";
+
+export type ForensicJobWaitInput = {
+  jobId: string;
+  claimStartedAt: Date;
+  address: string;
+  targetTimestamp: Date;
+  requiredFor: ForensicJobWaitRequiredFor;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  lastError?: string | null;
+};
+
+export type AddressFastCheckJobInput = {
+  id?: string;
+  subjectAddress: string;
+  status: Extract<ForensicCheckJobStatus, "completed" | "partial">;
+  windowStart: Date;
+  windowEnd: Date;
+  priority?: number;
+  chatId?: string | null;
+  requestedBy?: string | null;
+  progressJson: Record<string, unknown>;
+  resultJson: Record<string, unknown>;
+  rawEvidenceIds: string[];
+  observationIds: string[];
+  lastError: string | null;
+};
+
+export type ListAdminForensicCheckJobsInput = {
+  limit?: number;
+  offset?: number;
+  status?: ForensicCheckJobStatus;
+  kind?: ForensicCheckJobKind;
+  subjectAddress?: string;
+  query?: string;
+};
+
+export type SavedWalletRiskSummary = {
+  address: string;
+  jobId: string;
+  kind: string;
+  risk: number | null;
+  decision: string | null;
+  role: string | null;
+  evidence: string | null;
+  createdAt: string;
+};
+
+export type RecoverStaleForensicCheckJobsInput = {
+  staleRunningBefore: Date;
+  maxRetries: number;
+  limit?: number;
+  recoveredAt?: Date;
+};
+
+export type RecoverStaleForensicCheckJobsResult = {
+  requeued: ForensicCheckJob[];
+  failed: ForensicCheckJob[];
 };
 
 export type AddressLabelAssertionStatus = "active" | "inactive" | "retired" | "false_positive";
@@ -364,6 +822,7 @@ export type IndexedTronUsdtTransferQuery = {
   limit?: number;
   offset?: number;
   direction?: "incoming" | "outgoing" | "both";
+  orderBy?: "newest" | "amount_desc";
 };
 
 export type AddressLabelCacheInput = Omit<AddressLabelCacheEntry, "firstSeenAt" | "lastSeenAt"> & {
@@ -380,8 +839,10 @@ export type {
 
 const riskLabels = new Set<RiskLabel>([
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
+  "victim",
   "mule",
   "collector",
   "bridge",
@@ -391,21 +852,40 @@ const riskLabels = new Set<RiskLabel>([
   "needs_review",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange",
   "darknet_exchange_proximity",
   "approval_drain_proximity"
 ]);
 
-const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
+const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "analyzing", "sent", "failed", "skipped"]);
 const walletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "add_wallet",
   "check_address",
   "check_tx",
+  "report_theft_tx",
+  "report_theft_comment",
   "add_alert_admin",
   "add_alert_admin_all",
   "add_alert_admin_suspicious_only",
   "remove_alert_admin"
+]);
+const theftReportStatuses = new Set<TheftReportStatus>([
+  "draft",
+  "awaiting_deposit",
+  "deposit_confirmed",
+  "documents_requested",
+  "cancelled"
+]);
+const theftReportAdminStatuses = new Set<TheftReportAdminStatus>([
+  "new",
+  "awaiting_payment",
+  "awaiting_documents",
+  "in_progress",
+  "escalated",
+  "closed",
+  "cancelled"
 ]);
 const customerAlertModes = new Set<CustomerAlertMode>(["all", "suspicious_only"]);
 const walletApprovalStatuses = new Set<WalletApprovalStatus>(["active", "revoked", "unknown"]);
@@ -427,18 +907,90 @@ const riskSignalGroups = new Set<RiskSignalGroup>([
   "behavior",
   "incoming_context",
   "approval",
-  "manual"
+  "manual",
+  "wallet_safety"
 ]);
+const addressPoisoningCheckStatuses = new Set<AddressPoisoningCheckStatus>([
+  "pending", "running", "inconclusive", "clear", "candidate", "failed", "skipped", "skipped_backfill"
+]);
+const addressPoisoningCoverages = new Set<AddressPoisoningCoverage>(["complete", "partial"]);
+const addressPoisoningClearReasons = new Set<AddressPoisoningClearReason>([
+  "complete_no_match", "prior_relationship", "trusted_sender", "authoritative_service"
+]);
+const addressPoisoningClassifications = new Set<AddressPoisoningClassification>(["CRITICAL", "HIGH"]);
+const addressPoisoningCandidateStatuses = new Set<AddressPoisoningCandidateStatus>(["candidate", "confirmed", "dismissed"]);
+const addressPoisoningAlertStatuses = new Set<AddressPoisoningAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
 const riskConfidences = new Set<RiskConfidence>(["low", "medium", "high"]);
 const riskSeverities = new Set<RiskSeverity>(["info", "low", "medium", "high", "critical"]);
 const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial", "failed"]);
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
-const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
+  "address_fast_check",
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
+const walletIntelligenceSupportedJobKinds = new Set<WalletIntelligenceSupportedJobKind>([
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
+const walletIntelligenceJobStatuses = new Set<WalletIntelligenceJobStatus>(["completed", "partial"]);
+const walletIntelligenceIndexStatuses = new Set<WalletIntelligenceIndexStatus>(["indexed", "index_failed"]);
+const walletIntelligenceSourceKinds = new Set<WalletIntelligenceSourceKind>([
+  "deep_direct_counterparty",
+  "deep_second_layer",
+  "where_origin_path",
+  "where_source_provenance",
+  "incoming_origin_path",
+  "incoming_funding_bundle"
+]);
+const walletIntelligenceRoles = new Set<WalletIntelligenceRole>([
+  "subject",
+  "direct_counterparty",
+  "second_hop",
+  "source",
+  "funder",
+  "service_boundary",
+  "contract",
+  "unknown"
+]);
+const walletIntelligenceEdgeRoles = new Set<WalletIntelligenceEdgeRole>(["transfer", "context", "funding", "service_boundary"]);
+const walletIntelligenceTags = new Set<WalletIntelligenceTag>([
+  "repeated_cross_run_address",
+  "high_activity_wallet",
+  "large_liquidity_wallet",
+  "possible_service_or_exchange_like",
+  "known_service_or_exchange",
+  "cross_mode_seen"
+]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
+const tronAddressUsdtIndexStatuses = new Set<TronAddressUsdtIndexStatus>([
+  "queued",
+  "running",
+  "complete",
+  "partial",
+  "failed_retryable",
+  "failed_terminal"
+]);
+const tronAddressUsdtIndexPageStatuses = new Set<TronAddressUsdtIndexPageStatus>(["queued", "running", "complete", "empty", "failed"]);
+const tronAddressUsdtIndexProviders = new Set<TronAddressUsdtIndexProvider>(["tronscan", "trongrid_fallback", "mixed"]);
+const tronAddressUsdtCoverageModes = new Set<TronAddressUsdtCoverageMode>(["all_time", "targeted"]);
+const tronAddressUsdtIndexRequestKinds = new Set<TronAddressUsdtIndexRequestKind>(["broad_targeted", "candidate_window"]);
+const tronAddressUsdtCoverageStatusReasons = new Set<TronAddressUsdtCoverageStatusReason>([
+  "complete_provider_windowed",
+  "partial_provider_cap",
+  "partial_budget_exhausted",
+  "partial_rate_limited",
+  "partial_provider_inconsistent",
+  "too_large_deferred",
+  "failed_retryable",
+  "failed_terminal"
+]);
 const cachedAddressLabelProviders = new Set<CachedAddressLabelProvider>(["tronscan", "oklink", "arkham", "manual"]);
 const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
   "cex",
@@ -451,6 +1003,7 @@ const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
   "darknet_exchange",
   "unknown"
 ]);
+const botLocales = new Set<BotLocale>(["ru", "en"]);
 const maxUserAlertErrorLength = 1024;
 const maxPollErrorLength = 1024;
 
@@ -490,6 +1043,20 @@ function parseTelegramUserPendingAction(value: string | null): TelegramUserPendi
   return value as TelegramUserPendingAction;
 }
 
+function parseTheftReportStatus(value: string): TheftReportStatus {
+  if (!theftReportStatuses.has(value as TheftReportStatus)) {
+    throw new Error(`Invalid theft report status from database: ${value}`);
+  }
+  return value as TheftReportStatus;
+}
+
+function parseTheftReportAdminStatus(value: string): TheftReportAdminStatus {
+  if (!theftReportAdminStatuses.has(value as TheftReportAdminStatus)) {
+    throw new Error(`Invalid theft report admin status from database: ${value}`);
+  }
+  return value as TheftReportAdminStatus;
+}
+
 function parseCustomerAlertMode(value: string): CustomerAlertMode {
   if (!customerAlertModes.has(value as CustomerAlertMode)) {
     throw new Error(`Invalid customer alert mode from database: ${value}`);
@@ -509,6 +1076,49 @@ function parseRiskSignalGroup(value: string): RiskSignalGroup {
     throw new Error(`Invalid risk signal group from database: ${value}`);
   }
   return value as RiskSignalGroup;
+}
+
+function parseAddressPoisoningCheckStatus(value: string): AddressPoisoningCheckStatus {
+  if (!addressPoisoningCheckStatuses.has(value as AddressPoisoningCheckStatus)) {
+    throw new Error(`Invalid address poisoning check status from database: ${value}`);
+  }
+  return value as AddressPoisoningCheckStatus;
+}
+
+function parseAddressPoisoningCoverage(value: string | null): AddressPoisoningCoverage | null {
+  if (value === null) return null;
+  if (!addressPoisoningCoverages.has(value as AddressPoisoningCoverage)) {
+    throw new Error(`Invalid address poisoning coverage from database: ${value}`);
+  }
+  return value as AddressPoisoningCoverage;
+}
+
+function parseAddressPoisoningClearReason(value: string): AddressPoisoningClearReason {
+  if (!addressPoisoningClearReasons.has(value as AddressPoisoningClearReason)) {
+    throw new Error(`Invalid address poisoning clear reason: ${value}`);
+  }
+  return value as AddressPoisoningClearReason;
+}
+
+function parseAddressPoisoningClassification(value: string): AddressPoisoningClassification {
+  if (!addressPoisoningClassifications.has(value as AddressPoisoningClassification)) {
+    throw new Error(`Invalid address poisoning classification from database: ${value}`);
+  }
+  return value as AddressPoisoningClassification;
+}
+
+function parseAddressPoisoningCandidateStatus(value: string): AddressPoisoningCandidateStatus {
+  if (!addressPoisoningCandidateStatuses.has(value as AddressPoisoningCandidateStatus)) {
+    throw new Error(`Invalid address poisoning candidate status from database: ${value}`);
+  }
+  return value as AddressPoisoningCandidateStatus;
+}
+
+function parseAddressPoisoningAlertStatus(value: string): AddressPoisoningAlertStatus {
+  if (!addressPoisoningAlertStatuses.has(value as AddressPoisoningAlertStatus)) {
+    throw new Error(`Invalid address poisoning alert status from database: ${value}`);
+  }
+  return value as AddressPoisoningAlertStatus;
 }
 
 function parseRiskConfidence(value: string): RiskConfidence {
@@ -546,6 +1156,15 @@ function parseForensicRouteEdgeType(value: string): ForensicRouteEdgeType {
   return value as ForensicRouteEdgeType;
 }
 
+function parseBotLocale(value: string | null | undefined): BotLocale {
+  if (!botLocales.has(value as BotLocale)) return "ru";
+  return value as BotLocale;
+}
+
+function normalizeNullableBotLocale(value: unknown): BotLocale | null {
+  return value === "en" || value === "ru" ? value : null;
+}
+
 function parseTronUsdtTransferMethod(value: string): TronUsdtTransferMethod {
   if (!tronUsdtTransferMethods.has(value as TronUsdtTransferMethod)) {
     throw new Error(`Invalid TRON USDT transfer method: ${value}`);
@@ -558,6 +1177,58 @@ function parseTronUsdtIndexerCursorStatus(value: string): TronUsdtIndexerCursorS
     throw new Error(`Invalid TRON USDT indexer cursor status: ${value}`);
   }
   return value as TronUsdtIndexerCursorStatus;
+}
+
+function parseTronAddressUsdtIndexStatus(value: string): TronAddressUsdtIndexStatus {
+  if (!tronAddressUsdtIndexStatuses.has(value as TronAddressUsdtIndexStatus)) {
+    throw new Error(`Unknown TRON address USDT index status: ${value}`);
+  }
+  return value as TronAddressUsdtIndexStatus;
+}
+
+function parseNullableTronAddressUsdtIndexProvider(value: string | null): TronAddressUsdtIndexProvider | null {
+  if (value === null) return null;
+  if (!tronAddressUsdtIndexProviders.has(value as TronAddressUsdtIndexProvider)) {
+    throw new Error(`Unknown TRON address USDT index provider: ${value}`);
+  }
+  return value as TronAddressUsdtIndexProvider;
+}
+
+function parseTronAddressUsdtIndexPageStatus(value: string): TronAddressUsdtIndexPageStatus {
+  if (!tronAddressUsdtIndexPageStatuses.has(value as TronAddressUsdtIndexPageStatus)) {
+    throw new Error(`Unknown TRON address USDT index page status: ${value}`);
+  }
+  return value as TronAddressUsdtIndexPageStatus;
+}
+
+function parseTronAddressUsdtCoverageMode(value: string): TronAddressUsdtCoverageMode {
+  if (!tronAddressUsdtCoverageModes.has(value as TronAddressUsdtCoverageMode)) {
+    throw new Error(`Unknown TRON address USDT coverage mode: ${value}`);
+  }
+  return value as TronAddressUsdtCoverageMode;
+}
+
+function parseTronAddressUsdtIndexRequestKind(value: string): TronAddressUsdtIndexRequestKind {
+  if (!tronAddressUsdtIndexRequestKinds.has(value as TronAddressUsdtIndexRequestKind)) {
+    throw new Error(`Unknown TRON address USDT index request kind: ${value}`);
+  }
+  return value as TronAddressUsdtIndexRequestKind;
+}
+
+function parseNullableTronAddressUsdtCoverageStatusReason(value: string | null): TronAddressUsdtCoverageStatusReason | null {
+  if (value === null) return null;
+  if (!tronAddressUsdtCoverageStatusReasons.has(value as TronAddressUsdtCoverageStatusReason)) {
+    throw new Error(`Unknown TRON address USDT coverage status reason: ${value}`);
+  }
+  return value as TronAddressUsdtCoverageStatusReason;
+}
+
+function parseTronAddressUsdtCoverageStatusReason(value: string): TronAddressUsdtCoverageStatusReason {
+  const parsed = parseNullableTronAddressUsdtCoverageStatusReason(value);
+  if (parsed === null) {
+    throw new Error("TRON address USDT coverage status reason is required");
+  }
+  return parsed;
 }
 
 function parseCachedAddressLabelProvider(value: string): CachedAddressLabelProvider {
@@ -586,6 +1257,48 @@ function parseForensicCheckJobKind(value: string): ForensicCheckJobKind {
     throw new Error(`Invalid forensic check job kind: ${value}`);
   }
   return value as ForensicCheckJobKind;
+}
+
+function parseWalletIntelligenceSupportedJobKind(value: string): WalletIntelligenceSupportedJobKind {
+  if (!walletIntelligenceSupportedJobKinds.has(value as WalletIntelligenceSupportedJobKind)) {
+    throw new Error(`Invalid wallet intelligence job kind: ${value}`);
+  }
+  return value as WalletIntelligenceSupportedJobKind;
+}
+
+function parseWalletIntelligenceJobStatus(value: string): WalletIntelligenceJobStatus {
+  if (!walletIntelligenceJobStatuses.has(value as WalletIntelligenceJobStatus)) {
+    throw new Error(`Invalid wallet intelligence job status: ${value}`);
+  }
+  return value as WalletIntelligenceJobStatus;
+}
+
+function parseWalletIntelligenceIndexStatus(value: string): WalletIntelligenceIndexStatus {
+  if (!walletIntelligenceIndexStatuses.has(value as WalletIntelligenceIndexStatus)) {
+    throw new Error(`Invalid wallet intelligence index status: ${value}`);
+  }
+  return value as WalletIntelligenceIndexStatus;
+}
+
+function parseWalletIntelligenceSourceKind(value: string): WalletIntelligenceSourceKind {
+  if (!walletIntelligenceSourceKinds.has(value as WalletIntelligenceSourceKind)) {
+    throw new Error(`Invalid wallet intelligence source kind: ${value}`);
+  }
+  return value as WalletIntelligenceSourceKind;
+}
+
+function parseWalletIntelligenceRole(value: string): WalletIntelligenceRole {
+  if (!walletIntelligenceRoles.has(value as WalletIntelligenceRole)) {
+    throw new Error(`Invalid wallet intelligence role: ${value}`);
+  }
+  return value as WalletIntelligenceRole;
+}
+
+function parseWalletIntelligenceEdgeRole(value: string): WalletIntelligenceEdgeRole {
+  if (!walletIntelligenceEdgeRoles.has(value as WalletIntelligenceEdgeRole)) {
+    throw new Error(`Invalid wallet intelligence edge role: ${value}`);
+  }
+  return value as WalletIntelligenceEdgeRole;
 }
 
 function parseAddressLabelAssertionStatus(value: string): AddressLabelAssertionStatus {
@@ -718,6 +1431,112 @@ function mapForensicCheckJobRow(row: Record<string, any>): ForensicCheckJob {
   };
 }
 
+function jsonWalletModes(value: unknown): WalletIntelligenceSupportedJobKind[] {
+  return mapJsonStringArray(value).filter((item): item is WalletIntelligenceSupportedJobKind =>
+    walletIntelligenceSupportedJobKinds.has(item as WalletIntelligenceSupportedJobKind)
+  );
+}
+
+function jsonWalletTags(value: unknown): WalletIntelligenceTag[] {
+  return mapJsonStringArray(value).filter((item): item is WalletIntelligenceTag =>
+    walletIntelligenceTags.has(item as WalletIntelligenceTag)
+  );
+}
+
+function amountRawString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function mapWalletIntelligenceAddressSummaryRow(row: Record<string, any>): WalletIntelligenceAddressSummary {
+  return {
+    address: row.address,
+    uniqueSubjectCount: Number(row.unique_subject_count ?? 0),
+    uniqueRequesterCount: Number(row.unique_requester_count ?? 0),
+    jobCount: Number(row.job_count ?? 0),
+    completedJobCount: Number(row.completed_job_count ?? 0),
+    partialJobCount: Number(row.partial_job_count ?? 0),
+    occurrenceCount: Number(row.occurrence_count ?? 0),
+    distinctTxCount: Number(row.distinct_tx_count ?? 0),
+    distinctAmountRaw: amountRawString(row.distinct_amount_raw) ?? "0",
+    minDepth: nullableNumber(row.min_depth),
+    maxDepth: nullableNumber(row.max_depth),
+    firstSeenAt: row.first_seen_at ?? null,
+    lastSeenAt: row.last_seen_at ?? null,
+    modes: jsonWalletModes(row.modes),
+    tags: jsonWalletTags(row.tags),
+    serviceCategories: mapJsonStringArray(row.service_categories),
+    labelHints: mapJsonStringArray(row.label_hints)
+  };
+}
+
+function mapWalletIntelligenceRequesterSummaryRow(row: Record<string, any>): WalletIntelligenceRequesterSummary {
+  return {
+    requestedBy: row.requested_by ?? null,
+    telegramUserId: row.telegram_user_id ?? null,
+    username: row.username ?? null,
+    locale: normalizeNullableBotLocale(row.locale),
+    chatId: row.chat_id ?? null,
+    messageId: row.message_id ?? null,
+    jobCount: Number(row.job_count ?? 0)
+  };
+}
+
+function mapWalletIntelligenceSourceJobSummaryRow(row: Record<string, any>): WalletIntelligenceSourceJobSummary {
+  return {
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    jobStatus: parseWalletIntelligenceJobStatus(row.job_status),
+    subjectAddress: row.subject_address,
+    completedAt: row.completed_at ?? null
+  };
+}
+
+function mapWalletIntelligenceSightingRow(row: Record<string, any>): WalletIntelligenceSighting {
+  return {
+    id: row.id,
+    address: row.address,
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    subjectAddress: row.subject_address,
+    requestedBy: row.requested_by ?? null,
+    sourceKind: parseWalletIntelligenceSourceKind(row.source_kind),
+    role: parseWalletIntelligenceRole(row.role),
+    depth: nullableNumber(row.depth),
+    pathId: row.path_id ?? null,
+    txHash: row.tx_hash ?? null,
+    amountRaw: amountRawString(row.amount_raw),
+    firstSeenAt: row.first_seen_at ?? null,
+    lastSeenAt: row.last_seen_at ?? null,
+    metadataJson: mapJsonObject(row.metadata_json)
+  };
+}
+
+function mapWalletIntelligenceEdgeRow(row: Record<string, any>): WalletIntelligenceEdge {
+  return {
+    id: row.id,
+    fromAddress: row.from_address,
+    toAddress: row.to_address,
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    sourceKind: parseWalletIntelligenceSourceKind(row.source_kind),
+    depth: nullableNumber(row.depth),
+    pathId: row.path_id ?? null,
+    txHash: row.tx_hash ?? null,
+    amountRaw: amountRawString(row.amount_raw),
+    timestamp: row.timestamp ?? null,
+    edgeRole: parseWalletIntelligenceEdgeRole(row.edge_role),
+    metadataJson: mapJsonObject(row.metadata_json)
+  };
+}
+
+function mapWalletIntelligenceRunStateRow(row: Record<string, any>): WalletIntelligenceRunState {
+  return {
+    sourcePayloadHash: row.source_payload_hash,
+    indexVersion: Number(row.index_version),
+    indexStatus: parseWalletIntelligenceIndexStatus(row.index_status)
+  };
+}
+
 function mapAddressLabelRow(row: Record<string, any>): AddressLabel {
   return {
     address: row.address,
@@ -751,19 +1570,220 @@ function mapAddressLabelAssertionRow(row: Record<string, any>): AddressLabelAsse
   };
 }
 
+const tronUsdtContractAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function targetTimestampForCoverage(input: {
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowEndTimestamp?: Date | null;
+}): Date | null {
+  if (input.coverageMode !== "targeted") return null;
+  if (input.targetTimestamp) return input.targetTimestamp;
+  if (requestKindForIndex(input) === "candidate_window") return input.windowEndTimestamp ?? null;
+  return null;
+}
+
+function targetTimestampMsForCoverage(input: {
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowEndTimestamp?: Date | null;
+}): number {
+  return targetTimestampForCoverage(input)?.getTime() ?? 0;
+}
+
+function requestKindForIndex(input: { requestKind?: TronAddressUsdtIndexRequestKind | null }): TronAddressUsdtIndexRequestKind {
+  return input.requestKind ?? "broad_targeted";
+}
+
+function windowStartTimestampMsForIndex(input: {
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+}): number {
+  return requestKindForIndex(input) === "candidate_window" && input.windowStartTimestamp
+    ? input.windowStartTimestamp.getTime()
+    : 0;
+}
+
+function candidateTxHashForIndex(input: {
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  candidateTxHash?: string | null;
+}): string {
+  return requestKindForIndex(input) === "candidate_window" ? input.candidateTxHash ?? "" : "";
+}
+
+function validatedCoverageTargetTimestampMs(
+  input: { coverageMode: TronAddressUsdtCoverageMode; targetTimestamp?: Date | null; targetTimestampMs?: number | null },
+  fieldName: string
+): number {
+  const targetTimestampMs = input.targetTimestampMs ?? input.targetTimestamp?.getTime() ?? 0;
+  if (!Number.isFinite(targetTimestampMs)) {
+    throw new Error(`${fieldName} target timestamp must be finite`);
+  }
+  if (input.coverageMode === "targeted") {
+    if (targetTimestampMs <= 0) {
+      throw new Error(`${fieldName} targeted coverage requires a non-zero target timestamp`);
+    }
+    return targetTimestampMs;
+  }
+  if (targetTimestampMs !== 0) {
+    throw new Error(`${fieldName} all_time coverage requires a zero target timestamp`);
+  }
+  return 0;
+}
+
+function deriveIndexedTronUsdtTransferId(transfer: IndexedTronUsdtTransfer): string {
+  if (
+    transfer.provider === undefined &&
+    transfer.providerRowOrdinalInTx === undefined &&
+    transfer.eventType === undefined &&
+    transfer.finalResult === undefined &&
+    transfer.reverted === undefined &&
+    transfer.riskTransaction === undefined
+  ) {
+    return `legacy:${transfer.txHash}:${transfer.eventIndex}`;
+  }
+  const provider = transfer.provider ?? "tronscan";
+  const ordinal = transfer.providerRowOrdinalInTx ?? transfer.eventIndex;
+  const parts = [
+    provider,
+    transfer.txHash,
+    transfer.eventType ?? transfer.method,
+    transfer.fromAddress,
+    transfer.toAddress,
+    tronUsdtContractAddress,
+    transfer.amountRaw,
+    transfer.blockTimestamp.getTime().toString(),
+    transfer.blockNumber.toString(),
+    transfer.eventIndex.toString(),
+    ordinal === null || ordinal === undefined ? "" : ordinal.toString()
+  ];
+  return `tron-usdt:${createHash("sha256").update(parts.join("\u001f")).digest("hex")}`;
+}
+
 function mapIndexedTronUsdtTransferRow(row: Record<string, any>): IndexedTronUsdtTransfer {
   return {
+    transferId: row.transfer_id ?? undefined,
     txHash: row.tx_hash,
     blockNumber: Number(row.block_number),
     blockTimestamp: row.block_timestamp,
     eventIndex: Number(row.event_index),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null) ?? undefined,
+    providerRowOrdinalInTx: nullableNumber(row.provider_row_ordinal_in_tx),
     fromAddress: row.from_address,
     toAddress: row.to_address,
     amountRaw: String(row.amount_raw),
     method: parseTronUsdtTransferMethod(row.method),
+    eventType: row.event_type ?? null,
     callerAddress: row.caller_address ?? null,
     contractRet: row.contract_ret ?? null,
+    finalResult: row.final_result ?? null,
+    reverted: row.reverted === true,
+    riskTransaction: row.risk_transaction === true,
     confirmed: row.confirmed === true
+  };
+}
+
+function mapTronAddressUsdtIndexStateRow(row: Record<string, any>): TronAddressUsdtIndexState {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    coverageKind: "provider_windowed",
+    status: parseTronAddressUsdtIndexStatus(row.status),
+    statusReason: parseNullableTronAddressUsdtCoverageStatusReason(row.status_reason ?? null),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null),
+    totalReported: nullableNumber(row.total_reported),
+    fetchedTransferCount: Number(row.fetched_transfer_count),
+    uniqueCounterpartyCount: Number(row.unique_counterparty_count),
+    newestTransferAt: row.newest_transfer_at ?? null,
+    oldestTransferAt: row.oldest_transfer_at ?? null,
+    coveredUntilTimestamp: row.covered_until_timestamp ?? null,
+    targetTimestamp: row.target_timestamp ?? null,
+    requestKind: parseTronAddressUsdtIndexRequestKind(row.request_kind ?? "broad_targeted"),
+    windowStartTimestamp: row.window_start_timestamp ?? null,
+    windowEndTimestamp: row.window_end_timestamp ?? null,
+    relatedHopTxHash: row.related_hop_tx_hash ?? null,
+    candidateTxHash: row.candidate_tx_hash ?? null,
+    fetchedPageCount: Number(row.fetched_page_count),
+    plannedPageCount: nullableNumber(row.planned_page_count),
+    currentEndTimestamp: row.current_end_timestamp ?? null,
+    providerCapHit: row.provider_cap_hit === true,
+    budgetExhausted: row.budget_exhausted === true,
+    providerInconsistent: row.provider_inconsistent === true,
+    priority: Number(row.priority),
+    nextRunAt: row.next_run_at,
+    attemptCount: Number(row.attempt_count),
+    maxAttempts: Number(row.max_attempts),
+    retryCount: Number(row.retry_count),
+    lastError: row.last_error ?? null,
+    lastErrorClass: row.last_error_class ?? null,
+    lastSuccessfulPageAt: row.last_successful_page_at ?? null,
+    queuedReason: row.queued_reason ?? null,
+    requestedByJobId: row.requested_by_job_id ?? null,
+    lockedAt: row.locked_at ?? null,
+    lockedUntil: row.locked_until ?? null,
+    heartbeatAt: row.heartbeat_at ?? null,
+    lockOwner: row.lock_owner ?? null,
+    claimPreviousStatus: row.claim_previous_status ? parseTronAddressUsdtIndexStatus(row.claim_previous_status) : null,
+    budgetPages: nullableNumber(row.budget_pages),
+    budgetSeconds: nullableNumber(row.budget_seconds),
+    completedAt: row.completed_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTronAddressUsdtIndexPageRow(row: Record<string, any>): TronAddressUsdtIndexPage {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    targetTimestampMs: Number(row.target_timestamp_ms),
+    windowStartTimestampMs: Number(row.window_start_timestamp_ms),
+    windowEndTimestampMs: Number(row.window_end_timestamp_ms),
+    startOffset: Number(row.start_offset),
+    limitCount: Number(row.limit_count),
+    status: parseTronAddressUsdtIndexPageStatus(row.status),
+    transferCount: Number(row.transfer_count),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null),
+    totalReported: nullableNumber(row.total_reported),
+    rangeTotal: nullableNumber(row.range_total),
+    rawResponseHash: row.raw_response_hash ?? null,
+    canonicalTransferHash: row.canonical_transfer_hash ?? null,
+    attemptCount: Number(row.attempt_count),
+    error: row.error ?? null,
+    newestTransferAt: row.newest_transfer_at ?? null,
+    oldestTransferAt: row.oldest_transfer_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTronAddressUsdtCoverageIntervalRow(row: Record<string, any>): TronAddressUsdtCoverageInterval {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    targetTimestamp: row.target_timestamp ?? null,
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider) ?? "tronscan",
+    startTimestamp: row.start_timestamp,
+    endTimestamp: row.end_timestamp,
+    status: row.status === "complete" ? "complete" : "partial",
+    statusReason: parseTronAddressUsdtCoverageStatusReason(row.status_reason),
+    totalReported: nullableNumber(row.total_reported),
+    rangeTotal: nullableNumber(row.range_total),
+    pagesFetched: Number(row.pages_fetched),
+    rowsFetched: Number(row.rows_fetched),
+    uniqueRowsInserted: Number(row.unique_rows_inserted),
+    capHit: row.cap_hit === true,
+    providerInconsistent: row.provider_inconsistent === true,
+    completedAt: row.completed_at ?? null
   };
 }
 
@@ -829,6 +1849,47 @@ function mapTelegramUserSessionRow(row: Record<string, any>): TelegramUserSessio
     telegramUserId: row.telegram_user_id,
     pendingAction: parseTelegramUserPendingAction(row.pending_action),
     selectedWalletId: row.selected_wallet_id,
+    selectedTheftReportId: row.selected_theft_report_id ?? null,
+    updatedAt: row.updated_at
+  };
+}
+
+const theftReportColumns = [
+  "id",
+  "telegram_user_id",
+  "tx_hash",
+  "victim_address",
+  "reported_scam_address",
+  "amount_raw",
+  "amount_usdt",
+  "comment",
+  "status",
+  "deposit_address",
+  "deposit_amount_usdt",
+  "admin_status",
+  "admin_note",
+  "admin_updated_at",
+  "created_at",
+  "updated_at"
+].join(", ");
+
+function mapTheftReportRow(row: Record<string, any>): TheftReport {
+  return {
+    id: row.id,
+    telegramUserId: row.telegram_user_id,
+    txHash: row.tx_hash,
+    victimAddress: row.victim_address,
+    reportedScamAddress: row.reported_scam_address,
+    amountRaw: row.amount_raw,
+    amountUsdt: row.amount_usdt,
+    comment: row.comment ?? null,
+    status: parseTheftReportStatus(row.status),
+    depositAddress: row.deposit_address ?? null,
+    depositAmountUsdt: row.deposit_amount_usdt,
+    adminStatus: parseTheftReportAdminStatus(row.admin_status ?? "new"),
+    adminNote: row.admin_note ?? null,
+    adminUpdatedAt: row.admin_updated_at ?? null,
+    createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
@@ -907,6 +1968,93 @@ function mapObservedTransactionDigestItemRow(row: Record<string, any>): Observed
   };
 }
 
+function mapAddressPoisoningCheckWorkItemRow(row: Record<string, any>): AddressPoisoningCheckWorkItem {
+  parseAddressPoisoningCheckStatus(row.poisoning_check_status);
+  return {
+    txHash: row.tx_hash,
+    watchedWalletId: row.watched_wallet_id,
+    walletAddress: row.wallet_address,
+    telegramUserId: row.telegram_user_id,
+    sender: row.sender,
+    receiver: row.receiver,
+    token: row.token,
+    amount: row.amount,
+    timestamp: row.timestamp,
+    attemptCount: Number(row.poisoning_attempts ?? 0),
+    logicalOffset: Number(row.poisoning_logical_offset ?? 0),
+    pageCount: Number(row.poisoning_page_count ?? 0),
+    fetchedCount: Number(row.poisoning_fetched_count ?? 0),
+    oldestFetchedAt: row.poisoning_oldest_fetched_at ?? null,
+    coverage: parseAddressPoisoningCoverage(row.poisoning_lookup_coverage ?? null),
+    accumulatedLookupJson: mapJsonObject(row.poisoning_accumulated_lookup_json),
+    leaseVersion: row.poisoning_updated_at
+  };
+}
+
+function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoisoningCandidate {
+  return {
+    id: row.id,
+    callbackToken: row.callback_token,
+    watchedWalletId: row.watched_wallet_id,
+    tokenContract: row.token_contract,
+    tokenSymbol: row.token_symbol,
+    tokenDecimals: Number(row.token_decimals),
+    suspiciousIncomingTxHash: row.suspicious_incoming_tx_hash,
+    suspiciousSender: row.suspicious_sender,
+    suspiciousAmountRaw: String(row.suspicious_amount_raw),
+    suspiciousIncomingAt: row.suspicious_incoming_at,
+    matchedOutgoingTxHash: row.matched_outgoing_tx_hash,
+    genuineRecipient: row.genuine_recipient,
+    matchedOutgoingAmountRaw: String(row.matched_outgoing_amount_raw),
+    matchedOutgoingAt: row.matched_outgoing_at,
+    rawPrefixLength: Number(row.raw_prefix_length),
+    meaningfulPrefixLength: Number(row.meaningful_prefix_length),
+    suffixLength: Number(row.suffix_length),
+    classification: parseAddressPoisoningClassification(row.classification),
+    confidence: parseRiskConfidence(row.confidence),
+    rawEvidenceId: row.raw_evidence_id,
+    secondaryMatches: mapJsonArray(row.secondary_matches_json),
+    evidenceJson: mapJsonObject(row.evidence_json),
+    status: parseAddressPoisoningCandidateStatus(row.status),
+    alertFingerprint: row.alert_fingerprint,
+    alertStatus: parseAddressPoisoningAlertStatus(row.alert_status),
+    alertLocale: normalizeNullableBotLocale(row.alert_locale),
+    alertAttempts: Number(row.alert_attempts ?? 0),
+    alertLeaseUpdatedAt: row.alert_lease_updated_at ?? null,
+    alertNextRetryAt: row.alert_next_retry_at ?? null,
+    alertLastError: row.alert_last_error ?? null,
+    telegramChatId: row.telegram_chat_id ?? null,
+    telegramMessageId: row.telegram_message_id ?? null,
+    laterLossTxHash: row.later_loss_tx_hash ?? null,
+    laterLossEvidenceJson: row.later_loss_evidence_json === null || row.later_loss_evidence_json === undefined
+      ? null
+      : mapJsonObject(row.later_loss_evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at ?? null,
+    alertSentAt: row.alert_sent_at ?? null
+  };
+}
+
+function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): AddressPoisoningCandidateDelivery {
+  const candidate = mapAddressPoisoningCandidateRow(row);
+  if (candidate.alertLocale === null) {
+    throw new Error("Address poisoning delivery row is missing its fixed alert locale");
+  }
+  if (candidate.alertAttempts <= 0 || candidate.alertLeaseUpdatedAt === null) {
+    throw new Error("Address poisoning delivery row is missing its dedicated lease generation");
+  }
+  return {
+    ...candidate,
+    walletAddress: row.wallet_address,
+    telegramUserId: row.telegram_user_id,
+    locale: candidate.alertLocale,
+    alertMode: parseWalletAlertMode(row.alert_mode),
+    alertAttempt: candidate.alertAttempts,
+    alertLeaseVersion: candidate.alertLeaseUpdatedAt
+  };
+}
+
 function mapRiskReasons(value: unknown): RiskReason[] {
   return Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"));
 }
@@ -922,16 +2070,22 @@ function mapWalletApprovalPollStateRow(row: Record<string, any>): WalletApproval
   };
 }
 
-function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
+function mapWalletApprovalRow(row: Record<string, any>, evaluatedAt = new Date()): WalletApproval {
+  const allowanceStateV2 = mapApprovalAllowanceStateV2(row, evaluatedAt);
   return {
     watchedWalletId: row.watched_wallet_id,
     tokenContract: row.token_contract,
     spenderAddress: row.spender_address,
     amountRaw: row.amount_raw,
-    isUnlimited: row.is_unlimited,
+    isUnlimited: allowanceStateV2?.isUnlimited === true,
     currentAllowanceRaw: row.current_allowance_raw,
+    allowanceStateV2,
     spenderType: parseWalletApprovalSpenderType(row.spender_type),
-    status: parseWalletApprovalStatus(row.status),
+    status: allowanceStateV2?.state === "confirmed_active"
+      ? "active"
+      : allowanceStateV2?.state === "confirmed_zero"
+        ? "revoked"
+        : "unknown",
     lastApprovalTxHash: row.last_approval_tx_hash,
     lastApprovalAt: row.last_approval_at,
     riskLevel: row.risk_level,
@@ -954,6 +2108,40 @@ function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
     approvalFinalContextAlertSentAt: row.approval_final_context_alert_sent_at ?? null,
     updatedAt: row.updated_at
   };
+}
+
+function timestampText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : String(value);
+}
+
+function mapApprovalAllowanceStateV2(row: Record<string, any>, evaluatedAt: Date): ApprovalAllowanceStateV2 | null {
+  if (row.allowance_check_status === null || row.allowance_check_status === undefined) return null;
+  const confirmedAllowanceRaw = row.allowance_confirmed_raw === null
+    ? null
+    : String(row.allowance_confirmed_raw);
+  const state = String(row.allowance_check_status) as ApprovalAllowanceStateV2["state"];
+  const allowance: ApprovalAllowanceStateV2 = {
+    version: "approval-allowance-v2",
+    ownerAddress: String(row.watched_wallet_address ?? ""),
+    spenderAddress: String(row.spender_address),
+    tokenContract: String(row.token_contract),
+    confirmedAllowanceRaw,
+    isUnlimited: state === "confirmed_active"
+      ? confirmedAllowanceRaw === UINT256_MAX_RAW
+      : state === "confirmed_zero"
+        ? false
+        : null,
+    state,
+    confirmedAt: timestampText(row.allowance_checked_at),
+    freshUntil: timestampText(row.allowance_fresh_until),
+    lastAttemptAt: timestampText(row.allowance_last_attempt_at),
+    failureCode: row.allowance_failure_code === null ? null : String(row.allowance_failure_code),
+    source: "official_usdt_allowance",
+    observedApprovalTxHash: row.last_approval_tx_hash === null ? null : String(row.last_approval_tx_hash)
+  };
+  return validateApprovalAllowanceStateV2(allowance, evaluatedAt);
 }
 
 function mapAddressMetadataRow(row: Record<string, any>): AddressMetadata {
@@ -1052,6 +2240,29 @@ function mapContractIntelligenceProfileRow(row: Record<string, any>): ContractIn
   };
 }
 
+function mapContractLlmVerdictCacheRow(row: Record<string, any>): ContractLlmVerdictCacheRecord {
+  return {
+    id: row.id,
+    contractAddress: row.contract_address,
+    profileHash: row.profile_hash,
+    contractFingerprintHash: row.contract_fingerprint_hash ?? row.profile_hash,
+    cacheScope: row.cache_scope ?? "address_flow",
+    flowContextHash: row.flow_context_hash ?? null,
+    caseFileHash: row.case_file_hash,
+    policyVersion: row.policy_version,
+    providerLabel: row.provider_label,
+    model: row.model,
+    verdict: mapJsonObject(row.verdict_json) as ContractLlmVerdictCacheRecord["verdict"],
+    requestCaseHash: row.request_case_hash,
+    responseJson: mapJsonObject(row.response_json),
+    error: row.error ?? null,
+    latencyMs: mapNullableInteger(row.latency_ms),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function mapObservedApprovalEventRow(row: Record<string, any>): ObservedApprovalEvent {
   return {
     approvalTxHash: row.approval_tx_hash,
@@ -1082,7 +2293,8 @@ function mapWatchedWalletFields(row: Record<string, any>): WatchedWallet {
     address: row.wallet_address ?? row.address,
     createdAt: row.wallet_created_at ?? row.created_at,
     alertMode: parseWalletAlertMode(row.wallet_alert_mode ?? row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.wallet_digest_interval_minutes ?? row.digest_interval_minutes ?? 10
+    digestIntervalMinutes: row.wallet_digest_interval_minutes ?? row.digest_interval_minutes ?? 10,
+    locale: normalizeNullableBotLocale(row.locale ?? row.wallet_locale ?? null)
   };
 }
 
@@ -1164,18 +2376,56 @@ function createId(): string {
   return crypto.randomUUID();
 }
 
-export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null }): Promise<void> {
+export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null; locale?: BotLocale | null }): Promise<void> {
+  if (input.locale !== undefined && input.locale !== null) {
+    parseBotLocale(input.locale);
+  }
   await db.query(
-    `insert into telegram_users (telegram_user_id, username)
-     values ($1, $2)
-     on conflict (telegram_user_id) do update set username = excluded.username`,
-    [input.telegramUserId, input.username]
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, $2, coalesce($3, 'ru'))
+     on conflict (telegram_user_id) do update set
+       username = excluded.username,
+       locale = coalesce($3, telegram_users.locale)`,
+    [input.telegramUserId, input.username, input.locale ?? null]
+  );
+}
+
+export async function getTelegramUserLocale(db: Db, telegramUserId: string): Promise<BotLocale> {
+  const result = await db.query(
+    `select locale from telegram_users where telegram_user_id = $1`,
+    [telegramUserId]
+  );
+  return parseBotLocale(result.rows[0]?.locale);
+}
+
+export async function getTelegramUserProfile(db: Db, telegramUserId: string): Promise<TelegramUserProfile | null> {
+  const result = await db.query(
+    `select telegram_user_id, username, locale, created_at
+     from telegram_users
+     where telegram_user_id = $1`,
+    [telegramUserId]
+  );
+  return result.rows[0] ? {
+    telegramUserId: result.rows[0].telegram_user_id,
+    username: result.rows[0].username ?? null,
+    locale: parseBotLocale(result.rows[0].locale),
+    createdAt: result.rows[0].created_at
+  } : null;
+}
+
+export async function updateTelegramUserLocale(db: Db, telegramUserId: string, locale: BotLocale): Promise<void> {
+  parseBotLocale(locale);
+  await db.query(
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, null, $2)
+     on conflict (telegram_user_id) do update set locale = excluded.locale`,
+    [telegramUserId, locale]
   );
 }
 
 export async function getTelegramUserSession(db: Db, telegramUserId: string): Promise<TelegramUserSession | null> {
   const result = await db.query(
-    `select telegram_user_id, pending_action, selected_wallet_id, updated_at
+    `select telegram_user_id, pending_action, selected_wallet_id, selected_theft_report_id, updated_at
      from telegram_user_sessions
      where telegram_user_id = $1`,
     [telegramUserId]
@@ -1185,16 +2435,22 @@ export async function getTelegramUserSession(db: Db, telegramUserId: string): Pr
 
 export async function setTelegramUserPendingAction(
   db: Db,
-  input: { telegramUserId: string; pendingAction: TelegramUserPendingAction; selectedWalletId?: string | null }
+  input: {
+    telegramUserId: string;
+    pendingAction: TelegramUserPendingAction;
+    selectedWalletId?: string | null;
+    selectedTheftReportId?: string | null;
+  }
 ): Promise<void> {
   await db.query(
-    `insert into telegram_user_sessions (telegram_user_id, pending_action, selected_wallet_id)
-     values ($1, $2, $3)
+    `insert into telegram_user_sessions (telegram_user_id, pending_action, selected_wallet_id, selected_theft_report_id)
+     values ($1, $2, $3, $4)
      on conflict (telegram_user_id) do update set
        pending_action = excluded.pending_action,
        selected_wallet_id = excluded.selected_wallet_id,
+       selected_theft_report_id = excluded.selected_theft_report_id,
        updated_at = now()`,
-    [input.telegramUserId, input.pendingAction, input.selectedWalletId ?? null]
+    [input.telegramUserId, input.pendingAction, input.selectedWalletId ?? null, input.selectedTheftReportId ?? null]
   );
 }
 
@@ -1203,11 +2459,216 @@ export async function clearTelegramUserPendingAction(db: Db, telegramUserId: str
     `update telegram_user_sessions
      set pending_action = null,
        selected_wallet_id = null,
+       selected_theft_report_id = null,
        updated_at = now()
      where telegram_user_id = $1`,
     [telegramUserId]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function upsertTheftReportDraft(db: Db, input: TheftReportDraftInput): Promise<TheftReport | null> {
+  const id = input.id ?? createId();
+  const result = await db.query(
+    `insert into theft_reports (
+       id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, deposit_address, deposit_amount_usdt
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     on conflict (id) do update set
+       tx_hash = excluded.tx_hash,
+       victim_address = excluded.victim_address,
+       reported_scam_address = excluded.reported_scam_address,
+       amount_raw = excluded.amount_raw,
+       amount_usdt = excluded.amount_usdt,
+       deposit_address = excluded.deposit_address,
+       deposit_amount_usdt = excluded.deposit_amount_usdt,
+       status = 'draft',
+       updated_at = now()
+     where theft_reports.telegram_user_id = excluded.telegram_user_id
+       and theft_reports.status in ('draft', 'awaiting_deposit')
+     returning ${theftReportColumns}`,
+    [
+      id,
+      input.telegramUserId,
+      input.txHash,
+      input.victimAddress,
+      input.reportedScamAddress,
+      input.amountRaw,
+      input.amountUsdt,
+      input.depositAddress,
+      input.depositAmountUsdt
+    ]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function getTheftReport(db: Db, id: string): Promise<TheftReport | null> {
+  const result = await db.query(
+    `select ${theftReportColumns}
+     from theft_reports
+     where id = $1`,
+    [id]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+function sanitizeTheftReportListLimit(value: number | undefined): number {
+  const limit = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 50;
+  return Math.min(Math.max(limit, 1), 100);
+}
+
+function sanitizeTheftReportListOffset(value: number | undefined): number {
+  const offset = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 0;
+  return Math.max(offset, 0);
+}
+
+export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}): Promise<TheftReport[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (input.adminStatus) {
+    parseTheftReportAdminStatus(input.adminStatus);
+    params.push(input.adminStatus);
+    conditions.push(`admin_status = $${params.length}`);
+  }
+
+  if (input.botStatus) {
+    parseTheftReportStatus(input.botStatus);
+    params.push(input.botStatus);
+    conditions.push(`status = $${params.length}`);
+  }
+
+  const query = input.query?.trim();
+  if (query) {
+    params.push(`%${query}%`);
+    const index = params.length;
+    conditions.push(`(
+      id ilike $${index}
+      or telegram_user_id ilike $${index}
+      or tx_hash ilike $${index}
+      or victim_address ilike $${index}
+      or reported_scam_address ilike $${index}
+      or coalesce(comment, '') ilike $${index}
+      or coalesce(admin_note, '') ilike $${index}
+    )`);
+  }
+
+  const limit = sanitizeTheftReportListLimit(input.limit);
+  const offset = sanitizeTheftReportListOffset(input.offset);
+  params.push(limit, offset);
+  const limitIndex = params.length - 1;
+  const offsetIndex = params.length;
+  const where = conditions.length ? `where ${conditions.join(" and ")}` : "";
+
+  const result = await db.query(
+    `select ${theftReportColumns}
+     from theft_reports
+     ${where}
+     order by coalesce(admin_updated_at, updated_at) desc, created_at desc, id desc
+     limit $${limitIndex} offset $${offsetIndex}`,
+    params
+  );
+  return result.rows.map(mapTheftReportRow);
+}
+
+export async function listTheftReportsForTelegramUser(
+  db: Db,
+  telegramUserId: string,
+  input: Pick<ListTheftReportsInput, "limit"> = {}
+): Promise<TheftReport[]> {
+  const limit = sanitizeTheftReportListLimit(input.limit);
+  const result = await db.query(
+    `select ${theftReportColumns}
+     from theft_reports
+     where telegram_user_id = $1
+     order by created_at desc, id desc
+     limit $2`,
+    [telegramUserId, limit]
+  );
+  return result.rows.map(mapTheftReportRow);
+}
+
+export async function updateTheftReportAdminState(
+  db: Db,
+  input: UpdateTheftReportAdminStateInput
+): Promise<TheftReport | null> {
+  parseTheftReportAdminStatus(input.adminStatus);
+  const adminNote = input.adminNote.trim().slice(0, 2000);
+  const result = await db.query(
+    `update theft_reports
+     set admin_status = $2,
+       admin_note = $3,
+       admin_updated_at = now(),
+       updated_at = now()
+     where id = $1
+     returning ${theftReportColumns}`,
+    [input.id, input.adminStatus, adminNote]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function updateTheftReportComment(
+  db: Db,
+  input: { id: string; telegramUserId: string; comment: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set comment = $3,
+       updated_at = now()
+     where id = $1 and telegram_user_id = $2
+     returning ${theftReportColumns}`,
+    [input.id, input.telegramUserId, input.comment.trim().slice(0, 1000)]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function markTheftReportAwaitingDeposit(
+  db: Db,
+  input: { id: string; telegramUserId: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'awaiting_deposit',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('draft', 'awaiting_deposit')
+     returning ${theftReportColumns}`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function confirmTheftReportDeposit(
+  db: Db,
+  input: { id: string; telegramUserId: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'documents_requested',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('awaiting_deposit', 'deposit_confirmed', 'documents_requested')
+     returning ${theftReportColumns}`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function cancelTheftReport(db: Db, input: { id: string; telegramUserId: string }): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'cancelled',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('draft', 'awaiting_deposit')
+     returning ${theftReportColumns}`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
 }
 
 export async function addCustomerAlertRecipient(
@@ -1283,27 +2744,19 @@ export async function addWatchedWallet(db: Db, input: { telegramUserId: string; 
 
 export async function listWatchedWallets(db: Db, telegramUserId?: string): Promise<WatchedWallet[]> {
   const query = telegramUserId
-    ? `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    ? `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
        from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
        where w.telegram_user_id = $1 order by w.created_at asc`
-    : `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    : `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
        from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
        order by w.created_at asc`;
   const result = await db.query(query, telegramUserId ? [telegramUserId] : []);
-  return result.rows.map((row) => ({
-    id: row.id,
-    telegramUserId: row.telegram_user_id,
-    telegramUsername: row.username,
-    address: row.address,
-    createdAt: row.created_at,
-    alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.digest_interval_minutes ?? 10
-  }));
+  return result.rows.map(mapWatchedWalletFields);
 }
 
 export async function getWatchedWalletByAddress(db: Db, address: string): Promise<WatchedWallet | null> {
   const result = await db.query(
-    `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
      from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
      where w.address = $1
      order by w.created_at asc
@@ -1312,15 +2765,7 @@ export async function getWatchedWalletByAddress(db: Db, address: string): Promis
   );
   const row = result.rows[0];
   if (!row) return null;
-  return {
-    id: row.id,
-    telegramUserId: row.telegram_user_id,
-    telegramUsername: row.username,
-    address: row.address,
-    createdAt: row.created_at,
-    alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.digest_interval_minutes ?? 10
-  };
+  return mapWatchedWalletFields(row);
 }
 
 export async function updateWatchedWalletAlertMode(
@@ -1613,6 +3058,40 @@ export async function getAddressMetadata(db: Db, address: string, now = new Date
   return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
 }
 
+// ponytail: This scans all fresh non-empty provider tags. If candidate volume
+// materially approaches the metadata table size, add a separately reviewed
+// indexed exact-tag lookup without changing the decoder contract.
+export async function listFreshTaggedAddressMetadataAt(
+  db: Db,
+  frozenAt: Date
+): Promise<AddressMetadata[]> {
+  const result = await db.query(
+    `select address, source, name, tag, is_contract, verified,
+       account_type, raw_json, fetched_at, expires_at
+     from address_metadata
+     where source = 'tronscan'
+       and tag is not null
+       and btrim(tag) <> ''
+       and fetched_at <= $1
+       and expires_at > $1
+     order by address`,
+    [frozenAt]
+  );
+  return result.rows.map(mapAddressMetadataRow);
+}
+
+export async function getStaleAddressMetadata(db: Db, address: string): Promise<AddressMetadata | null> {
+  const result = await db.query(
+    `select address, source, name, tag, is_contract, verified, account_type, raw_json, fetched_at, expires_at
+     from address_metadata
+     where address = $1
+     order by fetched_at desc
+     limit 1`,
+    [address]
+  );
+  return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
+}
+
 export async function upsertAddressMetadata(db: Db, input: AddressMetadata): Promise<void> {
   await db.query(
     `insert into address_metadata (
@@ -1730,6 +3209,128 @@ export async function upsertContractIntelligenceProfile(db: Db, input: ContractI
   );
 }
 
+export async function getContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const params: unknown[] = [input.contractAddress, input.profileHash, input.policyVersion, input.model, input.now];
+  const scopeClause = input.cacheScope
+    ? `and cache_scope = $${params.push(input.cacheScope)}`
+    : "";
+  const flowContextClause = input.flowContextHash !== undefined
+    ? `and flow_context_hash is not distinct from $${params.push(input.flowContextHash)}`
+    : "";
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_address = $1
+       and profile_hash = $2
+       and policy_version = $3
+       and model = $4
+       and expires_at > $5
+       ${scopeClause}
+       ${flowContextClause}
+     limit 1`,
+    params
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function getContractLlmVerdictCacheByFingerprint(
+  db: Db,
+  input: ContractLlmVerdictFingerprintCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const cacheScope = input.cacheScope ?? "address_flow";
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_fingerprint_hash = $1
+       and cache_scope = $2
+       and flow_context_hash is not distinct from $3
+       and policy_version = $4
+       and model = $5
+       and expires_at > $6
+       and error is null
+     order by updated_at desc
+     limit 1`,
+    [input.contractFingerprintHash, cacheScope, input.flowContextHash ?? null, input.policyVersion, input.model, input.now]
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function upsertContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheRecord
+): Promise<void> {
+  await db.query(
+    `insert into contract_llm_verdict_cache (
+       id,
+       contract_address,
+       profile_hash,
+       contract_fingerprint_hash,
+       cache_scope,
+       flow_context_hash,
+       case_file_hash,
+       policy_version,
+       provider_label,
+       model,
+       verdict_json,
+       request_case_hash,
+       response_json,
+       error,
+       latency_ms,
+       created_at,
+       expires_at,
+       updated_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+     on conflict (id) do update set
+       contract_address = excluded.contract_address,
+       profile_hash = excluded.profile_hash,
+       contract_fingerprint_hash = excluded.contract_fingerprint_hash,
+       cache_scope = excluded.cache_scope,
+       flow_context_hash = excluded.flow_context_hash,
+       case_file_hash = excluded.case_file_hash,
+       policy_version = excluded.policy_version,
+       provider_label = excluded.provider_label,
+       model = excluded.model,
+       verdict_json = excluded.verdict_json,
+       request_case_hash = excluded.request_case_hash,
+       response_json = excluded.response_json,
+       error = excluded.error,
+       latency_ms = excluded.latency_ms,
+       created_at = excluded.created_at,
+       expires_at = excluded.expires_at,
+       updated_at = excluded.updated_at`,
+    [
+      input.id,
+      input.contractAddress,
+      input.profileHash,
+      input.contractFingerprintHash,
+      input.cacheScope ?? "address_flow",
+      input.flowContextHash ?? null,
+      input.caseFileHash,
+      input.policyVersion,
+      input.providerLabel,
+      input.model,
+      JSON.stringify(input.verdict),
+      input.requestCaseHash,
+      JSON.stringify(input.responseJson),
+      input.error,
+      input.latencyMs,
+      input.createdAt,
+      input.expiresAt,
+      input.updatedAt
+    ]
+  );
+}
+
 export async function getWalletDashboardSnapshot(db: Db, watchedWalletId: string): Promise<WalletDashboardSnapshot | null> {
   const result = await db.query(
     `select watched_wallet_id, trx_balance_sun, usdt_balance_micro, wallet_created_at,
@@ -1809,8 +3410,15 @@ export async function saveObservedTransaction(db: Db, input: { watchedWalletId: 
 
 export async function claimObservedTransactionForUserAlert(
   db: Db,
-  input: { watchedWalletId: string; event: TronTransferEvent }
+  input: {
+    watchedWalletId: string;
+    event: TronTransferEvent;
+    poisoningCheckStatus?: "pending" | "skipped" | "skipped_backfill";
+    poisoningCheckReason?: string | null;
+  }
 ): Promise<boolean> {
+  const poisoningCheckStatus = input.poisoningCheckStatus ?? "skipped_backfill";
+  const poisoningCheckReason = input.poisoningCheckReason ?? null;
   const result = await db.query(
     `insert into observed_transactions (
        tx_hash,
@@ -1822,11 +3430,24 @@ export async function claimObservedTransactionForUserAlert(
        timestamp,
        user_alert_status,
        user_alert_attempts,
-       user_alert_updated_at
+       user_alert_updated_at,
+       poisoning_check_status,
+       poisoning_last_error,
+       poisoning_updated_at
      )
-     values ($1, $2, $3, $4, $5, $6, $7, 'sending', 0, now())
+     values ($1, $2, $3, $4, $5, $6, $7, 'sending', 0, now(), $8, $9, now())
      on conflict (tx_hash, watched_wallet_id) do nothing`,
-    [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
+    [
+      input.event.txHash,
+      input.watchedWalletId,
+      input.event.sender,
+      input.event.receiver,
+      input.event.token,
+      input.event.amount,
+      input.event.timestamp,
+      poisoningCheckStatus,
+      poisoningCheckReason
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }
@@ -1839,8 +3460,27 @@ export async function claimUserAlertsForRetry(
     `with claimed as (
        select tx_hash, watched_wallet_id
        from observed_transactions
-       where user_alert_status in ('pending', 'failed')
-          or (user_alert_status = 'sending' and user_alert_updated_at < $2)
+       where (
+         user_alert_status in ('pending', 'failed')
+         or (user_alert_status = 'sending' and user_alert_updated_at < $2)
+         or (user_alert_status = 'analyzing' and user_alert_updated_at < $2)
+       )
+       and not exists (
+         select 1
+         from forensic_check_jobs job
+         where job.kind = 'incoming_deposit_check'
+           and job.status in ('completed', 'partial', 'failed')
+           and job.progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
+           and job.progress_json#>>'{telegramDelivery,payload,version}' = 'telegram-message-payload-v1'
+           and job.progress_json#>>'{telegramDelivery,state,status}' in ('pending', 'retryable', 'sent', 'failed')
+           and job.progress_json#>>'{telegramDelivery,effect,kind}' = 'incoming_user_alert'
+           and job.progress_json#>>'{telegramDelivery,effect,watchedWalletId}' = observed_transactions.watched_wallet_id
+           and job.progress_json#>>'{telegramDelivery,effect,incomingTxHash}' = observed_transactions.tx_hash
+           and job.progress_json->>'watchedWalletId' = observed_transactions.watched_wallet_id
+           and job.progress_json->>'depositTxHash' = observed_transactions.tx_hash
+           and job.chat_id is not null
+           and job.chat_id = job.progress_json#>>'{telegramDelivery,payload,chatId}'
+       )
        order by coalesce(user_alert_updated_at, created_at) asc
        limit $1
        for update skip locked
@@ -1863,7 +3503,8 @@ export async function markUserAlertSent(db: Db, input: { txHash: string; watched
      set user_alert_status = 'sent',
        user_alert_last_error = null,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId]
   );
   return (result.rowCount ?? 0) > 0;
@@ -1879,7 +3520,8 @@ export async function markUserAlertFailed(
        user_alert_attempts = user_alert_attempts + 1,
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error)]
   );
   return (result.rowCount ?? 0) > 0;
@@ -1894,10 +3536,40 @@ export async function markUserAlertSkipped(
      set user_alert_status = 'skipped',
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function markUserAlertAnalyzing(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set user_alert_status = 'analyzing',
+       user_alert_last_error = null,
+       user_alert_updated_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getObservedTransactionForIncomingDeposit(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<ObservedTransactionUserAlert | null> {
+  const result = await db.query(
+    `select tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+       user_alert_status, user_alert_attempts, user_alert_last_error, user_alert_updated_at, created_at
+     from observed_transactions
+     where tx_hash = $1 and watched_wallet_id = $2`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return result.rows[0] ? mapObservedTransactionUserAlertRow(result.rows[0]) : null;
 }
 
 export async function recordObservedTransactionRisk(
@@ -1913,6 +3585,743 @@ export async function recordObservedTransactionRisk(
     [input.txHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+function assertWalletSafetyObservationsHaveZeroImpact(observations: readonly RiskSignalObservationInput[]): void {
+  if (observations.some((observation) => observation.signalGroup === "wallet_safety" && observation.scoreImpact !== 0)) {
+    throw new Error("wallet_safety observations must have scoreImpact 0");
+  }
+}
+
+export async function claimAddressPoisoningChecks(
+  db: Db,
+  input: { limit: number; now: Date; staleRunningBefore: Date; freshEventCutoff: Date }
+): Promise<AddressPoisoningCheckWorkItem[]> {
+  const result = await db.query(
+    `with claimed as (
+       select tx.tx_hash, tx.watched_wallet_id
+       from observed_transactions tx
+       join watched_wallets w on w.id = tx.watched_wallet_id
+       where (
+         tx.poisoning_check_status = 'pending'
+          or (tx.poisoning_check_status = 'running' and tx.poisoning_updated_at < $3)
+          or (
+            tx.poisoning_check_status = 'failed'
+            and tx.poisoning_attempts < 4
+            and coalesce(tx.poisoning_next_retry_at, $2) <= $2
+          )
+          or (
+            tx.poisoning_check_status = 'inconclusive'
+            and tx.poisoning_page_count < 5
+            and tx.poisoning_checked_at is null
+            and tx.poisoning_next_retry_at is not null
+            and tx.poisoning_next_retry_at <= $2
+          )
+       ) and tx.timestamp >= $4
+       order by tx.timestamp desc
+       limit $1
+       for update of tx skip locked
+     )
+     update observed_transactions tx
+     set poisoning_check_status = 'running',
+       poisoning_next_retry_at = null,
+       poisoning_last_error = null,
+       poisoning_updated_at = $2
+     from claimed, watched_wallets w
+     where tx.tx_hash = claimed.tx_hash
+       and tx.watched_wallet_id = claimed.watched_wallet_id
+       and w.id = tx.watched_wallet_id
+     returning tx.tx_hash, tx.watched_wallet_id, w.address as wallet_address,
+       w.telegram_user_id, tx.sender, tx.receiver, tx.token, tx.amount, tx.timestamp,
+       tx.poisoning_check_status, tx.poisoning_attempts, tx.poisoning_logical_offset,
+       tx.poisoning_page_count, tx.poisoning_fetched_count, tx.poisoning_oldest_fetched_at,
+       tx.poisoning_lookup_coverage, tx.poisoning_accumulated_lookup_json, tx.poisoning_updated_at`,
+    [input.limit, input.now, input.staleRunningBefore, input.freshEventCutoff]
+  );
+  return result.rows.map(mapAddressPoisoningCheckWorkItemRow);
+}
+
+export async function skipExpiredAddressPoisoningChecks(
+  db: Db,
+  input: { expiredBefore: Date }
+): Promise<number> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped_backfill',
+       poisoning_last_error = 'expired_before_processing',
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')
+       and timestamp < $1`,
+    [input.expiredBefore]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function skipAddressPoisoningCheckIfExpired(
+  db: Db,
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    freshEventCutoff: Date;
+    now: Date;
+    leaseVersion: Date;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped_backfill',
+       poisoning_last_error = 'expired_during_processing',
+       poisoning_next_retry_at = null,
+       poisoning_updated_at = $4,
+       poisoning_checked_at = $4
+     where tx_hash = $1 and watched_wallet_id = $2
+       and timestamp < $3
+       and poisoning_check_status = 'running'
+       and poisoning_updated_at = $5`,
+    [
+      input.txHash,
+      input.watchedWalletId,
+      input.freshEventCutoff,
+      input.now,
+      input.leaseVersion
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function skipPausedAddressPoisoningChecks(db: Db): Promise<number> {
+  const result = await db.query(
+    `update observed_transactions tx
+     set poisoning_check_status = 'skipped',
+       poisoning_last_error = 'wallet_paused',
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     from watched_wallets w
+     where w.id = tx.watched_wallet_id
+       and w.alert_mode = 'paused'
+       and tx.poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')`,
+    []
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function markAddressPoisoningCheckClear(
+  db: Db,
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    coverage: AddressPoisoningCoverage;
+    reason: AddressPoisoningClearReason;
+    logicalOffset: number;
+    pageCount: number;
+    fetchedCount: number;
+    oldestFetchedAt: Date | null;
+    accumulatedLookupJson: Record<string, unknown>;
+    leaseVersion: Date;
+  }
+): Promise<boolean> {
+  if (input.coverage !== "complete" && input.coverage !== "partial") {
+    throw new Error(`Invalid address poisoning clear coverage: ${String(input.coverage)}`);
+  }
+  const coverage = input.coverage;
+  const reason = parseAddressPoisoningClearReason(input.reason);
+  if (reason === "complete_no_match" && coverage !== "complete") {
+    throw new Error("Address poisoning complete_no_match requires complete coverage");
+  }
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'clear',
+       poisoning_lookup_coverage = $3,
+       poisoning_logical_offset = $4,
+       poisoning_page_count = $5,
+       poisoning_fetched_count = $6,
+       poisoning_oldest_fetched_at = $7,
+       poisoning_accumulated_lookup_json = $8,
+       poisoning_next_retry_at = null,
+       poisoning_last_error = $9,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+       and poisoning_updated_at = $10`,
+    [
+      input.txHash,
+      input.watchedWalletId,
+      coverage,
+      input.logicalOffset,
+      input.pageCount,
+      input.fetchedCount,
+      input.oldestFetchedAt,
+      input.accumulatedLookupJson,
+      reason,
+      input.leaseVersion
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckInconclusive(
+  db: Db,
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    coverage: AddressPoisoningCoverage;
+    logicalOffset: number;
+    pageCount: number;
+    fetchedCount: number;
+    oldestFetchedAt: Date | null;
+    accumulatedLookupJson: Record<string, unknown>;
+    nextRetryAt: Date | null;
+    reason: string;
+    leaseVersion: Date;
+  }
+): Promise<boolean> {
+  if (input.coverage !== "partial") throw new Error("Address poisoning inconclusive requires partial coverage");
+  if (input.nextRetryAt !== null && input.pageCount >= 5) {
+    throw new Error("Address poisoning inconclusive cannot retry after the page limit");
+  }
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'inconclusive',
+       poisoning_lookup_coverage = 'partial',
+       poisoning_logical_offset = $5,
+       poisoning_page_count = $6,
+       poisoning_fetched_count = $7,
+       poisoning_oldest_fetched_at = $8,
+       poisoning_accumulated_lookup_json = $9,
+       poisoning_next_retry_at = $10::timestamptz,
+       poisoning_last_error = $11,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = case when $10::timestamptz is null then now() else null end
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = $3
+       and $4 = 'partial' and poisoning_updated_at = $12`,
+    [
+      input.txHash,
+      input.watchedWalletId,
+      "running",
+      input.coverage,
+      input.logicalOffset,
+      input.pageCount,
+      input.fetchedCount,
+      input.oldestFetchedAt,
+      input.accumulatedLookupJson,
+      input.nextRetryAt,
+      boundedUserAlertError(input.reason),
+      input.leaseVersion
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckFailed(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; error: string; now: Date; leaseVersion: Date }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'failed',
+       poisoning_attempts = poisoning_attempts + 1,
+       poisoning_next_retry_at = case poisoning_attempts
+         when 0 then $4::timestamptz + interval '30 seconds'
+         when 1 then $4::timestamptz + interval '60 seconds'
+         when 2 then $4::timestamptz + interval '120 seconds'
+         else null
+       end,
+       poisoning_last_error = $3,
+       poisoning_updated_at = $4,
+       poisoning_checked_at = case when poisoning_attempts + 1 >= 4 then $4 else poisoning_checked_at end
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+       and poisoning_updated_at = $5`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error), input.now, input.leaseVersion]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckSkipped(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; reason: string; leaseVersion: Date }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped',
+       poisoning_next_retry_at = null,
+       poisoning_last_error = $3,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2
+       and poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')
+       and poisoning_updated_at = $4`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason), input.leaseVersion]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+function deterministicAddressPoisoningId(kind: string, input: PersistAddressPoisoningCandidateInput): string {
+  const digest = createHash("sha256")
+    .update([
+      input.policyVersion,
+      input.watchedWalletId,
+      input.tokenContract,
+      input.suspiciousIncomingTxHash
+    ].join(":"))
+    .digest("hex");
+  return `address-poisoning-${kind}-${digest}`;
+}
+
+export async function persistAddressPoisoningCandidate(
+  db: Db,
+  input: PersistAddressPoisoningCandidateInput
+): Promise<AddressPoisoningCandidate> {
+  parseAddressPoisoningClassification(input.classification);
+  parseRiskConfidence(input.confidence);
+  parseAddressPoisoningCoverage(input.coverage);
+  const evidenceId = deterministicAddressPoisoningId("evidence", input);
+  const observationId = deterministicAddressPoisoningId("observation", input);
+  const candidateId = deterministicAddressPoisoningId("candidate", input);
+  const alertFingerprint = deterministicAddressPoisoningId("alert", input);
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const observedResult = await client.query(
+      `select tx.tx_hash, tx.watched_wallet_id, tx.sender, tx.receiver, tx.token, tx.amount,
+         tx.timestamp, tx.poisoning_check_status, tx.poisoning_updated_at, w.address as wallet_address
+       from observed_transactions tx
+       join watched_wallets w on w.id = tx.watched_wallet_id
+       where tx.tx_hash = $1 and tx.watched_wallet_id = $2
+       for update of tx`,
+      [input.suspiciousIncomingTxHash, input.watchedWalletId]
+    );
+    const observedRow = observedResult.rows[0];
+    const observedStatus = observedRow?.poisoning_check_status;
+    if (observedStatus === undefined) throw new Error("Address poisoning observed transaction is unavailable");
+    parseAddressPoisoningCheckStatus(observedStatus);
+    const observedAmountRaw = parseUsdtDecimalToRaw(observedRow.amount);
+    const observedAtMs = observedRow.timestamp instanceof Date
+      ? observedRow.timestamp.getTime()
+      : new Date(observedRow.timestamp).getTime();
+    if (
+      observedRow.tx_hash !== input.suspiciousIncomingTxHash
+      || observedRow.watched_wallet_id !== input.watchedWalletId
+      || observedRow.wallet_address !== input.walletAddress
+      || observedRow.receiver !== input.walletAddress
+      || observedRow.sender !== input.suspiciousSender
+      || observedRow.token !== input.tokenSymbol
+      || observedAmountRaw !== input.suspiciousAmountRaw
+      || observedAtMs !== input.suspiciousIncomingAt.getTime()
+      || input.tokenContract !== tronUsdtContractAddress
+      || input.tokenSymbol !== "USDT"
+      || input.tokenDecimals !== 6
+    ) {
+      throw new Error("Address poisoning candidate does not match locked observed transaction");
+    }
+
+    const existingResult = await client.query(
+      `select candidate.*
+       from address_poisoning_candidates candidate
+       where candidate.watched_wallet_id = $1
+         and candidate.token_contract = $2
+         and candidate.suspicious_incoming_tx_hash = $3
+       for update of candidate`,
+      [input.watchedWalletId, input.tokenContract, input.suspiciousIncomingTxHash]
+    );
+    const existing = existingResult.rows[0]
+      ? mapAddressPoisoningCandidateRow(existingResult.rows[0])
+      : null;
+    if (observedStatus === "candidate" && existing) {
+      await client.query("commit");
+      return existing;
+    }
+    if (observedStatus !== "running") {
+      throw new Error("Address poisoning candidate lost its running check lease");
+    }
+
+    const finalizeObservedCandidate = () => client.query(
+      `update observed_transactions
+       set poisoning_check_status = 'candidate',
+         poisoning_lookup_coverage = $3,
+         poisoning_logical_offset = $4,
+         poisoning_page_count = $5,
+         poisoning_fetched_count = $6,
+         poisoning_oldest_fetched_at = $7,
+         poisoning_accumulated_lookup_json = $8,
+         poisoning_next_retry_at = null,
+         poisoning_last_error = null,
+         poisoning_updated_at = now(),
+         poisoning_checked_at = now()
+       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+         and poisoning_updated_at = $9`,
+      [
+        input.suspiciousIncomingTxHash,
+        input.watchedWalletId,
+        input.coverage,
+        input.logicalOffset,
+        input.pageCount,
+        input.fetchedCount,
+        input.oldestFetchedAt,
+        input.accumulatedLookupJson,
+        input.leaseVersion
+      ]
+    );
+
+    if (existing) {
+      const transitioned = await finalizeObservedCandidate();
+      if ((transitioned.rowCount ?? 0) !== 1) {
+        throw new Error("Address poisoning candidate lost its running check lease");
+      }
+      await client.query("commit");
+      return existing;
+    }
+
+    await client.query(
+      `insert into raw_evidence (
+         id, source, source_type, chain, address, tx_hash,
+         observed_transaction_hash, evidence_json
+       ) values ($1, 'address_poisoning_detector', 'detector_output', 'tron', $2, $3, $3, $4)
+       on conflict (id) do update set evidence_json = excluded.evidence_json`,
+      [
+        evidenceId,
+        input.walletAddress,
+        input.suspiciousIncomingTxHash,
+        {
+          ...input.evidenceJson,
+          secondaryMatches: input.secondaryMatches,
+          policyVersion: input.policyVersion
+        }
+      ]
+    );
+    await client.query(
+      `insert into risk_signal_observations (
+         id, subject_chain, subject_address, subject_tx_hash,
+         observed_transaction_hash, signal_group, code, message,
+         score_impact, confidence, severity, source, policy_version, raw_evidence_id
+       ) values ($1, 'tron', $2, $3, $3, 'wallet_safety', 'address_poisoning_candidate',
+         'Possible address substitution detected', 0, $4, $5, 'address_poisoning_detector', $6, $7)
+       on conflict (id) do update set
+         signal_group = 'wallet_safety',
+         code = 'address_poisoning_candidate',
+         message = 'Possible address substitution detected',
+         score_impact = 0,
+         confidence = excluded.confidence,
+         severity = excluded.severity,
+         source = 'address_poisoning_detector',
+         policy_version = excluded.policy_version,
+         raw_evidence_id = excluded.raw_evidence_id`,
+      [
+        observationId,
+        input.walletAddress,
+        input.suspiciousIncomingTxHash,
+        input.confidence,
+        input.classification === "CRITICAL" ? "critical" : "high",
+        input.policyVersion,
+        evidenceId
+      ]
+    );
+    const callbackToken = randomBytes(15).toString("base64url");
+    const candidateResult = await client.query(
+      `insert into address_poisoning_candidates (
+         id, callback_token, watched_wallet_id, token_contract, token_symbol, token_decimals,
+         suspicious_incoming_tx_hash, suspicious_sender, suspicious_amount_raw, suspicious_incoming_at,
+         matched_outgoing_tx_hash, genuine_recipient, matched_outgoing_amount_raw, matched_outgoing_at,
+         raw_prefix_length, meaningful_prefix_length, suffix_length, classification, confidence,
+         raw_evidence_id, secondary_matches_json, evidence_json, alert_fingerprint
+       ) values (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+       )
+       on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash) do nothing
+       returning *`,
+      [
+        candidateId,
+        callbackToken,
+        input.watchedWalletId,
+        input.tokenContract,
+        input.tokenSymbol,
+        input.tokenDecimals,
+        input.suspiciousIncomingTxHash,
+        input.suspiciousSender,
+        input.suspiciousAmountRaw,
+        input.suspiciousIncomingAt,
+        input.matchedOutgoingTxHash,
+        input.genuineRecipient,
+        input.matchedOutgoingAmountRaw,
+        input.matchedOutgoingAt,
+        input.rawPrefixLength,
+        input.meaningfulPrefixLength,
+        input.suffixLength,
+        input.classification,
+        input.confidence,
+        evidenceId,
+        input.secondaryMatches,
+        input.evidenceJson,
+        alertFingerprint
+      ]
+    );
+    if (!candidateResult.rows[0]) {
+      throw new Error("Address poisoning candidate conflicted during persistence");
+    }
+    const transitioned = await finalizeObservedCandidate();
+    if ((transitioned.rowCount ?? 0) !== 1) {
+      throw new Error("Address poisoning candidate lost its running check lease");
+    }
+    await client.query("commit");
+    return mapAddressPoisoningCandidateRow(candidateResult.rows[0]);
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function claimAddressPoisoningAlertsForDelivery(
+  db: Db,
+  input: { limit: number; now: Date; staleSendingBefore: Date }
+): Promise<AddressPoisoningCandidateDelivery[]> {
+  const result = await db.query(
+    `with terminalized as (
+       update address_poisoning_candidates candidate
+       set alert_status = 'failed',
+         alert_lease_updated_at = null,
+         alert_next_retry_at = null,
+         alert_last_error = coalesce(candidate.alert_last_error, 'delivery_attempts_exhausted'),
+         updated_at = $2
+       where candidate.status = 'candidate'
+         and candidate.alert_status = 'sending'
+         and candidate.alert_attempts >= 4
+         and coalesce(candidate.alert_lease_updated_at, candidate.updated_at) < $3
+       returning candidate.id
+     ), claimed as (
+       select candidate.id
+       from address_poisoning_candidates candidate
+       where candidate.status = 'candidate'
+         and candidate.alert_attempts < 4
+         and (
+           candidate.alert_status = 'pending'
+           or (candidate.alert_status = 'failed' and coalesce(candidate.alert_next_retry_at, $2) <= $2)
+           or (candidate.alert_status = 'sending'
+             and coalesce(candidate.alert_lease_updated_at, candidate.updated_at) < $3)
+         )
+         and not exists (select 1 from terminalized where terminalized.id = candidate.id)
+       order by candidate.suspicious_incoming_at desc
+       limit $1
+       for update of candidate skip locked
+     )
+     update address_poisoning_candidates candidate
+     set alert_status = 'sending',
+       alert_locale = coalesce(candidate.alert_locale, u.locale),
+       alert_attempts = candidate.alert_attempts + 1,
+       alert_lease_updated_at = $2,
+       alert_next_retry_at = null,
+       alert_last_error = null,
+       updated_at = $2
+     from claimed, watched_wallets w, telegram_users u
+     where candidate.id = claimed.id
+       and w.id = candidate.watched_wallet_id
+       and u.telegram_user_id = w.telegram_user_id
+     returning candidate.*, w.address as wallet_address, w.telegram_user_id, w.alert_mode`,
+    [input.limit, input.now, input.staleSendingBefore]
+  );
+  return result.rows.map(mapAddressPoisoningCandidateDeliveryRow);
+}
+
+export async function markAddressPoisoningAlertSent(
+  db: Db,
+  input: {
+    candidateId: string;
+    fingerprint: string;
+    telegramChatId: string;
+    telegramMessageId: string;
+    sentAt: Date;
+    alertAttempt: number;
+  }
+): Promise<boolean> {
+  if (!/^[a-f0-9]{64}$/.test(input.fingerprint)) {
+    throw new Error("Invalid address-poisoning alert fingerprint");
+  }
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'sent', alert_fingerprint = $2, telegram_chat_id = $3, telegram_message_id = $4,
+       alert_lease_updated_at = null, alert_next_retry_at = null, alert_last_error = null,
+       alert_sent_at = $5, updated_at = $5
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $6`,
+    [
+      input.candidateId,
+      input.fingerprint,
+      input.telegramChatId,
+      input.telegramMessageId,
+      input.sentAt,
+      input.alertAttempt
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function renewAddressPoisoningAlertLease(
+  db: Db,
+  input: { candidateId: string; alertAttempt: number; alertLeaseVersion: Date; now: Date }
+): Promise<Date | null> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_lease_updated_at = $4
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $2 and alert_lease_updated_at = $3
+     returning alert_lease_updated_at`,
+    [input.candidateId, input.alertAttempt, input.alertLeaseVersion, input.now]
+  );
+  const value = result.rows[0]?.alert_lease_updated_at;
+  if (value === undefined) return null;
+  const renewedAt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(renewedAt.getTime())) throw new Error("Invalid renewed address-poisoning alert lease");
+  return renewedAt;
+}
+
+export async function markAddressPoisoningAlertFailed(
+  db: Db,
+  input: {
+    candidateId: string;
+    error: string;
+    now: Date;
+    alertAttempt: number;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'failed',
+       alert_lease_updated_at = null,
+       alert_next_retry_at = case alert_attempts
+         when 1 then $3::timestamptz + interval '30 seconds'
+         when 2 then $3::timestamptz + interval '60 seconds'
+         when 3 then $3::timestamptz + interval '120 seconds'
+         else null
+       end,
+       alert_last_error = $2,
+       updated_at = $3
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $4`,
+    [
+      input.candidateId,
+      boundedUserAlertError(input.error),
+      input.now,
+      input.alertAttempt
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningAlertSkipped(
+  db: Db,
+  input: { candidateId: string; reason: string; alertAttempt: number }
+): Promise<boolean> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'skipped', alert_lease_updated_at = null,
+       alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $3`,
+    [
+      input.candidateId,
+      boundedUserAlertError(input.reason),
+      input.alertAttempt
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function resolveAddressPoisoningCandidate(
+  db: Db,
+  input: { callbackToken: string; telegramUserId: string; resolution: "confirmed" | "dismissed" }
+): Promise<{
+  outcome: "updated" | "idempotent" | "conflict" | "unavailable";
+  candidate: AddressPoisoningCandidate | null;
+}> {
+  const result = await db.query(
+    `with eligible as (
+       select candidate.id, candidate.status, candidate.resolved_at, candidate.updated_at
+       from address_poisoning_candidates candidate
+       join watched_wallets w on w.id = candidate.watched_wallet_id
+       where candidate.callback_token = $1 and w.telegram_user_id = $2
+       for update of candidate
+     ), updated as (
+       update address_poisoning_candidates candidate
+       set status = $3, resolved_at = now(), updated_at = now()
+       from eligible
+       where candidate.id = eligible.id and candidate.status = 'candidate'
+       returning candidate.id, candidate.status, candidate.resolved_at, candidate.updated_at
+     ), resolution as (
+       select updated.id as candidate_id, 'updated' as outcome,
+         updated.status as resolved_status, updated.resolved_at as resolution_resolved_at,
+         updated.updated_at as resolution_updated_at
+       from updated
+       union all
+       select case when eligible.status = $3 then eligible.id else null end as candidate_id,
+         case when eligible.status = $3 then 'idempotent' else 'conflict' end as outcome,
+         case when eligible.status = $3 then eligible.status else null end as resolved_status,
+         case when eligible.status = $3 then eligible.resolved_at else null end as resolution_resolved_at,
+         case when eligible.status = $3 then eligible.updated_at else null end as resolution_updated_at
+       from eligible
+       where not exists (select 1 from updated)
+     )
+     select candidate.*, resolution.outcome, resolution.resolved_status,
+       resolution.resolution_resolved_at, resolution.resolution_updated_at
+     from resolution
+     left join address_poisoning_candidates candidate on candidate.id = resolution.candidate_id`,
+    [input.callbackToken, input.telegramUserId, input.resolution]
+  );
+  const row = result.rows[0];
+  if (!row) return { outcome: "unavailable", candidate: null };
+  if (row.outcome === "conflict" || !row.id) {
+    return { outcome: "conflict", candidate: null };
+  }
+  return {
+    outcome: row.outcome as "updated" | "idempotent",
+    candidate: mapAddressPoisoningCandidateRow({
+      ...row,
+      status: row.resolved_status ?? row.status,
+      resolved_at: row.resolution_resolved_at ?? row.resolved_at,
+      updated_at: row.resolution_updated_at ?? row.updated_at
+    })
+  };
+}
+
+export async function hasUndismissedAddressPoisoningCandidateForIncoming(
+  db: Db,
+  input: { watchedWalletId: string; txHash: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `select exists (
+       select 1 from address_poisoning_candidates
+       where watched_wallet_id = $1 and suspicious_incoming_tx_hash = $2 and status <> 'dismissed'
+     ) as exists`,
+    [input.watchedWalletId, input.txHash]
+  );
+  return result.rows[0]?.exists === true;
+}
+
+export async function getAddressPoisoningQueueMetrics(
+  db: Db,
+  now: Date
+): Promise<{ queueDepth: number; oldestQueueAgeMs: number | null }> {
+  const result = await db.query(
+    `select count(*) as queue_depth,
+       extract(epoch from ($1 - min(timestamp))) * 1000 as oldest_queue_age_ms
+     from observed_transactions
+     where poisoning_check_status = 'pending'
+       or (poisoning_check_status = 'failed' and poisoning_attempts < 4 and coalesce(poisoning_next_retry_at, $1) <= $1)
+       or (poisoning_check_status = 'inconclusive'
+         and poisoning_page_count < 5
+         and poisoning_checked_at is null
+         and poisoning_next_retry_at is not null
+         and poisoning_next_retry_at <= $1)`,
+    [now]
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    queueDepth: Number(row.queue_depth ?? 0),
+    oldestQueueAgeMs: row.oldest_queue_age_ms === null || row.oldest_queue_age_ms === undefined
+      ? null
+      : Number(row.oldest_queue_age_ms)
+  };
 }
 
 export async function upsertWalletApproval(
@@ -1946,6 +4355,12 @@ export async function upsertWalletApproval(
        current_allowance_raw,
        spender_type,
        status,
+       allowance_confirmed_raw,
+       allowance_check_status,
+       allowance_checked_at,
+       allowance_fresh_until,
+       allowance_last_attempt_at,
+       allowance_failure_code,
        last_approval_tx_hash,
        last_approval_at,
        risk_level,
@@ -1953,29 +4368,78 @@ export async function upsertWalletApproval(
        risk_reasons,
        last_alerted_tx_hash
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
      on conflict (watched_wallet_id, token_contract, spender_address) do update set
        amount_raw = excluded.amount_raw,
-       is_unlimited = excluded.is_unlimited,
-       current_allowance_raw = excluded.current_allowance_raw,
+       is_unlimited = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.is_unlimited else wallet_approvals.is_unlimited end,
+       current_allowance_raw = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.current_allowance_raw else wallet_approvals.current_allowance_raw end,
        spender_type = excluded.spender_type,
-       status = excluded.status,
+       status = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.status else wallet_approvals.status end,
+       allowance_confirmed_raw = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_confirmed_raw else wallet_approvals.allowance_confirmed_raw end,
+       allowance_check_status = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_check_status else wallet_approvals.allowance_check_status end,
+       allowance_checked_at = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_checked_at else wallet_approvals.allowance_checked_at end,
+       allowance_fresh_until = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_fresh_until else wallet_approvals.allowance_fresh_until end,
+       allowance_last_attempt_at = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_last_attempt_at else wallet_approvals.allowance_last_attempt_at end,
+       allowance_failure_code = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_failure_code else wallet_approvals.allowance_failure_code end,
        last_approval_tx_hash = excluded.last_approval_tx_hash,
        last_approval_at = excluded.last_approval_at,
        risk_level = excluded.risk_level,
        risk_score = excluded.risk_score,
        risk_reasons = excluded.risk_reasons,
        last_alerted_tx_hash = coalesce(excluded.last_alerted_tx_hash, wallet_approvals.last_alerted_tx_hash),
-       updated_at = now()`,
+       updated_at = now()
+     where (
+       excluded.last_approval_at is not null
+       and (
+         wallet_approvals.last_approval_at is null
+         or excluded.last_approval_at >= wallet_approvals.last_approval_at
+       )
+     ) or (
+       excluded.last_approval_at is null
+       and wallet_approvals.last_approval_at is null
+     )`,
     [
       input.watchedWalletId,
       input.tokenContract,
       input.spenderAddress,
       input.amountRaw,
-      input.isUnlimited,
-      input.currentAllowanceRaw ?? input.amountRaw,
+      false,
+      "0",
       input.spenderType,
-      input.status ?? "active",
+      "unknown",
+      null,
+      "stale",
+      null,
+      null,
+      null,
+      null,
       input.lastApprovalTxHash,
       input.lastApprovalAt,
       input.riskLevel,
@@ -1984,6 +4448,281 @@ export async function upsertWalletApproval(
       input.lastAlertedTxHash ?? null
     ]
   );
+}
+
+export type ApprovalAllowanceRefreshTarget = {
+  watchedWalletId: string;
+  ownerAddress: string;
+  tokenContract: string;
+  spenderAddress: string;
+};
+
+export async function listDueApprovalAllowanceRefreshTargets(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<ApprovalAllowanceRefreshTarget[]> {
+  const limit = Number.isFinite(input.limit)
+    ? Math.min(Math.max(Math.floor(input.limit), 0), 5)
+    : 5;
+  if (limit === 0) return [];
+  const result = await db.query(
+    `select wa.watched_wallet_id, ww.address as owner_address,
+       wa.token_contract, wa.spender_address
+     from wallet_approvals wa
+     join watched_wallets ww on ww.id = wa.watched_wallet_id
+     where wa.token_contract = $1
+       and ww.alert_mode <> 'paused'
+       and (
+         wa.allowance_check_status in ('stale', 'failed')
+         or wa.allowance_fresh_until <= $2
+       )
+       and (
+         wa.allowance_last_attempt_at is null
+         or wa.allowance_last_attempt_at <= $2 - interval '15 minutes'
+       )
+     order by wa.allowance_last_attempt_at asc nulls first,
+       wa.watched_wallet_id asc, wa.spender_address asc
+     limit $3`,
+    [TRON_USDT_CONTRACT_ADDRESS, input.now, limit]
+  );
+  return result.rows.map((row) => ({
+    watchedWalletId: String(row.watched_wallet_id),
+    ownerAddress: String(row.owner_address),
+    tokenContract: String(row.token_contract),
+    spenderAddress: String(row.spender_address)
+  }));
+}
+
+export async function tryAcquireApprovalAllowanceRefreshLock(
+  db: Db,
+  input: {
+    watchedWalletId: string;
+    tokenContract: string;
+    spenderAddress: string;
+    now: Date;
+  }
+): Promise<null | { release(): Promise<void> }> {
+  const client = await db.connect();
+  let acquired = false;
+  let released = false;
+  let lockKey: string | null = null;
+
+  const release = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    try {
+      if (acquired && lockKey !== null) {
+        const result = await client.query(
+          "select pg_advisory_unlock(hashtextextended($1, 0)) as released",
+          [lockKey]
+        );
+        if (result.rows[0]?.released !== true) {
+          throw new Error("approval_allowance_refresh_unlock_failed");
+        }
+      }
+    } finally {
+      client.release();
+    }
+  };
+
+  try {
+    lockKey = `allowance-refresh:${input.watchedWalletId}:${input.tokenContract}:${input.spenderAddress}`;
+    const lock = await client.query(
+      "select pg_try_advisory_lock(hashtextextended($1, 0)) as acquired",
+      [lockKey]
+    );
+    if (lock.rows[0]?.acquired !== true) {
+      await release();
+      return null;
+    }
+    acquired = true;
+
+    const eligible = await client.query(
+      `select 1
+       from wallet_approvals wa
+       join watched_wallets ww on ww.id = wa.watched_wallet_id
+       where wa.watched_wallet_id = $1
+         and wa.token_contract = $2
+         and wa.spender_address = $3
+         and wa.token_contract = $4
+         and ww.alert_mode <> 'paused'
+         and (
+           wa.allowance_check_status in ('stale', 'failed')
+           or wa.allowance_fresh_until <= $5
+         )
+         and (
+           wa.allowance_last_attempt_at is null
+           or wa.allowance_last_attempt_at <= $5 - interval '15 minutes'
+         )`,
+      [
+        input.watchedWalletId,
+        input.tokenContract,
+        input.spenderAddress,
+        TRON_USDT_CONTRACT_ADDRESS,
+        input.now
+      ]
+    );
+    if (eligible.rows.length === 0) {
+      await release();
+      return null;
+    }
+
+    return { release };
+  } catch (error) {
+    try {
+      await release();
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "approval allowance refresh lock cleanup failed");
+    }
+    throw error;
+  }
+}
+
+export async function saveWalletApprovalAllowanceStateV2(
+  db: Db,
+  input: { watchedWalletId: string; allowance: ApprovalAllowanceStateV2 }
+): Promise<void> {
+  const allowance = validateApprovalAllowanceStateV2(input.allowance, new Date());
+  if (allowance.state !== input.allowance.state) throw new Error("allowance_state_not_current");
+  const confirmed = allowance.state === "confirmed_active" || allowance.state === "confirmed_zero";
+  const currentAllowanceRaw = confirmed ? allowance.confirmedAllowanceRaw! : "0";
+  const isUnlimited = confirmed && allowance.confirmedAllowanceRaw === UINT256_MAX_RAW;
+  const status: WalletApprovalStatus = allowance.state === "confirmed_active"
+    ? "active"
+    : allowance.state === "confirmed_zero"
+      ? "revoked"
+      : "unknown";
+
+  const result = await db.query(
+    `with bound_owner as (
+       select id
+       from watched_wallets
+       where id = $1 and address = $20
+     ), write_result as (
+       insert into wallet_approvals (
+       watched_wallet_id,
+       token_contract,
+       spender_address,
+       amount_raw,
+       is_unlimited,
+       current_allowance_raw,
+       spender_type,
+       status,
+       allowance_confirmed_raw,
+       allowance_check_status,
+       allowance_checked_at,
+       allowance_fresh_until,
+       allowance_last_attempt_at,
+       allowance_failure_code,
+       last_approval_tx_hash,
+       last_approval_at,
+       risk_level,
+       risk_score,
+       risk_reasons
+       )
+       select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+       from bound_owner
+       on conflict (watched_wallet_id, token_contract, spender_address) do update set
+         is_unlimited = excluded.is_unlimited,
+         current_allowance_raw = excluded.current_allowance_raw,
+         status = excluded.status,
+         allowance_confirmed_raw = excluded.allowance_confirmed_raw,
+         allowance_check_status = excluded.allowance_check_status,
+         allowance_checked_at = excluded.allowance_checked_at,
+         allowance_fresh_until = excluded.allowance_fresh_until,
+         allowance_last_attempt_at = excluded.allowance_last_attempt_at,
+         allowance_failure_code = excluded.allowance_failure_code,
+         updated_at = now()
+       where (
+         excluded.allowance_last_attempt_at is not null
+         and (
+           wallet_approvals.last_approval_at is null
+           or excluded.allowance_last_attempt_at >= wallet_approvals.last_approval_at
+         )
+         and (
+           wallet_approvals.allowance_last_attempt_at is null
+           or excluded.allowance_last_attempt_at > wallet_approvals.allowance_last_attempt_at
+           or (
+             excluded.allowance_last_attempt_at = wallet_approvals.allowance_last_attempt_at
+             and row(
+               excluded.allowance_confirmed_raw,
+               excluded.allowance_check_status,
+               excluded.allowance_checked_at,
+               excluded.allowance_fresh_until,
+               excluded.allowance_last_attempt_at,
+               excluded.allowance_failure_code,
+               excluded.current_allowance_raw,
+               excluded.is_unlimited,
+               excluded.status
+             ) is not distinct from row(
+               wallet_approvals.allowance_confirmed_raw,
+               wallet_approvals.allowance_check_status,
+               wallet_approvals.allowance_checked_at,
+               wallet_approvals.allowance_fresh_until,
+               wallet_approvals.allowance_last_attempt_at,
+               wallet_approvals.allowance_failure_code,
+               wallet_approvals.current_allowance_raw,
+               wallet_approvals.is_unlimited,
+               wallet_approvals.status
+             )
+           )
+         )
+       ) or (
+         excluded.allowance_last_attempt_at is null
+         and wallet_approvals.allowance_last_attempt_at is null
+         and wallet_approvals.last_approval_at is null
+         and row(
+           excluded.allowance_confirmed_raw,
+           excluded.allowance_check_status,
+           excluded.allowance_checked_at,
+           excluded.allowance_fresh_until,
+           excluded.allowance_last_attempt_at,
+           excluded.allowance_failure_code,
+           excluded.current_allowance_raw,
+           excluded.is_unlimited,
+           excluded.status
+         ) is not distinct from row(
+           wallet_approvals.allowance_confirmed_raw,
+           wallet_approvals.allowance_check_status,
+           wallet_approvals.allowance_checked_at,
+           wallet_approvals.allowance_fresh_until,
+           wallet_approvals.allowance_last_attempt_at,
+           wallet_approvals.allowance_failure_code,
+           wallet_approvals.current_allowance_raw,
+           wallet_approvals.is_unlimited,
+           wallet_approvals.status
+         )
+       )
+       returning watched_wallet_id
+     )
+     select exists(select 1 from bound_owner) as owner_matches,
+       exists(select 1 from write_result) as write_applied`,
+    [
+      input.watchedWalletId,
+      allowance.tokenContract,
+      allowance.spenderAddress,
+      "0",
+      isUnlimited,
+      currentAllowanceRaw,
+      "unknown",
+      status,
+      allowance.confirmedAllowanceRaw,
+      allowance.state,
+      allowance.confirmedAt ? new Date(allowance.confirmedAt) : null,
+      allowance.freshUntil ? new Date(allowance.freshUntil) : null,
+      allowance.lastAttemptAt ? new Date(allowance.lastAttemptAt) : null,
+      allowance.failureCode,
+      allowance.observedApprovalTxHash,
+      null,
+      "LOW",
+      0,
+      JSON.stringify([]),
+      allowance.ownerAddress
+    ]
+  );
+  const outcome = result.rows[0];
+  if (outcome?.owner_matches !== true) throw new Error("allowance_owner_binding_mismatch");
+  if (outcome.write_applied !== true) throw new Error("allowance_state_stale_write");
 }
 
 export async function claimObservedApprovalEvent(
@@ -2056,6 +4795,267 @@ export async function recordApprovalRisk(
     [input.approvalTxHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+function strictStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) return null;
+  if (new Set(value).size !== value.length) return null;
+  return [...value];
+}
+
+function strictKnownServiceSession(value: unknown): ApprovalSafetyAssessmentV2["serviceSession"] | undefined {
+  if (value === null) return null;
+  const row = mapJsonObject(value);
+  if (
+    typeof row.walletAddress !== "string" ||
+    typeof row.spenderAddress !== "string" ||
+    typeof row.approvalTxHash !== "string" || row.approvalTxHash.length === 0 ||
+    typeof row.actionTxHash !== "string" || row.actionTxHash.length === 0 ||
+    (row.actionKind !== "swap" && row.actionKind !== "bridge" && row.actionKind !== "router") ||
+    row.walletInitiated !== true || row.successful !== true ||
+    !Number.isSafeInteger(row.delayMs) || Number(row.delayMs) < 0 ||
+    (row.approvedAmountRaw !== null && (typeof row.approvedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.approvedAmountRaw))) ||
+    typeof row.movedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.movedAmountRaw) ||
+    row.amountContinuity !== "exact" || Number(row.delayMs) > 600_000 ||
+    typeof row.authoritativeServiceId !== "string" || row.authoritativeServiceId.length === 0
+  ) return undefined;
+  return row as ApprovalSafetyAssessmentV2["serviceSession"];
+}
+
+function sameKnownServiceSession(
+  left: NonNullable<ApprovalSafetyAssessmentV2["serviceSession"]>,
+  right: NonNullable<ApprovalSafetyAssessmentV2["serviceSession"]>
+): boolean {
+  return left.walletAddress === right.walletAddress &&
+    left.spenderAddress === right.spenderAddress &&
+    left.approvalTxHash === right.approvalTxHash &&
+    left.actionTxHash === right.actionTxHash &&
+    left.actionKind === right.actionKind &&
+    left.walletInitiated === right.walletInitiated &&
+    left.successful === right.successful &&
+    left.delayMs === right.delayMs &&
+    left.approvedAmountRaw === right.approvedAmountRaw &&
+    left.movedAmountRaw === right.movedAmountRaw &&
+    left.amountContinuity === right.amountContinuity &&
+    left.authoritativeServiceId === right.authoritativeServiceId;
+}
+
+function parseApprovalSafetyAuditRow(
+  row: Record<string, unknown>,
+  input: { spenderAddress: string; now: Date }
+): ApprovalSafetyAuditForContractDecision | null {
+  const approvalTxHash = typeof row.approval_tx_hash === "string" ? row.approval_tx_hash : null;
+  const ownerAddress = typeof row.owner_address === "string" ? row.owner_address : null;
+  const watchedWalletAddress = typeof row.watched_wallet_address === "string" ? row.watched_wallet_address : null;
+  const spenderAddress = typeof row.spender_address === "string" ? row.spender_address : null;
+  const tokenContract = typeof row.token_contract === "string" ? row.token_contract : null;
+  const approvalEvidenceId = typeof row.approval_evidence_id === "string" ? row.approval_evidence_id : null;
+  if (!approvalTxHash || !ownerAddress || watchedWalletAddress !== ownerAddress || spenderAddress !== input.spenderAddress ||
+    tokenContract !== TRON_USDT_CONTRACT_ADDRESS || !approvalEvidenceId) return null;
+
+  const approvalEvidence = mapJsonObject(row.approval_evidence_json);
+  if (approvalEvidence.ownerAddress !== ownerAddress || approvalEvidence.spenderAddress !== spenderAddress ||
+    approvalEvidence.tokenContract !== tokenContract) return null;
+  const rawAssessment = mapJsonObject(approvalEvidence.approvalSafetyAssessmentV2);
+  const rawAllowance = mapJsonObject(rawAssessment.allowance);
+  let allowance: ApprovalAllowanceStateV2;
+  try {
+    allowance = validateApprovalAllowanceStateV2(rawAllowance as ApprovalAllowanceStateV2, input.now);
+  } catch {
+    return null;
+  }
+  if (allowance.state !== "confirmed_active" && allowance.state !== "confirmed_zero") return null;
+  if (allowance.ownerAddress !== ownerAddress || allowance.spenderAddress !== spenderAddress ||
+    allowance.tokenContract !== tokenContract || allowance.observedApprovalTxHash !== approvalTxHash) return null;
+  const campaignEvidenceIds = strictStringArray(rawAssessment.campaignEvidenceIds);
+  const serviceSession = strictKnownServiceSession(rawAssessment.serviceSession);
+  if (!campaignEvidenceIds || serviceSession === undefined) return null;
+  if (
+    rawAssessment.version !== "approval-safety-v2" ||
+    rawAssessment.subjectAddress !== ownerAddress ||
+    (rawAssessment.level !== "LOW" && rawAssessment.level !== "MEDIUM" && rawAssessment.level !== "HIGH" &&
+      rawAssessment.level !== "CRITICAL" && rawAssessment.level !== "UNKNOWN") ||
+    (rawAssessment.score !== null && (!Number.isInteger(rawAssessment.score) || Number(rawAssessment.score) < 0 || Number(rawAssessment.score) > 100)) ||
+    (rawAssessment.action !== "NONE" && rawAssessment.action !== "REVOKE_IF_UNUSED" &&
+      rawAssessment.action !== "REVOKE_NOW" && rawAssessment.action !== "CONFIRM_ALLOWANCE") ||
+    rawAssessment.amlScoreImpact !== 0 ||
+    (rawAssessment.balanceAtRiskRaw !== null && (typeof rawAssessment.balanceAtRiskRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(rawAssessment.balanceAtRiskRaw))) ||
+    typeof rawAssessment.exactVerify20 !== "boolean" ||
+    typeof rawAssessment.exactDebit !== "boolean" ||
+    typeof rawAssessment.debitFoundFromSubject !== "boolean"
+  ) return null;
+
+  const sessionEvidenceId = typeof row.session_evidence_id === "string" ? row.session_evidence_id : null;
+  if (serviceSession) {
+    const sessionEvidence = mapJsonObject(row.session_evidence_json);
+    const persistedSession = strictKnownServiceSession(sessionEvidence.knownServiceSession);
+    if (!sessionEvidenceId || !persistedSession ||
+      serviceSession.walletAddress !== ownerAddress ||
+      serviceSession.spenderAddress !== spenderAddress ||
+      serviceSession.approvalTxHash !== approvalTxHash ||
+      sessionEvidence.approvalTxHash !== approvalTxHash ||
+      sessionEvidence.ownerAddress !== ownerAddress ||
+      sessionEvidence.spenderAddress !== spenderAddress ||
+      sessionEvidence.linkedRouteTxHash !== serviceSession.actionTxHash ||
+      !sameKnownServiceSession(persistedSession, serviceSession)) return null;
+  }
+
+  return {
+    approvalTxHash,
+    approvalEvidenceId,
+    sessionEvidenceId,
+    campaignEvidence: [],
+    assessment: {
+      version: "approval-safety-v2",
+      subjectAddress: ownerAddress,
+      level: rawAssessment.level,
+      score: rawAssessment.score as number | null,
+      action: rawAssessment.action,
+      amlScoreImpact: 0,
+      allowance,
+      balanceAtRiskRaw: rawAssessment.balanceAtRiskRaw as string | null,
+      exactVerify20: rawAssessment.exactVerify20,
+      exactDebit: rawAssessment.exactDebit,
+      debitFoundFromSubject: rawAssessment.debitFoundFromSubject,
+      campaignEvidenceIds,
+      serviceSession
+    } as ApprovalSafetyAssessmentV2
+  };
+}
+
+const VERIFY20_REQUIRED_SELECTORS = new Set(["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"]);
+
+function parseExactCampaignEvidenceRow(
+  row: Record<string, unknown>,
+  input: {
+    evidenceId: string;
+    ownerAddress: string;
+    spenderAddress: string;
+    approvalTxHash: string;
+    exactDebit: boolean;
+    exactVerify20: boolean;
+  }
+): ContractDecisionEvidenceV1 | null {
+  if (row.id !== input.evidenceId || row.address !== input.spenderAddress ||
+    row.source_type !== "detector_output" || row.chain !== "tron") return null;
+  const evidence = mapJsonObject(row.evidence_json);
+  if (row.source === "approval_drain_observation" && input.exactDebit) {
+    if (evidence.approvalTxHash !== input.approvalTxHash || evidence.ownerAddress !== input.ownerAddress ||
+      evidence.spenderAddress !== input.spenderAddress || evidence.tokenContract !== TRON_USDT_CONTRACT_ADDRESS ||
+      evidence.callerAddress !== input.spenderAddress || evidence.method !== "transferFrom" ||
+      typeof evidence.receiverAddress !== "string" || evidence.receiverAddress.length === 0 ||
+      evidence.receiverAddress === input.ownerAddress || evidence.receiverAddress === input.spenderAddress ||
+      typeof evidence.amountRaw !== "string" || !/^[1-9][0-9]*$/.test(evidence.amountRaw) ||
+      typeof row.tx_hash !== "string" || row.tx_hash.length === 0) return null;
+    return {
+      id: input.evidenceId,
+      kind: "exact_debit",
+      subjectAddress: input.spenderAddress,
+      spenderAddress: input.spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    };
+  }
+  if (row.source === "verify20_fingerprint" && input.exactVerify20) {
+    const fingerprint = mapJsonObject(evidence.verify20Fingerprint);
+    const selectors = strictStringArray(fingerprint.selectors);
+    const missing = strictStringArray(fingerprint.missingSelectors);
+    const mismatched = strictStringArray(fingerprint.mismatchedSelectors);
+    if (evidence.contractAddress !== input.spenderAddress || evidence.spenderAddress !== input.spenderAddress ||
+      evidence.tokenContract !== TRON_USDT_CONTRACT_ADDRESS || fingerprint.matched !== true ||
+      fingerprint.blockedByTrustedService !== false || !selectors || !missing || !mismatched ||
+      missing.length !== 0 || mismatched.length !== 0 || selectors.length !== VERIFY20_REQUIRED_SELECTORS.size ||
+      selectors.some((selector) => !VERIFY20_REQUIRED_SELECTORS.has(selector))) return null;
+    return {
+      id: input.evidenceId,
+      kind: "verify20_fingerprint",
+      subjectAddress: input.spenderAddress,
+      spenderAddress: input.spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    };
+  }
+  return null;
+}
+
+async function loadExactCampaignEvidence(
+  db: Db,
+  audit: ApprovalSafetyAuditForContractDecision
+): Promise<ContractDecisionEvidenceV1[] | null> {
+  const ids = audit.assessment.campaignEvidenceIds;
+  if (ids.length === 0) return audit.assessment.exactDebit || audit.assessment.exactVerify20 ? null : [];
+  if (!audit.assessment.exactDebit && !audit.assessment.exactVerify20) return null;
+  const result = await db.query(
+    `select id, source, source_type, chain, address, tx_hash, evidence_json
+     from raw_evidence
+     where id = any($1::text[])
+     order by id`,
+    [ids]
+  );
+  if ((result.rowCount ?? result.rows.length) !== ids.length || result.rows.length !== ids.length) return null;
+  const byId = new Map(result.rows.map((row) => [row.id, row]));
+  if (byId.size !== ids.length) return null;
+  const evidence = ids.map((evidenceId) => {
+    const row = byId.get(evidenceId);
+    return row ? parseExactCampaignEvidenceRow(row, {
+      evidenceId,
+      ownerAddress: audit.assessment.subjectAddress,
+      spenderAddress: audit.assessment.allowance.spenderAddress,
+      approvalTxHash: audit.approvalTxHash,
+      exactDebit: audit.assessment.exactDebit,
+      exactVerify20: audit.assessment.exactVerify20
+    }) : null;
+  });
+  if (evidence.some((row) => row === null)) return null;
+  const resolved = evidence as ContractDecisionEvidenceV1[];
+  if (audit.assessment.exactDebit && !resolved.some((row) => row.kind === "exact_debit")) return null;
+  if (audit.assessment.exactVerify20 && !resolved.some((row) => row.kind === "verify20_fingerprint")) return null;
+  return resolved;
+}
+
+export async function getLatestApprovalSafetyAuditForSpenderByTelegramUser(
+  db: Db,
+  input: { telegramUserId: string; spenderAddress: string; now?: Date }
+): Promise<ApprovalSafetyAuditForContractDecision | null> {
+  const result = await db.query(
+    `select approval.approval_tx_hash, approval.owner_address, w.address as watched_wallet_address, approval.spender_address,
+       approval.token_contract, guard_raw.id as approval_evidence_id,
+       guard_raw.evidence_json as approval_evidence_json,
+       session_raw.id as session_evidence_id, session_raw.evidence_json as session_evidence_json
+     from observed_approval_events approval
+     join watched_wallets w on w.id = approval.watched_wallet_id
+       and approval.owner_address = w.address
+     join lateral (
+       select guard.id, guard.evidence_json
+       from raw_evidence guard
+       where guard.source = 'approval_guard'
+         and guard.tx_hash = approval.approval_tx_hash
+         and guard.address = approval.spender_address
+       order by guard.created_at desc, guard.id desc
+       limit 1
+     ) guard_raw on true
+     left join lateral (
+       select session.id, session.evidence_json
+       from raw_evidence session
+       where session.source = 'approval_session_context'
+         and session.tx_hash = approval.approval_tx_hash
+         and session.address = approval.spender_address
+       order by session.created_at desc, session.id desc
+       limit 1
+     ) session_raw on true
+     where w.telegram_user_id = $1
+       and approval.spender_address = $2
+       and approval.token_contract = $3
+     order by approval.approval_at desc, approval.approval_tx_hash desc
+     limit 1`,
+    [input.telegramUserId, input.spenderAddress, TRON_USDT_CONTRACT_ADDRESS]
+  );
+  if (!result.rows[0]) return null;
+  const audit = parseApprovalSafetyAuditRow(result.rows[0], {
+    spenderAddress: input.spenderAddress,
+    now: input.now ?? new Date()
+  });
+  if (!audit) return null;
+  const campaignEvidence = await loadExactCampaignEvidence(db, audit);
+  return campaignEvidence ? { ...audit, campaignEvidence } : null;
 }
 
 export async function claimObservedApprovalDrainEvent(
@@ -2274,6 +5274,7 @@ export async function claimDueApprovalContexts(
        w.id as wallet_id,
        w.telegram_user_id as wallet_telegram_user_id,
        u.username as wallet_username,
+       u.locale as wallet_locale,
        w.address as wallet_address,
        w.created_at as wallet_created_at,
        w.alert_mode as wallet_alert_mode,
@@ -2385,6 +5386,8 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
   const result = await db.query(
     `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
        wa.is_unlimited, wa.current_allowance_raw, wa.spender_type, wa.status,
+       wa.allowance_confirmed_raw, wa.allowance_check_status, wa.allowance_checked_at,
+       wa.allowance_fresh_until, wa.allowance_last_attempt_at, wa.allowance_failure_code,
        wa.last_approval_tx_hash, wa.last_approval_at, wa.risk_level, wa.risk_score,
        wa.risk_reasons, wa.last_alerted_tx_hash, wa.updated_at,
        am.name as metadata_name,
@@ -2406,19 +5409,79 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
         oae.context_status as approval_context_status,
         oae.context_result as approval_context_result,
         oae.context_deadline_at as approval_context_deadline_at,
-        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at
+        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at,
+       w.address as watched_wallet_address
       from wallet_approvals wa
+      join watched_wallets w on w.id = wa.watched_wallet_id
       left join address_metadata am on am.address = wa.spender_address
       left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
       left join observed_approval_events oae
         on oae.watched_wallet_id = wa.watched_wallet_id
        and oae.approval_tx_hash = wa.last_approval_tx_hash
+       and oae.token_contract = wa.token_contract
        and oae.spender_address = wa.spender_address
+       and oae.owner_address = w.address
       where wa.watched_wallet_id = $1
      order by wa.risk_score desc, wa.updated_at desc`,
     [watchedWalletId]
   );
-  return result.rows.map(mapWalletApprovalRow);
+  const evaluatedAt = new Date();
+  return result.rows.map((row) => mapWalletApprovalRow(row, evaluatedAt));
+}
+
+export async function listWalletApprovalsBySpenderForTelegramUser(
+  db: Db,
+  input: { telegramUserId: string; spenderAddress: string }
+): Promise<WalletApprovalSpenderRelation[]> {
+  const result = await db.query(
+    `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
+       wa.is_unlimited, wa.current_allowance_raw, wa.spender_type, wa.status,
+       wa.allowance_confirmed_raw, wa.allowance_check_status, wa.allowance_checked_at,
+       wa.allowance_fresh_until, wa.allowance_last_attempt_at, wa.allowance_failure_code,
+       wa.last_approval_tx_hash, wa.last_approval_at, wa.risk_level, wa.risk_score,
+       wa.risk_reasons, wa.last_alerted_tx_hash, wa.updated_at,
+       am.name as metadata_name,
+       am.tag as metadata_tag,
+       am.source as metadata_source,
+       am.is_contract as metadata_is_contract,
+       coalesce(cip.provider_tags->0->>'label', cip.public_tags->0->>'label') as contract_service_tag,
+       cip.is_verified as contract_verified,
+       case
+         when coalesce(cip.tx_count, 0) >= 100000 or coalesce(cip.total_call_count, 0) >= 100000 or coalesce(cip.total_caller_count, 0) >= 10000 then 'high'
+         when coalesce(cip.tx_count, 0) >= 1000 or coalesce(cip.total_call_count, 0) >= 1000 or coalesce(cip.total_caller_count, 0) >= 100 then 'normal'
+         when cip.contract_address is null then null
+         when coalesce(cip.tx_count, 0) = 0 and coalesce(cip.total_call_count, 0) = 0 then 'none'
+         else 'low'
+       end as contract_activity_level,
+       cip.top_methods as contract_top_methods,
+       ((cip.method_map ? '23b872dd') or cip.raw_payload::text ilike '%transferfrom%' or cip.raw_payload::text ilike '%23b872dd%') as contract_has_transfer_from_selector,
+        (cip.raw_payload::text ilike '%no access%' or cip.raw_payload::text ilike '%onlyowner%' or cip.raw_payload::text ilike '%caller is not the owner%') as contract_has_owner_only_pattern,
+        oae.context_status as approval_context_status,
+        oae.context_result as approval_context_result,
+        oae.context_deadline_at as approval_context_deadline_at,
+        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at,
+       w.address as watched_wallet_address,
+       w.telegram_user_id as watched_wallet_telegram_user_id
+     from wallet_approvals wa
+     join watched_wallets w on w.id = wa.watched_wallet_id
+     left join address_metadata am on am.address = wa.spender_address
+     left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
+     left join observed_approval_events oae
+       on oae.watched_wallet_id = wa.watched_wallet_id
+      and oae.approval_tx_hash = wa.last_approval_tx_hash
+      and oae.token_contract = wa.token_contract
+      and oae.spender_address = wa.spender_address
+      and oae.owner_address = w.address
+     where w.telegram_user_id = $1 and wa.spender_address = $2
+     order by wa.risk_score desc, wa.updated_at desc`,
+    [input.telegramUserId, input.spenderAddress]
+  );
+  const evaluatedAt = new Date();
+  return result.rows.map((row) => ({
+    ...mapWalletApprovalRow(row, evaluatedAt),
+    watchedWalletAddress: row.watched_wallet_address,
+    watchedWalletTelegramUserId: row.watched_wallet_telegram_user_id
+  }));
 }
 
 export async function listWalletApprovalDrainObservations(
@@ -2490,6 +5553,7 @@ export async function claimDigestTransactions(
      where w.alert_mode = 'digest'
        and tx.digest_sent_at is null
        and tx.risk_level is not null
+       and coalesce(tx.user_alert_last_error, '') <> 'backfill_stale_transaction'
        and tx.created_at <= ($2::timestamptz - (w.digest_interval_minutes || ' minutes')::interval)
      order by tx.created_at asc
      limit $1`,
@@ -2540,8 +5604,90 @@ export async function listActiveRiskLabelsForAddress(db: Db, address: string, ch
   return result.rows.map(mapAddressLabelRow);
 }
 
-export async function upsertAddressLabelAssertion(
+export async function recordClaimedObservedTransactionRisk(
   db: Db,
+  input: ForensicJobClaim & { txHash: string; watchedWalletId: string; report: RiskReport }
+): Promise<boolean> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const result = await client.query(
+      `update observed_transactions
+       set risk_level = $3, risk_score = $4, risk_reasons = $5
+       where tx_hash = $1 and watched_wallet_id = $2`,
+      [input.txHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
+    );
+    await client.query("commit");
+    return (result.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listActiveAddressLabelAssertionsForRoute(
+  db: Db,
+  input: { chain: "tron"; addresses: string[]; txHashes: string[] }
+): Promise<AddressLabelAssertion[]> {
+  const addresses = [...new Set(input.addresses.filter((address) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/u.test(address)))];
+  const txHashes = [...new Set(input.txHashes
+    .map((hash) => hash.toLowerCase())
+    .filter((hash) => /^[0-9a-f]{64}$/u.test(hash)))];
+  if (addresses.length === 0 && txHashes.length === 0) return [];
+  const result = await db.query(
+    `select id, chain, address, label, entity_name, category, confidence, severity,
+       status, source_name, source_url, notes, evidence_json,
+       created_by_telegram_id, first_seen_at, last_seen_at, created_at, updated_at
+     from address_label_assertions assertions
+     where assertions.chain = $1
+       and assertions.status = 'active'
+       and (
+         assertions.address = any($2)
+         or (
+           jsonb_typeof(assertions.evidence_json) = 'object'
+           and (
+             assertions.evidence_json ->> 'approvalTxHash' = any($3)
+             or assertions.evidence_json ->> 'drainTxHash' = any($3)
+             or exists (
+               select 1
+               from jsonb_array_elements_text(
+                 case when jsonb_typeof(assertions.evidence_json -> 'pathTxHashes') = 'array'
+                   then assertions.evidence_json -> 'pathTxHashes'
+                   else '[]'::jsonb end
+               ) as path_hash(value)
+               where path_hash.value = any($3)
+             )
+           )
+         )
+       )
+     order by assertions.id asc`,
+    [input.chain, addresses, txHashes]
+  );
+  return result.rows.map(mapAddressLabelAssertionRow);
+}
+
+export {
+  getTransactionProviderEvidence,
+  saveTransactionEnrichmentDecisionEvidence,
+  saveTransactionProviderEvidence,
+  transactionProviderFinalityWitnessSha256,
+  transactionProviderEvidenceId
+} from "./transactionEvidenceRepository";
+export type {
+  TransactionEnrichmentDecisionEvidenceV1,
+  TransactionProviderMovementWitnessV1,
+  TransactionProviderEvidenceIdentityV1,
+  TronTransactionProviderEvidenceV1
+} from "./transactionEvidenceRepository";
+
+async function upsertAddressLabelAssertionWithClient(
+  client: PoolClient,
   input: AddressLabelAssertionInput
 ): Promise<AddressLabelAssertion> {
   parseRiskLabel(input.label);
@@ -2549,9 +5695,6 @@ export async function upsertAddressLabelAssertion(
   parseRiskSeverity(input.severity);
   parseAddressLabelAssertionStatus(input.status);
 
-  const client = await db.connect();
-  try {
-    await client.query("begin");
     const firstSeenAt = input.firstSeenAt ?? new Date();
     const lastSeenAt = input.lastSeenAt ?? firstSeenAt;
     const assertionResult = await client.query(
@@ -2623,8 +5766,19 @@ export async function upsertAddressLabelAssertion(
       );
     }
 
-    await client.query("commit");
     return mapAddressLabelAssertionRow(assertionResult.rows[0]);
+}
+
+export async function upsertAddressLabelAssertion(
+  db: Db,
+  input: AddressLabelAssertionInput
+): Promise<AddressLabelAssertion> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const assertion = await upsertAddressLabelAssertionWithClient(client, input);
+    await client.query("commit");
+    return assertion;
   } catch (error) {
     await client.query("rollback");
     throw error;
@@ -2639,47 +5793,796 @@ function assertRawAmount(value: string, fieldName = "amountRaw"): void {
   }
 }
 
+type UpsertTronAddressUsdtIndexStateInput = {
+  address: string;
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
+  status: TronAddressUsdtIndexStatus;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  provider?: TronAddressUsdtIndexProvider | null;
+  totalReported?: number | null;
+  fetchedTransferCount?: number;
+  uniqueCounterpartyCount?: number;
+  newestTransferAt?: Date | null;
+  oldestTransferAt?: Date | null;
+  coveredUntilTimestamp?: Date | null;
+  fetchedPageCount?: number;
+  plannedPageCount?: number | null;
+  currentEndTimestamp?: Date | null;
+  providerCapHit?: boolean;
+  budgetExhausted?: boolean;
+  providerInconsistent?: boolean;
+  priority?: number;
+  nextRunAt?: Date | null;
+  attemptCount?: number;
+  maxAttempts?: number;
+  retryCount?: number;
+  lastError?: string | null;
+  lastErrorClass?: string | null;
+  lastSuccessfulPageAt?: Date | null;
+  queuedReason?: string | null;
+  requestedByJobId?: string | null;
+  lockedAt?: Date | null;
+  lockedUntil?: Date | null;
+  heartbeatAt?: Date | null;
+  lockOwner?: string | null;
+  budgetPages?: number | null;
+  budgetSeconds?: number | null;
+  completedAt?: Date | null;
+};
+
+const tronAddressIndexStateReturningSql = `address, token_contract, coverage_mode, coverage_kind, target_timestamp_ms, target_timestamp,
+  request_kind, window_start_timestamp_ms, window_start_timestamp,
+  window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash,
+  status, status_reason, provider, total_reported,
+  fetched_transfer_count, unique_counterparty_count, newest_transfer_at,
+  oldest_transfer_at, covered_until_timestamp, fetched_page_count, planned_page_count,
+  current_end_timestamp, provider_cap_hit, budget_exhausted, provider_inconsistent,
+  priority, next_run_at, attempt_count, max_attempts, retry_count, last_error, last_error_class,
+  last_successful_page_at, queued_reason, requested_by_job_id, locked_at, locked_until,
+  heartbeat_at, lock_owner, budget_pages, budget_seconds,
+  completed_at, created_at, updated_at`;
+
+export async function getTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    candidateTxHash?: string | null;
+  }
+): Promise<TronAddressUsdtIndexState | null> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const result = await db.query(
+    `select ${tronAddressIndexStateReturningSql}
+     from tron_address_usdt_index_states
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3
+       and request_kind = $4
+       and window_start_timestamp_ms = $5
+       and coalesce(candidate_tx_hash, '') = $6`,
+    [input.address, input.coverageMode, targetTimestampMs, requestKind, windowStartTimestampMs, candidateTxHash]
+  );
+  return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
+}
+
+export async function getCoveringTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }
+): Promise<TronAddressUsdtIndexState | null> {
+  if (input.coverageMode !== "targeted" || !input.targetTimestamp) {
+    return getTronAddressUsdtIndexState(db, input);
+  }
+  const result = await db.query(
+    `select ${tronAddressIndexStateReturningSql}
+     from tron_address_usdt_index_states
+     where address = $1
+       and coverage_mode = 'targeted'
+       and request_kind = 'broad_targeted'
+       and target_timestamp_ms >= $2
+     order by
+       case
+         when status = 'complete' then 0
+         when status = 'failed_terminal' then 1
+         when status = 'partial' and status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+         when status = 'partial' and status_reason = 'partial_provider_cap' and attempt_count >= greatest(coalesce(max_attempts, 0), 8) then 2
+         when status in ('queued', 'running', 'failed_retryable') then 3
+         when status = 'partial' then 4
+         else 5
+       end,
+       target_timestamp_ms asc
+     limit 1`,
+    [input.address, input.targetTimestamp.getTime()]
+  );
+  return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
+}
+
+// ponytail: one boring upsert is enough for the first implementation, but optional counters stay optional.
+export async function upsertTronAddressUsdtIndexState(
+  db: Db,
+  input: UpsertTronAddressUsdtIndexStateInput
+): Promise<TronAddressUsdtIndexState> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const targetTimestamp = targetTimestampForCoverage(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
+    : targetTimestampMs;
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? targetTimestamp
+    : targetTimestamp;
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const result = await db.query(
+    `insert into tron_address_usdt_index_states (
+       address, coverage_mode, target_timestamp_ms, target_timestamp,
+       status, status_reason, provider, total_reported, fetched_transfer_count,
+       unique_counterparty_count, newest_transfer_at, oldest_transfer_at, covered_until_timestamp,
+       fetched_page_count, planned_page_count, current_end_timestamp,
+       provider_cap_hit, budget_exhausted, provider_inconsistent,
+       priority, next_run_at, attempt_count, max_attempts, retry_count,
+       last_error, last_error_class, last_successful_page_at, queued_reason,
+       requested_by_job_id, locked_at, locked_until, heartbeat_at, lock_owner,
+       budget_pages, budget_seconds, completed_at,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
+     )
+     values (
+       $1,$2,$3,$4,$5,$6,$7,$8,coalesce($9,0),coalesce($10,0),$11,$12,$13,
+       coalesce($14,0),$15,$16,coalesce($17,false),coalesce($18,false),coalesce($19,false),
+       coalesce($20,0),coalesce($21,now()),coalesce($22,0),coalesce($23,5),coalesce($24,0),
+       $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,
+       $37,$38,$39,$40,$41,$42,$43
+     )
+     on conflict (
+       address, token_contract, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
+       status = excluded.status,
+       status_reason = excluded.status_reason,
+       provider = coalesce(excluded.provider, tron_address_usdt_index_states.provider),
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_index_states.total_reported),
+       fetched_transfer_count = coalesce($9, tron_address_usdt_index_states.fetched_transfer_count),
+       unique_counterparty_count = coalesce($10, tron_address_usdt_index_states.unique_counterparty_count),
+       newest_transfer_at = coalesce(excluded.newest_transfer_at, tron_address_usdt_index_states.newest_transfer_at),
+       oldest_transfer_at = coalesce(excluded.oldest_transfer_at, tron_address_usdt_index_states.oldest_transfer_at),
+       covered_until_timestamp = coalesce(excluded.covered_until_timestamp, tron_address_usdt_index_states.covered_until_timestamp),
+       fetched_page_count = coalesce($14, tron_address_usdt_index_states.fetched_page_count),
+       planned_page_count = coalesce(excluded.planned_page_count, tron_address_usdt_index_states.planned_page_count),
+       current_end_timestamp = coalesce(excluded.current_end_timestamp, tron_address_usdt_index_states.current_end_timestamp),
+       provider_cap_hit = coalesce($17, tron_address_usdt_index_states.provider_cap_hit),
+       budget_exhausted = coalesce($18, tron_address_usdt_index_states.budget_exhausted),
+       provider_inconsistent = coalesce($19, tron_address_usdt_index_states.provider_inconsistent),
+       priority = coalesce($20, tron_address_usdt_index_states.priority),
+       next_run_at = coalesce(excluded.next_run_at, tron_address_usdt_index_states.next_run_at),
+       attempt_count = coalesce($22, tron_address_usdt_index_states.attempt_count),
+       max_attempts = coalesce($23, tron_address_usdt_index_states.max_attempts),
+       retry_count = coalesce($24, tron_address_usdt_index_states.retry_count),
+       last_error = excluded.last_error,
+       last_error_class = excluded.last_error_class,
+       last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
+       queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, tron_address_usdt_index_states.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
+        locked_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_at
+          else coalesce(excluded.locked_at, tron_address_usdt_index_states.locked_at)
+        end,
+        locked_until = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_until
+          else coalesce(excluded.locked_until, tron_address_usdt_index_states.locked_until)
+        end,
+        heartbeat_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.heartbeat_at
+          else coalesce(excluded.heartbeat_at, tron_address_usdt_index_states.heartbeat_at)
+        end,
+        lock_owner = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.lock_owner
+          else coalesce(excluded.lock_owner, tron_address_usdt_index_states.lock_owner)
+        end,
+       budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
+       budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
+       completed_at = excluded.completed_at,
+       updated_at = now()
+     returning ${tronAddressIndexStateReturningSql}`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      targetTimestamp,
+      input.status,
+      input.statusReason ?? null,
+      input.provider ?? null,
+      input.totalReported ?? null,
+      input.fetchedTransferCount ?? null,
+      input.uniqueCounterpartyCount ?? null,
+      input.newestTransferAt ?? null,
+      input.oldestTransferAt ?? null,
+      input.coveredUntilTimestamp ?? null,
+      input.fetchedPageCount ?? null,
+      input.plannedPageCount ?? null,
+      input.currentEndTimestamp ?? null,
+      input.providerCapHit ?? null,
+      input.budgetExhausted ?? null,
+      input.providerInconsistent ?? null,
+      input.priority ?? null,
+      input.nextRunAt ?? null,
+      input.attemptCount ?? null,
+      input.maxAttempts ?? null,
+      input.retryCount ?? null,
+      input.lastError ?? null,
+      input.lastErrorClass ?? null,
+      input.lastSuccessfulPageAt ?? null,
+      input.queuedReason ?? null,
+      input.requestedByJobId ?? null,
+      input.lockedAt ?? null,
+      input.lockedUntil ?? null,
+      input.heartbeatAt ?? null,
+      input.lockOwner ?? null,
+      input.budgetPages ?? null,
+      input.budgetSeconds ?? null,
+      input.completedAt ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      input.requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash
+    ]
+  );
+  return mapTronAddressUsdtIndexStateRow(result.rows[0]);
+}
+
+export type QueueTronAddressUsdtIndexStateInput = {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
+    queuedReason: string;
+    requestedByJobId?: string | null;
+    priority?: number;
+    nextRunAt?: Date | null;
+    budgetPages?: number | null;
+    budgetSeconds?: number | null;
+    maxAttempts?: number | null;
+    allowRunningRequeue?: boolean | null;
+};
+
+async function queueTronAddressUsdtIndexStateWithQuery(
+  db: Pick<Db, "query">,
+  input: QueueTronAddressUsdtIndexStateInput
+): Promise<TronAddressUsdtIndexState> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const targetTimestamp = targetTimestampForCoverage(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
+    : targetTimestampMs;
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? targetTimestamp
+    : targetTimestamp;
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const allowRunningRequeue = input.allowRunningRequeue === true;
+  const runningRequeueWhere = allowRunningRequeue
+    ? "\n       or tron_address_usdt_index_states.status = 'running'"
+    : "";
+  const clearRunningLockSql = allowRunningRequeue
+    ? `locked_at = null,\n       locked_until = null,\n       heartbeat_at = null,\n       lock_owner = null,\n       `
+    : "";
+  const result = await db.query(
+    `insert into tron_address_usdt_index_states (
+       address, coverage_mode, target_timestamp_ms, target_timestamp,
+       status, status_reason, queued_reason, requested_by_job_id,
+       priority, next_run_at, budget_pages, budget_seconds, max_attempts,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
+     )
+     values (
+       $1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5),
+       $12,$13,$14,$15,$16,$17,$18
+     )
+     on conflict (
+       address, token_contract, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
+       status = 'queued',
+       status_reason = null,
+       queued_reason = excluded.queued_reason,
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
+       priority = coalesce($7, tron_address_usdt_index_states.priority),
+       next_run_at = coalesce(
+         $8,
+         case
+           when tron_address_usdt_index_states.status = 'failed_retryable' then now()
+           else tron_address_usdt_index_states.next_run_at
+         end
+       ),
+       budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
+       budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
+       max_attempts = greatest(tron_address_usdt_index_states.max_attempts, excluded.max_attempts),
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, tron_address_usdt_index_states.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
+       ${clearRunningLockSql}updated_at = now()
+     where (
+       tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')${runningRequeueWhere}
+     )
+       and not (tron_address_usdt_index_states.status = 'partial' and tron_address_usdt_index_states.coverage_mode = 'all_time')
+       and not (tron_address_usdt_index_states.status = 'failed_retryable' and tron_address_usdt_index_states.next_run_at > now())
+     returning ${tronAddressIndexStateReturningSql}`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      targetTimestamp,
+      input.queuedReason,
+      input.requestedByJobId ?? null,
+      input.priority ?? null,
+      input.nextRunAt ?? null,
+      input.budgetPages ?? null,
+      input.budgetSeconds ?? null,
+      input.maxAttempts ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      input.requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash
+    ]
+  );
+  if (result.rows[0]) {
+    return mapTronAddressUsdtIndexStateRow(result.rows[0]);
+  }
+  const existing = await getTronAddressUsdtIndexState(db as Db, input);
+  if (!existing) {
+    throw new Error("TRON address USDT index state was not returned by guarded queue upsert");
+  }
+  return existing;
+}
+
+export async function queueTronAddressUsdtIndexState(
+  db: Db,
+  input: QueueTronAddressUsdtIndexStateInput
+): Promise<TronAddressUsdtIndexState> {
+  return queueTronAddressUsdtIndexStateWithQuery(db, input);
+}
+
+export async function queueClaimedTronAddressUsdtIndexState(
+  db: Db,
+  input: QueueTronAddressUsdtIndexStateInput & ForensicJobClaim
+): Promise<TronAddressUsdtIndexState | false> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const state = await queueTronAddressUsdtIndexStateWithQuery(client, input);
+    await client.query("commit");
+    return state;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function upsertClaimedAddressLabelAssertion(
+  db: Db,
+  input: AddressLabelAssertionInput & ForensicJobClaim
+): Promise<AddressLabelAssertion | false> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    const assertion = await upsertAddressLabelAssertionWithClient(client, input);
+    await client.query("commit");
+    return assertion;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function claimQueuedTronAddressUsdtIndexStates(
+  db: Db,
+  input: {
+    limit: number;
+    lockOwner: string;
+    lockMs: number;
+    coverageMode?: TronAddressUsdtCoverageMode;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+  }
+): Promise<TronAddressUsdtIndexState[]> {
+  const result = await db.query(
+     `with candidates as (
+       select address, token_contract, coverage_mode, target_timestamp_ms,
+         request_kind, window_start_timestamp_ms, candidate_tx_hash,
+         status as claim_previous_status
+       from tron_address_usdt_index_states state
+       where ($4::text is null or coverage_mode = $4)
+         and (
+           state.coverage_mode = 'all_time'
+           or (
+             state.coverage_mode = 'targeted'
+             and (
+               ($5::text is null and state.request_kind in ('broad_targeted', 'candidate_window'))
+               or ($5::text is not null and state.request_kind = $5)
+             )
+           )
+         )
+         and (
+            status in ('queued', 'failed_retryable')
+            or (status = 'running' and (locked_until is null or locked_until < now()))
+         )
+         and next_run_at <= now()
+         and (locked_until is null or locked_until < now())
+         and not exists (
+           select 1
+           from tron_address_usdt_index_states newer
+           where state.coverage_mode = 'targeted'
+             and state.request_kind = 'broad_targeted'
+             and newer.address = state.address
+             and newer.token_contract = state.token_contract
+             and newer.coverage_mode = 'targeted'
+             and newer.request_kind = 'broad_targeted'
+             and newer.target_timestamp_ms > state.target_timestamp_ms
+             and newer.status in ('queued', 'running', 'failed_retryable')
+         )
+       order by priority desc, created_at asc
+       limit $1
+       for update skip locked
+     )
+     update tron_address_usdt_index_states state
+     set status = 'running',
+       locked_at = now(),
+       locked_until = now() + ($2::text || ' milliseconds')::interval,
+       heartbeat_at = now(),
+       lock_owner = $3,
+       attempt_count = state.attempt_count + 1,
+       retry_count = state.retry_count + 1,
+       updated_at = now()
+     from candidates
+     where state.address = candidates.address
+       and state.token_contract = candidates.token_contract
+       and state.coverage_mode = candidates.coverage_mode
+       and state.target_timestamp_ms = candidates.target_timestamp_ms
+       and state.request_kind = candidates.request_kind
+       and state.window_start_timestamp_ms = candidates.window_start_timestamp_ms
+       and coalesce(state.candidate_tx_hash, '') = coalesce(candidates.candidate_tx_hash, '')
+     returning state.address, state.token_contract, state.coverage_mode, state.coverage_kind, state.target_timestamp_ms, state.target_timestamp,
+       state.request_kind, state.window_start_timestamp_ms, state.window_start_timestamp,
+       state.window_end_timestamp_ms, state.window_end_timestamp, state.related_hop_tx_hash, state.candidate_tx_hash,
+       state.status, state.status_reason, state.provider, state.total_reported,
+       state.fetched_transfer_count, state.unique_counterparty_count, state.newest_transfer_at,
+       state.oldest_transfer_at, state.covered_until_timestamp, state.fetched_page_count, state.planned_page_count,
+       state.current_end_timestamp, state.provider_cap_hit, state.budget_exhausted, state.provider_inconsistent,
+       state.priority, state.next_run_at, state.attempt_count, state.max_attempts, state.retry_count,
+       state.last_error, state.last_error_class, state.last_successful_page_at,
+       state.queued_reason, state.requested_by_job_id, state.locked_at, state.locked_until,
+       state.heartbeat_at, state.lock_owner, state.budget_pages, state.budget_seconds,
+       state.completed_at, state.created_at, state.updated_at,
+       candidates.claim_previous_status`,
+    [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null, input.requestKind ?? null]
+  );
+  return result.rows.map(mapTronAddressUsdtIndexStateRow);
+}
+
+export async function failTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
+    error: string;
+    errorClass: "rate_limited" | "provider_error" | "provider_inconsistent" | "terminal";
+    nextRunAt?: Date | null;
+  }
+): Promise<void> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const retryable = input.errorClass !== "terminal";
+  await db.query(
+    `update tron_address_usdt_index_states
+     set status = case
+         when $5::boolean = true and attempt_count < max_attempts then 'failed_retryable'
+         else 'failed_terminal'
+       end,
+       status_reason = case
+         when $4 = 'provider_inconsistent' then 'partial_provider_inconsistent'
+         when $4 = 'rate_limited' then 'partial_rate_limited'
+         when $5::boolean = true and attempt_count < max_attempts then 'failed_retryable'
+         else 'failed_terminal'
+       end,
+       last_error = $3,
+       last_error_class = $4,
+       next_run_at = coalesce($6, now() + interval '5 minutes'),
+       locked_at = null,
+       locked_until = null,
+       heartbeat_at = null,
+       lock_owner = null,
+       updated_at = now()
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $7
+       and request_kind = $8
+       and window_start_timestamp_ms = $9
+       and coalesce(candidate_tx_hash, '') = $10`,
+    [
+      input.address,
+      input.coverageMode,
+      input.error,
+      input.errorClass,
+      retryable,
+      input.nextRunAt ?? null,
+      targetTimestampMs,
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
+    ]
+  );
+}
+
+export async function upsertTronAddressUsdtIndexPage(
+  db: Db,
+  input: Omit<TronAddressUsdtIndexPage, "tokenContract" | "createdAt" | "updatedAt">
+): Promise<void> {
+  const targetTimestampMs = validatedCoverageTargetTimestampMs(input, "TRON address USDT index page");
+  await db.query(
+    `insert into tron_address_usdt_index_pages (
+       address, coverage_mode, target_timestamp_ms, window_start_timestamp_ms, window_end_timestamp_ms, start_offset, limit_count,
+       status, transfer_count, provider, total_reported, range_total, raw_response_hash, canonical_transfer_hash, attempt_count, error,
+       newest_transfer_at, oldest_transfer_at
+     )
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, window_start_timestamp_ms, window_end_timestamp_ms, start_offset) do update set
+       limit_count = excluded.limit_count,
+       status = excluded.status,
+       transfer_count = excluded.transfer_count,
+       provider = coalesce(excluded.provider, tron_address_usdt_index_pages.provider),
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_index_pages.total_reported),
+       range_total = coalesce(excluded.range_total, tron_address_usdt_index_pages.range_total),
+       raw_response_hash = coalesce(excluded.raw_response_hash, tron_address_usdt_index_pages.raw_response_hash),
+       canonical_transfer_hash = coalesce(excluded.canonical_transfer_hash, tron_address_usdt_index_pages.canonical_transfer_hash),
+       attempt_count = excluded.attempt_count,
+       error = excluded.error,
+       newest_transfer_at = coalesce(excluded.newest_transfer_at, tron_address_usdt_index_pages.newest_transfer_at),
+       oldest_transfer_at = coalesce(excluded.oldest_transfer_at, tron_address_usdt_index_pages.oldest_transfer_at),
+       updated_at = now()`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.windowStartTimestampMs,
+      input.windowEndTimestampMs,
+      input.startOffset,
+      input.limitCount,
+      input.status,
+      input.transferCount,
+      input.provider,
+      input.totalReported,
+      input.rangeTotal,
+      input.rawResponseHash,
+      input.canonicalTransferHash,
+      input.attemptCount,
+      input.error,
+      input.newestTransferAt,
+      input.oldestTransferAt
+    ]
+  );
+}
+
+export async function listTronAddressUsdtIndexPages(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestampMs?: number;
+    limit?: number;
+  }
+): Promise<TronAddressUsdtIndexPage[]> {
+  const result = await db.query(
+    `select address, token_contract, coverage_mode, target_timestamp_ms,
+       window_start_timestamp_ms, window_end_timestamp_ms, start_offset,
+       limit_count, status, transfer_count, provider, total_reported, range_total, raw_response_hash, canonical_transfer_hash, attempt_count,
+       error, newest_transfer_at, oldest_transfer_at, created_at, updated_at
+     from tron_address_usdt_index_pages
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3
+     order by window_start_timestamp_ms asc, window_end_timestamp_ms desc, start_offset asc
+     limit $4`,
+    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 20_000]
+  );
+  return result.rows.map(mapTronAddressUsdtIndexPageRow);
+}
+
+export async function upsertTronAddressUsdtCoverageInterval(
+  db: Db,
+  input: Omit<TronAddressUsdtCoverageInterval, "tokenContract">
+): Promise<void> {
+  const targetTimestampMs = validatedCoverageTargetTimestampMs(input, "TRON address USDT coverage interval");
+  await db.query(
+    `insert into tron_address_usdt_coverage_intervals (
+       address, coverage_mode, target_timestamp_ms, provider,
+       start_timestamp, end_timestamp, status, status_reason,
+       total_reported, range_total, pages_fetched, rows_fetched,
+       unique_rows_inserted, cap_hit, provider_inconsistent, completed_at
+     )
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, provider, start_timestamp, end_timestamp)
+     do update set
+       status = excluded.status,
+       status_reason = excluded.status_reason,
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_coverage_intervals.total_reported),
+       range_total = coalesce(excluded.range_total, tron_address_usdt_coverage_intervals.range_total),
+       pages_fetched = excluded.pages_fetched,
+       rows_fetched = excluded.rows_fetched,
+       unique_rows_inserted = excluded.unique_rows_inserted,
+       cap_hit = tron_address_usdt_coverage_intervals.cap_hit or excluded.cap_hit,
+       provider_inconsistent = tron_address_usdt_coverage_intervals.provider_inconsistent or excluded.provider_inconsistent,
+       completed_at = excluded.completed_at,
+       updated_at = now()`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.provider,
+      input.startTimestamp,
+      input.endTimestamp,
+      input.status,
+      input.statusReason,
+      input.totalReported,
+      input.rangeTotal,
+      input.pagesFetched,
+      input.rowsFetched,
+      input.uniqueRowsInserted,
+      input.capHit,
+      input.providerInconsistent,
+      input.completedAt
+    ]
+  );
+}
+
+export async function listTronAddressUsdtCoverageIntervals(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    limit?: number;
+  }
+): Promise<TronAddressUsdtCoverageInterval[]> {
+  const result = await db.query(
+    `select address, token_contract, coverage_mode, target_timestamp_ms,
+       case when target_timestamp_ms = 0 then null else to_timestamp(target_timestamp_ms::double precision / 1000) end as target_timestamp,
+       provider, start_timestamp, end_timestamp, status, status_reason,
+       total_reported, range_total, pages_fetched, rows_fetched,
+       unique_rows_inserted, cap_hit, provider_inconsistent, completed_at
+     from tron_address_usdt_coverage_intervals
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3
+     order by start_timestamp asc, end_timestamp asc
+     limit $4`,
+    [input.address, input.coverageMode, targetTimestampMsForCoverage(input), input.limit ?? 500]
+  );
+  return result.rows.map(mapTronAddressUsdtCoverageIntervalRow);
+}
+
+export async function upsertIndexedTronUsdtTransfersWithClient(
+  client: Pick<PoolClient, "query">,
+  transfers: IndexedTronUsdtTransfer[]
+): Promise<void> {
+  if (transfers.length === 0) return;
+  for (const transfer of transfers) {
+    assertRawAmount(transfer.amountRaw);
+    parseTronUsdtTransferMethod(transfer.method);
+    const provider = transfer.provider ?? "tronscan";
+    const transferId = transfer.transferId ?? deriveIndexedTronUsdtTransferId(transfer);
+    await client.query(
+      `insert into tron_usdt_transfers (
+           transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+           provider_row_ordinal_in_tx,
+           from_address, to_address, amount_raw, method,
+           event_type, caller_address, contract_ret, final_result,
+           reverted, risk_transaction, confirmed
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+         on conflict (transfer_id) do update set
+           provider = excluded.provider,
+           tx_hash = excluded.tx_hash,
+           block_number = excluded.block_number,
+           block_timestamp = excluded.block_timestamp,
+           event_index = excluded.event_index,
+           provider_row_ordinal_in_tx = excluded.provider_row_ordinal_in_tx,
+           from_address = excluded.from_address,
+           to_address = excluded.to_address,
+           amount_raw = excluded.amount_raw,
+           method = excluded.method,
+           event_type = excluded.event_type,
+           caller_address = excluded.caller_address,
+           contract_ret = excluded.contract_ret,
+           final_result = excluded.final_result,
+           reverted = excluded.reverted,
+           risk_transaction = excluded.risk_transaction,
+           confirmed = excluded.confirmed,
+           updated_at = now()`,
+      [
+        transferId,
+        provider,
+        transfer.txHash,
+        transfer.blockNumber,
+        transfer.blockTimestamp,
+        transfer.eventIndex,
+        transfer.providerRowOrdinalInTx ?? null,
+        transfer.fromAddress,
+        transfer.toAddress,
+        transfer.amountRaw,
+        transfer.method,
+        transfer.eventType ?? null,
+        transfer.callerAddress,
+        transfer.contractRet,
+        transfer.finalResult ?? null,
+        transfer.reverted ?? false,
+        transfer.riskTransaction ?? false,
+        transfer.confirmed
+      ]
+    );
+  }
+}
+
 export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedTronUsdtTransfer[]): Promise<void> {
   if (transfers.length === 0) return;
   const client = await db.connect();
   try {
     await client.query("begin");
-    for (const transfer of transfers) {
-      assertRawAmount(transfer.amountRaw);
-      parseTronUsdtTransferMethod(transfer.method);
-      await client.query(
-        `insert into tron_usdt_transfers (
-           tx_hash, block_number, block_timestamp, event_index,
-           from_address, to_address, amount_raw, method,
-           caller_address, contract_ret, confirmed
-         )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         on conflict (tx_hash, event_index) do update set
-           block_number = excluded.block_number,
-           block_timestamp = excluded.block_timestamp,
-           from_address = excluded.from_address,
-           to_address = excluded.to_address,
-           amount_raw = excluded.amount_raw,
-           method = excluded.method,
-           caller_address = excluded.caller_address,
-           contract_ret = excluded.contract_ret,
-           confirmed = excluded.confirmed,
-           updated_at = now()`,
-        [
-          transfer.txHash,
-          transfer.blockNumber,
-          transfer.blockTimestamp,
-          transfer.eventIndex,
-          transfer.fromAddress,
-          transfer.toAddress,
-          transfer.amountRaw,
-          transfer.method,
-          transfer.callerAddress,
-          transfer.contractRet,
-          transfer.confirmed
-        ]
-      );
-    }
+    await upsertIndexedTronUsdtTransfersWithClient(client, transfers);
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -2755,15 +6658,49 @@ export async function listIndexedTronUsdtTransfersForAddress(
   const limitParam = params.length;
   params.push(input.offset ?? 0);
   const offsetParam = params.length;
+  const orderBy = input.orderBy === "amount_desc"
+    ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc, transfer_id desc"
+    : "block_timestamp desc, block_number desc, event_index desc, transfer_id desc";
   const result = await db.query(
-    `select tx_hash, block_number, block_timestamp, event_index,
-       from_address, to_address, amount_raw, method, caller_address,
-       contract_ret, confirmed
+    `select transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+       provider_row_ordinal_in_tx, from_address, to_address, amount_raw, method,
+       event_type, caller_address, contract_ret, final_result, reverted, risk_transaction, confirmed
      from tron_usdt_transfers
      where ${filters.join(" and ")}
-     order by block_timestamp desc, block_number desc, event_index desc
+     order by ${orderBy}
      limit $${limitParam} offset $${offsetParam}`,
     params
+  );
+  return result.rows.map(mapIndexedTronUsdtTransferRow);
+}
+
+export async function countIndexedTronUsdtCounterpartiesForAddress(db: Db, address: string): Promise<number> {
+  const result = await db.query(
+    `select count(distinct nullif(
+       case when from_address = $1 then to_address else from_address end,
+       $1
+     ))::int as count
+     from tron_usdt_transfers
+     where from_address = $1 or to_address = $1`,
+    [address]
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+export async function listIndexedTronUsdtTransfersByHashes(
+  db: Db,
+  txHashes: string[]
+): Promise<IndexedTronUsdtTransfer[]> {
+  const uniqueHashes = [...new Set(txHashes.filter((hash) => hash.length > 0))];
+  if (uniqueHashes.length === 0) return [];
+  const result = await db.query(
+    `select transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+       provider_row_ordinal_in_tx, from_address, to_address, amount_raw, method,
+       event_type, caller_address, contract_ret, final_result, reverted, risk_transaction, confirmed
+     from tron_usdt_transfers
+     where tx_hash = any($1)
+     order by block_timestamp desc, block_number desc, event_index desc`,
+    [uniqueHashes]
   );
   return result.rows.map(mapIndexedTronUsdtTransferRow);
 }
@@ -2949,6 +6886,72 @@ export async function upsertTronUsdtIndexerCursor(db: Db, input: TronUsdtIndexer
   return mapTronUsdtIndexerCursorRow(result.rows[0]);
 }
 
+type RiskEvaluationEvidenceInput = {
+  rawEvidence: RawEvidenceInput[];
+  observations: RiskSignalObservationInput[];
+};
+
+async function saveRiskEvaluationEvidenceWithClient(
+  client: PoolClient,
+  input: RiskEvaluationEvidenceInput
+): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
+
+  for (const evidence of input.rawEvidence) {
+    parseRawEvidenceSourceType(evidence.sourceType);
+    await client.query(
+      `insert into raw_evidence (
+         id, source, source_type, chain, address, tx_hash,
+         observed_transaction_hash, evidence_json
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       on conflict (id) do update set
+         source = excluded.source,
+         source_type = excluded.source_type,
+         chain = excluded.chain,
+         address = excluded.address,
+         tx_hash = excluded.tx_hash,
+         observed_transaction_hash = excluded.observed_transaction_hash,
+         evidence_json = excluded.evidence_json`,
+      [evidence.id, evidence.source, evidence.sourceType, evidence.chain, evidence.address,
+        evidence.txHash, evidence.observedTransactionHash, evidence.evidenceJson]
+    );
+  }
+
+  for (const observation of input.observations) {
+    parseRiskSignalGroup(observation.signalGroup);
+    parseRiskConfidence(observation.confidence);
+    parseRiskSeverity(observation.severity);
+    await client.query(
+      `insert into risk_signal_observations (
+         id, subject_chain, subject_address, subject_tx_hash,
+         observed_transaction_hash, signal_group, code, message,
+         score_impact, confidence, severity, source, policy_version,
+         raw_evidence_id
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       on conflict (id) do update set
+         subject_chain = excluded.subject_chain,
+         subject_address = excluded.subject_address,
+         subject_tx_hash = excluded.subject_tx_hash,
+         observed_transaction_hash = excluded.observed_transaction_hash,
+         signal_group = excluded.signal_group,
+         code = excluded.code,
+         message = excluded.message,
+         score_impact = excluded.score_impact,
+         confidence = excluded.confidence,
+         severity = excluded.severity,
+         source = excluded.source,
+         policy_version = excluded.policy_version,
+         raw_evidence_id = excluded.raw_evidence_id`,
+      [observation.id, observation.subjectChain, observation.subjectAddress,
+        observation.subjectTxHash, observation.observedTransactionHash, observation.signalGroup,
+        observation.code, observation.message, observation.scoreImpact, observation.confidence,
+        observation.severity, observation.source, observation.policyVersion, observation.rawEvidenceId]
+    );
+  }
+}
+
 export async function saveRiskEvaluationEvidence(
   db: Db,
   input: {
@@ -2956,85 +6959,36 @@ export async function saveRiskEvaluationEvidence(
     observations: RiskSignalObservationInput[];
   }
 ): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
   const client = await db.connect();
   try {
     await client.query("begin");
 
-    for (const evidence of input.rawEvidence) {
-      parseRawEvidenceSourceType(evidence.sourceType);
-      await client.query(
-        `insert into raw_evidence (
-           id, source, source_type, chain, address, tx_hash,
-           observed_transaction_hash, evidence_json
-         )
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
-         on conflict (id) do update set
-           source = excluded.source,
-           source_type = excluded.source_type,
-           chain = excluded.chain,
-           address = excluded.address,
-           tx_hash = excluded.tx_hash,
-           observed_transaction_hash = excluded.observed_transaction_hash,
-           evidence_json = excluded.evidence_json`,
-        [
-          evidence.id,
-          evidence.source,
-          evidence.sourceType,
-          evidence.chain,
-          evidence.address,
-          evidence.txHash,
-          evidence.observedTransactionHash,
-          evidence.evidenceJson
-        ]
-      );
-    }
-
-    for (const observation of input.observations) {
-      parseRiskSignalGroup(observation.signalGroup);
-      parseRiskConfidence(observation.confidence);
-      parseRiskSeverity(observation.severity);
-      await client.query(
-        `insert into risk_signal_observations (
-           id, subject_chain, subject_address, subject_tx_hash,
-           observed_transaction_hash, signal_group, code, message,
-           score_impact, confidence, severity, source, policy_version,
-           raw_evidence_id
-         )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-         on conflict (id) do update set
-           subject_chain = excluded.subject_chain,
-           subject_address = excluded.subject_address,
-           subject_tx_hash = excluded.subject_tx_hash,
-           observed_transaction_hash = excluded.observed_transaction_hash,
-           signal_group = excluded.signal_group,
-           code = excluded.code,
-           message = excluded.message,
-           score_impact = excluded.score_impact,
-           confidence = excluded.confidence,
-           severity = excluded.severity,
-           source = excluded.source,
-           policy_version = excluded.policy_version,
-           raw_evidence_id = excluded.raw_evidence_id`,
-        [
-          observation.id,
-          observation.subjectChain,
-          observation.subjectAddress,
-          observation.subjectTxHash,
-          observation.observedTransactionHash,
-          observation.signalGroup,
-          observation.code,
-          observation.message,
-          observation.scoreImpact,
-          observation.confidence,
-          observation.severity,
-          observation.source,
-          observation.policyVersion,
-          observation.rawEvidenceId
-        ]
-      );
-    }
+    await saveRiskEvaluationEvidenceWithClient(client, input);
 
     await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function saveClaimedRiskEvaluationEvidence(
+  db: Db,
+  input: RiskEvaluationEvidenceInput & ForensicJobClaim
+): Promise<boolean> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    if (!await lockForensicJobClaim(client, input)) {
+      await client.query("rollback");
+      return false;
+    }
+    await saveRiskEvaluationEvidenceWithClient(client, input);
+    await client.query("commit");
+    return true;
   } catch (error) {
     await client.query("rollback");
     throw error;
@@ -3047,13 +7001,17 @@ export async function createOrReuseForensicCheckJob(
   db: Db,
   input: ForensicCheckJobInput
 ): Promise<ForensicCheckJob> {
+  const kind = (input.kind ?? "address_deep_check") as ForensicCheckJobKind;
+  if (kind === "address_fast_check") {
+    throw new Error("address_fast_check jobs must be saved with saveAddressFastCheckJob");
+  }
   const result = await db.query(
     `insert into forensic_check_jobs (
        id, kind, subject_address, status, window_start, window_end,
        priority, chat_id, message_id, requested_by, progress_json
      )
-     values ($1, 'address_deep_check', $2, 'queued', $3, $4, $5, $6, $7, $8, $9)
-     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''))
+     values ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10)
+     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''), coalesce(progress_json->>'depositTxHash', ''))
        where status in ('queued', 'running')
      do update set
        chat_id = coalesce(excluded.chat_id, forensic_check_jobs.chat_id),
@@ -3067,6 +7025,7 @@ export async function createOrReuseForensicCheckJob(
        started_at, completed_at`,
     [
       createId(),
+      kind,
       input.subjectAddress,
       input.windowStart,
       input.windowEnd,
@@ -3080,19 +7039,99 @@ export async function createOrReuseForensicCheckJob(
   return mapForensicCheckJobRow(result.rows[0]);
 }
 
-export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJob | null> {
+export async function saveAddressFastCheckJob(
+  db: Db,
+  input: AddressFastCheckJobInput
+): Promise<ForensicCheckJob> {
+  if (input.status !== "completed" && input.status !== "partial") {
+    throw new Error(`Invalid address fast check terminal status: ${input.status}`);
+  }
   const result = await db.query(
-    `with next_job as (
-       select id
-       from forensic_check_jobs
-       where status = 'queued'
-       order by priority desc, created_at asc
+    `insert into forensic_check_jobs (
+       id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, started_at, completed_at
+     )
+     values ($1, 'address_fast_check', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), now())
+     returning id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at`,
+    [
+      input.id ?? createId(),
+      input.subjectAddress,
+      input.status,
+      input.windowStart,
+      input.windowEnd,
+      input.priority ?? 100,
+      input.chatId ?? null,
+      input.requestedBy ?? null,
+      input.progressJson,
+      input.resultJson,
+      JSON.stringify(input.rawEvidenceIds),
+      JSON.stringify(input.observationIds),
+      input.lastError
+    ]
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error("Failed to save address fast check job.");
+  return mapForensicCheckJobRow(row);
+}
+
+export async function claimNextForensicCheckJob(
+  db: Db,
+  input: { kinds?: ForensicCheckJobKind[] } = {}
+): Promise<ForensicCheckJob | null> {
+  const kinds = (input.kinds ?? []).map((kind) => {
+    if (kind === "address_fast_check") {
+      throw new Error("address_fast_check jobs are not queueable");
+    }
+    return parseForensicCheckJobKind(kind);
+  });
+  const kindFilter = kinds.length > 0 ? "and kind = any($1::text[])" : "";
+  const result = await db.query(
+    `with claim_clock as materialized (
+       select date_trunc('milliseconds', clock_timestamp()) as now_ms
+     ),
+     next_job as (
+       select job.id,
+         case
+           when jsonb_typeof(job.progress_json->'jobRunnableQueuedAtMs') = 'number'
+             and coalesce(job.progress_json->>'jobRunnableQueuedAtMs', '') ~ '^[0-9]{13}$'
+           then case
+             when (job.progress_json->>'jobRunnableQueuedAtMs')::bigint
+               between floor(extract(epoch from job.created_at) * 1000)::bigint
+                 and floor(extract(epoch from claim_clock.now_ms) * 1000)::bigint
+             then (job.progress_json->>'jobRunnableQueuedAtMs')::bigint
+             else floor(extract(epoch from job.created_at) * 1000)::bigint
+           end
+           else floor(extract(epoch from job.created_at) * 1000)::bigint
+         end as runnable_queued_at_ms,
+         greatest(
+           claim_clock.now_ms,
+           coalesce(
+             date_trunc('milliseconds', job.started_at) + interval '1 millisecond',
+             claim_clock.now_ms
+           )
+         ) as claim_started_at
+       from forensic_check_jobs job
+       cross join claim_clock
+       where job.status = 'queued'
+       and job.kind <> 'address_fast_check'
+       ${kindFilter}
+       and job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
+       order by priority desc, created_at asc, id asc
        limit 1
-       for update skip locked
+       for update of job skip locked
      )
      update forensic_check_jobs job
      set status = 'running',
-       started_at = coalesce(job.started_at, now()),
+       started_at = next_job.claim_started_at,
+       progress_json = job.progress_json || jsonb_build_object(
+         'jobHeartbeatAt',
+         to_char(next_job.claim_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+         'jobRunnableQueuedAtMs', next_job.runnable_queued_at_ms
+       ),
        updated_at = now()
      from next_job
      where job.id = next_job.id
@@ -3100,22 +7139,895 @@ export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJo
        job.window_start, job.window_end, job.priority, job.chat_id,
        job.message_id, job.requested_by, job.progress_json, job.result_json,
        job.raw_evidence_ids, job.observation_ids, job.last_error,
-       job.created_at, job.updated_at, job.started_at, job.completed_at`
+       job.created_at, job.updated_at, job.started_at, job.completed_at`,
+    kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
 
+export async function getForensicLaneQueueDiagnostics(
+  db: Db,
+  kind: ForensicLaneQueueDiagnostics["kind"]
+): Promise<ForensicLaneQueueDiagnostics> {
+  if (kind !== "where_is_money_check" && kind !== "address_deep_check") {
+    throw new Error("forensic_lane_diagnostics_kind_unsupported");
+  }
+  // The active status predicate matches the existing migration-012 partial index.
+  const result = await db.query(
+    `select
+       count(*) filter (
+         where status = 'queued'
+           and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
+       ) as runnable_queued_count,
+       min(case
+         when jsonb_typeof(progress_json->'jobRunnableQueuedAtMs') = 'number'
+           and coalesce(progress_json->>'jobRunnableQueuedAtMs', '') ~ '^[0-9]{13}$'
+         then case
+           when (progress_json->>'jobRunnableQueuedAtMs')::bigint
+             between floor(extract(epoch from created_at) * 1000)::bigint
+               and floor(extract(epoch from clock_timestamp()) * 1000)::bigint
+           then to_timestamp((progress_json->>'jobRunnableQueuedAtMs')::double precision / 1000)
+           else created_at
+         end
+         else created_at
+       end) filter (
+         where status = 'queued'
+           and progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
+       ) as oldest_runnable_queued_at,
+       count(*) filter (where status = 'running') as db_running_count
+     from forensic_check_jobs
+     where kind = $1
+       and status in ('queued', 'running')`,
+    [kind]
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    kind,
+    runnableQueuedCount: Number(row.runnable_queued_count ?? 0),
+    oldestRunnableQueuedAt: row.oldest_runnable_queued_at ?? null,
+    dbRunningCount: Number(row.db_running_count ?? 0)
+  };
+}
+
+export async function releaseForensicCheckJobToWaiting(
+  db: Db,
+  input: ForensicJobClaimMutation & { progressJson: Record<string, unknown>; lastError?: string | null }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set status = 'queued',
+       progress_json = $2,
+       last_error = $3,
+       updated_at = now()
+     where id = $1
+       and (
+           (status = 'running' and started_at = $4)
+           or (
+             status = 'queued'
+             and started_at = $4
+             and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+         )
+       )`,
+    [input.id, input.progressJson, input.lastError ?? null, input.claimStartedAt]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<boolean> {
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? input.targetTimestamp.getTime()
+    : input.targetTimestamp.getTime();
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? input.targetTimestamp
+    : input.targetTimestamp;
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const result = await db.query(
+    `with locked_parent as materialized (
+       select job.id
+       from forensic_check_jobs job
+       where job.id = $1
+         and job.started_at = $15
+         and (
+           job.status = 'running'
+           or (
+             job.status = 'queued'
+             and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+           )
+         )
+       for update of job
+     )
+     insert into forensic_job_waits (
+       job_id, wait_type, address, coverage_mode, target_timestamp_ms, target_timestamp,
+       required_for, status, status_reason, last_error,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
+     )
+     select
+       locked_parent.id, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7,
+       $8, $9, $10, $11, $12, $13, $14
+     from locked_parent
+     on conflict (
+       job_id, wait_type, address, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
+       status = 'waiting',
+       status_reason = excluded.status_reason,
+       last_error = excluded.last_error,
+       required_for = excluded.required_for,
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, forensic_job_waits.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
+       updated_at = now()`,
+    [
+      input.jobId,
+      input.address,
+      input.targetTimestamp.getTime(),
+      input.targetTimestamp,
+      input.requiredFor,
+      input.statusReason ?? null,
+      input.lastError ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash,
+      input.claimStartedAt
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markForensicJobWaitCancelledForJob(db: Db, input: { jobId: string }): Promise<number> {
+  const result = await db.query(
+    `update forensic_job_waits
+     set status = 'cancelled',
+       updated_at = now()
+     where job_id = $1
+       and status = 'waiting'`,
+    [input.jobId]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function markWaitingForensicJobsReadyAfterTargetedIndex(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return 0;
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
+  const result = await db.query(
+    `update forensic_job_waits wait
+     set status = $3,
+       status_reason = $4,
+       last_error = $5,
+       updated_at = now()
+     where wait.wait_type = 'targeted_usdt_history'
+       and wait.address = $1
+       and wait.coverage_mode = 'targeted'
+       and (
+         ($6::text = 'candidate_window'
+           and wait.request_kind = $6
+           and wait.target_timestamp_ms = $2
+           and wait.window_start_timestamp_ms = $7
+           and coalesce(wait.candidate_tx_hash, '') = $8)
+         or ($6::text <> 'candidate_window'
+           and wait.request_kind = 'broad_targeted'
+           and wait.target_timestamp_ms <= $2)
+       )
+       and wait.status = 'waiting'`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      waitStatus,
+      input.statusReason,
+      input.lastError,
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+const MAX_WAIT_RECONCILIATION_BATCH = 100;
+
+export async function reconcileWaitingForensicCheckJobs(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<WaitReconciliationResultV1[]> {
+  if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+    throw new RangeError("now must be a valid Date");
+  }
+  if (!Number.isSafeInteger(input.limit)
+    || input.limit < 1
+    || input.limit > MAX_WAIT_RECONCILIATION_BATCH) {
+    throw new RangeError(`limit must be an integer from 1 to ${MAX_WAIT_RECONCILIATION_BATCH}`);
+  }
+
+  const client = await db.connect();
+  let transactionStarted = false;
+  try {
+    await client.query("begin");
+    transactionStarted = true;
+    const locked = await client.query(
+      `select job.id
+       from forensic_check_jobs job
+       where job.status = 'queued'
+         and job.kind in ('where_is_money_check', 'incoming_deposit_check')
+         and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       order by job.updated_at asc, job.priority desc, job.created_at asc, job.id asc
+       limit $1
+       for update of job skip locked`,
+      [input.limit]
+    );
+    const parentJobIds = locked.rows.map((row) => String(row.id));
+    if (parentJobIds.length === 0) {
+      await client.query("commit");
+      transactionStarted = false;
+      return [];
+    }
+
+    const result = await client.query(
+      `with candidate_parents as (
+         select locked.id, locked.position
+         from unnest($2::text[]) with ordinality as locked(id, position)
+       ),
+       wait_counts as (
+         select parent.id as parent_job_id,
+           min(parent.position) as position,
+           (count(wait.id) filter (where wait.status = 'ready'))::integer as ready_count,
+           (count(wait.id) filter (where wait.status = 'terminal'))::integer as terminal_count,
+           (count(wait.id) filter (where wait.status = 'cancelled'))::integer as cancelled_count,
+           (count(wait.id) filter (where wait.status = 'waiting'))::integer as waiting_count
+         from candidate_parents parent
+         left join forensic_job_waits wait on wait.job_id = parent.id
+         group by parent.id
+       ),
+       decisions as (
+         select counts.*,
+           case
+             when counts.waiting_count > 0 then 'unchanged'
+             when counts.ready_count + counts.terminal_count
+               + counts.cancelled_count + counts.waiting_count = 0 then 'contradictory'
+             when counts.cancelled_count > 0 then 'contradictory'
+             when counts.terminal_count > 0 then 'resume_terminal'
+             else 'resume_ready'
+           end as outcome,
+           case
+             when counts.ready_count + counts.terminal_count
+               + counts.cancelled_count + counts.waiting_count = 0 then 'missing_wait_rows'
+             when counts.waiting_count = 0 and counts.cancelled_count > 0 then 'cancelled_wait_present'
+             else null
+           end as diagnostic_code
+         from wait_counts counts
+       ),
+       updated_jobs as (
+         update forensic_check_jobs job
+         set progress_json = job.progress_json || jsonb_build_object(
+             'jobPhase', case decisions.outcome
+               when 'resume_ready' then 'reading_local_index'
+               when 'resume_terminal' then 'provider_limited'
+               else 'waiting_for_targeted_index'
+             end,
+             'waitReconciliation', jsonb_build_object(
+               'parentJobId', decisions.parent_job_id,
+               'readyCount', decisions.ready_count,
+               'terminalCount', decisions.terminal_count,
+               'cancelledCount', decisions.cancelled_count,
+               'waitingCount', decisions.waiting_count,
+               'outcome', decisions.outcome,
+               'diagnosticCode', decisions.diagnostic_code
+             )
+           ) || case
+             when decisions.outcome in ('resume_ready', 'resume_terminal') then jsonb_build_object(
+               'jobRunnableQueuedAtMs', floor(extract(epoch from $1::timestamptz) * 1000)::bigint
+             )
+             else '{}'::jsonb
+           end,
+           updated_at = $1::timestamptz
+         from decisions
+         where job.id = decisions.parent_job_id
+           and job.status = 'queued'
+           and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+         returning job.id, job.progress_json
+       )
+       select updated.progress_json
+       from updated_jobs updated
+       join decisions on decisions.parent_job_id = updated.id
+       order by decisions.position`,
+      [input.now, parentJobIds]
+    );
+    const snapshots = result.rows.map((row) => {
+      const snapshot = buildForensicRuntimeContractProjection(row.progress_json).waitReconciliation;
+      if (!snapshot) throw new Error("Invalid wait reconciliation progress snapshot");
+      return snapshot;
+    });
+    await client.query("commit");
+    transactionStarted = false;
+    return snapshots;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("rollback");
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Wait reconciliation rollback failed");
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function patchWaitingForensicJobsTargetedIndexProgress(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
+  const result = await db.query(
+    `update forensic_check_jobs job
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', 'waiting_for_targeted_index',
+         'jobHeartbeatAt', $3::text,
+         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', 'waiting_for_targeted_index',
+             'lastIndexedAddress', $1::text,
+             'lastIndexedTargetTimestamp', $6::text,
+             'lastIndexStatus', $7::text,
+             'statusReason', $4::text,
+             'lastError', $5::text,
+             'pagesFetched', $8::integer,
+             'transfersFetched', $9::integer,
+             'oldestFetchedTransferAt', $10::text,
+             'newestFetchedTransferAt', $11::text,
+             'targetTimestamp', $6::text,
+             'budgetPages', $12::integer,
+             'attemptCount', $13::integer,
+             'maxAttempts', $14::integer,
+             'retryCount', $15::integer,
+             'providerCapHit', $16::boolean,
+             'budgetExhausted', $17::boolean,
+             'providerInconsistent', $18::boolean,
+             'requestCount', $8::integer,
+             'rateLimitedCount', $19::integer,
+             'forbiddenCount', $20::integer,
+             'serverErrorCount', $21::integer
+           )
+       ),
+       updated_at = now()
+     where job.status = 'queued'
+       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and exists (
+         select 1
+         from forensic_job_waits wait
+         where wait.job_id = job.id
+           and wait.wait_type = 'targeted_usdt_history'
+           and wait.address = $1
+           and wait.coverage_mode = 'targeted'
+           and (
+             ($22::text = 'candidate_window'
+               and wait.request_kind = $22
+               and wait.target_timestamp_ms = $2
+               and wait.window_start_timestamp_ms = $23
+               and coalesce(wait.candidate_tx_hash, '') = $24)
+             or ($22::text <> 'candidate_window'
+               and wait.request_kind = 'broad_targeted'
+               and wait.target_timestamp_ms <= $2)
+           )
+           and wait.status = 'waiting'
+       )`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      new Date().toISOString(),
+      input.statusReason,
+      input.lastError,
+      input.targetTimestamp.toISOString(),
+      input.indexStatus,
+      input.state?.fetchedPageCount ?? null,
+      input.state?.fetchedTransferCount ?? null,
+      input.state?.oldestTransferAt?.toISOString() ?? null,
+      input.state?.newestTransferAt?.toISOString() ?? null,
+      input.state?.budgetPages ?? null,
+      input.state?.attemptCount ?? null,
+      input.state?.maxAttempts ?? null,
+      input.state?.retryCount ?? null,
+      input.state?.providerCapHit ?? null,
+      input.state?.budgetExhausted ?? null,
+      input.state?.providerInconsistent ?? null,
+      targetedRateLimitedCount(input.statusReason, input.lastError),
+      targetedForbiddenCount(input.lastError),
+      targetedServerErrorCount(input.lastError),
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+function targetedRateLimitedCount(
+  statusReason: TronAddressUsdtCoverageStatusReason | null,
+  lastError: string | null
+): number {
+  return statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(lastError ?? "")
+    ? 1
+    : 0;
+}
+
+function targetedForbiddenCount(lastError: string | null): number {
+  return /\b(403|forbidden)\b/i.test(lastError ?? "") ? 1 : 0;
+}
+
+function targetedServerErrorCount(lastError: string | null): number {
+  return /\b5\d\d\b/i.test(lastError ?? "") ? 1 : 0;
+}
+
+function isoString(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function minIso(values: Array<string | null>): string | null {
+  return values.filter((value): value is string => typeof value === "string").sort()[0] ?? null;
+}
+
+function maxIso(values: Array<string | null>): string | null {
+  const sorted = values.filter((value): value is string => typeof value === "string").sort();
+  return sorted[sorted.length - 1] ?? null;
+}
+
+export async function getForensicJobTargetedHistoryProgress(
+  db: Db,
+  jobId: string
+): Promise<Record<string, unknown> | null> {
+  const result = await db.query(
+    `select
+       wait.address,
+       wait.required_for,
+       wait.status as wait_status,
+       wait.status_reason as wait_status_reason,
+       wait.last_error as wait_last_error,
+       wait.target_timestamp,
+       wait.request_kind,
+       wait.window_start_timestamp,
+       wait.window_end_timestamp,
+       wait.related_hop_tx_hash,
+       wait.candidate_tx_hash,
+       state.status as index_status,
+       state.status_reason as index_status_reason,
+       coalesce(page_stats.page_count, state.fetched_page_count) as fetched_page_count,
+       state.fetched_transfer_count,
+       state.oldest_transfer_at,
+       state.newest_transfer_at,
+       state.budget_pages,
+       state.attempt_count,
+       state.max_attempts,
+       state.retry_count,
+       state.provider_cap_hit,
+       state.budget_exhausted,
+       state.provider_inconsistent,
+       state.locked_until,
+       state.lock_owner,
+       state.next_run_at,
+       state.last_error as index_last_error,
+       page_stats.unique_canonical_hash_count,
+       page_stats.repeat_ratio
+     from forensic_job_waits wait
+     left join lateral (
+       select state.*
+       from tron_address_usdt_index_states state
+       where state.address = wait.address
+         and state.coverage_mode = 'targeted'
+         and (
+           (
+             wait.request_kind = 'candidate_window'
+             and state.request_kind = wait.request_kind
+             and state.target_timestamp_ms = wait.target_timestamp_ms
+             and state.window_start_timestamp_ms = wait.window_start_timestamp_ms
+             and coalesce(state.candidate_tx_hash, '') = coalesce(wait.candidate_tx_hash, '')
+           )
+           or (
+             wait.request_kind = 'broad_targeted'
+             and state.request_kind = 'broad_targeted'
+             and state.target_timestamp_ms >= wait.target_timestamp_ms
+           )
+         )
+       order by
+         case
+           when state.status = 'complete' then 0
+           when state.status = 'failed_terminal' then 1
+           when state.status = 'partial' and state.status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+           when state.status = 'partial' and state.status_reason = 'partial_provider_cap' and state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8) then 2
+           when state.status in ('queued', 'running', 'failed_retryable') then 3
+           when state.status = 'partial' then 4
+           else 5
+         end,
+         state.target_timestamp_ms asc
+       limit 1
+     ) state on true
+     left join lateral (
+       select
+         count(*)::integer as page_count,
+         count(distinct page.canonical_transfer_hash)::integer as unique_canonical_hash_count,
+         case
+           when count(*) = 0 then null
+           else round((1 - count(distinct page.canonical_transfer_hash)::numeric / greatest(count(*), 1))::numeric, 4)
+         end as repeat_ratio
+       from tron_address_usdt_index_pages page
+       where page.address = wait.address
+         and page.coverage_mode = 'targeted'
+         and page.target_timestamp_ms = state.target_timestamp_ms
+         and page.window_start_timestamp_ms = state.window_start_timestamp_ms
+         and page.window_end_timestamp_ms = state.window_end_timestamp_ms
+     ) page_stats on true
+     where wait.job_id = $1
+       and wait.wait_type = 'targeted_usdt_history'
+     order by wait.created_at asc`,
+    [jobId]
+  );
+  if (result.rows.length === 0) return null;
+
+  const now = new Date();
+  const states = result.rows.map((row) => {
+    const status = String(row.index_status ?? row.wait_status ?? "unknown");
+    const statusReason = row.index_status_reason ?? row.wait_status_reason ?? null;
+    const lastError = row.index_last_error ?? row.wait_last_error ?? null;
+    return {
+      address: row.address,
+      requestKind: row.request_kind ?? "broad_targeted",
+      windowStartTimestamp: isoString(row.window_start_timestamp),
+      windowEndTimestamp: isoString(row.window_end_timestamp),
+      relatedHopTxHash: row.related_hop_tx_hash ?? null,
+      candidateTxHash: row.candidate_tx_hash ?? null,
+      targetTimestamp: isoString(row.target_timestamp),
+      requiredFor: row.required_for ?? null,
+      waitStatus: row.wait_status ?? null,
+      status,
+      statusReason,
+      budgetPages: nullableNumber(row.budget_pages),
+      fetchedPageCount: nullableNumber(row.fetched_page_count) ?? 0,
+      fetchedTransferCount: nullableNumber(row.fetched_transfer_count) ?? 0,
+      oldestTransferAt: isoString(row.oldest_transfer_at),
+      newestTransferAt: isoString(row.newest_transfer_at),
+      attemptCount: nullableNumber(row.attempt_count) ?? 0,
+      maxAttempts: nullableNumber(row.max_attempts) ?? 0,
+      retryCount: nullableNumber(row.retry_count) ?? 0,
+      providerCapHit: row.provider_cap_hit === true,
+      budgetExhausted: row.budget_exhausted === true,
+      providerInconsistent: row.provider_inconsistent === true,
+      lockedUntil: isoString(row.locked_until),
+      lockOwner: row.lock_owner ?? null,
+      nextRunAt: isoString(row.next_run_at),
+      uniqueCanonicalHashCount: nullableNumber(row.unique_canonical_hash_count),
+      repeatRatio: nullableNumber(row.repeat_ratio),
+      lastError
+    };
+  });
+  const statusCount = (predicate: (state: typeof states[number]) => boolean) => states.filter(predicate).length;
+  const waitStatusCount = (status: string) => states.filter((state) => state.waitStatus === status).length;
+  const fetchedPageCount = states.reduce((sum, state) => sum + (state.fetchedPageCount ?? 0), 0);
+  const fetchedTransferCount = states.reduce((sum, state) => sum + (state.fetchedTransferCount ?? 0), 0);
+  const uniqueCanonicalHashCount = states.reduce((sum, state) => sum + (state.uniqueCanonicalHashCount ?? 0), 0);
+  const candidateStates = states.filter((state) => state.requestKind === "candidate_window");
+  const candidateStatusCount = (predicate: (state: typeof states[number]) => boolean) => candidateStates.filter(predicate).length;
+  const candidateWindows = candidateStates.length > 0 ? {
+    total: candidateStates.length,
+    queued: candidateStatusCount((state) => state.status === "queued"),
+    running: candidateStatusCount((state) => state.status === "running"),
+    complete: candidateStatusCount((state) => state.status === "complete"),
+    terminal: candidateStatusCount((state) => state.waitStatus === "terminal" || state.status === "failed_terminal"),
+    pending: candidateStatusCount((state) => state.waitStatus === "waiting")
+  } : null;
+  const repeatRatio = fetchedPageCount > 0 && uniqueCanonicalHashCount > 0
+    ? Number((1 - uniqueCanonicalHashCount / fetchedPageCount).toFixed(4))
+    : null;
+  const maxBudgetPages = states.reduce<number | null>((max, state) => {
+    if (state.budgetPages === null) return max;
+    return max === null ? state.budgetPages : Math.max(max, state.budgetPages);
+  }, null);
+
+  return {
+    totalTargetedStates: states.length,
+    queuedCount: statusCount((state) => state.status === "queued"),
+    runningCount: statusCount((state) => state.status === "running"),
+    completeCount: statusCount((state) => state.status === "complete"),
+    partialCount: statusCount((state) => state.status === "partial"),
+    failedCount: statusCount((state) => state.status === "failed_retryable" || state.status === "failed_terminal"),
+    waitingCount: waitStatusCount("waiting"),
+    readyCount: waitStatusCount("ready"),
+    terminalCount: waitStatusCount("terminal"),
+    staleRunningCount: states.filter((state) =>
+      state.status === "running" && typeof state.lockedUntil === "string" && new Date(state.lockedUntil) < now
+    ).length,
+    maxBudgetPages,
+    fetchedPageCount,
+    fetchedTransferCount,
+    uniqueCanonicalHashCount,
+    repeatRatio,
+    oldestTransferAt: minIso(states.map((state) => state.oldestTransferAt)),
+    newestTransferAt: maxIso(states.map((state) => state.newestTransferAt)),
+    providerCapHit: states.some((state) => state.providerCapHit),
+    budgetExhausted: states.some((state) => state.budgetExhausted),
+    providerInconsistent: states.some((state) => state.providerInconsistent),
+    requestCount: fetchedPageCount,
+    rateLimitedCount: states.filter((state) =>
+      state.statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(String(state.lastError ?? ""))
+    ).length,
+    forbiddenCount: states.filter((state) => /\b(403|forbidden)\b/i.test(String(state.lastError ?? ""))).length,
+    serverErrorCount: states.filter((state) => /\b5\d\d\b/i.test(String(state.lastError ?? ""))).length,
+    candidateWindows,
+    states
+  };
+}
+
+export async function markStrictProvenanceJobReadyAfterIndex(
+  db: Db,
+  input: {
+    id: string;
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }
+): Promise<boolean> {
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return false;
+  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const readyAt = new Date();
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', $2::text,
+         'jobHeartbeatAt', $3::text,
+         'jobRunnableQueuedAtMs', $9::bigint,
+         'strictProvenance', coalesce(progress_json->'strictProvenance', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', $2::text,
+             'waitingFor', null,
+             'lastIndexedAddress', $4::text,
+             'lastIndexedTargetTimestamp', $5::text,
+             'lastIndexStatus', $6::text,
+             'lastIndexStatusReason', $7::text,
+             'lastIndexError', $8::text
+           )
+       ),
+       last_error = $8,
+       updated_at = $3::timestamptz
+     where id = $1
+       and status = 'queued'
+       and $2::text in ('reading_local_index', 'provider_limited')
+       and progress_json->>'strictProvenanceBenchmark' = 'true'
+       and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and progress_json->'strictProvenance'->'waitingFor'->>'address' = $4
+       and (progress_json->'strictProvenance'->'waitingFor'->>'targetTimestamp') is not distinct from $5::text`,
+    [
+      input.id,
+      phase,
+      readyAt.toISOString(),
+      input.address,
+      input.targetTimestamp?.toISOString() ?? null,
+      input.indexStatus,
+      input.statusReason,
+      input.lastError,
+      readyAt.getTime()
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function patchStrictBenchmarkProgress(
+  db: Db,
+  input: { id: string; claimStartedAt: Date; patchJson: Record<string, unknown> }
+): Promise<boolean> {
+  const result = await db.query(
+    `with metric_patch as (
+       select $2::jsonb as patch_json
+     )
+     update forensic_check_jobs
+     set progress_json = jsonb_set(
+         jsonb_set(
+           progress_json || (metric_patch.patch_json - 'strictBenchmarkMetrics'),
+           '{strictBenchmarkMetrics,total}',
+           coalesce(progress_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb)
+             || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb),
+           true
+         ),
+         '{strictBenchmarkMetrics,stages}',
+         coalesce(progress_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb)
+           || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb),
+         true
+       ),
+       updated_at = now()
+     from metric_patch
+     where id = $1
+       and status in ('queued', 'running')
+       and started_at = $3
+       and progress_json->>'strictProvenanceBenchmark' = 'true'`,
+    [input.id, JSON.stringify(input.patchJson), input.claimStartedAt]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function recoverStaleForensicCheckJobs(
+  db: Db,
+  input: RecoverStaleForensicCheckJobsInput
+): Promise<RecoverStaleForensicCheckJobsResult> {
+  const maxRetries = Number.isFinite(input.maxRetries) ? Math.max(0, Math.floor(input.maxRetries)) : 0;
+  const requestedLimit = input.limit ?? 100;
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500) : 100;
+  const staleRunningBeforeIso = input.staleRunningBefore.toISOString();
+  const recoveredAtIso = (input.recoveredAt ?? new Date()).toISOString();
+  const result = await db.query(
+    `with stale_jobs as (
+       select job.id,
+         job.kind,
+         runtime.retry_count,
+         runtime.job_phase,
+         (
+           job.kind in ('where_is_money_check', 'address_deep_check')
+           and runtime.retry_count < $3
+         ) as route_retry_allowed,
+         (
+           job.kind = 'incoming_deposit_check'
+           and runtime.job_phase in ('incoming_deposit_trace', 'risk_recording')
+           and runtime.retry_count < 1
+         ) as incoming_retry_allowed,
+         (
+           job.kind = 'incoming_deposit_check'
+           and (
+             runtime.job_phase is null
+             or runtime.job_phase in ('notification_delivery', 'completing')
+             or runtime.job_phase not in ('incoming_deposit_trace', 'risk_recording')
+           )
+         ) as incoming_delivery_sensitive
+       from forensic_check_jobs job
+       cross join lateral (
+         select
+           coalesce(job.progress_json->>'jobHeartbeatAt', '') as heartbeat_text,
+           coalesce(job.progress_json->>'jobHeartbeatAt', '') ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$' as has_iso_heartbeat,
+           case
+             when coalesce(job.progress_json->>'retryCount', '') ~ '^[0-9]+$'
+               and length(coalesce(job.progress_json->>'retryCount', '')) <= 9
+             then (job.progress_json->>'retryCount')::int
+             else 0
+           end as retry_count,
+           nullif(job.progress_json->>'jobPhase', '') as job_phase
+       ) runtime
+       where job.status = 'running'
+         and (
+           (runtime.has_iso_heartbeat and runtime.heartbeat_text < $2)
+           or (not runtime.has_iso_heartbeat and coalesce(job.started_at, job.created_at) < $1)
+         )
+       order by
+         case
+           when runtime.has_iso_heartbeat then runtime.heartbeat_text
+           else to_char(coalesce(job.started_at, job.created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         end asc,
+         job.created_at asc
+       limit $4
+       for update of job skip locked
+     ),
+     decisions as (
+       select id,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'queued'
+           else 'failed'
+         end as next_status,
+         case
+           when route_retry_allowed or incoming_retry_allowed then retry_count + 1
+           else retry_count
+         end as next_retry_count,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'queued_after_stale_recovery'
+           else 'failed_after_stale_recovery'
+         end as next_job_phase,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'stale_running_requeued'
+           when kind = 'incoming_deposit_check' and incoming_delivery_sensitive then 'stale_running_delivery_sensitive_phase'
+           when kind = 'incoming_deposit_check' then 'stale_running_incoming_retry_exhausted'
+           else 'stale_running_retry_exhausted'
+         end as recovery_reason
+       from stale_jobs
+     )
+     update forensic_check_jobs job
+     set status = decisions.next_status,
+       progress_json = job.progress_json || jsonb_build_object(
+         'jobPhase', decisions.next_job_phase,
+         'jobHeartbeatAt', $5::text,
+         'retryCount', decisions.next_retry_count,
+         'lastRecoveredAt', $5::text,
+         'staleRecoveryReason', decisions.recovery_reason
+       ) || case
+         when decisions.next_status = 'queued' then jsonb_build_object(
+           'jobRunnableQueuedAtMs', floor(extract(epoch from $5::timestamptz) * 1000)::bigint
+         )
+         else '{}'::jsonb
+       end || case
+         when decisions.next_status = 'failed' and job.chat_id is not null then jsonb_build_object(
+           'telegramDeliveryIntent', jsonb_build_object(
+             'version', 'recovered-forensic-delivery-intent-v1',
+             'kind', 'stale_failure',
+             'createdAt', $5::text,
+             'reasonCode', decisions.recovery_reason,
+             'preparationStatus', 'pending',
+             'preparationAttemptCount', 0,
+             'lastPreparationAttemptAt', null,
+             'nextPreparationAttemptAt', null,
+             'lastPreparationError', null
+           )
+         )
+         else '{}'::jsonb
+       end,
+       last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,
+       started_at = job.started_at,
+       completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end,
+       updated_at = $5::timestamptz
+     from decisions
+     where job.id = decisions.id
+     returning job.id, job.kind, job.subject_address, job.status,
+       job.window_start, job.window_end, job.priority, job.chat_id,
+       job.message_id, job.requested_by, job.progress_json, job.result_json,
+       job.raw_evidence_ids, job.observation_ids, job.last_error,
+       job.created_at, job.updated_at, job.started_at, job.completed_at`,
+    [input.staleRunningBefore, staleRunningBeforeIso, maxRetries, limit, recoveredAtIso]
+  );
+  const recovered = result.rows.map(mapForensicCheckJobRow);
+  return {
+    requeued: recovered.filter((job) => job.status === "queued"),
+    failed: recovered.filter((job) => job.status === "failed")
+  };
+}
+
 export async function updateForensicCheckJobProgress(
   db: Db,
-  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+  input: ForensicJobClaimMutation & { progressJson: Record<string, unknown>; lastError?: string | null }
 ): Promise<boolean> {
   const result = await db.query(
     `update forensic_check_jobs
      set progress_json = $2,
        last_error = $3,
        updated_at = now()
-     where id = $1 and status = 'running'`,
-    [input.id, input.progressJson, input.lastError ?? null]
+     where id = $1 and status = 'running' and started_at = $4`,
+    [input.id, input.progressJson, input.lastError ?? null, input.claimStartedAt]
   );
   return (result.rowCount ?? 0) > 0;
 }
@@ -3124,6 +8036,7 @@ export async function completeForensicCheckJob(
   db: Db,
   input: {
     id: string;
+    claimStartedAt: Date;
     status: Exclude<ForensicCheckJobStatus, "queued" | "running" | "cancelled">;
     progressJson: Record<string, unknown>;
     resultJson: Record<string, unknown>;
@@ -3132,6 +8045,14 @@ export async function completeForensicCheckJob(
     lastError: string | null;
   }
 ): Promise<boolean> {
+  const delivery = input.progressJson.telegramDelivery;
+  if (delivery !== undefined && delivery !== null) {
+    if (!isForensicTelegramDeliveryV1(delivery, "incoming_deposit_check")
+      || delivery.state.status !== "pending"
+      || delivery.claim !== null) {
+      throw new TypeError("Invalid pending forensic Telegram delivery");
+    }
+  }
   const result = await db.query(
     `update forensic_check_jobs
      set status = $2,
@@ -3142,7 +8063,27 @@ export async function completeForensicCheckJob(
        last_error = $7,
        completed_at = now(),
        updated_at = now()
-     where id = $1`,
+     where id = $1
+       and status = 'running'
+       and started_at = $8
+       and (
+         coalesce($3::jsonb->'telegramDelivery', 'null'::jsonb) = 'null'::jsonb
+         or (
+           kind <> 'address_fast_check'
+           and chat_id is not null
+           and chat_id = ($3::jsonb #>> '{telegramDelivery,payload,chatId}')
+           and (
+             ($3::jsonb #> '{telegramDelivery,effect}') = 'null'::jsonb
+             or (
+               kind = 'incoming_deposit_check'
+               and progress_json->>'watchedWalletId'
+                 = ($3::jsonb #>> '{telegramDelivery,effect,watchedWalletId}')
+               and progress_json->>'depositTxHash'
+                 = ($3::jsonb #>> '{telegramDelivery,effect,incomingTxHash}')
+             )
+           )
+         )
+       )`,
     [
       input.id,
       input.status,
@@ -3150,10 +8091,583 @@ export async function completeForensicCheckJob(
       input.resultJson,
       JSON.stringify(input.rawEvidenceIds),
       JSON.stringify(input.observationIds),
-      input.lastError
+      input.lastError,
+      input.claimStartedAt
     ]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function claimNextForensicTelegramDelivery(
+  db: Db,
+  input: {
+    now: Date;
+    resolveWalletDeliveryGeneration?: (input: {
+      db: {
+        query(
+          sql: string,
+          values?: unknown[]
+        ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
+      };
+      subjectAddress: string;
+      chatId: string;
+    }) => Promise<
+      | { deliveryGeneration: "legacy" }
+      | { deliveryGeneration: "unified"; generationId: string }
+    >;
+  }
+): Promise<ForensicTelegramDeliveryClaim | null> {
+  const nowIso = input.now.toISOString();
+  const cutoffs = [30_000, 120_000, 600_000]
+    .map((delay) => new Date(input.now.getTime() - delay).toISOString());
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const candidates = await client.query(
+      `select job.id, job.kind, job.subject_address, job.chat_id,
+              job.progress_json->'telegramDelivery' as delivery
+       from forensic_check_jobs job
+       where job.status in ('completed', 'partial', 'failed')
+         and job.progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
+         and (
+           job.progress_json#>>'{telegramDelivery,state,status}' = 'pending'
+           or (
+             job.progress_json#>>'{telegramDelivery,state,status}' = 'retryable'
+             and (
+               (
+                 job.progress_json#>'{telegramDelivery,claim}' <> 'null'::jsonb
+                 and job.progress_json#>>'{telegramDelivery,claim,leaseExpiresAt}' <= $1
+               )
+               or (
+                 job.progress_json#>'{telegramDelivery,claim}' = 'null'::jsonb
+                 and (
+                   (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '1'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $2)
+                   or (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '2'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $3)
+                   or (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '3'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $4)
+                 )
+               )
+             )
+           )
+         )
+       order by job.created_at asc
+       limit 10
+       for update skip locked`,
+      [nowIso, ...cutoffs]
+    );
+
+    for (const row of candidates.rows) {
+      const kind = row.kind as ForensicCheckJobKind;
+      const delivery = row.delivery as unknown;
+      if (
+        input.resolveWalletDeliveryGeneration &&
+        (kind === "where_is_money_check" || kind === "address_deep_check") &&
+        typeof row.subject_address === "string" &&
+        typeof row.chat_id === "string"
+      ) {
+        const owner = await input.resolveWalletDeliveryGeneration({
+          db: client,
+          subjectAddress: row.subject_address,
+          chatId: row.chat_id
+        });
+        if (owner.deliveryGeneration === "unified") {
+          await client.query(
+            `update forensic_check_jobs
+                set progress_json = (progress_json - 'telegramDelivery')
+                  || jsonb_build_object(
+                    'quarantinedLegacyTelegramDelivery', progress_json->'telegramDelivery',
+                    'legacyDeliveryFence', jsonb_build_object(
+                      'version', 'legacy-wallet-delivery-fence-v1',
+                      'generationId', $3::text,
+                      'quarantinedAt', $4::text
+                    )
+                  ),
+                    updated_at = $4::timestamptz
+              where id = $1
+                and progress_json->'telegramDelivery' = $2::jsonb`,
+            [
+              row.id,
+              JSON.stringify(delivery),
+              owner.generationId,
+              nowIso
+            ]
+          );
+          continue;
+        }
+      }
+      if (kind === "address_fast_check"
+        || !isForensicTelegramDeliveryV1(delivery, kind)
+        || !isTelegramDeliveryDue(delivery, input.now, kind)) {
+        continue;
+      }
+      const next = transitionTelegramDeliveryToClaimed(
+        delivery,
+        { token: randomBytes(16).toString("base64url"), claimedAt: input.now },
+        kind
+      );
+      const updated = await client.query(
+        `update forensic_check_jobs
+         set progress_json = jsonb_set(progress_json, '{telegramDelivery}', $2::jsonb, false),
+           updated_at = $3::timestamptz
+         where id = $1
+           and status in ('completed', 'partial', 'failed')
+           and progress_json->'telegramDelivery' = $4::jsonb`,
+        [row.id, JSON.stringify(next), nowIso, JSON.stringify(delivery)]
+      );
+      if ((updated.rowCount ?? 0) !== 1) continue;
+
+      if (next.state.status === "failed" && next.effect !== null) {
+        const effect = await client.query(
+          `update observed_transactions
+           set user_alert_status = 'failed',
+             user_alert_last_error = $3,
+             user_alert_updated_at = $4::timestamptz
+           where watched_wallet_id = $1
+             and tx_hash = $2
+             and user_alert_status in ('sending', 'analyzing')`,
+          [
+            next.effect.watchedWalletId,
+            next.effect.incomingTxHash,
+            next.state.lastError,
+            nowIso
+          ]
+        );
+        if ((effect.rowCount ?? 0) !== 1) {
+          throw new Error("forensic_telegram_delivery_effect_cas_failed");
+        }
+      }
+
+      await client.query("commit");
+      if (next.state.status === "failed" || next.claim === null) return null;
+      return {
+        jobId: row.id,
+        kind,
+        payload: next.payload,
+        effect: next.effect,
+        messageFingerprint: next.state.messageFingerprint,
+        claim: next.claim
+      };
+    }
+
+    await client.query("commit");
+    return null;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function settleForensicTelegramDelivery(
+  db: Db,
+  input: {
+    jobId: string;
+    messageFingerprint: string;
+    attempt: number;
+    claimToken: string;
+    settledAt: Date;
+    outcome: "sent" | "retryable" | "failed";
+    errorCode?: TelegramDeliveryErrorCode | null;
+    telegramMessageId?: string | null;
+  }
+): Promise<boolean> {
+  const settledAtIso = input.settledAt.toISOString();
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select kind, progress_json->'telegramDelivery' as delivery
+       from forensic_check_jobs
+       where id = $1 and status in ('completed', 'partial', 'failed')
+       for update`,
+      [input.jobId]
+    );
+    const row = selected.rows[0];
+    if (!row) {
+      await client.query("commit");
+      return false;
+    }
+    const kind = row.kind as ForensicCheckJobKind;
+    const delivery = row.delivery as unknown;
+    if (kind === "address_fast_check"
+      || !isForensicTelegramDeliveryV1(delivery, kind)
+      || delivery.state.messageFingerprint !== input.messageFingerprint
+      || delivery.claim?.attempt !== input.attempt
+      || delivery.claim.token !== input.claimToken) {
+      await client.query("commit");
+      return false;
+    }
+
+    const next = transitionTelegramDeliveryToSettled(delivery, {
+      token: input.claimToken,
+      attempt: input.attempt,
+      settledAt: input.settledAt,
+      outcome: input.outcome,
+      errorCode: input.errorCode
+    }, kind);
+    const updated = await client.query(
+      `update forensic_check_jobs
+       set progress_json = jsonb_set(progress_json, '{telegramDelivery}', $2::jsonb, false),
+         updated_at = $3::timestamptz
+       where id = $1
+         and status in ('completed', 'partial', 'failed')
+         and progress_json->'telegramDelivery' = $4::jsonb`,
+      [input.jobId, JSON.stringify(next), settledAtIso, JSON.stringify(delivery)]
+    );
+    if ((updated.rowCount ?? 0) !== 1) {
+      await client.query("commit");
+      return false;
+    }
+
+    if ((next.state.status === "sent" || next.state.status === "failed")
+      && next.effect !== null) {
+      const alertStatus = next.state.status === "sent" ? "sent" : "failed";
+      const effect = await client.query(
+        `update observed_transactions
+         set user_alert_status = $3,
+           user_alert_last_error = $4,
+           user_alert_updated_at = $5::timestamptz
+         where watched_wallet_id = $1
+           and tx_hash = $2
+           and user_alert_status in ('sending', 'analyzing')`,
+        [
+          next.effect.watchedWalletId,
+          next.effect.incomingTxHash,
+          alertStatus,
+          next.state.lastError,
+          settledAtIso
+        ]
+      );
+      if ((effect.rowCount ?? 0) !== 1) {
+        throw new Error("forensic_telegram_delivery_effect_cas_failed");
+      }
+    }
+
+    await client.query("commit");
+    return true;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listDueRecoveredForensicDeliveryIntents(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<Array<{ jobId: string; intent: RecoveredForensicDeliveryIntentV1 }>> {
+  const requestedLimit = Number.isFinite(input.limit) ? Math.floor(input.limit) : 10;
+  const limit = Math.min(Math.max(requestedLimit, 1), 10);
+  const nowIso = input.now.toISOString();
+  const result = await db.query(
+    `select id, progress_json->'telegramDeliveryIntent' as intent
+     from forensic_check_jobs
+     where status = 'failed'
+       and not (progress_json ? 'telegramDelivery')
+       and progress_json#>>'{telegramDeliveryIntent,version}' = 'recovered-forensic-delivery-intent-v1'
+       and (
+         (progress_json#>>'{telegramDeliveryIntent,preparationStatus}' = 'pending'
+           and progress_json#>>'{telegramDeliveryIntent,createdAt}' <= $1)
+         or (progress_json#>>'{telegramDeliveryIntent,preparationStatus}' = 'retryable'
+           and progress_json#>>'{telegramDeliveryIntent,nextPreparationAttemptAt}' <= $1)
+       )
+     order by updated_at asc
+     limit $2`,
+    [nowIso, limit]
+  );
+  return result.rows.flatMap((row) => {
+    const intent = row.intent as unknown;
+    return isRecoveredForensicDeliveryIntentV1(intent)
+      && isRecoveredForensicDeliveryIntentDue(intent, input.now)
+      ? [{ jobId: row.id as string, intent }]
+      : [];
+  });
+}
+
+export async function attachRecoveredForensicTelegramDelivery(
+  db: Db,
+  input: {
+    jobId: string;
+    intentCreatedAt: string;
+    expectedPreparationAttemptCount: number;
+    delivery: ForensicTelegramDeliveryV1;
+  }
+): Promise<boolean> {
+  if (!Number.isInteger(input.expectedPreparationAttemptCount)) return false;
+  if (!isForensicTelegramDeliveryV1(input.delivery, "incoming_deposit_check")
+    || input.delivery.state.status !== "pending"
+    || input.delivery.claim !== null) {
+    return false;
+  }
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select kind, chat_id, progress_json,
+         progress_json->'telegramDeliveryIntent' as intent
+       from forensic_check_jobs
+       where id = $1 and status = 'failed'
+       for update`,
+      [input.jobId]
+    );
+    const row = selected.rows[0];
+    const kind = row?.kind as ForensicCheckJobKind | undefined;
+    const chatId = row?.chat_id as unknown;
+    const progressJson = row?.progress_json as unknown;
+    const intent = row?.intent as unknown;
+    const effect = input.delivery.effect;
+    if (!row
+      || kind === undefined
+      || kind === "address_fast_check"
+      || typeof chatId !== "string"
+      || chatId !== input.delivery.payload.chatId
+      || !isRecoveredForensicDeliveryIntentV1(intent)
+      || intent.createdAt !== input.intentCreatedAt
+      || intent.preparationAttemptCount !== input.expectedPreparationAttemptCount
+      || intent.preparationStatus === "failed"
+      || !isForensicTelegramDeliveryV1(input.delivery, kind)
+      || input.delivery.state.status !== "pending"
+      || input.delivery.claim !== null
+      || (effect !== null && (
+        kind !== "incoming_deposit_check"
+        || progressJson === null
+        || typeof progressJson !== "object"
+        || Array.isArray(progressJson)
+        || (progressJson as Record<string, unknown>).watchedWalletId !== effect.watchedWalletId
+        || (progressJson as Record<string, unknown>).depositTxHash !== effect.incomingTxHash
+      ))) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const result = await client.query(
+      `update forensic_check_jobs
+       set progress_json = (progress_json - 'telegramDeliveryIntent')
+         || jsonb_build_object('telegramDelivery', $3::jsonb),
+         updated_at = now()
+       where id = $1
+         and status = 'failed'
+         and not (progress_json ? 'telegramDelivery')
+         and progress_json->'telegramDeliveryIntent' = $2::jsonb
+         and kind = $4
+         and chat_id = $5
+         and (
+           ($3::jsonb->'effect') = 'null'::jsonb
+           or (
+             kind = 'incoming_deposit_check'
+             and progress_json->>'watchedWalletId' = ($3::jsonb #>> '{effect,watchedWalletId}')
+             and progress_json->>'depositTxHash' = ($3::jsonb #>> '{effect,incomingTxHash}')
+           )
+         )`,
+      [
+        input.jobId,
+        JSON.stringify(intent),
+        JSON.stringify(input.delivery),
+        kind,
+        chatId
+      ]
+    );
+    if ((result.rowCount ?? 0) !== 1) {
+      await client.query("rollback");
+      return false;
+    }
+    await client.query("commit");
+    return true;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function settleRecoveredForensicDeliveryIntentPreparation(
+  db: Db,
+  input: {
+    jobId: string;
+    intentCreatedAt: string;
+    expectedPreparationAttemptCount: number;
+    attemptedAt: Date;
+    errorCode: Exclude<
+      RecoveredForensicDeliveryIntentPreparationErrorCode,
+      "stale_intent_preparation_attempts_exhausted"
+    >;
+  }
+): Promise<boolean> {
+  if (!Number.isInteger(input.expectedPreparationAttemptCount)) return false;
+  const selected = await db.query(
+    `select progress_json->'telegramDeliveryIntent' as intent
+     from forensic_check_jobs
+     where id = $1 and status = 'failed'`,
+    [input.jobId]
+  );
+  const intent = selected.rows[0]?.intent as unknown;
+  if (!isRecoveredForensicDeliveryIntentV1(intent)
+    || intent.createdAt !== input.intentCreatedAt
+    || intent.preparationAttemptCount !== input.expectedPreparationAttemptCount
+    || !isRecoveredForensicDeliveryIntentDue(intent, input.attemptedAt)) {
+    return false;
+  }
+  const next = transitionRecoveredIntentPreparation(intent, {
+    attemptedAt: input.attemptedAt,
+    errorCode: input.errorCode
+  });
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = jsonb_set(progress_json, '{telegramDeliveryIntent}', $3::jsonb, false),
+       updated_at = $4::timestamptz
+     where id = $1
+       and status = 'failed'
+       and not (progress_json ? 'telegramDelivery')
+       and progress_json->'telegramDeliveryIntent' = $2::jsonb`,
+    [
+      input.jobId,
+      JSON.stringify(intent),
+      JSON.stringify(next),
+      input.attemptedAt.toISOString()
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function saveCompletedDeepSecondLayerContext(
+  db: Db,
+  input: { id: string; context: DeepSecondLayerContextV1 }
+): Promise<boolean> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select subject_address, progress_json, result_json
+       from forensic_check_jobs
+       where id = $1
+         and kind = 'address_deep_check'
+         and status = 'completed'
+       for update`,
+      [input.id]
+    );
+    const row = selected.rows[0] as Record<string, unknown> | undefined;
+    const subjectAddress = row?.subject_address;
+    const resultJson = row?.result_json;
+    const progressJson = row?.progress_json;
+    const hasResultSubjectAddress = resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      && Object.prototype.hasOwnProperty.call(resultJson, "subjectAddress");
+    const resultSubjectAddress = resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      ? (resultJson as Record<string, unknown>).subjectAddress
+      : null;
+    if (typeof subjectAddress !== "string"
+      || !resultJson
+      || typeof resultJson !== "object"
+      || Array.isArray(resultJson)
+      || !progressJson
+      || typeof progressJson !== "object"
+      || Array.isArray(progressJson)
+      || (hasResultSubjectAddress && resultSubjectAddress !== subjectAddress)
+      || !isDeepSecondLayerContextV1(input.context, {
+        expectedSubjectAddress: subjectAddress,
+        baseResult: resultJson
+      })) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const currentContext = buildForensicRuntimeContractProjection(progressJson, {
+      jobKind: "address_deep_check",
+      expectedSubjectAddress: subjectAddress,
+      baseResult: resultJson
+    }).deepSecondLayerContext;
+    if (currentContext && currentContext.refreshedAt >= input.context.refreshedAt) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const result = await client.query(
+      `update forensic_check_jobs
+       set progress_json = jsonb_set(progress_json, '{deepSecondLayerContext}', $2::jsonb, true),
+         updated_at = now()
+       where id = $1
+         and kind = 'address_deep_check'
+         and status = 'completed'
+         and result_json = $3::jsonb
+         and coalesce(progress_json->'deepSecondLayerContext', 'null'::jsonb) = $4::jsonb`,
+      [
+        input.id,
+        JSON.stringify(input.context),
+        JSON.stringify(resultJson),
+        JSON.stringify((progressJson as Record<string, unknown>).deepSecondLayerContext ?? null)
+      ]
+    );
+    await client.query("commit");
+    return (result.rowCount ?? 0) === 1;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
+  db: Db,
+  input: { limit: number }
+): Promise<ForensicCheckJob[]> {
+  const requestedLimit = Number.isFinite(input.limit) ? Math.floor(input.limit) : 5;
+  const limit = Math.min(Math.max(requestedLimit, 1), 100);
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where kind = 'address_deep_check'
+       and status = 'completed'
+       and (
+         case when (progress_json #>> '{deepSecondLayerContext,profile,counters,queued}') ~ '^[0-9]{1,9}$'
+           then (progress_json #>> '{deepSecondLayerContext,profile,counters,queued}')::int
+           else 0
+         end > 0
+         or case when (progress_json #>> '{deepSecondLayerContext,profile,counters,notIndexed}') ~ '^[0-9]{1,9}$'
+           then (progress_json #>> '{deepSecondLayerContext,profile,counters,notIndexed}')::int
+           else 0
+         end > 0
+         or
+         case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}')::int
+           else 0
+         end > 0
+         or case when (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}')::int
+           else 0
+         end > 0
+       )
+     order by updated_at asc, id asc`
+  );
+  // ponytail: context fingerprints require the TypeScript canonicalizer; if this candidate
+  // scan grows large, persist a validated pending counter in a future schema migration.
+  return result.rows
+    .map(mapForensicCheckJobRow)
+    .filter((job) => {
+      const resultSubjectAddress = job.resultJson.subjectAddress;
+      if (Object.prototype.hasOwnProperty.call(job.resultJson, "subjectAddress")
+        && resultSubjectAddress !== job.subjectAddress) return false;
+      const context = buildForensicRuntimeContractProjection(job.progressJson, {
+        jobKind: "address_deep_check",
+        expectedSubjectAddress: job.subjectAddress,
+        baseResult: job.resultJson
+      }).deepSecondLayerContext;
+      const profile = context?.profile ?? job.resultJson.secondLayerRelationshipProfiles;
+      if (!profile || typeof profile !== "object" || Array.isArray(profile)) return false;
+      const counters = (profile as Record<string, unknown>).counters;
+      if (!counters || typeof counters !== "object" || Array.isArray(counters)) return false;
+      const record = counters as Record<string, unknown>;
+      return (Number.isSafeInteger(record.queued) && (record.queued as number) > 0)
+        || (Number.isSafeInteger(record.notIndexed) && (record.notIndexed as number) > 0);
+    })
+    .slice(0, limit);
 }
 
 export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicCheckJob | null> {
@@ -3168,6 +8682,807 @@ export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicC
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
 
+export async function getLatestForensicCheckJobForAddress(db: Db, address: string): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1 and kind = 'address_deep_check'
+     order by created_at desc
+     limit 1`,
+    [address]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function findLatestSavedWalletRiskByAddresses(
+  db: Db,
+  addresses: string[]
+): Promise<Map<string, SavedWalletRiskSummary>> {
+  const uniqueAddresses = [...new Set(addresses.filter((address) => address.length > 0))];
+  if (uniqueAddresses.length === 0) return new Map();
+
+  const result = await db.query(
+    `select distinct on (subject_address)
+       subject_address as address,
+       id as job_id,
+       kind,
+       case
+         when risk_text ~ '^[0-9]+(\\.[0-9]+)?$' then round(risk_text::numeric)::int
+         else null
+       end as risk,
+       nullif(result_json->>'decision', '') as decision,
+       coalesce(
+         nullif(result_json#>>'{role,primary}', ''),
+         nullif(result_json#>>'{walletRole,role}', ''),
+         nullif(result_json->>'role', '')
+       ) as role,
+       coalesce(
+         nullif(result_json#>>'{risk,evidence}', ''),
+         nullif(result_json->>'evidence', ''),
+         nullif(result_json#>>'{summary,evidenceClass}', '')
+       ) as evidence,
+       created_at
+     from (
+       select *,
+         coalesce(
+           nullif(result_json#>>'{risk,score}', ''),
+           nullif(result_json->>'finalRisk', ''),
+           nullif(result_json->>'riskScore', ''),
+           nullif(result_json#>>'{summary,riskScore}', '')
+         ) as risk_text
+       from forensic_check_jobs
+       where subject_address = any($1::text[])
+         and status in ('completed', 'partial')
+     ) job
+     order by subject_address, completed_at desc nulls last, created_at desc`,
+    [uniqueAddresses]
+  );
+
+  return new Map(result.rows.map((row) => [
+    row.address,
+    {
+      address: row.address,
+      jobId: row.job_id,
+      kind: row.kind,
+      risk: row.risk === null || row.risk === undefined ? null : Number(row.risk),
+      decision: row.decision,
+      role: row.role,
+      evidence: row.evidence,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+    }
+  ]));
+}
+
+export async function getLatestWhereIsMoneyCheckJobForAddress(
+  db: Db,
+  input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }
+): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1
+       and chat_id is not distinct from $2
+       and requested_by is not distinct from $3
+       and window_start is not distinct from $4
+       and window_end is not distinct from $5
+       and kind = 'where_is_money_check'
+       and status in ('completed', 'partial')
+     order by completed_at desc nulls last, created_at desc
+     limit 1`,
+    [input.subjectAddress, input.chatId, input.requestedBy, input.windowStart, input.windowEnd]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getLatestDeepForensicCheckJobForAddress(
+  db: Db,
+  input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }
+): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1
+       and chat_id is not distinct from $2
+       and requested_by is not distinct from $3
+       and window_start is not distinct from $4
+       and window_end is not distinct from $5
+       and kind = 'address_deep_check'
+       and status in ('completed', 'partial')
+     order by completed_at desc nulls last, created_at desc
+     limit 1`,
+    [input.subjectAddress, input.chatId, input.requestedBy, input.windowStart, input.windowEnd]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getLatestDeepForensicCheckJobForAddressAnyStatus(
+  db: Db,
+  input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }
+): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1
+       and chat_id is not distinct from $2
+       and requested_by is not distinct from $3
+       and window_start is not distinct from $4
+       and window_end is not distinct from $5
+       and kind = 'address_deep_check'
+       and status in ('queued', 'running', 'completed', 'partial')
+     order by
+       case when status in ('queued', 'running') then 0 else 1 end,
+       case when status in ('queued', 'running') then created_at end desc nulls last,
+       completed_at desc nulls last,
+       created_at desc
+     limit 1`,
+    [input.subjectAddress, input.chatId, input.requestedBy, input.windowStart, input.windowEnd]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function listAdminForensicCheckJobs(
+  db: Db,
+  input: ListAdminForensicCheckJobsInput = {}
+): Promise<ForensicCheckJob[]> {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const params: unknown[] = [];
+  const where: string[] = [];
+
+  if (input.status) {
+    params.push(parseForensicCheckJobStatus(input.status));
+    where.push(`status = $${params.length}`);
+  }
+  if (input.kind) {
+    params.push(parseForensicCheckJobKind(input.kind));
+    where.push(`kind = $${params.length}`);
+  }
+  if (input.subjectAddress) {
+    params.push(input.subjectAddress);
+    where.push(`subject_address = $${params.length}`);
+  }
+  const query = input.query?.trim();
+  if (query) {
+    params.push(`%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`(
+      id ilike $${params.length} escape '\\'
+      or subject_address ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'sender', '') ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'watchedWallet', '') ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'depositTxHash', '') ilike $${params.length} escape '\\'
+    )`);
+  }
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+  params.push(offset);
+  const offsetParam = `$${params.length}`;
+
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     ${where.length > 0 ? `where ${where.join(" and ")}` : ""}
+     order by created_at desc
+     limit ${limitParam} offset ${offsetParam}`,
+    params
+  );
+  return result.rows.map(mapForensicCheckJobRow);
+}
+
+type QueryableDb = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>;
+};
+
+async function refreshWalletIntelligenceAddressSummariesWithClient(client: QueryableDb, addresses: string[]): Promise<void> {
+  const uniqueAddresses = Array.from(new Set(addresses.filter((address) => address.length > 0)));
+  if (uniqueAddresses.length === 0) return;
+
+  await client.query(`delete from wallet_intelligence_address_summary where address = any($1::text[])`, [uniqueAddresses]);
+
+  // ponytail: Admin-only tags use fixed investigative thresholds; upgrade path is calibrated thresholds/config if analysts need tuning.
+  await client.query(
+    `with selected_addresses as (
+       select unnest($1::text[]) as address
+     ),
+     sightings as (
+       select s.*, r.job_status as run_job_status
+       from wallet_intelligence_sightings s
+       join wallet_intelligence_runs r on r.job_id = s.job_id
+       join selected_addresses selected on selected.address = s.address
+     ),
+     stats as (
+       select
+         address,
+         count(distinct subject_address)::integer as unique_subject_count,
+         (count(distinct coalesce(requested_by, '')) filter (where requested_by is not null))::integer as unique_requester_count,
+         count(distinct job_id)::integer as job_count,
+         (count(distinct job_id) filter (where run_job_status = 'completed'))::integer as completed_job_count,
+         (count(distinct job_id) filter (where run_job_status = 'partial'))::integer as partial_job_count,
+         count(*)::integer as occurrence_count,
+         (count(distinct tx_hash) filter (where tx_hash is not null))::integer as distinct_tx_count,
+         min(depth)::integer as min_depth,
+         max(depth)::integer as max_depth,
+         min(first_seen_at) as first_seen_at,
+         max(last_seen_at) as last_seen_at,
+         array_agg(distinct job_kind order by job_kind) as modes
+       from sightings
+       group by address
+     ),
+     deduped_amount_rows as (
+       select distinct address, tx_hash, amount_raw
+       from sightings
+       where tx_hash is not null and amount_raw is not null
+     ),
+     amount_stats as (
+       select address, coalesce(sum(amount_raw), 0)::numeric(78, 0) as distinct_amount_raw
+       from deduped_amount_rows
+       group by address
+     ),
+     label_rows as (
+       select cache.address, cache.category, cache.label, true as known_service
+       from address_labels_cache cache
+       join selected_addresses selected on selected.address = cache.address
+       where cache.chain = 'tron'
+         and cache.category in ('cex', 'hot_wallet', 'bridge', 'router', 'dex', 'pool')
+       union all
+       select assertions.address, assertions.category, coalesce(assertions.entity_name, assertions.label), true
+       from address_label_assertions assertions
+       join selected_addresses selected on selected.address = assertions.address
+       where assertions.chain = 'tron'
+         and assertions.status = 'active'
+         and assertions.category in ('cex', 'exchange', 'bridge', 'router', 'dex', 'pool', 'hot_wallet')
+       union all
+       select labels.address,
+         case
+           when labels.label in ('exchange', 'whitebit') then 'cex'
+           when labels.label = 'bridge' then 'bridge'
+           else null
+         end as category,
+         labels.label,
+         labels.label in ('exchange', 'whitebit', 'bridge')
+       from address_labels labels
+       join selected_addresses selected on selected.address = labels.address
+       where labels.label in ('exchange', 'whitebit', 'bridge')
+     ),
+     label_hints as (
+       select
+         address,
+         coalesce(jsonb_agg(distinct category) filter (where category is not null), '[]'::jsonb) as service_categories,
+         coalesce(jsonb_agg(distinct label) filter (where label is not null), '[]'::jsonb) as label_hints,
+         bool_or(known_service) as has_known_service
+       from label_rows
+       group by address
+     )
+     insert into wallet_intelligence_address_summary (
+       address,
+       unique_subject_count,
+       unique_requester_count,
+       job_count,
+       completed_job_count,
+       partial_job_count,
+       occurrence_count,
+       distinct_tx_count,
+       distinct_amount_raw,
+       min_depth,
+       max_depth,
+       first_seen_at,
+       last_seen_at,
+       modes,
+       tags,
+       service_categories,
+       label_hints
+     )
+     select
+       stats.address,
+       stats.unique_subject_count,
+       stats.unique_requester_count,
+       stats.job_count,
+       stats.completed_job_count,
+       stats.partial_job_count,
+       stats.occurrence_count,
+       stats.distinct_tx_count,
+       coalesce(amount_stats.distinct_amount_raw, 0),
+       stats.min_depth,
+       stats.max_depth,
+       stats.first_seen_at,
+       stats.last_seen_at,
+       to_jsonb(coalesce(stats.modes, '{}'::text[])),
+       to_jsonb(array_remove(array[
+         case when stats.unique_subject_count > 1 or stats.unique_requester_count > 1 then 'repeated_cross_run_address' end,
+         case when cardinality(stats.modes) > 1 then 'cross_mode_seen' end,
+         case when coalesce(amount_stats.distinct_amount_raw, 0) >= 1000000000000 then 'large_liquidity_wallet' end,
+         case when stats.occurrence_count >= 25 or stats.distinct_tx_count >= 25 then 'high_activity_wallet' end,
+         case when coalesce(label_hints.has_known_service, false) then 'known_service_or_exchange' end,
+         case when coalesce(label_hints.has_known_service, false) = false
+            and stats.unique_subject_count >= 3
+            and stats.distinct_tx_count >= 10
+           then 'possible_service_or_exchange_like' end
+       ], null)),
+       coalesce(label_hints.service_categories, '[]'::jsonb),
+       coalesce(label_hints.label_hints, '[]'::jsonb)
+     from stats
+     left join amount_stats on amount_stats.address = stats.address
+     left join label_hints on label_hints.address = stats.address
+     on conflict (address) do update set
+       unique_subject_count = excluded.unique_subject_count,
+       unique_requester_count = excluded.unique_requester_count,
+       job_count = excluded.job_count,
+       completed_job_count = excluded.completed_job_count,
+       partial_job_count = excluded.partial_job_count,
+       occurrence_count = excluded.occurrence_count,
+       distinct_tx_count = excluded.distinct_tx_count,
+       distinct_amount_raw = excluded.distinct_amount_raw,
+       min_depth = excluded.min_depth,
+       max_depth = excluded.max_depth,
+       first_seen_at = excluded.first_seen_at,
+       last_seen_at = excluded.last_seen_at,
+       modes = excluded.modes,
+       tags = excluded.tags,
+       service_categories = excluded.service_categories,
+       label_hints = excluded.label_hints,
+       updated_at = now()`,
+    [uniqueAddresses]
+  );
+}
+
+export async function indexWalletIntelligenceJobPayload(db: Db, input: WalletIntelligenceIndexPayload): Promise<void> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+
+    const oldAddressResult = await client.query(
+      `select distinct address
+       from wallet_intelligence_sightings
+       where job_id = $1
+       union
+       select distinct from_address as address
+       from wallet_intelligence_edges
+       where job_id = $1
+       union
+       select distinct to_address as address
+       from wallet_intelligence_edges
+       where job_id = $1`,
+      [input.run.jobId]
+    );
+    const addressesToRefresh = new Set<string>([
+      ...input.touchedAddresses,
+      ...input.sightings.map((sighting) => sighting.address),
+      ...input.edges.flatMap((edge) => [edge.fromAddress, edge.toAddress]),
+      ...oldAddressResult.rows.map((row) => String(row.address))
+    ]);
+
+    await client.query(
+      `insert into wallet_intelligence_runs (
+         job_id,
+         job_kind,
+         job_status,
+         subject_address,
+         requested_by,
+         chat_id,
+         message_id,
+         completed_at,
+         telegram_user_id,
+         telegram_username,
+         telegram_locale,
+         source_payload_hash,
+         index_version,
+         index_status,
+         index_error,
+         indexed_at
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+       on conflict (job_id) do update set
+         job_kind = excluded.job_kind,
+         job_status = excluded.job_status,
+         subject_address = excluded.subject_address,
+         requested_by = excluded.requested_by,
+         chat_id = excluded.chat_id,
+         message_id = excluded.message_id,
+         completed_at = excluded.completed_at,
+         telegram_user_id = excluded.telegram_user_id,
+         telegram_username = excluded.telegram_username,
+         telegram_locale = excluded.telegram_locale,
+         source_payload_hash = excluded.source_payload_hash,
+         index_version = excluded.index_version,
+         index_status = excluded.index_status,
+         index_error = excluded.index_error,
+         indexed_at = now(),
+         updated_at = now()`,
+      [
+        input.run.jobId,
+        parseWalletIntelligenceSupportedJobKind(input.run.jobKind),
+        parseWalletIntelligenceJobStatus(input.run.jobStatus),
+        input.run.subjectAddress,
+        input.run.requestedBy,
+        input.run.chatId,
+        input.run.messageId,
+        input.run.completedAt,
+        input.run.telegramUserId,
+        input.run.telegramUsername,
+        input.run.telegramLocale,
+        input.run.sourcePayloadHash,
+        input.run.indexVersion,
+        parseWalletIntelligenceIndexStatus(input.run.indexStatus),
+        input.run.indexError
+      ]
+    );
+
+    await client.query(`delete from wallet_intelligence_sightings where job_id = $1`, [input.run.jobId]);
+    await client.query(`delete from wallet_intelligence_edges where job_id = $1`, [input.run.jobId]);
+
+    for (const sighting of input.sightings) {
+      await client.query(
+        `insert into wallet_intelligence_sightings (
+           id,
+           address,
+           job_id,
+           job_kind,
+           subject_address,
+           requested_by,
+           source_kind,
+           role,
+           depth,
+           path_id,
+           tx_hash,
+           amount_raw,
+           first_seen_at,
+           last_seen_at,
+           metadata_json
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+         on conflict (id) do update set
+           address = excluded.address,
+           job_id = excluded.job_id,
+           job_kind = excluded.job_kind,
+           subject_address = excluded.subject_address,
+           requested_by = excluded.requested_by,
+           source_kind = excluded.source_kind,
+           role = excluded.role,
+           depth = excluded.depth,
+           path_id = excluded.path_id,
+           tx_hash = excluded.tx_hash,
+           amount_raw = excluded.amount_raw,
+           first_seen_at = excluded.first_seen_at,
+           last_seen_at = excluded.last_seen_at,
+           metadata_json = excluded.metadata_json,
+           updated_at = now()`,
+        [
+          sighting.id,
+          sighting.address,
+          sighting.jobId,
+          parseWalletIntelligenceSupportedJobKind(sighting.jobKind),
+          sighting.subjectAddress,
+          sighting.requestedBy,
+          parseWalletIntelligenceSourceKind(sighting.sourceKind),
+          parseWalletIntelligenceRole(sighting.role),
+          sighting.depth,
+          sighting.pathId,
+          sighting.txHash,
+          sighting.amountRaw,
+          sighting.firstSeenAt,
+          sighting.lastSeenAt,
+          JSON.stringify(sighting.metadataJson)
+        ]
+      );
+    }
+
+    for (const edge of input.edges) {
+      await client.query(
+        `insert into wallet_intelligence_edges (
+           id,
+           from_address,
+           to_address,
+           job_id,
+           job_kind,
+           source_kind,
+           depth,
+           path_id,
+           tx_hash,
+           amount_raw,
+           timestamp,
+           edge_role,
+           metadata_json
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+         on conflict (id) do update set
+           from_address = excluded.from_address,
+           to_address = excluded.to_address,
+           job_id = excluded.job_id,
+           job_kind = excluded.job_kind,
+           source_kind = excluded.source_kind,
+           depth = excluded.depth,
+           path_id = excluded.path_id,
+           tx_hash = excluded.tx_hash,
+           amount_raw = excluded.amount_raw,
+           timestamp = excluded.timestamp,
+           edge_role = excluded.edge_role,
+           metadata_json = excluded.metadata_json,
+           updated_at = now()`,
+        [
+          edge.id,
+          edge.fromAddress,
+          edge.toAddress,
+          edge.jobId,
+          parseWalletIntelligenceSupportedJobKind(edge.jobKind),
+          parseWalletIntelligenceSourceKind(edge.sourceKind),
+          edge.depth,
+          edge.pathId,
+          edge.txHash,
+          edge.amountRaw,
+          edge.timestamp,
+          parseWalletIntelligenceEdgeRole(edge.edgeRole),
+          JSON.stringify(edge.metadataJson)
+        ]
+      );
+    }
+
+    await refreshWalletIntelligenceAddressSummariesWithClient(client, Array.from(addressesToRefresh));
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listWalletIntelligenceBackfillJobs(
+  db: Db,
+  input: ListWalletIntelligenceBackfillJobsInput = {}
+): Promise<ForensicCheckJob[]> {
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const result = await db.query(
+    `select job.id, job.kind, job.subject_address, job.status, job.window_start, job.window_end,
+       job.priority, job.chat_id, job.message_id, job.requested_by, job.progress_json, job.result_json,
+       job.raw_evidence_ids, job.observation_ids, job.last_error, job.created_at, job.updated_at,
+       job.started_at, job.completed_at
+     from forensic_check_jobs job
+     where job.kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check')
+       and job.status in ('completed', 'partial')
+       and job.result_json <> '{}'::jsonb
+     order by job.completed_at asc nulls last, job.created_at asc, job.id asc
+     limit $1 offset $2`,
+    [limit, offset]
+  );
+  return result.rows.map(mapForensicCheckJobRow);
+}
+
+export async function getWalletIntelligenceRunState(db: Db, jobId: string): Promise<WalletIntelligenceRunState | null> {
+  const result = await db.query(
+    `select source_payload_hash, index_version, index_status
+     from wallet_intelligence_runs
+     where job_id = $1`,
+    [jobId]
+  );
+  return result.rows[0] ? mapWalletIntelligenceRunStateRow(result.rows[0]) : null;
+}
+
+export async function listWalletIntelligenceAddressSummaries(
+  db: Db,
+  input: ListWalletIntelligenceAddressSummariesInput = {}
+): Promise<WalletIntelligenceAddressSummary[]> {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const params: unknown[] = [];
+  const where: string[] = [];
+  const addresses = [...new Set((input.addresses || []).map((address) => address.trim()).filter(Boolean))];
+  if (addresses.length > 0) {
+    params.push(addresses);
+    where.push(`address = any($${params.length}::text[])`);
+  }
+
+  if (input.minUniqueSubjects !== undefined) {
+    params.push(input.minUniqueSubjects);
+    where.push(`unique_subject_count >= $${params.length}`);
+  }
+  if (input.minUniqueRequesters !== undefined) {
+    params.push(input.minUniqueRequesters);
+    where.push(`unique_requester_count >= $${params.length}`);
+  }
+  if (input.tag) {
+    params.push(input.tag);
+    where.push(`tags ? $${params.length}`);
+  }
+  if (input.mode) {
+    params.push(parseWalletIntelligenceSupportedJobKind(input.mode));
+    where.push(`modes ? $${params.length}`);
+  }
+  if (input.startDate) {
+    params.push(input.startDate);
+    where.push(`last_seen_at >= $${params.length}`);
+  }
+  if (input.endDate) {
+    params.push(input.endDate);
+    where.push(`first_seen_at <= $${params.length}`);
+  }
+  const addressQuery = input.addressQuery?.trim();
+  if (addressQuery) {
+    params.push(`%${addressQuery.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`address ilike $${params.length} escape '\\'`);
+  }
+  if (input.minDepth !== undefined) {
+    params.push(input.minDepth);
+    where.push(`min_depth >= $${params.length}`);
+  }
+  if (input.maxDepth !== undefined) {
+    params.push(input.maxDepth);
+    where.push(`max_depth <= $${params.length}`);
+  }
+  if (input.minDistinctAmountRaw !== undefined) {
+    params.push(input.minDistinctAmountRaw);
+    where.push(`distinct_amount_raw >= $${params.length}::numeric`);
+  }
+  if (input.maxDistinctAmountRaw !== undefined) {
+    params.push(input.maxDistinctAmountRaw);
+    where.push(`distinct_amount_raw <= $${params.length}::numeric`);
+  }
+  if (input.serviceCategory) {
+    params.push(input.serviceCategory);
+    where.push(`service_categories ? $${params.length}`);
+  }
+  if (input.subjectAddress) {
+    params.push(input.subjectAddress);
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      where sighting.address = wallet_intelligence_address_summary.address
+        and sighting.subject_address = $${params.length}
+    )`);
+  }
+  if (input.jobStatus) {
+    params.push(parseWalletIntelligenceJobStatus(input.jobStatus));
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      join wallet_intelligence_runs run on run.job_id = sighting.job_id
+      where sighting.address = wallet_intelligence_address_summary.address
+        and run.job_status = $${params.length}
+    )`);
+  }
+  const requesterQuery = input.requesterQuery?.trim();
+  if (requesterQuery) {
+    params.push(`%${requesterQuery.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      join wallet_intelligence_runs run on run.job_id = sighting.job_id
+      left join telegram_users telegram_user on telegram_user.telegram_user_id = run.telegram_user_id
+      where sighting.address = wallet_intelligence_address_summary.address
+        and (
+          coalesce(run.requested_by, '') ilike $${params.length} escape '\\'
+          or coalesce(run.telegram_user_id, '') ilike $${params.length} escape '\\'
+          or coalesce(run.telegram_username, '') ilike $${params.length} escape '\\'
+          or coalesce(telegram_user.username, '') ilike $${params.length} escape '\\'
+        )
+    )`);
+  }
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+  params.push(offset);
+  const offsetParam = `$${params.length}`;
+
+  const result = await db.query(
+    `select address, unique_subject_count, unique_requester_count, job_count,
+       completed_job_count, partial_job_count, occurrence_count, distinct_tx_count,
+       distinct_amount_raw, min_depth, max_depth, first_seen_at, last_seen_at,
+       modes, tags, service_categories, label_hints
+     from wallet_intelligence_address_summary
+     ${where.length > 0 ? `where ${where.join(" and ")}` : ""}
+     order by unique_subject_count desc, unique_requester_count desc, job_count desc, last_seen_at desc
+     limit ${limitParam} offset ${offsetParam}`,
+    params
+  );
+  return result.rows.map(mapWalletIntelligenceAddressSummaryRow);
+}
+
+export async function getWalletIntelligenceAddressDetail(
+  db: Db,
+  address: string
+): Promise<WalletIntelligenceAddressDetail | null> {
+  const summaryResult = await db.query(
+    `select address, unique_subject_count, unique_requester_count, job_count,
+       completed_job_count, partial_job_count, occurrence_count, distinct_tx_count,
+       distinct_amount_raw, min_depth, max_depth, first_seen_at, last_seen_at,
+       modes, tags, service_categories, label_hints
+     from wallet_intelligence_address_summary
+     where address = $1`,
+    [address]
+  );
+  if (!summaryResult.rows[0]) return null;
+
+  const requestersResult = await db.query(
+    `select
+       run.requested_by,
+       run.telegram_user_id,
+       coalesce(run.telegram_username, telegram_user.username) as username,
+       coalesce(run.telegram_locale, telegram_user.locale) as locale,
+       run.chat_id,
+       run.message_id,
+       count(distinct run.job_id)::integer as job_count
+     from wallet_intelligence_sightings sighting
+     join wallet_intelligence_runs run on run.job_id = sighting.job_id
+     left join telegram_users telegram_user on telegram_user.telegram_user_id = run.telegram_user_id
+     where sighting.address = $1
+     group by run.requested_by, run.telegram_user_id, coalesce(run.telegram_username, telegram_user.username), coalesce(run.telegram_locale, telegram_user.locale), run.chat_id, run.message_id
+     order by job_count desc, max(run.completed_at) desc nulls last
+     limit 50`,
+    [address]
+  );
+
+  const jobsResult = await db.query(
+    `select distinct run.job_id, run.job_kind, run.job_status, run.subject_address, run.completed_at
+     from wallet_intelligence_sightings sighting
+     join wallet_intelligence_runs run on run.job_id = sighting.job_id
+     where sighting.address = $1
+     order by run.completed_at desc nulls last, run.job_id asc
+     limit 100`,
+    [address]
+  );
+
+  const sightingsResult = await db.query(
+    `select id, address, job_id, job_kind, subject_address, requested_by, source_kind,
+       role, depth, path_id, tx_hash, amount_raw, first_seen_at, last_seen_at, metadata_json
+     from wallet_intelligence_sightings
+     where address = $1
+     order by last_seen_at desc nulls last, first_seen_at desc nulls last
+     limit 200`,
+    [address]
+  );
+
+  const edgesResult = await db.query(
+    `select id, from_address, to_address, job_id, job_kind, source_kind, depth,
+       path_id, tx_hash, amount_raw, timestamp, edge_role, metadata_json
+     from wallet_intelligence_edges
+     where from_address = $1 or to_address = $1
+     order by timestamp desc nulls last
+     limit 200`,
+    [address]
+  );
+
+  return {
+    summary: mapWalletIntelligenceAddressSummaryRow(summaryResult.rows[0]),
+    requesters: requestersResult.rows.map(mapWalletIntelligenceRequesterSummaryRow),
+    jobs: jobsResult.rows.map(mapWalletIntelligenceSourceJobSummaryRow),
+    sightings: sightingsResult.rows.map(mapWalletIntelligenceSightingRow),
+    edges: edgesResult.rows.map(mapWalletIntelligenceEdgeRow)
+  };
+}
+
 export async function saveForensicRouteSearchResult(
   db: Db,
   input: {
@@ -3177,6 +9492,7 @@ export async function saveForensicRouteSearchResult(
     paths: ForensicRoutePath[];
   }
 ): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
   parseForensicCaseStatus(input.case.status);
   const client = await db.connect();
   try {
@@ -3347,6 +9663,42 @@ export async function listRecentRiskSignalObservations(
      from risk_signal_observations
      where subject_chain = $1 and subject_address = $2
      order by created_at desc
+     limit $3`,
+    [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
+  );
+  return result.rows.map(mapRiskSignalObservationRow);
+}
+
+export async function listRecentAmlRiskSignalObservations(
+  db: Db,
+  input: { subjectAddress: string; chain?: string; limit?: number }
+): Promise<RiskSignalObservationInput[]> {
+  const result = await db.query(
+    `select id, subject_chain, subject_address, subject_tx_hash,
+       observed_transaction_hash, signal_group, code, message, score_impact,
+       confidence, severity, source, policy_version, raw_evidence_id
+     from risk_signal_observations
+     where subject_chain = $1 and subject_address = $2
+       and signal_group <> 'wallet_safety'
+     order by created_at desc, id desc
+     limit $3`,
+    [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
+  );
+  return result.rows.map(mapRiskSignalObservationRow);
+}
+
+export async function listRecentWalletSafetyObservations(
+  db: Db,
+  input: { subjectAddress: string; chain?: string; limit?: number }
+): Promise<RiskSignalObservationInput[]> {
+  const result = await db.query(
+    `select id, subject_chain, subject_address, subject_tx_hash,
+       observed_transaction_hash, signal_group, code, message, score_impact,
+       confidence, severity, source, policy_version, raw_evidence_id
+     from risk_signal_observations
+     where subject_chain = $1 and subject_address = $2
+       and signal_group = 'wallet_safety'
+     order by created_at desc, id desc
      limit $3`,
     [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
   );

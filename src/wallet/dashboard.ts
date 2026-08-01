@@ -27,20 +27,23 @@ export type WalletDashboard = {
   lastError: string | null;
 };
 
-export type WalletDashboardDeps = {
-  tronClient: TronDashboardClient;
-  config: Pick<AppConfig, "tronscanDashboardCacheTtlMs" | "tronscanDashboardMaxPages" | "tronscanDashboardForceRefreshCooldownMs">;
+export type WalletDashboardCacheDeps = {
+  config: Pick<AppConfig, "tronscanDashboardCacheTtlMs">;
   getSnapshot(watchedWalletId: string): Promise<WalletDashboardSnapshot | null>;
-  upsertSnapshot(snapshot: WalletDashboardSnapshot): Promise<void>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   getApprovalSummary?(watchedWalletId: string): Promise<WalletApprovalSummary>;
   now?(): Date;
 };
 
+export type WalletDashboardDeps = WalletDashboardCacheDeps & {
+  tronClient: TronDashboardClient;
+  config: Pick<AppConfig, "tronscanDashboardCacheTtlMs" | "tronscanDashboardMaxPages">;
+  upsertSnapshot(snapshot: WalletDashboardSnapshot): Promise<void>;
+};
+
 export type GetWalletDashboardInput = {
   wallet: WatchedWallet;
-  forceRefresh?: boolean;
 };
 
 type PageFetch<T> = (start: number) => Promise<T[]>;
@@ -164,6 +167,42 @@ function createEmptySnapshot(input: {
 }
 
 export async function getWalletDashboard(
+  deps: WalletDashboardCacheDeps,
+  input: GetWalletDashboardInput
+): Promise<WalletDashboard | null> {
+  const now = deps.now?.() ?? new Date();
+  const emptyApprovalSummary: WalletApprovalSummary = {
+    usdtApprovalCount: 0,
+    unlimitedApprovalCount: 0,
+    highRiskApprovalCount: 0,
+    topRiskyApprovals: [],
+    drainObservationCount: 0,
+    highRiskDrainObservationCount: 0,
+    topDrainObservations: []
+  };
+  const [cached, pollState, labels, approvalSummary] = await Promise.all([
+    deps.getSnapshot(input.wallet.id),
+    deps.getPollState(input.wallet.id),
+    deps.getLabelsForAddress(input.wallet.address),
+    deps.getApprovalSummary?.(input.wallet.id) ?? Promise.resolve(emptyApprovalSummary)
+  ]);
+
+  if (!cached) return null;
+
+  return buildDashboardFromSnapshot({
+    wallet: input.wallet,
+    snapshot: cached,
+    pollState,
+    labels,
+    approvalSummary,
+    source: cached.lastError
+      ? "error"
+      : isCacheFresh(cached, now, deps.config.tronscanDashboardCacheTtlMs) ? "cache" : "stale",
+    now
+  });
+}
+
+export async function refreshWalletDashboard(
   deps: WalletDashboardDeps,
   input: GetWalletDashboardInput
 ): Promise<WalletDashboard> {
@@ -183,30 +222,6 @@ export async function getWalletDashboard(
     deps.getLabelsForAddress(input.wallet.address),
     deps.getApprovalSummary?.(input.wallet.id) ?? Promise.resolve(emptyApprovalSummary)
   ]);
-
-  if (cached && !input.forceRefresh && isCacheFresh(cached, now, deps.config.tronscanDashboardCacheTtlMs)) {
-    return buildDashboardFromSnapshot({
-      wallet: input.wallet,
-      snapshot: cached,
-      pollState,
-      labels,
-      approvalSummary,
-      source: "cache",
-      now
-    });
-  }
-
-  if (cached && input.forceRefresh && cacheAgeMs(cached, now) <= deps.config.tronscanDashboardForceRefreshCooldownMs) {
-    return buildDashboardFromSnapshot({
-      wallet: input.wallet,
-      snapshot: cached,
-      pollState,
-      labels,
-      approvalSummary,
-      source: cached.lastError ? "stale" : "cache",
-      now
-    });
-  }
 
   try {
     const minTimestamp = now.getTime() - THIRTY_DAYS_MS;
@@ -293,7 +308,6 @@ export async function getWalletDashboard(
       now,
       error: errorMessage
     });
-    await deps.upsertSnapshot(snapshot);
     return buildDashboardFromSnapshot({
       wallet: input.wallet,
       snapshot,

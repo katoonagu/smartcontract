@@ -1,0 +1,615 @@
+# Продуктовый Narrative
+
+## Зачем Эта Глава
+
+У проекта уже есть код, режимы проверок, Telegram-бот, админка, risk logic и графы.
+
+Но все это нужно уметь объяснить просто.
+
+Эта глава отвечает на вопрос:
+
+```text
+Что мы строим, для кого, зачем, и почему это ценно?
+```
+
+Narrative нужен для:
+
+- команды;
+- пользователей;
+- обменников;
+- партнеров;
+- инвесторов;
+- будущих sales-материалов;
+- обсуждения roadmap.
+
+Главное:
+
+```text
+Мы не просто проверяем адрес по blacklist.
+Мы строим операционный risk layer для TRON USDT: мониторинг, проверки, графы, alerts и объяснимые решения.
+```
+
+## One-Liner
+
+Короткая версия:
+
+```text
+Telegram-бот и forensic backend для TRON USDT, который предупреждает о рискованных входящих деньгах, опасных approvals и подозрительных связях кошелька до того, как это станет проблемой.
+```
+
+Еще короче:
+
+```text
+Address Guard для TRON USDT: ранние предупреждения, проверка происхождения денег и объяснимый риск.
+```
+
+## Что Это За Продукт
+
+Это read-only система для мониторинга и проверки crypto-адресов.
+
+В текущем фокусе:
+
+```text
+TRON / TRC20 USDT.
+```
+
+Пользователь или команда добавляет кошелек в Telegram-бот.
+
+Система:
+
+- следит за входящими USDT;
+- проверяет отправителей;
+- предупреждает о high-risk incoming funds;
+- проверяет approvals;
+- строит jobs;
+- считает риск;
+- показывает графы связей;
+- сохраняет доказательства в админке.
+
+Пользователь получает короткий alert.
+
+Аналитик получает полную forensic-картину.
+
+## Какая Боль
+
+У пользователя или обменника есть рабочий USDT-кошелек.
+
+Каждый день туда приходят деньги.
+
+Проблема:
+
+- вручную смотреть TronScan неудобно;
+- понять происхождение денег сложно;
+- рискованные входящие можно заметить слишком поздно;
+- dangerous approval можно пропустить;
+- blacklist или риск-связь может появиться после контакта;
+- обменник может принять спорный депозит без достаточной проверки;
+- support и compliance начинают разбираться уже после проблемы.
+
+Наш продукт двигает предупреждение раньше.
+
+```text
+Не после инцидента, а в момент входа денег или появления опасного разрешения.
+```
+
+## Для Кого
+
+### Физлица
+
+Человек с TRON USDT-кошельком хочет знать:
+
+- пришли ли деньги;
+- безопасен ли sender;
+- есть ли опасные approvals;
+- не стоит ли сменить адрес;
+- что делать при warning.
+
+Для него ценность:
+
+```text
+Меньше ручной проверки, больше ранних предупреждений.
+```
+
+### Обменники И OTC
+
+Обменник принимает и отправляет USDT.
+
+Ему важно:
+
+- быстро видеть риск входящих денег;
+- не принимать спорные средства вслепую;
+- видеть sender risk;
+- видеть историю checks;
+- иметь доказательства для manual review;
+- получать alerts не только владельцу, но и операционной команде.
+
+Для обменника ценность:
+
+```text
+Меньше рискованных приемов, быстрее review, понятнее evidence trail.
+```
+
+### P2P И Crypto Processing
+
+Команды, которые работают с большим числом кошельков, хотят:
+
+- видеть события без ручного TronScan;
+- разделять low-risk и suspicious flow;
+- настроить alert modes;
+- видеть повторяющиеся risky patterns;
+- иметь единый backend для checks и history.
+
+Для них ценность:
+
+```text
+Операционный слой контроля вокруг кошельков.
+```
+
+### Юристы И Incident Teams
+
+Для команд, которые разбирают theft/scam cases, важны:
+
+- route денег;
+- approvals;
+- transferFrom;
+- timestamps;
+- граф связей;
+- boundary;
+- evidence pack;
+- понятная история действий.
+
+Для них ценность:
+
+```text
+Быстрее собрать первичный case file и понять, куда пошли деньги.
+```
+
+## Почему Это Не Просто Blacklist Check
+
+Blacklist check отвечает только на один вопрос:
+
+```text
+Есть ли адрес в известном списке?
+```
+
+Наш продукт шире.
+
+Он смотрит:
+
+- сам адрес;
+- входящие переводы;
+- исходящие переводы;
+- approvals;
+- sender risk;
+- source path;
+- service exposure;
+- CEX, DEX, bridge, contract;
+- bundles и groups;
+- time gaps;
+- peer links;
+- historical patterns;
+- coverage и missing checks.
+
+Главное отличие:
+
+```text
+Blacklist - это один сигнал.
+У нас система доказательств и объяснений.
+```
+
+## Почему Это Не Просто Telegram Alert
+
+Telegram alert сам по себе - это только сообщение.
+
+Ценность появляется, когда alert подкреплен backend-логикой.
+
+У нас alert связан с:
+
+- сохраненным job;
+- risk reasons;
+- raw evidence;
+- graph;
+- coverage;
+- admin view;
+- history;
+- manual review flow.
+
+То есть Telegram - это вход и короткий ответ.
+
+Доказательная часть живет глубже.
+
+```text
+Бот говорит "обрати внимание".
+Админка показывает "почему".
+```
+
+## Почему Это Не Просто Граф
+
+Граф без risk logic может быть красивой картинкой.
+
+Проблема:
+
+- много линий;
+- много адресов;
+- непонятно, что важно;
+- непонятно, где факт, а где context;
+- непонятно, где trace остановился.
+
+Наш граф должен быть частью решения.
+
+Он показывает:
+
+- путь денег;
+- важные связи;
+- сервисные границы;
+- bundles;
+- peer links;
+- amounts;
+- time gaps;
+- limitations.
+
+```text
+Граф нужен не для демонстрации сложности.
+Граф нужен, чтобы аналитик быстрее понял смысл.
+```
+
+## Главная Ценность
+
+Ценность продукта в связке:
+
+```text
+Telegram bot
++ monitoring
++ jobs
++ risk engine
++ source tracing
++ graph visualization
++ admin evidence
++ honest limitations
+```
+
+Каждый слой сам по себе полезен.
+
+Но сила продукта в том, что они работают вместе.
+
+Пример:
+
+```text
+На кошелек пришел USDT.
+Бот отправил alert.
+Worker проверил sender.
+Risk engine дал score и причины.
+Where is money показал source path.
+Graph показал route и boundary.
+Админка сохранила job и evidence.
+Аналитик принял решение.
+```
+
+## Как Объяснять Пользователю
+
+Пользователю не нужно объяснять всю forensic-архитектуру.
+
+Ему нужно сказать:
+
+```text
+Добавьте свой TRON USDT-кошелек.
+Бот будет предупреждать о входящих переводах, рисковых отправителях и опасных approvals.
+Он не просит private key и не управляет вашими средствами.
+```
+
+Пользовательская версия:
+
+```text
+Это бот, который следит за вашим USDT-кошельком и предупреждает, если входящие деньги или разрешения выглядят рискованно.
+```
+
+## Как Объяснять Обменнику
+
+Обменнику важно не "интересно посмотреть граф".
+
+Ему важно:
+
+- можно ли принимать депозит;
+- нужно ли ручное review;
+- какой sender risk;
+- где proof;
+- почему система так решила;
+- где история проверок.
+
+Версия для обменника:
+
+```text
+Мы даем Telegram alerts и forensic-админку для входящих TRON USDT.
+Система проверяет sender, происхождение денег, риск-метки, сервисные связи и approvals,
+а затем сохраняет объяснимый job для review.
+```
+
+Коротко:
+
+```text
+Меньше рискованных приемов и быстрее разбор спорных депозитов.
+```
+
+## Как Объяснять Партнеру
+
+Партнер может быть:
+
+- обменник;
+- crypto processor;
+- wallet service;
+- TRON Energy provider;
+- security team;
+- AML/API provider.
+
+Версия для партнера:
+
+```text
+Мы строим операционный слой безопасности вокруг TRON USDT-кошельков.
+Партнер может встроиться как источник данных, канал alerts, service integration или дополнительный action layer.
+```
+
+Что важно:
+
+- мы read-only;
+- мы не просим private keys;
+- мы можем подключать новые risk sources;
+- мы можем показывать evidence;
+- мы можем стать frontend для alerts и review.
+
+## Как Объяснять Инвестору
+
+Инвестору нужно объяснить рынок и wedge.
+
+Версия:
+
+```text
+Crypto-пользователи, обменники и P2P-команды каждый день принимают USDT,
+но часто видят риск только после инцидента.
+Мы строим ранний warning layer: мониторинг кошельков, проверка входящих денег,
+approval guard, risk scoring, graph forensics и админка для evidence.
+```
+
+Почему это интересно:
+
+- TRON USDT широко используется для платежей и обменов;
+- входящие средства могут нести AML и fraud risk;
+- approvals создают прямой fund-loss risk;
+- ручная проверка через explorer плохо масштабируется;
+- Telegram удобен как быстрый операционный интерфейс;
+- B2B-команды готовы платить за снижение операционного и compliance risk.
+
+## Текущий Wedge
+
+Не надо начинать с "мы анализируем весь блокчейн".
+
+Текущий wedge:
+
+```text
+TRON USDT wallet monitoring + incoming risk alerts + Approval Guard.
+```
+
+Почему это хороший wedge:
+
+- узкая понятная сеть;
+- понятный токен;
+- понятный пользовательский сценарий;
+- частые реальные операции;
+- Telegram подходит для alerts;
+- можно постепенно добавлять deeper forensic.
+
+После этого можно расширяться:
+
+- B2B admin workflows;
+- API/webhooks;
+- deeper source tracing;
+- evidence reports;
+- EVM/BSC;
+- commercial AML integrations;
+- case management.
+
+## Что Уже Можно Называть Реальным
+
+Можно говорить:
+
+- read-only Telegram bot;
+- TRON/TRC20 USDT focus;
+- watched wallets;
+- incoming monitoring;
+- alert modes;
+- Approval Guard;
+- manual address/tx checks;
+- jobs;
+- risk scoring;
+- admin console;
+- graph visualization;
+- evidence-first approach;
+- partial/coverage limitations.
+
+Но нужно аккуратно отделять от future:
+
+- commercial AML integrations;
+- arbitrary address-to-Telegram identity;
+- automatic fund recovery;
+- legal/police workflow;
+- full multi-chain coverage;
+- enterprise API, если он еще не готов.
+
+## Current vs Future
+
+### Current
+
+- TRON/TRC20 USDT focus.
+- Telegram bot for monitored wallets and manual checks.
+- Forensic jobs for address, source-of-funds, incoming deposits, and approvals.
+- Admin console for jobs, evidence, graph review, and history.
+- Risk scoring with explainable reasons and limitations.
+
+### Future Direction
+
+- Commercial AML integrations.
+- Wider multi-chain coverage.
+- API/webhook product layer.
+- Case management and export/reporting workflows.
+
+The future direction should not be sold as already complete.
+
+## Какие Фразы Использовать
+
+Хорошие фразы:
+
+```text
+early warning layer
+read-only wallet monitoring
+incoming funds risk
+approval safety
+source tracing
+evidence-backed risk
+forensic admin console
+manual review support
+operational risk layer
+```
+
+По-русски:
+
+```text
+раннее предупреждение
+мониторинг кошелька
+риск входящих денег
+опасные approvals
+происхождение средств
+объяснимый риск
+админка доказательств
+поддержка ручной проверки
+операционный слой контроля
+```
+
+## Какие Фразы Не Использовать
+
+Не стоит говорить:
+
+```text
+Мы точно знаем мошенников.
+Мы гарантируем чистоту кошелька.
+Мы вернем деньги.
+Мы отменим транзакцию.
+Мы узнаем Telegram владельца любого адреса.
+Мы полностью проверяем весь блокчейн.
+Мы заменяем AML officer.
+```
+
+Эти фразы создают неправильное ожидание и юридический риск.
+
+## Позиционирование Относительно AML-Сервисов
+
+Мы не должны притворяться Chainalysis, TRM или Elliptic.
+
+Лучше позиционировать так:
+
+```text
+Мы операционный слой вокруг кошелька и Telegram alerts.
+AML-провайдеры могут быть источником данных внутри risk engine.
+```
+
+То есть коммерческий AML API в будущем может усилить продукт.
+
+Но ценность продукта не только в paid AML score.
+
+Ценность в том, что мы:
+
+- видим событие вовремя;
+- связываем его с пользователем и watched wallet;
+- запускаем нужную проверку;
+- показываем результат в Telegram;
+- сохраняем evidence в jobs;
+- даем админке graph и review context.
+
+## Позиционирование Относительно Explorers
+
+Explorer показывает сырые данные.
+
+Наш продукт помогает принять операционное решение.
+
+Разница:
+
+```text
+Explorer: вот транзакции.
+Наш продукт: вот событие, риск, причины, путь денег, gaps, boundary и что делать дальше.
+```
+
+Explorer нужен как источник и ссылка.
+
+Но пользователь не должен вручную открывать 20 страниц, чтобы понять первый risk signal.
+
+## Позиционирование Относительно Internal Tools
+
+У обменника может быть своя таблица или manual review.
+
+Наш продукт может стать первым risk layer поверх этого.
+
+Он не обязан сразу заменить все процессы.
+
+Он может:
+
+- предупреждать;
+- объяснять;
+- сохранять evidence;
+- ускорять ручной review;
+- давать API или export позже.
+
+## Narrative Для Демо
+
+Хороший demo-flow:
+
+1. Пользователь запускает Telegram-бот.
+2. Добавляет TRON USDT wallet.
+3. Видит dashboard.
+4. Получает входящий депозит.
+5. Бот показывает alert и risk.
+6. В админке открывается job.
+7. На графе видно sender, source path, boundary, amount и gap.
+8. Analytics объясняет risk reason.
+9. Если данных не хватает, видно partial/missing checks.
+10. Аналитик принимает решение: accept, review или decline.
+
+Этот flow показывает всю ценность:
+
+```text
+быстрый пользовательский alert + глубокий evidence layer.
+```
+
+## Главный Product Claim
+
+Главный claim:
+
+```text
+Мы помогаем увидеть риск входящих TRON USDT и опасных approvals раньше,
+объяснить причину риска и сохранить доказательства для review.
+```
+
+Это сильная, но честная формулировка.
+
+Она не обещает абсолютную AML-истину.
+
+Она обещает ранний сигнал, объяснение и evidence.
+
+## Короткая Формулировка Для Команды
+
+Мы строим не просто Telegram-бота.
+
+И не просто граф.
+
+И не просто blacklist checker.
+
+Мы строим:
+
+```text
+read-only risk intelligence layer для TRON USDT wallets.
+```
+
+Пользователь видит короткий alert.
+
+Аналитик видит job, graph, risk reasons и limitations.
+
+Партнер получает операционный слой контроля.
+
+Инвестор видит wedge: TRON USDT monitoring today, broader crypto risk infrastructure tomorrow.

@@ -1,0 +1,439 @@
+# Unified Address Risk Report Design
+
+## Summary
+
+Telegram checks currently show several risk numbers for the same address:
+
+- preliminary fast risk;
+- where-is-money provenance risk;
+- deep address behavior risk.
+
+Each number is produced by a different subsystem and answers a different question. The analysis itself is useful, but the current bot output makes these numbers look like competing final decisions. This confuses operators, especially when a wallet has clean-ish provenance but risky operational behavior.
+
+This spec defines a single user-facing final report for address checks. "Where money came from" becomes the primary exchange decision and final score. Preliminary and deep behavior checks add short warnings only, unless they find hard evidence.
+
+## Approved Product Rule
+
+Use one final user-facing assessment:
+
+1. **Primary score source:** where-is-money result.
+2. **Context sources:** preliminary fast check and deep behavior check.
+3. **Override rule:** hard evidence from any source can override the final score and decision.
+4. **Hidden details:** technical fields move to support/debug output instead of the normal user message.
+
+Hard evidence includes exact self labels, exact approval-drain provenance, active USDT blacklist state, exact high-risk labeled path, or equivalent deterministic evidence. Behavior-only, service-boundary, operational-liquidity, and counterparty-fast-snapshot signals are not hard evidence by themselves.
+
+## Problems To Fix
+
+### Problem 1: Three Scores Look Like Three Decisions
+
+Example:
+
+- Preliminary: `60/100 HIGH`
+- Where-is-money: `25/100 LOW`, decision `ACCEPTABLE`
+- Behavior: `72/100 HIGH` or counterparty snapshot `80/100 HIGH`
+
+This is technically explainable but bad UX. The operator should not have to know internal scoring categories.
+
+### Problem 2: Preliminary Risk Sounds Too Final
+
+Fast risk can be raised by operational patterns:
+
+- service-boundary exposure;
+- rapid redistribution;
+- transit-like behavior;
+- major counterparty context.
+
+Those are review signals, not proof of dirty provenance. The preliminary message should not present this as the final address risk when async provenance jobs are still running.
+
+### Problem 3: Where-Is-Money Output Is Too Technical
+
+The current user report includes internal details:
+
+- job id;
+- evidence type;
+- assessment internals;
+- origin paths;
+- sender interactions;
+- coverage debug notes;
+- previous fast risk;
+- long transaction hashes;
+- raw stopped reasons.
+
+Most of this belongs in support/debug tooling, not in the main Telegram result.
+
+### Problem 4: `partial` Reads Like Incomplete Work
+
+Where-is-money may cover 95-100% of the target amount but still mark the job partial because some origin paths stop as `REVIEW`. In user copy this should be phrased as "готово, есть ограничения" or as confidence/limitations, not as if the analysis did not run.
+
+## What The System Actually Does
+
+### Balance-Forming Selection
+
+For a normal address check without a requested amount, the where-is-money job uses the current USDT balance as target.
+
+It selects inbound USDT transfers newest-first until they explain the current balance, with a default minimum coverage ratio of 95%.
+
+For the observed `TTs9xC...w7FD` job:
+
+- target: current balance, about `881,418 USDT`;
+- selected inbound transfers: `32`;
+- selected amount: about `840,313 USDT`;
+- coverage ratio: `95.33%`;
+- scope: current-balance provenance;
+- origin paths: all selected paths were `REVIEW`, with `weak_amount_or_time_continuity` or `no_previous_transfer`.
+
+### Weak Amount Or Time Continuity
+
+`weak_amount_or_time_continuity` means the sender has previous incoming USDT transfers, but the tracer cannot confidently connect a previous incoming transfer to the outgoing transfer into the checked wallet.
+
+The current threshold requires:
+
+- at least 70% amount preservation between candidate transfer and expected amount;
+- candidate transfer timestamp not later than the outgoing transfer;
+- maximum time delta of 365 days;
+- clean path must not cross an unresolved service boundary.
+
+This is a conservative stop. It prevents the report from claiming clean provenance when the chain is only loosely related by address history.
+
+### Behavior Risk
+
+Deep behavior risk is contextual. In the observed job it was driven by:
+
+- a major outbound counterparty with fast risk `80/100`;
+- about 50% outbound volume connected to that counterparty;
+- service exposure and transit-like behavior;
+- limited coverage notes.
+
+This is useful support context, but it should not compete with the final exchange decision unless it becomes hard evidence.
+
+## User-Facing Report
+
+The normal Telegram output should be one final message:
+
+```text
+Проверка адреса — итог
+
+Решение: ACCEPTABLE
+Итоговый риск: 🟢 25/100 (низкий)
+
+Почему:
+• Проверено 95% текущего баланса: 32 входящих USDT-перевода.
+• Жёстких плохих доказательств не найдено.
+• Часть путей не доказана до чистого источника, поэтому уверенность средняя.
+• Есть поведенческий риск по крупному контрагенту, но это не доказательство грязного происхождения.
+
+Ограничения:
+• 13 путей остановлены из-за слабой связи суммы/времени.
+• 19 путей остановлены без предыдущего входящего перевода.
+```
+
+The exact copy can be shorter when there are fewer signals. The message should stay under roughly 8-10 user-facing lines, excluding the address and runtime marker.
+
+## Preliminary Message
+
+The preliminary response should become a status message, not a competing score:
+
+```text
+Проверка адреса — запущена
+
+Адрес: ...
+
+Что делаем:
+• Проверяем происхождение текущего USDT-баланса.
+• Проверяем поведение адреса как дополнительный контекст.
+
+Итоговый риск появится после анализа происхождения средств.
+```
+
+If hard evidence is found during the fast check, the preliminary message may show it immediately. Otherwise it should avoid "Риск адреса: 60/100".
+
+## Deep Behavior Output
+
+Deep behavior should not send a separate "Риск поведения: N/100" user message by default.
+
+Instead:
+
+- if where-is-money is still pending, store the deep result and wait for aggregation when feasible;
+- if final where-is-money already exists, update/send a unified final report with a context warning;
+- if deep finds hard evidence, send/update final report immediately with override decision.
+
+Support/debug commands may still show standalone deep behavior details.
+
+## Support And Debug Output
+
+Move these fields out of the normal report:
+
+- job id;
+- raw evidence type;
+- internal assessment scores;
+- origin path list;
+- sender interaction list;
+- AI contract verdict details;
+- coverage debug notes;
+- transaction hashes;
+- previous fast risk;
+- raw counterparty snapshots.
+
+Keep them available for admins/support through existing job status/debug flows or a new compact support formatter.
+
+## Final Scoring Rules
+
+### Base Final Score
+
+Use `whereIsMoneyReport.riskScore` and `whereIsMoneyReport.decision` when where-is-money exists.
+
+### Hard Evidence Override
+
+Override the base score when any source contains deterministic hard evidence with a higher severity:
+
+- active USDT blacklist state;
+- exact approval-drain provenance;
+- exact internal critical label on the subject;
+- exact high-risk labeled path;
+- other hard evidence explicitly classified by risk policy.
+
+The override should explain the hard evidence in one short bullet.
+
+### Context Warnings
+
+Do not override the where-is-money score for:
+
+- service-boundary context;
+- operational/liquidity wallet role;
+- behavior-only score;
+- counterparty fast-risk snapshot;
+- weak amount/time continuity;
+- provider/data coverage limitation.
+
+These become warnings or limitations.
+
+## Data Flow
+
+1. `/check <address>` starts fast check and async jobs.
+2. Fast check sends a neutral "analysis started" message unless hard evidence exists.
+3. Where-is-money result becomes the primary final report.
+4. Deep result is merged into the final report as context.
+5. If jobs finish in either order, the bot should avoid showing multiple competing risk messages.
+6. Support/debug detail remains available outside the user-facing final message.
+
+## Living Issue Log
+
+Use this section for follow-up issues discovered during review before implementation.
+
+### 2026-06-01: Initial UX Consolidation
+
+Decision: use where-is-money as the primary final score. Preliminary and deep behavior add warnings only, except for hard-evidence overrides.
+
+Open questions for future additions:
+
+- Should final reports be edited in place when Telegram message ids are available, or sent as a new final message?
+- Should support/debug details be admin-only or available to all operators by command?
+- Should the preliminary message be suppressed entirely for fast where-is-money jobs?
+
+### 2026-06-01: Incoming Deposit Origin Coverage Copy
+
+Observed output:
+
+```text
+Проверено происхождение: 15% суммы
+```
+
+This is misleading for operators. The system did not simply "check only 15% of the deposit". For incoming deposits, this value is `originCoverage`: the share of the deposit amount that could be connected to upstream funding with sufficient amount/time continuity and without unresolved provenance stops.
+
+In the observed `300000 USDT` deposit case, the job checked the deposit and sender history, but the sender behaved like a pooled operational/liquidity wallet. The trace found only weak or budget-limited upstream continuity:
+
+- one long path reached `maxAddressFetches=60` before a clean or declined source was found;
+- another path had previous incoming transfers but weak cashflow continuity;
+- no hard bad evidence was found.
+
+The user-facing report should not show this as "Проверено происхождение: 15% суммы". Prefer one of these:
+
+- hide the percentage and show `Уверенность по происхождению: низкая/средняя`;
+- rename it to `Доказанная связка происхождения: 15%`;
+- include a short limitation: `Для остальной суммы источник не доказан из-за смешанной ликвидности отправителя`.
+
+This should be folded into the same unified-report work so incoming deposit alerts do not expose a confusing standalone percentage.
+
+### 2026-06-01: Large Deposit Cashflow Coverage Accounting
+
+The incoming-deposit report needs two separate accounting concepts:
+
+1. **Deposit funding coverage**: how much of the watched deposit can be explained by recent inbound transfers into the sender before the deposit.
+2. **Clean-source proof**: how much of that funding can be traced to a clean source, such as an allowlisted CEX, without unresolved weak continuity or service-boundary stops.
+
+The current output collapses these concepts into one percentage. In the observed `300000 USDT` deposit, immediate funding coverage was effectively 100%:
+
+```text
+TXd6AP...cMKX -> TQAX4B...jDbV, 299000 USDT
+TXd6AP...cMKX -> TQAX4B...jDbV,   1000 USDT
+TQAX4B...jDbV -> TEYPUt...UZBM, 300000 USDT
+```
+
+But clean-source proof was low because the upstream path moved through a large operational liquidity corridor. The user-facing report should therefore say:
+
+```text
+Покрытие депозита входящими переводами: 100%
+Доказанный чистый источник: не найден
+```
+
+or, in a shorter final message:
+
+```text
+Депозит покрыт входящими потоками отправителя, но чистый источник выше по цепочке не доказан.
+```
+
+The old `originCoverage` / exact-continuity percentage should move to support/debug output unless it is renamed clearly as `Доказанная связка происхождения`.
+
+This distinction is required before improving deeper traversal, because increasing depth without fixing the accounting model would still leave operators with confusing percentages.
+
+### 2026-06-01: Sender Role Must Be Coverage-Aware
+
+Observed output:
+
+```text
+Причины
+• Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found.
+
+Роль отправителя: кошелёк с CEX-источником
+```
+
+This happens because incoming deposit role inference currently returns `clean_cex_funded_wallet` when any origin path reaches a clean CEX. In the `249985 USDT` deposit case, the job found two paths:
+
+- a clean Binance path, but only as a weak/minority path;
+- a higher-coverage path that stopped at a service boundary.
+
+The trace did not fail because of shallow depth. The job uses `maxDepth=20` for incoming deposits and stopped early because one branch reached a clean CEX and another reached a service boundary. The inconsistency is semantic: "sender role" is too optimistic when it ignores how much of the deposit the clean CEX path explains.
+
+Desired behavior:
+
+- Only show `кошелёк с CEX-источником` when clean-source coverage is strong, for example `cleanSourceCoverageRatio >= 0.85`.
+- If clean CEX is reached only for a minority/weak branch, show it as context: `есть частичный маршрут к CEX`.
+- If the main amount stops at service boundary or liquidity corridor, keep sender role as operational/liquidity or corridor context.
+- The reason and role should not contradict each other.
+
+### 2026-06-01: Large-Transfer Funding Bundle For Liquidity Corridors
+
+Observed case:
+
+```text
+Deposit: TQAX4B...jDbV -> TEYPUt...UZBM, 300000 USDT
+Funding into sender:
+  TXd6AP...cMKX -> TQAX4B...jDbV, 299000 USDT
+  TXd6AP...cMKX -> TQAX4B...jDbV, 1000 USDT
+```
+
+Those two funding transfers explain 100% of the watched deposit. The weak user-facing coverage came from the next hop up the chain, where the `299000 USDT` transfer was part of a much larger liquidity corridor.
+
+The corridor included:
+
+```text
+TLNtiz...7cou -> TCSB8G...4xyU    500000 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU       100 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU    749900 USDT
+TBq8Qz...VcsH -> TCSB8G...4xyU    456000 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU    250000 USDT
+TEPSrS...RGfn -> TCSB8G...4xyU      2999 USDT
+TCSB8G...4xyU -> TQsNcd...54Cc   1960000 USDT
+```
+
+The incoming bundle before the `1960000 USDT` outbound transfer totals about `1958999 USDT`, which almost fully funds the outbound transfer. The current exact-continuity metric can still report a low continuity share because a later downstream amount, such as `299000 USDT`, is compared against a much larger upstream corridor transfer.
+
+This is analytically different from "source not checked":
+
+- the immediate deposit funding is covered;
+- the large corridor transfer is also mostly covered by a bundle of recent inbound transfers;
+- the clean source above the corridor is still not proven;
+- the structure is consistent with operational liquidity routing, not a simple one-wallet provenance path.
+
+Desired behavior:
+
+1. Detect large outbound transfers whose recent inbound transfers, as a bundle, cover the outbound amount.
+2. Store a `fundingBundle` or equivalent evidence object for the path.
+3. Separate these concepts in user-facing copy:
+   - `Покрытие депозита входящими переводами: 100%`;
+   - `Крупный промежуточный перевод покрыт входящим bundle: ~99.95%`;
+   - `Чистый источник выше по цепочке: не доказан`.
+4. Do not convert liquidity-corridor bundle coverage into clean-origin proof.
+5. Use the bundle to guide second-pass expansion: follow the largest bundle funders first, instead of spending the address budget on a single linear path.
+
+This should improve "where money came from" explanations for operational wallets without overstating clean provenance.
+
+### 2026-06-01: Adaptive 15-20 Hop Corridor Expansion
+
+It is valid to look further than the first weak corridor stop. The system already traces long paths, but the observed case shows that a single linear path can spend the address budget before it reaches a clean source or a meaningful service boundary.
+
+The improvement should not be "always fetch 20 hops for everything". That would create three problems:
+
+- provider cost and rate-limit pressure;
+- combinatorial explosion on fan-in/fan-out liquidity wallets;
+- false confidence if weak operational links are treated as exact provenance.
+
+Instead, use adaptive deepening:
+
+1. Start with the normal provenance trace.
+2. If a large deposit path stops at `data_budget_exhausted` or `weak_amount_or_time_continuity`, check whether the path contains a large intermediate transfer with a strong funding bundle.
+3. If a bundle exists, run a second-pass expansion only from the top bundle funders.
+4. Expand up to 15-20 hops or a larger address budget, but keep each branch bounded by:
+   - amount coverage;
+   - time continuity;
+   - service-boundary stops;
+   - maximum fan-out/fan-in branch count.
+5. Report the result as one of:
+   - clean source reached;
+   - hard-risk source reached;
+   - service/liquidity boundary reached;
+   - deep corridor remains unproven.
+
+User-facing copy should stay conservative:
+
+```text
+Депозит покрыт входящими потоками отправителя.
+Глубокая проверка прошла дальше по крупным funding-веткам.
+Чистый источник выше по цепочке не доказан.
+```
+
+If a clean CEX is reached through high-continuity branches, that can raise provenance confidence. If no clean or hard-risk source is reached, the report should explain that the funds move through a deep liquidity corridor rather than showing a misleading low checked-origin percentage.
+
+### 2026-06-01: Operational Chain Compression
+
+Long operational wallet chains should not be presented as ordinary one-hop-at-a-time provenance when they behave like a corridor:
+
+- many wallets;
+- large amounts;
+- monotonic time order;
+- repeated fan-in/fan-out;
+- no clean source reached;
+- no hard-risk source reached.
+
+The report should compress this into a single concept:
+
+```text
+Крупный liquidity corridor, clean CEX не достигнут.
+```
+
+Support/debug output can still show the full path. The user-facing output should show the compressed status and the decision impact:
+
+- the corridor explains cashflow movement;
+- it does not prove clean origin;
+- it does not prove scam/blacklist by itself;
+- it lowers provenance confidence and may justify manual review.
+
+## Testing Strategy
+
+Add focused tests for:
+
+- preliminary report hides non-hard fast score;
+- where-is-money final report shows one score and no technical sections;
+- deep behavior merges as warning without changing final score;
+- hard evidence from deep overrides where-is-money;
+- `partial` coverage wording becomes limitations/confidence wording;
+- support/debug output still exposes job ids and technical details.
+
+## Success Criteria
+
+- A normal address check produces one final user-facing score.
+- Operators can understand why the decision was made without reading internal provenance structures.
+- Behavior context is visible but clearly not proof of dirty funds.
+- Technical detail remains accessible for support.
+- Existing forensic scoring internals are preserved unless the implementation plan explicitly changes formatting or aggregation.

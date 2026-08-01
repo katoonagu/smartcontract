@@ -1,0 +1,3366 @@
+import { describe, expect, it } from "vitest";
+import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../../src/forensics/moneyOriginOperationalAssessment";
+import type {
+  ApprovalDrainReviewFinding,
+  ApprovalDrainProvenanceProfile,
+  MoneyOriginFundingSourceProvenance,
+  MoneyOriginPath,
+  MoneyOriginSenderInteractionProfile,
+  RiskReport,
+  RiskLayerScore,
+  SourceBundleExposureProfile,
+  SourceExposureKind,
+  SourcePolicyEvidence,
+  SubjectExposureProfile,
+  WhereIsMoneyAgeSignals,
+  WhereIsMoneyHardBadEvidence,
+  WhereIsMoneyCoverage
+} from "../../src/types";
+
+const subject = "TSubject111111111111111111111111111111";
+const sender = "TSender1111111111111111111111111111111";
+const funding = "TFunding111111111111111111111111111111";
+
+const lowFastRisk: RiskReport = {
+  subjectAddress: subject,
+  level: "LOW",
+  score: 0,
+  reasons: []
+};
+
+const mediumFastRisk: RiskReport = {
+  subjectAddress: subject,
+  level: "MEDIUM",
+  score: 55,
+  reasons: [{ code: "medium_context", message: "Medium contextual risk.", scoreImpact: 55 }]
+};
+
+const criticalFastRisk: RiskReport = {
+  subjectAddress: subject,
+  level: "CRITICAL",
+  score: 90,
+  reasons: [{ code: "critical_context_only", message: "Critical contextual risk.", scoreImpact: 90, evidenceRef: "fast-context-1" }]
+};
+
+const exactBlacklistFastRisk: RiskReport = {
+  subjectAddress: subject,
+  level: "CRITICAL",
+  score: 90,
+  reasons: [{
+    code: "stablecoin_usdt_blacklisted",
+    message: "Official USDT blacklist state is active.",
+    scoreImpact: 90,
+    evidenceRef: "fast-blacklist-1"
+  }]
+};
+
+function coverage(overrides: Partial<WhereIsMoneyCoverage> = {}): WhereIsMoneyCoverage {
+  return {
+    selectedInboundTxCount: 2,
+    currentBalanceRaw: "225240325624",
+    requestedAmountRaw: null,
+    targetAmountRaw: "225240325624",
+    selectedAmountRaw: "225240325624",
+    coverageRatio: 1,
+    selectedInboundVolumeRaw: "225240325624",
+    currentBalanceCoverageRatio: 1,
+    maxDepth: 7,
+    fetchedAddressCount: 19,
+    partial: true,
+    notes: [],
+    ...overrides
+  };
+}
+
+function reviewPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
+  return {
+    balanceTransferTxHash: "tx-review",
+    rootSourceAddress: funding,
+    rootSourceType: "incomplete",
+    balanceShare: 0.5,
+    exposureSourceKey: null,
+    exposureSourceLabel: null,
+    pathAddresses: [funding, sender, subject],
+    txHashes: ["tx-funding", "tx-review"],
+    steps: [
+      {
+        txHash: "tx-funding",
+        fromAddress: funding,
+        toAddress: sender,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-22T09:00:00.000Z"
+      },
+      {
+        txHash: "tx-review",
+        fromAddress: sender,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-22T10:00:00.000Z"
+      }
+    ],
+    amountPreservationRatio: 1,
+    timeSpanMs: 60 * 60 * 1000,
+    stoppedReason: "weak_amount_or_time_continuity",
+    verdict: "REVIEW",
+    riskScoreContribution: 30,
+    reasons: ["Previous incoming transfers exist, but clean CEX origin is not fully proven."],
+    ...overrides
+  };
+}
+
+function unresolvedSourceProvenance(overrides: Partial<MoneyOriginFundingSourceProvenance> = {}): MoneyOriginFundingSourceProvenance {
+  return {
+    mode: "source_provenance",
+    targetTxHash: "tx-unresolved-source",
+    targetFromAddress: sender,
+    targetToAddress: subject,
+    targetTimestamp: "2026-05-22T10:00:00.000Z",
+    targetAmountRaw: "14776543",
+    proofClass: "unresolved",
+    coveredAmountRaw: "0",
+    coverageRatio: 0,
+    amountContinuity: "strong",
+    stopReason: "incoming_history_not_fetched",
+    fundingBundle: null,
+    coverageWindow: {
+      startTimestamp: null,
+      endTimestamp: "2026-05-22T10:00:00.000Z",
+      complete: false,
+      capped: true,
+      providerInconsistent: false
+    },
+    reasons: ["coverage_window_not_exact", "provider_cap_hit", "funding_source_unresolved"],
+    ...overrides
+  };
+}
+
+function cleanCexPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
+  return reviewPath({
+    verdict: "ACCEPTABLE",
+    rootSourceType: "allowlist_cex",
+    stoppedReason: "allowlist_cex_reached",
+    balanceShare: 1,
+    riskScoreContribution: 5,
+    reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."],
+    ...overrides
+  });
+}
+
+function profile(overrides: Partial<MoneyOriginSenderInteractionProfile> = {}): MoneyOriginSenderInteractionProfile {
+  return {
+    balanceTransferTxHash: "tx-review",
+    senderAddress: sender,
+    incomingVolumeRaw: "512624000216",
+    outgoingVolumeRaw: "507355503200",
+    incomingTxCount: 4,
+    outgoingTxCount: 5,
+    topIncomingCounterparties: [
+      {
+        address: funding,
+        direction: "incoming",
+        volumeRaw: "258493000000",
+        txCount: 2,
+        firstSeen: "2026-05-20T00:00:00.000Z",
+        lastSeen: "2026-05-22T09:00:00.000Z",
+        txHashes: ["tx-funding"]
+      }
+    ],
+    topOutgoingCounterparties: [
+      {
+        address: subject,
+        direction: "outgoing",
+        volumeRaw: "100000000000",
+        txCount: 1,
+        firstSeen: "2026-05-22T10:00:00.000Z",
+        lastSeen: "2026-05-22T10:00:00.000Z",
+        txHashes: ["tx-review"]
+      }
+    ],
+    fundingCandidates: [
+      {
+        txHash: "tx-funding",
+        fromAddress: funding,
+        toAddress: sender,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-22T09:00:00.000Z",
+        amountPreservationRatio: 1,
+        timeDeltaMs: 60 * 60 * 1000
+      }
+    ],
+    ...overrides
+  };
+}
+
+function approvalDrainProfile(overrides: Partial<ApprovalDrainProvenanceProfile> = {}): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: "TVictim11111111111111111111111111111",
+    approvalTxHash: "tx-approve",
+    drainTxHash: "tx-drain",
+    spenderAddress: "TSpender1111111111111111111111111111",
+    operatorAddress: "TOperator111111111111111111111111111",
+    spenderResolution: "wrapper_contract",
+    falsePositiveGuards: [],
+    supportingFingerprints: [],
+    firstReceiverAddress: subject,
+    subjectAddress: subject,
+    hopDepth: 0,
+    amountRaw: "100000000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-05-22T09:00:00.000Z",
+    drainAt: "2026-05-22T10:00:00.000Z",
+    pathTxHashes: ["tx-drain"],
+    pathAddresses: ["TVictim11111111111111111111111111111", subject],
+    score: 92,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
+  };
+}
+
+function approvalReviewFinding(overrides: Partial<ApprovalDrainReviewFinding> = {}): ApprovalDrainReviewFinding {
+  return {
+    victimAddress: "TVictim11111111111111111111111111111",
+    drainTxHash: "tx-review-drain",
+    spenderAddress: "TSpender1111111111111111111111111111",
+    operatorAddress: "TOperator111111111111111111111111111",
+    spenderResolution: "wrapper_contract",
+    firstReceiverAddress: subject,
+    subjectAddress: subject,
+    reason: "path_not_proven",
+    falsePositiveGuards: [],
+    supportingFingerprints: [],
+    ...overrides
+  };
+}
+
+function ageSignals(scoreImpact: number): WhereIsMoneyAgeSignals {
+  return {
+    subjectFirstSeenAt: "2025-01-01T00:00:00.000Z",
+    subjectAgeDays: 500,
+    subjectActiveDays: 10,
+    directSenderMedianAgeDays: 300,
+    oldestDirectSenderAgeDays: 400,
+    repeatedRelationshipCount: scoreImpact < 0 ? 1 : 0,
+    longestRelationshipAgeDays: scoreImpact < 0 ? 30 : null,
+    maxDormancyGapDays: scoreImpact > 0 ? 120 : null,
+    signals: [
+      {
+        code: scoreImpact < 0 ? "relationship_repeated" : "dormancy_gap",
+        scoreImpact,
+        message: "Fixture age signal.",
+        value: null,
+        evidenceIds: ["tx-age"]
+      }
+    ]
+  };
+}
+
+function sourceBundleExposureProfile(overrides: Partial<SourceBundleExposureProfile> = {}): SourceBundleExposureProfile {
+  return {
+    scope: "where_requested_amount",
+    targetAmountRaw: "1000000000",
+    coveredAmountRaw: "1000000000",
+    coverageRatio: 1,
+    htxHuobiShare: 0,
+    cleanCexShare: 1,
+    bridgeRouterDexShare: 0,
+    unknownContractShare: 0,
+    riskyLabelShare: 0,
+    unknownShare: 0,
+    dominantSource: "clean_cex",
+    evidenceTxHashes: ["tx-source-bundle"],
+    reasons: ["Fixture source bundle exposure."],
+    warnings: [],
+    budget: {
+      maxDepth: 7,
+      fetchedAddressCount: 3,
+      maxAddressFetches: 20,
+      liveTransferReadCount: 4,
+      skippedAddressCount: 0,
+      exhausted: false,
+      exhaustedPhase: null
+    },
+    unresolvedBoundary: null,
+    ...overrides
+  };
+}
+
+function subjectExposureProfile(overrides: Partial<SubjectExposureProfile> = {}): SubjectExposureProfile {
+  return {
+    subjectAddress: subject,
+    windowStart: "2026-05-01T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    transferEventsScanned: 4,
+    incomingVolumeRaw: "1000000000",
+    outgoingVolumeRaw: "900000000",
+    htxHuobiIncomingShare: 0,
+    cleanCexIncomingShare: 1,
+    bridgeRouterDexVolumeShare: 0,
+    unknownContractVolumeShare: 0,
+    unknownSourceShare: 0,
+    inOutVelocityScore: 0,
+    scoreContribution: 0,
+    reasons: ["Fixture subject exposure."],
+    warnings: [],
+    ...overrides
+  };
+}
+
+function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] {
+  return {
+    checkedSubjectAddress: subject,
+    fastWalletRisk: lowFastRisk,
+    originPaths: [reviewPath()],
+    senderInteractionProfiles: [profile()],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    coverage: coverage(),
+    ...overrides
+  };
+}
+
+function checkedAssessmentInput(
+  overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}
+): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] & { checkedSubjectAddress: string } {
+  return { ...assessmentInput(overrides), checkedSubjectAddress: subject };
+}
+
+function extraSourcePolicyEvidence(kind: SourceExposureKind, score: number): SourcePolicyEvidence {
+  return {
+    kind,
+    aggregateShare: 1,
+    effectiveShare: 1,
+    pathCount: 1,
+    score,
+    riskBand: riskBandFromWhereScore(score),
+    proofLevel: score >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+    canBeDampened: kind !== "no_name_token_liquidity" && kind !== "mixer",
+    reasons: [`Extra ${kind} source-policy evidence.`],
+    warnings: [],
+    evidenceIds: [`extra-${kind}`]
+  };
+}
+
+function extraRiskLayer(overrides: Partial<RiskLayerScore> = {}): RiskLayerScore {
+  const score = overrides.score ?? 66;
+  return {
+    evidenceClass: "source_policy",
+    kind: "extra_layer",
+    score,
+    rawScore: score,
+    adjustedScore: score,
+    proofLevel: score >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+    canBeDampened: true,
+    reasons: ["Extra risk layer."],
+    warnings: [],
+    evidenceIds: ["extra-layer"],
+    ...overrides
+  };
+}
+
+function extraSanctionedHardEvidence(overrides: Partial<WhereIsMoneyHardBadEvidence> = {}): WhereIsMoneyHardBadEvidence {
+  return {
+    kind: "sanctioned_service",
+    score: 99,
+    message: "Cross-chain corridor reached a sanctioned service.",
+    evidenceIds: ["extra-sanctioned-hard"],
+    ...overrides
+  };
+}
+
+describe("riskBandFromWhereScore", () => {
+  it("uses the where-is-money operational thresholds", () => {
+    expect(riskBandFromWhereScore(0)).toBe("LOW");
+    expect(riskBandFromWhereScore(19)).toBe("LOW");
+    expect(riskBandFromWhereScore(20)).toBe("LOW-MEDIUM");
+    expect(riskBandFromWhereScore(44)).toBe("LOW-MEDIUM");
+    expect(riskBandFromWhereScore(45)).toBe("MEDIUM");
+    expect(riskBandFromWhereScore(59)).toBe("MEDIUM");
+    expect(riskBandFromWhereScore(60)).toBe("HIGH");
+    expect(riskBandFromWhereScore(84)).toBe("HIGH");
+    expect(riskBandFromWhereScore(85)).toBe("CRITICAL");
+  });
+});
+
+describe("buildMoneyOriginOperationalAssessment", () => {
+  const smallBridgeBoundary = "TBridge111111111111111111111111111111";
+
+  it("does not trust a saved risky-label source bundle share without an authoritative path", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        riskyLabelShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "risky_label"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeLessThan(85);
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence.some((item) => item.kind === "risky_label")).toBe(false);
+  });
+
+  it("applies the 10 percent HTX/Huobi context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("applies the 50 percent unknown-contract context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.5,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(45);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unknown_contract",
+        score: 45,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("keeps combined contextual source bundle floors out of decline aggregation", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
+  });
+
+  it("keeps selected source bundle evidence ids scoped to matching origin path kinds", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-htx",
+          txHashes: ["tx-htx"],
+          sourceExposureKind: "htx_huobi",
+          balanceShare: 0.1,
+          reasons: ["HTX/Huobi source exposure."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unknown",
+          txHashes: ["tx-unknown"],
+          sourceExposureKind: "unknown_contract",
+          balanceShare: 0.5,
+          reasons: ["Unknown contract source exposure."]
+        }),
+        cleanCexPath({
+          balanceTransferTxHash: "tx-clean",
+          txHashes: ["tx-clean"],
+          balanceShare: 0.4
+        })
+      ],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract",
+        evidenceTxHashes: ["tx-htx", "tx-unknown", "tx-clean"]
+      })
+    }));
+
+    const htxEvidence = assessment.sourcePolicyEvidence.find((item) =>
+      item.kind === "htx_huobi" &&
+      item.reasons.some((reason) => reason.includes("Selected amount source bundle"))
+    );
+
+    expect(htxEvidence?.evidenceIds).toEqual(["tx-htx"]);
+  });
+
+  it("floors selected HTX/Huobi source bundle share at 85 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0.3,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 85,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("floors selected HTX/Huobi source bundle share at 70 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.31,
+        cleanCexShare: 0.69,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(70);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 70,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("keeps small selected bridge/router/dex source bundle exposure as review context", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-subject-inbound",
+          rootSourceAddress: smallBridgeBoundary,
+          rootSourceType: "decline_boundary",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          pathAddresses: [smallBridgeBoundary, sender, subject],
+          txHashes: ["tx-bridge-hop", "tx-subject-inbound"],
+          steps: [
+            {
+              txHash: "tx-bridge-hop",
+              fromAddress: smallBridgeBoundary,
+              toAddress: sender,
+              amountRaw: "2094300000",
+              timestamp: "2026-07-08T04:50:15.000Z"
+            },
+            {
+              txHash: "tx-subject-inbound",
+              fromAddress: sender,
+              toAddress: subject,
+              amountRaw: "2094300000",
+              timestamp: "2026-07-08T04:51:21.000Z"
+            }
+          ],
+          amountUsage: {
+            anchorAmountRaw: "2094300000",
+            originalAmountRaw: "2094300000",
+            usedAmountRaw: "2094300000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          },
+          amountPreservationRatio: 1,
+          timeSpanMs: 66 * 1000,
+          stoppedReason: "service_boundary",
+          verdict: "DECLINE",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches bridge boundary; public-chain continuity after the service boundary should not be assumed."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      coverage: coverage({
+        targetAmountRaw: "2094300000",
+        selectedAmountRaw: "2094300000",
+        selectedInboundVolumeRaw: "2094300000",
+        currentBalanceRaw: "2094300000"
+      }),
+      sourceBundleExposure: sourceBundleExposureProfile({
+        targetAmountRaw: "2094300000",
+        coveredAmountRaw: "2094300000",
+        bridgeRouterDexShare: 1,
+        cleanCexShare: 0,
+        dominantSource: "bridge_router_dex"
+      })
+    }));
+    const text = [
+      ...assessment.reasons,
+      ...assessment.sourcePolicyEvidence.flatMap((item) => item.reasons),
+      ...assessment.riskLayers.flatMap((layer) => layer.reasons)
+    ].join(" ");
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.riskScore).toBeLessThan(60);
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 58,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+    expect(text).toContain("2.09K USDT");
+    expect(text).toContain("source-policy review context");
+    expect(text).toContain("not scam/drain proof");
+  });
+
+  it("applies unresolved bridge source bundle boundary as coverage-limited context without exact source proof", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        warnings: ["Source bundle coverage-limited: graph budget stopped before every material boundary was resolved."],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 7,
+          maxAddressFetches: 7,
+          liveTransferReadCount: 12,
+          skippedAddressCount: 0,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-bridge"],
+          scoreFloor: 55
+        }
+      })
+    }));
+    const text = [
+      ...assessment.reasons,
+      ...assessment.warnings,
+      ...assessment.sourcePolicyEvidence.flatMap((item) => [...item.reasons, ...item.warnings]),
+      ...assessment.riskLayers.flatMap((layer) => [...layer.reasons, ...layer.warnings])
+    ].join(" ");
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_source_boundary",
+        sourceExposureKind: "bridge_router_dex",
+        floorApplied: 55
+      })
+    ]));
+    expect(text).toContain("coverage-limited");
+    expect(text).toContain("unresolved");
+    expect(text.toLowerCase()).not.toContain("exact source proof");
+  });
+
+  it("ignores an unresolved risky-label boundary without authoritative path evidence overlap", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "risky_label",
+          affectedShare: 0.5,
+          reason: "Saved unresolved risky-label boundary.",
+          evidenceTxHashes: ["tx-stale-risky-boundary"],
+          scoreFloor: 85
+        }
+      })
+    }));
+
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).not.toContain("risky_label");
+    expect(assessment.riskLayers.some((layer) =>
+      layer.kind === "unresolved_source_boundary" && layer.sourceExposureKind === "risky_label"
+    )).toBe(false);
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
+  it("accepts an unresolved risky-label boundary bound to an authoritative risky-label path", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [reviewPath({
+        verdict: "DECLINE",
+        rootSourceType: "risky_label",
+        exposureSourceKey: "scam",
+        exposureSourceLabel: "scam",
+        sourceExposureKind: "risky_label",
+        stoppedReason: "risky_label_reached",
+        balanceShare: 1,
+        riskScoreContribution: 90,
+        reasons: ["Authoritative risky-label source path."]
+      })],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "risky_label",
+          affectedShare: 0.5,
+          reason: "Bound unresolved risky-label boundary.",
+          evidenceTxHashes: ["tx-review"],
+          scoreFloor: 85
+        }
+      })
+    }));
+
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("risky_label");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unresolved_source_boundary",
+        sourceExposureKind: "risky_label",
+        evidenceIds: ["tx-review"]
+      })
+    ]));
+  });
+
+  it("applies unresolved unknown source bundle floor as coverage-limited context", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "unknown",
+          affectedShare: 0.35,
+          reason: "Source bundle coverage-limited: unresolved unknown boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-unknown"],
+          scoreFloor: 35
+        }
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(35);
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_unknown_source_boundary",
+        score: 35,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("adds capped subject exposure context without declining by itself", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      subjectExposureProfile: subjectExposureProfile({
+        scoreContribution: 20,
+        htxHuobiIncomingShare: 0.2,
+        reasons: ["Subject has contextual HTX/Huobi background exposure."]
+      })
+    }));
+    const subjectLayer = assessment.riskLayers.find((layer) => layer.kind === "subject_exposure_context");
+
+    expect(subjectLayer).toMatchObject({
+      evidenceClass: "behavior_context",
+      proofLevel: "operational_liquidity_context",
+      canBeDampened: true,
+      score: 20,
+      rawScore: 20,
+      adjustedScore: 20
+    });
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).not.toContain("htx_huobi");
+    expect(assessment.riskScore).toBeLessThan(70);
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
+  it("accepts an operational liquidity wallet when no hard bad evidence exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({ balanceShare: 0.45 }),
+        reviewPath({ balanceTransferTxHash: "tx-review-2", balanceShare: 0.55 })
+      ],
+      senderInteractionProfiles: [
+        profile(),
+        profile({
+          balanceTransferTxHash: "tx-review-2",
+          incomingVolumeRaw: "1399178000000",
+          outgoingVolumeRaw: "1382660771000",
+          incomingTxCount: 8,
+          outgoingTxCount: 9
+        })
+      ]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "ACCEPTABLE",
+      riskBand: "LOW-MEDIUM",
+      walletRole: "operational_liquidity_wallet",
+      hardBadEvidence: []
+    });
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(25);
+    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+    expect(assessment.provenanceConfidence).toBeGreaterThanOrEqual(45);
+    expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
+    expect(assessment.unknownOriginEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "unknown_origin",
+        proofLevel: "operational_liquidity_context"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "unknown_origin",
+      proofLevel: "operational_liquidity_context"
+    }));
+  });
+
+  it("keeps unresolved recent-flow operational wallets low-medium without hard evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          riskScoreContribution: 35,
+          stoppedReason: "no_previous_transfer",
+          balanceShare: 1,
+          reasons: ["No previous inbound USDT transfer found before this recent-flow anchor."]
+        })
+      ],
+      coverage: coverage({
+        selectedInboundTxCount: 2,
+        currentBalanceRaw: "147000",
+        requestedAmountRaw: null,
+        targetAmountRaw: "89473150000",
+        selectedAmountRaw: "89473150000",
+        coverageRatio: 1,
+        selectedInboundVolumeRaw: "89473150000",
+        currentBalanceCoverageRatio: 0,
+        provenanceScope: "recent_flow",
+        anchorTransfer: {
+          txHash: "out-anchor",
+          direction: "outgoing",
+          fromAddress: subject,
+          toAddress: "TReceiver11111111111111111111111111",
+          amountRaw: "89473150000",
+          timestamp: "2026-05-05T08:49:27.000Z",
+          reason: "latest_meaningful_outgoing"
+        },
+        lowBalanceThresholdRaw: "1000000000",
+        dataScopeNote: "Low-balance recent-flow mode.",
+        partial: true
+      }),
+      ageSignals: null
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+    expect(assessment.riskBand).toBe("LOW-MEDIUM");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("Recent-flow source is not fully proven");
+  });
+
+  it("declines exact approval-drain provenance as hard bad evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(90);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("uses the checked Where subject for direct approval authority when Fast is missing", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(checkedAssessmentInput({
+      fastWalletRisk: null,
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("does not let a mismatched Fast subject suppress a correct-subject direct approval profile", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(checkedAssessmentInput({
+      fastWalletRisk: { ...lowFastRisk, subjectAddress: sender },
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("does not authorize a direct approval profile for a different checked subject", () => {
+    const assessment = buildMoneyOriginOperationalAssessment({
+      ...assessmentInput({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] }),
+      checkedSubjectAddress: sender
+    });
+
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("approval_drain");
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
+  it("declines exact risky labels as scam or blacklist hard evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "risky_label",
+          exposureSourceKey: "scam",
+          sourceExposureKind: "risky_label",
+          stoppedReason: "risky_label_reached",
+          balanceShare: 1,
+          riskScoreContribution: 90,
+          reasons: ["Balance-forming path reaches high-risk label scam; exchange policy declines this source."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(90);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scam_or_blacklist" })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "hard_proof",
+      proofLevel: "exact_scam_or_taint_proof"
+    }));
+  });
+
+  it("keeps small WhiteBIT as medium source-policy context without hard bad evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.1,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 38,
+          reasons: ["Balance-forming path has WhiteBIT exposure (10% of selected provenance target); this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThan(60);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "whitebit",
+        proofLevel: "exchange_policy_context"
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        sourceExposureKind: "whitebit"
+      })
+    ]));
+  });
+
+  it("does not apply a fixed WhiteBIT decline floor for tiny exposure", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.03,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          effectiveExposureShare: 0.03,
+          riskScoreContribution: 24,
+          reasons: ["Balance-forming path has WhiteBIT exposure."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThan(45);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "whitebit",
+      proofLevel: "exchange_policy_context"
+    });
+  });
+
+  it("uses WhiteBIT source-policy reasons when another path appears first", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          reasons: ["Unrelated clean/review path reason."]
+        }),
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.1,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 38,
+          reasons: ["Balance-forming path has WhiteBIT exposure."]
+        })
+      ]
+    }));
+
+    expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
+    expect(assessment.sourcePolicyEvidence[0]?.reasons.join(" ")).toContain("whitebit exposure");
+  });
+
+  it("keeps minority HTX/Huobi exposure out of hard evidence and accepts operational wallets", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.15,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (15% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(35);
+    expect(assessment.riskScore).toBeLessThanOrEqual(55);
+    expect(assessment.riskBand).toBe("LOW-MEDIUM");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("htx_huobi_source");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_context"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_context"
+    }));
+  });
+
+  it("declines majority HTX/Huobi through a source-policy dominant layer without hard source evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (62% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("htx_huobi_source");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_decline"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("does not aggregate contextual source-policy exposures into decline proof", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.19,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure; this is source-policy risk, not direct scam/blacklist proof."]
+        }),
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.45,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 55,
+          reasons: ["Balance-forming path has WhiteBIT exposure; this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
+  });
+
+  it("does not report final risk below the dominant contextual source-policy layer", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.49,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 52,
+          reasons: ["Balance-forming path has WhiteBIT exposure; this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.dominantRiskLayer?.score ?? 0).toBeGreaterThan(0);
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(assessment.dominantRiskLayer?.score ?? 0);
+  });
+
+  it("does not promote generic Fast 90 context to hard evidence or decline", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: criticalFastRisk,
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("fast_critical");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("scam_or_blacklist");
+  });
+
+  it("keeps exact Fast blacklist evidence hard and declining", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: exactBlacklistFastRisk,
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(95);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "fast_critical", evidenceIds: ["fast-blacklist-1"] })
+    ]));
+  });
+
+  it("rejects exact Fast hard evidence reported for a different checked subject", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: { ...exactBlacklistFastRisk, subjectAddress: sender },
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("fast_critical");
+  });
+
+  it("keeps exact approval-drain proof as dominant even when source-policy score is higher", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure; this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [approvalDrainProfile({ score: 92 })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      proofLevel: "exact_approval_drain_provenance"
+    }));
+  });
+
+  it("declines bridge/router/DEX boundaries as source-policy evidence but not hard bad evidence", () => {
+    const bridgeAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches bridge boundary."]
+        })
+      ]
+    }));
+    const unknownContractAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "unknown",
+          stoppedReason: "unlabeled_service_boundary",
+          balanceShare: 1,
+          exposureSourceKey: "unknown_contract",
+          sourceExposureKind: "unknown_contract",
+          riskScoreContribution: 55,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ]
+    }));
+
+    expect(bridgeAssessment.decision).toBe("DECLINE");
+    expect(bridgeAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(bridgeAssessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "bridge_router_dex",
+      proofLevel: "exchange_policy_decline"
+    });
+    expect(unknownContractAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");
+    expect(unknownContractAssessment.hardBadEvidence).toHaveLength(0);
+    expect(unknownContractAssessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "unknown_contract",
+      proofLevel: "exchange_policy_context"
+    });
+  });
+
+  it("keeps minority bridge/router/DEX exposure contextual against the selected amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      coverage: coverage({
+        targetAmountRaw: "46000000000",
+        selectedAmountRaw: "46000000000",
+        checkedScope: "transaction_seed",
+        provenanceScope: "transaction_seed"
+      }),
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 4060 / 46000,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 30,
+          reasons: ["Balance-forming path reaches bridge boundary."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThan(45);
+    expect(assessment.sourcePolicyEvidence[0]?.shareDetail).toMatchObject({
+      scope: "where_selected_amount",
+      targetAmountRaw: "46000000000",
+      affectedAmountRaw: "4060000000",
+      shareCap: 30
+    });
+  });
+
+  it("does not publish a final decline for deterministic guarded approval review with incomplete hop coverage", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          reasons: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      coverage: coverage({
+        partial: true,
+        notes: ["tx-review: Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("coverage");
+    expect(assessment.reasons.join(" ")).not.toContain("declined by policy");
+  });
+
+  it("keeps score valid when only residual source provenance is unresolved below materiality", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.998678,
+          txHashes: ["tx-large-clean"],
+          steps: [{
+            txHash: "tx-large-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "11161025102",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-small-unresolved",
+          balanceShare: 0.001322,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-small-unresolved"],
+          steps: [{
+            txHash: "tx-small-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "14776543",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-small-unresolved",
+            targetAmountRaw: "14776543"
+          })],
+          reasons: ["Residual source is unresolved, but below materiality and has no hard evidence."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      coverage: coverage({
+        currentBalanceRaw: "11175801645",
+        targetAmountRaw: "11175801645",
+        selectedAmountRaw: "11175801645",
+        partial: true,
+        notes: ["Residual source unresolved below materiality."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.scoreBlockedReason).toBeNull();
+    expect(assessment.technicalStatus).toBe("completed");
+    expect(assessment.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Residual unresolved source")
+    ]));
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "residual_unresolved_below_materiality",
+      unresolvedAmountRaw: "14776543",
+      unresolvedAmountUsdt: 14.776543,
+      unresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false
+    });
+    expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001322, 6);
+  });
+
+  it.each([
+    {
+      status: "local_limit" as const,
+      error: null,
+      scoreBlockedReason: "local_budget_limited" as const,
+      technicalStatus: "local_budget_limited" as const
+    },
+    {
+      status: "read_failed" as const,
+      error: "local index unavailable",
+      scoreBlockedReason: "local_index_read_failed" as const,
+      technicalStatus: "local_data_error" as const
+    }
+  ])("blocks below-materiality bypass for $status local materialization", ({
+    status,
+    error,
+    scoreBlockedReason,
+    technicalStatus
+  }) => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-local-clean",
+          balanceShare: 0.999,
+          txHashes: ["tx-local-clean"],
+          steps: [{
+            txHash: "tx-local-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "9990000000",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-local-unresolved",
+          balanceShare: 0.001,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-local-unresolved"],
+          steps: [{
+            txHash: "tx-local-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "10000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-local-unresolved",
+            targetAmountRaw: "10000000"
+          })],
+          historyCoverage: [
+            ...(status === "read_failed" ? [{
+              address: funding,
+              targetTimestamp: "2026-05-22T10:00:00.000Z",
+              fetchedTransferCount: 2,
+              fetchedPageCount: 1,
+              oldestFetchedTransferAt: "2026-05-22T09:59:00.000Z",
+              reachedTargetHop: false,
+              source: "local_index" as const,
+              coverageComplete: false,
+              providerCapHit: false,
+              budgetExhausted: true,
+              providerInconsistent: false,
+              statusReason: null,
+              localMaterializationStatus: "local_limit" as const,
+              localMaterializationCompletionReason: null,
+              localMaterializationKnownZero: false,
+              localMaterializationError: null
+            }] : []),
+            {
+              address: sender,
+              targetTimestamp: "2026-05-22T10:00:00.000Z",
+              fetchedTransferCount: 2,
+              fetchedPageCount: 1,
+              oldestFetchedTransferAt: "2026-05-22T09:59:00.000Z",
+              reachedTargetHop: false,
+              source: "local_index",
+              coverageComplete: false,
+              providerCapHit: false,
+              budgetExhausted: status === "local_limit",
+              providerInconsistent: false,
+              statusReason: null,
+              localMaterializationStatus: status,
+              localMaterializationCompletionReason: null,
+              localMaterializationKnownZero: false,
+              localMaterializationError: error
+            }
+          ]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "10000000000",
+        targetAmountRaw: "10000000000",
+        selectedAmountRaw: "10000000000",
+        partial: true,
+        notes: ["Residual source is below materiality, but the local index was not fully materialized."]
+      })
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason,
+      technicalStatus,
+      hardBadEvidence: [],
+      sourcePolicyEvidence: [],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: []
+    });
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(30);
+    expect(assessment.riskScore).toBeLessThanOrEqual(59);
+    expect(assessment.reasons.join(" ")).toContain("local index");
+    expect(assessment.warnings.join(" ")).toContain("technical");
+  });
+
+  it("preserves exact approval-drain evidence across a local materialization read failure", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [reviewPath({
+        historyCoverage: [{
+          address: sender,
+          targetTimestamp: "2026-05-22T10:00:00.000Z",
+          fetchedTransferCount: 0,
+          fetchedPageCount: 1,
+          oldestFetchedTransferAt: null,
+          reachedTargetHop: false,
+          source: "local_index",
+          coverageComplete: false,
+          providerCapHit: false,
+          budgetExhausted: false,
+          providerInconsistent: false,
+          statusReason: null,
+          localMaterializationStatus: "read_failed",
+          localMaterializationCompletionReason: null,
+          localMaterializationKnownZero: false,
+          localMaterializationError: "local index unavailable"
+        }]
+      })],
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()],
+      approvalDrainReviewFindings: [approvalReviewFinding()],
+      coverage: coverage({ partial: true })
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "DECLINE",
+      scoreValid: false,
+      scoreBlockedReason: "local_index_read_failed",
+      technicalStatus: "local_data_error"
+    });
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(assessment.warnings.join(" ")).toContain("local index");
+    expect(assessment.warnings.join(" ")).toContain("tx-review-drain");
+  });
+
+  it.each(["source_materiality", "source_policy"] as const)(
+    "locks exact hard evidence before %s interpretation",
+    (phase) => {
+      const input = assessmentInput({
+        originPaths: [reviewPath({
+          historyCoverage: [{
+            address: sender,
+            targetTimestamp: "2026-05-22T10:00:00.000Z",
+            fetchedTransferCount: 0,
+            fetchedPageCount: 1,
+            oldestFetchedTransferAt: null,
+            reachedTargetHop: false,
+            source: "local_index",
+            coverageComplete: false,
+            providerCapHit: false,
+            budgetExhausted: false,
+            providerInconsistent: false,
+            statusReason: null,
+            localMaterializationStatus: "read_failed",
+            localMaterializationCompletionReason: null,
+            localMaterializationKnownZero: false,
+            localMaterializationError: "local index unavailable"
+          }]
+        })],
+        approvalDrainProvenanceProfiles: [approvalDrainProfile()],
+        coverage: coverage({ partial: true })
+      });
+      let interpretationReadCount = 0;
+      const readInterpretationInput = () => {
+        interpretationReadCount += 1;
+        return [];
+      };
+      if (phase === "source_materiality") {
+        Object.defineProperty(input.originPaths[0], "sourceProvenance", { get: readInterpretationInput });
+      } else {
+        Object.defineProperty(input, "extraSourcePolicyEvidence", { get: readInterpretationInput });
+      }
+
+      const assessment = buildMoneyOriginOperationalAssessment(input);
+      expect(interpretationReadCount).toBe(0);
+      expect(assessment).toMatchObject({
+        decision: "DECLINE",
+        scoreValid: false,
+        scoreBlockedReason: "local_index_read_failed",
+        technicalStatus: "local_data_error"
+      });
+      expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    }
+  );
+
+  it("marks completed assessments explicitly valid outside local materialization failures", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment).toMatchObject({
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed"
+    });
+  });
+
+  it("keeps score valid for a small-relative dense-hop provider-cap tail above dust amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.998438,
+          txHashes: ["tx-large-clean"],
+          steps: [{
+            txHash: "tx-large-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "998438000000",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-dense-tail",
+          balanceShare: 0.001562,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-dense-tail"],
+          steps: [{
+            txHash: "tx-dense-tail",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-dense-tail",
+            targetAmountRaw: "1562000000",
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+            stopReason: "incoming_history_not_fetched"
+          })],
+          reasons: ["Dense-hop source remains unresolved after provider-cap terminal state."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Dense-hop source unresolved below relative materiality."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.scoreBlockedReason).toBeNull();
+    expect(assessment.technicalStatus).toBe("completed");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "1562000000",
+      unresolvedAmountUsdt: 1562,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true
+    });
+    expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001562, 6);
+    expect(assessment.warnings.join(" ")).toContain("Dense-hop unresolved source");
+  });
+
+  it("keeps score invalid when the same dense-hop unresolved amount is material for the checked amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-dense-material",
+          balanceShare: 0.781,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-dense-material"],
+          steps: [{
+            txHash: "tx-dense-material",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-dense-material",
+            targetAmountRaw: "1562000000",
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+            stopReason: "incoming_history_not_fetched"
+          })]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "2000000000",
+        targetAmountRaw: "2000000000",
+        selectedAmountRaw: "2000000000",
+        partial: true,
+        notes: ["Dense-hop source unresolved but material."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "material_unresolved_source",
+      materialityTier: "material_unresolved_source",
+      unresolvedAmountRaw: "1562000000",
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: false
+    });
+  });
+
+  it("keeps score invalid when aggregate dense-hop tails exceed aggregate materiality", () => {
+    const unresolvedPaths = Array.from({ length: 3 }, (_, index) => reviewPath({
+      balanceTransferTxHash: `tx-dense-tail-${index}`,
+      balanceShare: 0.008,
+      stoppedReason: "incoming_history_not_fetched",
+      verdict: "REVIEW",
+      riskScoreContribution: 45,
+      txHashes: [`tx-dense-tail-${index}`],
+      steps: [{
+        txHash: `tx-dense-tail-${index}`,
+        fromAddress: sender,
+        toAddress: subject,
+        amountRaw: "8000000000",
+        timestamp: `2026-05-22T10:0${index}:00.000Z`
+      }],
+      sourceProvenance: [unresolvedSourceProvenance({
+        targetTxHash: `tx-dense-tail-${index}`,
+        targetAmountRaw: "8000000000",
+        reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+        stopReason: "incoming_history_not_fetched"
+      })]
+    }));
+
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.976
+        }),
+        ...unresolvedPaths
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Several dense-hop source tails unresolved."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "aggregate_unresolved_above_materiality",
+      materialityTier: "material_unresolved_source",
+      unresolvedAmountRaw: "24000000000",
+      unresolvedPathCount: 3,
+      excludedFromDecisiveScore: false
+    });
+  });
+
+  it("keeps score invalid when unresolved source provenance is above materiality", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceShare: 0.7,
+          balanceTransferTxHash: "tx-clean"
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-material-unresolved",
+          balanceShare: 0.3,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-material-unresolved"],
+          steps: [{
+            txHash: "tx-material-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "500000000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-material-unresolved",
+            targetAmountRaw: "500000000000"
+          })]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Material source unresolved."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "material_unresolved_source",
+      unresolvedAmountRaw: "500000000000",
+      hardEvidenceInUnresolved: false
+    });
+  });
+
+  it("does not downgrade hard evidence on an unresolved residual path into a materiality caveat", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          rootSourceType: "risky_label",
+          exposureSourceKey: "scam",
+          sourceExposureKind: "risky_label",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 92,
+          txHashes: ["tx-risky-unresolved"],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-risky-unresolved",
+            targetAmountRaw: "1000000"
+          })],
+          reasons: ["Residual branch reaches a scam or blacklist risk label."]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scam_or_blacklist" })
+    ]));
+    expect(assessment.sourceProvenanceMateriality).toBeUndefined();
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "hard_proof",
+      kind: "scam_or_blacklist"
+    }));
+  });
+
+  it("does not publish a final decline from probable source provenance alone", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-review",
+            targetFromAddress: sender,
+            targetToAddress: subject,
+            targetTimestamp: "2026-05-22T10:00:00.000Z",
+            targetAmountRaw: "100000000000",
+            proofClass: "probable",
+            coveredAmountRaw: "100000000000",
+            coverageRatio: 1,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: {
+              hopTxHash: "tx-review",
+              hopAddress: sender,
+              expectedAmountRaw: "100000000000",
+              coveredAmountRaw: "100000000000",
+              coverageRatio: 1,
+              members: [{
+                txHash: "tx-probable-funding",
+                fromAddress: funding,
+                toAddress: sender,
+                originalAmountRaw: "100000000000",
+                usedAmountRaw: "100000000000",
+                spentBeforeHopRaw: "0",
+                timestamp: "2026-05-22T09:00:00.000Z",
+                coverageShare: 1
+              }]
+            },
+            coverageWindow: {
+              startTimestamp: "2026-05-22T09:00:00.000Z",
+              endTimestamp: "2026-05-22T10:00:00.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["funding_bundle_amount_covered", "coverage_window_not_exact"]
+          }],
+          reasons: ["Probable funding from capped history is context, not hard proof."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      coverage: coverage({
+        partial: true,
+        notes: ["Probable funding from capped history is context, not hard proof."]
+      })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence.every((item) => item.proofLevel !== "exchange_policy_decline")).toBe(true);
+  });
+
+  it("still declines guarded approval review when separate hard bad evidence exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "Guarded route",
+            address: "TService1111111111111111111111111111",
+            category: "dex",
+            identity: "Guarded Service"
+          }]
+        })
+      ],
+      extraHardBadEvidence: [extraSanctionedHardEvidence()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "sanctioned_service" })
+    ]));
+  });
+
+  it("keeps unrelated unresolved contract paths at deterministic source-policy risk", () => {
+    const coveredContract = "TCoveredContract111111111111111111";
+    const unresolvedContract = "TUncoveredContract111111111111111";
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          rootSourceAddress: coveredContract,
+          pathAddresses: [coveredContract, sender, subject],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-review-2",
+          rootSourceAddress: unresolvedContract,
+          pathAddresses: [unresolvedContract, sender, subject],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(35);
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("keeps strict bridge/router/DEX source policy deterministic", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches bridge router boundary."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "bridge_router_dex",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("keeps structured bridge/router/DEX boundary fields deterministic", () => {
+    const keyAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge",
+          exposureSourceLabel: null,
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+    const labelAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: null,
+          exposureSourceLabel: "DEX aggregator",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(keyAssessment.decision).toBe("DECLINE");
+    expect(keyAssessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(keyAssessment.hardBadEvidence).toEqual([]);
+    expect(keyAssessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+    expect(keyAssessment.reasons.join(" ")).not.toContain("downgraded");
+    expect(labelAssessment.decision).toBe("DECLINE");
+    expect(labelAssessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(labelAssessment.hardBadEvidence).toEqual([]);
+    expect(labelAssessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+    expect(labelAssessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("keeps structured bridge/router/DEX keys with separators deterministic", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_pool",
+          exposureSourceLabel: null,
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("keeps unknown contract boundary risk deterministic", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(35);
+    expect(assessment.hardBadEvidence).toHaveLength(0);
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("returns exact approval-drain hard proof before interpretive scoring", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          approvalTxHash: "tx-exact-approve",
+          drainTxHash: "tx-exact-drain",
+          pathTxHashes: ["tx-exact-drain"],
+          evidenceStrength: "exact_approval_and_transfer_from",
+          score: 96
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(95);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "approval_drain", evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"] })
+    ]));
+    expect(assessment.contractSuspicionEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      proofLevel: "exact_approval_drain_provenance"
+    }));
+  });
+
+  it("floors exact approval-drain hard proof at 95", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          score: 90,
+          evidenceStrength: "exact_approval_and_transfer_from"
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(95);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "approval_drain", score: 95 })
+    ]));
+  });
+
+  it("keeps stronger HTX source-policy decline deterministic", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (62% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.contractSuspicionEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("keeps unguarded source-policy decline ahead of another guarded route", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-guarded-route",
+          txHashes: ["tx-guarded-route"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.5,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 75,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Guarded service-route path reaches a bridge boundary."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unguarded-htx",
+          txHashes: ["tx-unguarded-htx"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Unguarded HTX/Huobi source-policy decline."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          drainTxHash: "tx-guarded-route",
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_decline"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("keeps exact approval-drain evidence ahead of higher route-linked profiles under a service-route guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 75,
+          balanceShare: 1,
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          approvalTxHash: "tx-exact-approve",
+          drainTxHash: "tx-exact-drain",
+          pathTxHashes: ["tx-exact-drain"],
+          evidenceStrength: "exact_approval_and_transfer_from",
+          score: 92
+        }),
+        approvalDrainProfile({
+          approvalTxHash: "tx-route-approve",
+          drainTxHash: "tx-route-drain",
+          pathTxHashes: ["tx-route-drain"],
+          evidenceStrength: "route_linked",
+          score: 99
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence[0]).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      score: 95,
+      evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"]
+    }));
+    expect(assessment.hardBadEvidence.flatMap((item) => item.evidenceIds)).not.toContain("tx-route-drain");
+    expect(assessment.reasons.join(" ")).toContain("Exact approval-drain provenance");
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("keeps unrelated bridge/router decline paths as source-policy evidence when a service-route guard exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-unrelated-bridge",
+          rootSourceAddress: "TUnrelatedRoot111111111111111111111",
+          pathAddresses: [
+            "TUnrelatedRoot111111111111111111111",
+            "TUnrelatedHop1111111111111111111111",
+            subject
+          ],
+          txHashes: ["tx-unrelated-bridge"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 90,
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          reasons: ["Balance-forming path reaches unrelated bridge/router boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          firstReceiverAddress: "TGuardedReceiver11111111111111111111",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(75);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        evidenceIds: ["tx-unrelated-bridge"]
+      })
+    ]));
+    expect(assessment.reasons).toEqual(["Balance-forming path reaches unrelated bridge/router boundary."]);
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("caps a deterministic service-route source-policy decline when approval review found a guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(75);
+    expect(assessment.riskBand).toBe("HIGH");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
+    expect(assessment.reasons.join(" ")).toContain("drainer proof is not proven");
+    expect(assessment.warnings.join(" ")).toContain("service_boundary_guard");
+  });
+
+  it("caps route-linked approval drain profiles when a service-route guard exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          evidenceStrength: "route_linked",
+          score: 92
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(75);
+    expect(assessment.riskBand).toBe("HIGH");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("approval_drain");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
+  });
+
+  it("does not cap non-dampenable source-policy declines under a service-route guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-no-name-liquidity",
+          txHashes: ["tx-no-name-liquidity"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 95,
+          balanceShare: 0.5,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          exposureSourceKey: "no_name_token_liquidity",
+          exposureSourceLabel: "No-name token liquidity",
+          sourceExposureKind: "no_name_token_liquidity",
+          reasons: ["Balance-forming path reaches no-name token liquidity."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(88);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "no_name_token_liquidity",
+      score: 88,
+      adjustedScore: 88,
+      canBeDampened: false
+    }));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "aggregate_source_policy",
+        score: 88,
+        adjustedScore: 88
+      })
+    ]));
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("keeps non-dampenable mixer source-policy decline deterministic", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-low-share-mixer",
+          txHashes: ["tx-low-share-mixer"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 78,
+          balanceShare: 0.15,
+          exposureSourceKey: "mixer",
+          exposureSourceLabel: "Mixer",
+          sourceExposureKind: "mixer",
+          amountPreservationRatio: 0.15,
+          timeSpanMs: 45 * 24 * 60 * 60 * 1000,
+          steps: [
+            {
+              txHash: "tx-mixer-hop",
+              fromAddress: funding,
+              toAddress: sender,
+              amountRaw: "100000000000",
+              timestamp: "2026-04-01T00:00:00.000Z"
+            },
+            {
+              txHash: "tx-low-share-mixer",
+              fromAddress: sender,
+              toAddress: subject,
+              amountRaw: "15000000000",
+              timestamp: "2026-05-16T00:00:00.000Z"
+            }
+          ],
+          reasons: ["Balance-forming path reaches mixer source-policy exposure."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.reasons).toEqual(["Balance-forming path reaches mixer source-policy exposure."]);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "mixer",
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "mixer",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("classifies unstructured no-name token liquidity text as source-policy evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-unstructured-no-name",
+          txHashes: ["tx-unstructured-no-name"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 88,
+          balanceShare: 0.5,
+          exposureSourceKey: "terminal_boundary",
+          exposureSourceLabel: "Unlabeled token pool",
+          sourceExposureKind: null,
+          reasons: ["Balance-forming path reaches no-name token liquidity exposure."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "no_name_token_liquidity"
+    }));
+  });
+
+  it("keeps independent unresolved-origin risk in the top-level score alongside capped source-policy evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-no-name-liquidity",
+          txHashes: ["tx-no-name-liquidity"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 95,
+          balanceShare: 0.5,
+          exposureSourceKey: "no_name_token_liquidity",
+          exposureSourceLabel: "No-name token liquidity",
+          sourceExposureKind: "no_name_token_liquidity",
+          reasons: ["Balance-forming path reaches no-name token liquidity."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unresolved-high",
+          txHashes: ["tx-unresolved-high"],
+          verdict: "REVIEW",
+          rootSourceType: "incomplete",
+          stoppedReason: "data_budget_exhausted",
+          riskScoreContribution: 95,
+          balanceShare: 0.5,
+          exposureSourceKey: null,
+          exposureSourceLabel: null,
+          sourceExposureKind: null,
+          reasons: ["Independent path has unresolved high-risk coverage."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88
+      })
+    ]));
+    expect(assessment.unknownOriginEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "unknown_origin",
+        score: 95
+      })
+    ]));
+    expect(assessment.riskScore).toBe(95);
+  });
+
+  it("accepts only explicit allowlisted CEX paths as clean CEX funded", () => {
+    const cleanAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "ACCEPTABLE",
+          rootSourceType: "allowlist_cex",
+          stoppedReason: "allowlist_cex_reached",
+          balanceShare: 1,
+          riskScoreContribution: 5,
+          reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+    const genericAcceptableAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "ACCEPTABLE",
+          rootSourceType: "unknown",
+          stoppedReason: "data_budget_exhausted",
+          riskScoreContribution: 5,
+          reasons: ["Generic acceptable path without allowlisted CEX proof."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(cleanAssessment).toMatchObject({
+      decision: "ACCEPTABLE",
+      walletRole: "clean_cex_funded_wallet",
+      riskScore: 5
+    });
+    expect(genericAcceptableAssessment.walletRole).not.toBe("clean_cex_funded_wallet");
+    expect(genericAcceptableAssessment.decision).toBe("DECLINE");
+  });
+
+  it("does not inflate clean CEX coverage from transaction-seed branch internals", () => {
+    const cleanPath = (txHash: string): MoneyOriginPath => reviewPath({
+      balanceTransferTxHash: txHash,
+      txHashes: [txHash],
+      verdict: "ACCEPTABLE",
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached",
+      balanceShare: 1,
+      amountUsage: {
+        anchorAmountRaw: "1000000",
+        originalAmountRaw: "1000000",
+        usedAmountRaw: "1000000",
+        coverageShare: 0.1,
+        role: "funding_candidate"
+      },
+      riskScoreContribution: 5,
+      reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanPath("tx-clean-minority-1"), cleanPath("tx-clean-minority-2")],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.walletRole).not.toBe("clean_cex_funded_wallet");
+  });
+
+  it("keeps operational wallets acceptable with non-critical fast risk when no hard evidence exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: mediumFastRisk,
+      originPaths: [
+        reviewPath({ balanceShare: 0.45 }),
+        reviewPath({ balanceTransferTxHash: "tx-review-2", balanceShare: 0.55 })
+      ],
+      senderInteractionProfiles: [
+        profile(),
+        profile({
+          balanceTransferTxHash: "tx-review-2",
+          incomingVolumeRaw: "1399178000000",
+          outgoingVolumeRaw: "1382660771000",
+          incomingTxCount: 8,
+          outgoingTxCount: 9
+        })
+      ]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "ACCEPTABLE",
+      riskBand: "LOW-MEDIUM",
+      walletRole: "operational_liquidity_wallet",
+      hardBadEvidence: []
+    });
+    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+  });
+
+  it("does not accept operational wallets when approval-drain review findings remain unresolved", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({ balanceShare: 0.45 }),
+        reviewPath({ balanceTransferTxHash: "tx-review-2", balanceShare: 0.55 })
+      ],
+      senderInteractionProfiles: [
+        profile(),
+        profile({
+          balanceTransferTxHash: "tx-review-2",
+          incomingVolumeRaw: "1399178000000",
+          outgoingVolumeRaw: "1382660771000",
+          incomingTxCount: 8,
+          outgoingTxCount: 9
+        })
+      ],
+      approvalDrainReviewFindings: [approvalReviewFinding()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("Approval-drain review findings exist");
+    expect(assessment.warnings.join(" ")).toContain("tx-review-drain");
+  });
+
+  it("conservatively declines unresolved non-operational wallets", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      senderInteractionProfiles: [],
+      originPaths: [reviewPath({ riskScoreContribution: 30 })]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 45,
+      riskBand: "MEDIUM",
+      walletRole: "unknown_wallet",
+      hardBadEvidence: []
+    });
+  });
+
+  it("applies age signals to operational risk but keeps the floor at 25", () => {
+    const baseInput = assessmentInput({
+      originPaths: [reviewPath({ riskScoreContribution: 40 })],
+      ageSignals: ageSignals(-12)
+    });
+
+    const dampened = buildMoneyOriginOperationalAssessment(baseInput);
+    const boosted = buildMoneyOriginOperationalAssessment({
+      ...baseInput,
+      ageSignals: ageSignals(12)
+    });
+
+    expect(dampened.ageSignals).toBe(baseInput.ageSignals);
+    expect(dampened.riskScore).toBe(25);
+    expect(boosted.riskScore).toBeGreaterThan(dampened.riskScore);
+    expect(boosted.riskScore).toBeLessThanOrEqual(40);
+  });
+
+  it("makes an extra no-name source-policy layer the dominant risk layer", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("no_name_token_liquidity", 88)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "no_name_token_liquidity",
+        sourceExposureKind: "no_name_token_liquidity",
+        score: 88,
+        rawScore: 88,
+        adjustedScore: 88,
+        canBeDampened: false,
+        evidenceIds: ["extra-no-name-layer"]
+      })]
+    }));
+
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88
+      })
+    ]));
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(88);
+    expect(assessment.riskBand).toBe("CRITICAL");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "no_name_token_liquidity",
+      score: 88
+    }));
+  });
+
+  it("makes an extra mixer source-policy layer decline an otherwise operational wallet", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("mixer", 95)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "mixer",
+        sourceExposureKind: "mixer",
+        score: 95,
+        rawScore: 95,
+        adjustedScore: 95,
+        canBeDampened: false,
+        evidenceIds: ["extra-mixer-layer"]
+      })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(95);
+    expect(assessment.riskBand).toBe("CRITICAL");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "mixer",
+      score: 95
+    }));
+  });
+
+  it("uses the stronger same-kind extra source-policy layer score", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("mixer", 45)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "mixer",
+        sourceExposureKind: "mixer",
+        score: 95,
+        rawScore: 95,
+        adjustedScore: 95,
+        canBeDampened: false,
+        evidenceIds: ["extra-mixer-layer"]
+      })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(95);
+    expect(assessment.riskBand).toBe("CRITICAL");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      sourceExposureKind: "mixer",
+      score: 95
+    }));
+  });
+
+  it("does not double-count same-kind base and extra source-policy exposure", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches bridge boundary."]
+        })
+      ],
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("bridge_router_dex", 85)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "cross_chain_bridge_router_dex",
+        sourceExposureKind: "bridge_router_dex",
+        score: 85,
+        rawScore: 85,
+        adjustedScore: 85,
+        proofLevel: "exchange_policy_decline",
+        evidenceIds: ["extra-bridge_router_dex"]
+      })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(85);
+    expect(assessment.riskBand).toBe("CRITICAL");
+    expect(assessment.sourcePolicyEvidence.filter((item) => item.kind === "bridge_router_dex")).toHaveLength(2);
+  });
+
+  it("keeps an extra no-name source-policy layer out of hard bad evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "no_name_token_liquidity",
+        sourceExposureKind: "no_name_token_liquidity",
+        score: 88,
+        rawScore: 88,
+        adjustedScore: 88,
+        canBeDampened: false
+      })]
+    }));
+
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("sanctioned_service");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("scam_or_blacklist");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        sourceExposureKind: "no_name_token_liquidity"
+      })
+    ]));
+  });
+
+  it("keeps an extra mixer source-policy layer out of hard bad evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "mixer",
+        sourceExposureKind: "mixer",
+        score: 95,
+        rawScore: 95,
+        adjustedScore: 95,
+        canBeDampened: false
+      })]
+    }));
+
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("sanctioned_service");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("scam_or_blacklist");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        sourceExposureKind: "mixer"
+      })
+    ]));
+  });
+
+  it("adds extra sanctioned hard evidence to hard bad evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraHardBadEvidence: [extraSanctionedHardEvidence()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence[0]).toEqual(expect.objectContaining({
+      kind: "sanctioned_service",
+      score: 99,
+      evidenceIds: ["extra-sanctioned-hard"]
+    }));
+  });
+
+  it("does not duplicate matching sanctioned hard proof layers", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraHardBadEvidence: [extraSanctionedHardEvidence()],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "hard_proof",
+        kind: "cross_chain_sanctioned_service",
+        sourceExposureKind: "sanctioned_service",
+        score: 99,
+        rawScore: 99,
+        adjustedScore: 99,
+        proofLevel: "exact_scam_or_taint_proof",
+        canBeDampened: false,
+        reasons: ["Cross-chain corridor reached a sanctioned service."],
+        evidenceIds: ["extra-sanctioned-hard"]
+      })]
+    }));
+
+    const sanctionedHardLayers = assessment.riskLayers.filter((layer) =>
+      layer.evidenceClass === "hard_proof" &&
+      layer.evidenceIds.includes("extra-sanctioned-hard")
+    );
+    expect(sanctionedHardLayers).toHaveLength(1);
+  });
+
+  it("does not let operational dampening lower extra no-name or mixer layers below HIGH", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraRiskLayers: [
+        extraRiskLayer({
+          evidenceClass: "source_policy",
+          kind: "no_name_token_liquidity",
+          sourceExposureKind: "no_name_token_liquidity",
+          score: 88,
+          rawScore: 88,
+          adjustedScore: 88,
+          canBeDampened: false,
+          evidenceIds: ["extra-no-name-layer"]
+        }),
+        extraRiskLayer({
+          evidenceClass: "source_policy",
+          kind: "mixer",
+          sourceExposureKind: "mixer",
+          score: 95,
+          rawScore: 95,
+          adjustedScore: 95,
+          canBeDampened: false,
+          evidenceIds: ["extra-mixer-layer"]
+        })
+      ]
+    }));
+
+    expect(assessment.walletRole).toBe("risky_source_wallet");
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(["HIGH", "CRITICAL"]).toContain(assessment.riskBand);
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceExposureKind: "no_name_token_liquidity",
+        score: 88,
+        adjustedScore: 88
+      }),
+      expect.objectContaining({
+        sourceExposureKind: "mixer",
+        score: 95,
+        adjustedScore: 95
+      })
+    ]));
+  });
+
+  it("preserves extra risk layers in the top hard evidence branch", () => {
+    const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_hard_branch_partial", score: 52 });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: exactBlacklistFastRisk,
+      extraRiskLayers: [extraLayer]
+    }));
+
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("fast_critical");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_hard_branch_partial" })
+    ]));
+  });
+
+  it("preserves extra risk layers in the deterministic contract suspicion branch", () => {
+    const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_contract_branch_partial", score: 52 });
+    const contractLayer = extraRiskLayer({
+      evidenceClass: "contract_suspicion",
+      kind: "deterministic_contract_review",
+      score: 80,
+      rawScore: 80,
+      adjustedScore: 80,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      reasons: ["Deterministic contract evidence requires review."],
+      evidenceIds: ["contract-evidence"]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      extraRiskLayers: [contractLayer, extraLayer]
+    }));
+
+    expect(assessment.reasons).toContain("Deterministic contract evidence requires review.");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceClass: "contract_suspicion", kind: "deterministic_contract_review" }),
+      expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_contract_branch_partial" })
+    ]));
+  });
+
+  it("does not let route-linked approval context suppress a stronger contract-suspicion decline", () => {
+    const contractLayer = extraRiskLayer({
+      evidenceClass: "contract_suspicion",
+      kind: "deterministic_contract_decline",
+      score: 90,
+      rawScore: 90,
+      adjustedScore: 90,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      reasons: ["Independent deterministic contract suspicion requires decline."],
+      evidenceIds: ["contract-decline-evidence"]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [approvalDrainProfile({
+        evidenceStrength: "route_linked",
+        score: 80
+      })],
+      extraRiskLayers: [contractLayer]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 90
+    });
+    expect(assessment.reasons).toContain("Independent deterministic contract suspicion requires decline.");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "contract_suspicion",
+        kind: "deterministic_contract_decline"
+      }),
+      expect.objectContaining({
+        evidenceClass: "behavior_context",
+        kind: "route_linked_approval_pattern",
+        score: 80
+      })
+    ]));
+  });
+
+  it("preserves extra risk layers in the service route guard branch", () => {
+    const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_guard_branch_partial", score: 52 });
+    const extraSourcePolicyLayer = extraRiskLayer({
+      evidenceClass: "source_policy",
+      kind: "extra_guard_source_policy",
+      sourceExposureKind: "unknown_contract",
+      score: 52,
+      rawScore: 52,
+      adjustedScore: 52,
+      proofLevel: "exchange_policy_context",
+      evidenceIds: ["extra-guard-source-policy"]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({ provenanceScope: "recent_flow" }),
+      extraRiskLayers: [extraLayer, extraSourcePolicyLayer]
+    }));
+
+    expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_guard_branch_partial" }),
+      expect.objectContaining({ evidenceClass: "source_policy", kind: "extra_guard_source_policy" })
+    ]));
+  });
+
+  it("keeps same-kind source-policy aggregate capped in the service route guard branch", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 92,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({ provenanceScope: "recent_flow" }),
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("bridge_router_dex", 85)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "cross_chain_bridge_router_dex",
+        sourceExposureKind: "bridge_router_dex",
+        score: 85,
+        rawScore: 85,
+        adjustedScore: 85,
+        proofLevel: "exchange_policy_decline",
+        evidenceIds: ["extra-bridge_router_dex"]
+      })]
+    }));
+
+    const aggregateLayer = assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy");
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(75);
+    expect(aggregateLayer).toEqual(expect.objectContaining({
+      kind: "aggregate_source_policy",
+      score: 75
+    }));
+  });
+
+  it("keeps stronger same-kind source-policy layer dominant after service route guard caps", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 92,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({ provenanceScope: "recent_flow" }),
+      extraSourcePolicyEvidence: [extraSourcePolicyEvidence("bridge_router_dex", 65)],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "source_policy",
+        kind: "cross_chain_bridge_router_dex",
+        sourceExposureKind: "bridge_router_dex",
+        score: 65,
+        rawScore: 65,
+        adjustedScore: 65,
+        proofLevel: "exchange_policy_decline",
+        evidenceIds: ["extra-bridge_router_dex"]
+      })]
+    }));
+
+    const extraLayer = assessment.riskLayers.find((layer) => layer.kind === "cross_chain_bridge_router_dex");
+    expect(assessment.riskScore).toBe(75);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "bridge_router_dex",
+      score: 75,
+      evidenceIds: expect.arrayContaining(["tx-review"])
+    }));
+    expect(extraLayer).toEqual(expect.objectContaining({
+      score: 65,
+      evidenceIds: ["extra-bridge_router_dex"]
+    }));
+  });
+
+  it("preserves extra risk layers in the source policy decline branch", () => {
+    const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_source_policy_branch_partial", score: 52 });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      extraRiskLayers: [extraLayer]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "htx_huobi" })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_source_policy_branch_partial" })
+    ]));
+  });
+
+  it("preserves extra risk layers in the deterministic unknown-contract branch", () => {
+    const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_unknown_contract_branch_partial", score: 52 });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "unlabeled_service_boundary",
+          balanceShare: 1,
+          exposureSourceKey: "unknown_contract",
+          exposureSourceLabel: "Unknown contract",
+          sourceExposureKind: "unknown_contract",
+          riskScoreContribution: 70,
+          pathAddresses: [funding, "TContract111111111111111111111111111", subject],
+          reasons: ["Balance-forming path stops at unknown contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      extraRiskLayers: [extraLayer]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.reasons.join(" ")).not.toContain("legitimate service");
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceClass: "data_quality", kind: "extra_unknown_contract_branch_partial" })
+    ]));
+  });
+
+  it("preserves extra data-quality partial layers in the acceptable branch", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "ACCEPTABLE",
+          rootSourceType: "allowlist_cex",
+          stoppedReason: "allowlist_cex_reached",
+          balanceShare: 1,
+          riskScoreContribution: 5,
+          reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      extraRiskLayers: [extraRiskLayer({
+        evidenceClass: "data_quality",
+        kind: "extra_cross_chain_partial",
+        score: 48,
+        rawScore: 48,
+        adjustedScore: 48,
+        proofLevel: "insufficient_coverage",
+        canBeDampened: false,
+        evidenceIds: ["extra-cross-chain-partial"]
+      })]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.unknownOriginEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "data_quality",
+        kind: "extra_cross_chain_partial",
+        evidenceIds: ["extra-cross-chain-partial"]
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "data_quality",
+        kind: "extra_cross_chain_partial"
+      })
+    ]));
+  });
+});

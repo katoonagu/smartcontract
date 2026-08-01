@@ -1,0 +1,76 @@
+import { startAdminServer, type RunningAdminServer } from "./adminServer";
+import type { AppConfig } from "../config";
+import type {
+  ForensicCheckJob,
+  ForensicCheckJobKind,
+  ForensicCheckJobStatus,
+  ListTheftReportsInput,
+  SavedWalletRiskSummary,
+  TheftReport,
+  UpdateTheftReportAdminStateInput
+} from "../storage/repositories";
+import type { IndexedTronUsdtTransfer } from "../types";
+import type { RuntimeNavigationProbeV1, RuntimeProofV1 } from "../runtime/runtimeLiveProof";
+import type {
+  UnifiedAdminRunSnapshot
+} from "../unifiedCheck/adminRunSnapshot";
+import type {
+  UnifiedAdaptiveAggregateSnapshot
+} from "../unifiedCheck/adaptiveObservability";
+import type {
+  UnifiedRuntimeHandoffAdminSnapshotV1
+} from "../unifiedCheck/runtimeHandoffRepository";
+
+export type AdminRuntimeDeps = {
+  config: Pick<AppConfig, "adminDashboardEnabled" | "adminDashboardHost" | "adminDashboardPort" | "adminDashboardToken">;
+  startAdminServer?: typeof startAdminServer;
+  listJobs(input: {
+    limit?: number;
+    offset?: number;
+    status?: ForensicCheckJobStatus;
+    kind?: ForensicCheckJobKind;
+    subjectAddress?: string;
+    query?: string;
+  }): Promise<ForensicCheckJob[]>;
+  getJob(id: string): Promise<ForensicCheckJob | null>;
+  listTheftReports?(input: ListTheftReportsInput): Promise<TheftReport[]>;
+  getTheftReport?(id: string): Promise<TheftReport | null>;
+  updateTheftReportAdminState?(input: UpdateTheftReportAdminStateInput): Promise<TheftReport | null>;
+  getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
+  listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
+  findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
+  getRuntimeProof?(): RuntimeProofV1;
+  runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
+  getUnifiedRunSnapshot?(
+    runId: string
+  ): Promise<UnifiedAdminRunSnapshot | null>;
+  getUnifiedAdaptiveSnapshot?(): UnifiedAdaptiveAggregateSnapshot | null;
+  getUnifiedRuntimeHandoffSnapshot?(): Promise<UnifiedRuntimeHandoffAdminSnapshotV1>;
+};
+
+export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<RunningAdminServer | null> {
+  if (!deps.config.adminDashboardEnabled) return null;
+  if (!deps.config.adminDashboardToken) {
+    throw new Error("ADMIN_DASHBOARD_TOKEN is required when ADMIN_DASHBOARD_ENABLED=true");
+  }
+  return (deps.startAdminServer ?? startAdminServer)({
+    config: {
+      host: deps.config.adminDashboardHost,
+      port: deps.config.adminDashboardPort,
+      token: deps.config.adminDashboardToken
+    },
+    listJobs: deps.listJobs,
+    getJob: deps.getJob,
+    listTheftReports: deps.listTheftReports,
+    getTheftReport: deps.getTheftReport,
+    updateTheftReportAdminState: deps.updateTheftReportAdminState,
+    getTargetedHistoryProgressForJob: deps.getTargetedHistoryProgressForJob,
+    listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
+    findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses,
+    getRuntimeProof: deps.getRuntimeProof,
+    runRuntimeNavigationProbe: deps.runRuntimeNavigationProbe,
+    getUnifiedRunSnapshot: deps.getUnifiedRunSnapshot,
+    getUnifiedAdaptiveSnapshot: deps.getUnifiedAdaptiveSnapshot,
+    getUnifiedRuntimeHandoffSnapshot: deps.getUnifiedRuntimeHandoffSnapshot
+  });
+}

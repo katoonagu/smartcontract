@@ -24,6 +24,9 @@ describe("forensic service classifier", () => {
           { methodId: "deposit", signature: "Deposit(uint256)", count: 21, ratio: 0.2625 },
           { methodId: "withdraw", signature: "Withdraw(uint256)", count: 20, ratio: 0.25 }
         ],
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
         lowMetadata: false
       }
     });
@@ -35,6 +38,7 @@ describe("forensic service classifier", () => {
       isBoundary: true
     });
     expect(result.evidence.join(" ")).toContain("ClaimRewards");
+    expect(result.evidence.join(" ")).not.toContain("permitTransfer");
   });
 
   it("classifies tagged bridge contracts as bridges", () => {
@@ -54,11 +58,319 @@ describe("forensic service classifier", () => {
     expect(result.confidence).toBe("high");
   });
 
-  it("classifies weak unverified contracts without service tags as unknown contracts", () => {
+  it("classifies LayerZero/OFT contracts as bridge service routes", () => {
     const result = classifyServiceAddress({
-      address: "TUnknownContract111111111111111111111",
+      address: "TLayerZero111111111111111111111111111",
       metadata: {
-        address: "TUnknownContract111111111111111111111",
+        address: "TLayerZero111111111111111111111111111",
+        name: "LayerZero EndpointV2",
+        tag: "UsdtOFT Omnichain Fungible Token",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "bridge",
+      identity: "UsdtOFT Omnichain Fungible Token",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:cross_chain_bridge");
+    expect(result.evidence).toContain("service_route_identity:LayerZero/OFT");
+  });
+
+  it("classifies HTX/Huobi tags as CEX terminal liquidity boundaries", () => {
+    const htx = classifyServiceAddress({
+      address: "THTX11111111111111111111111111111111",
+      metadata: {
+        address: "THTX11111111111111111111111111111111",
+        name: "HTX Hot Wallet",
+        tag: "HTX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    const huobi = classifyServiceAddress({
+      address: "THuobi11111111111111111111111111111",
+      metadata: {
+        address: "THuobi11111111111111111111111111111",
+        name: "Huobi Deposit",
+        tag: "Huobi",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(htx).toMatchObject({ category: "cex", identity: "HTX", isBoundary: true, confidence: "high" });
+    expect(huobi).toMatchObject({ category: "cex", identity: "Huobi", isBoundary: true, confidence: "high" });
+  });
+
+  it("classifies named exchange tags as CEX boundaries even without a generic exchange word", () => {
+    const bybit = classifyServiceAddress({
+      address: "TBybit111111111111111111111111111111",
+      metadata: {
+        address: "TBybit111111111111111111111111111111",
+        name: null,
+        tag: "Bybit",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+    const whitebit = classifyServiceAddress({
+      address: "TWhiteBIT11111111111111111111111111",
+      metadata: {
+        address: "TWhiteBIT11111111111111111111111111",
+        name: null,
+        tag: "WhiteBIT",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+
+    expect(bybit).toMatchObject({ category: "cex", identity: "Bybit", isBoundary: true });
+    expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
+  });
+
+  it("classifies sanctioned exchange tags with designation evidence", () => {
+    const result = classifyServiceAddress({
+      address: "TNobitex1111111111111111111111111111",
+      metadata: {
+        address: "TNobitex1111111111111111111111111111",
+        name: "Nobitex Hot Wallet",
+        tag: "Nobitex",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "cex",
+      identity: "Nobitex",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("sanctioned_service:nobitex");
+    expect(result.evidence).toContain("sanctions_authority:OFAC");
+    expect(result.evidence).toContain("sanctioned_at:2026-06-02");
+  });
+
+  it("lets OKX DEX bridge registry phrases win over OKX exchange identity", () => {
+    const result = classifyServiceAddress({
+      address: "TOKXDexBridge1111111111111111111111",
+      metadata: {
+        address: "TOKXDexBridge1111111111111111111111",
+        name: "OKX DEX Bridge",
+        tag: "OKX Bridge Aggregator",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "bridge",
+      identity: "OKX Bridge Aggregator",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:bridge_aggregator");
+    expect(result.evidence).toContain("service_route_identity:OKX DEX Bridge");
+  });
+
+  it("preserves plain OKX tags as CEX boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TOKX1111111111111111111111111111111",
+      metadata: {
+        address: "TOKX1111111111111111111111111111111",
+        name: null,
+        tag: "OKX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "OKX", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:okx");
+  });
+
+  it("does not classify a plain wallet address containing Dex as a DEX boundary", () => {
+    const address = "TB44QiUnyECTGfmqgZmN5jV7SzjnDexzHP";
+    const result = classifyServiceAddress({
+      address,
+      metadata: {
+        address,
+        name: address,
+        tag: null,
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "none",
+      identity: address,
+      isBoundary: false
+    });
+  });
+
+  it("classifies Binance Gateway as a CEX instead of a broad bridge keyword match", () => {
+    const result = classifyServiceAddress({
+      address: "TBinanceGateway111111111111111111111",
+      metadata: {
+        address: "TBinanceGateway111111111111111111111",
+        name: "Binance Gateway",
+        tag: "Binance",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "Binance", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:binance");
+  });
+
+  it("classifies OKX Endpoint as a CEX instead of a broad service-route keyword match", () => {
+    const result = classifyServiceAddress({
+      address: "TOKXEndpoint111111111111111111111111",
+      metadata: {
+        address: "TOKXEndpoint111111111111111111111111",
+        name: "OKX Endpoint",
+        tag: "OKX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "OKX", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:okx");
+  });
+
+  it.each([
+    "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+    "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD"
+  ])("classifies real GasFree Account %s as a non-boundary contract account", (address) => {
+    const result = classifyServiceAddress({
+      address,
+      metadata: { address, name: "CreatedByContract", tag: null, isContract: true, verified: false },
+      contractProfile: {
+        providerTags: [{ kind: "greyTag", label: "GasFree Account", url: null }],
+        verified: false,
+        providerRisk: false,
+        methodMap: { "6f21b898": "permitTransfer(address,address,address,uint256,uint256,uint256,uint256,uint256,bytes)" },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({ category: "service", isBoundary: false });
+    expect(result.evidence).toContain("role:gasfree_account");
+  });
+
+  it("classifies SunSwap Router contracts as DEX service routes", () => {
+    const result = classifyServiceAddress({
+      address: "TSunSwap111111111111111111111111111",
+      metadata: {
+        address: "TSunSwap111111111111111111111111111",
+        name: "SunSwap Router",
+        tag: "DEX",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "dex",
+      identity: "DEX",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:dex_router_or_swap_aggregator");
+    expect(result.evidence).toContain("service_route_identity:SunSwap");
+  });
+
+  it("keeps GasFree Endpoint as a boundary ahead of proxy heuristics", () => {
+    const address = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+    const result = classifyServiceAddress({
+      address,
+      metadata: { address, name: "UpgradableProxy", tag: "GasFree Endpoint", isContract: true, verified: false },
+      contractProfile: {
+        providerTags: [
+          { kind: "tag1", label: "GasFree Endpoint", url: null },
+          { kind: "blueTag", label: "GasFree", url: "gasfree.io" }
+        ],
+        verified: false,
+        providerRisk: false,
+        methodMap: {
+          "6f21b898": "permitTransfer(address,address,address,uint256,uint256,uint256,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+    expect(result).toMatchObject({ category: "service", identity: "GasFree Endpoint", isBoundary: true });
+    expect(result.evidence).toContain("role:gasfree_endpoint");
+  });
+
+  it("keeps an unresolved generic GasFree tag traceable", () => {
+    const address = "TGenericGasFree1111111111111111111111";
+    const result = classifyServiceAddress({
+      address,
+      metadata: { address, name: "GasFree", tag: "GasFree", isContract: true, verified: false }
+    });
+    expect(result).toMatchObject({ category: "service", isBoundary: false });
+    expect(result.evidence).toContain("role:gasfree_unresolved");
+  });
+
+  it("does not classify method-only permitTransfer contracts as GasFree service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TPermitOnly11111111111111111111111111",
+      metadata: {
+        address: "TPermitOnly11111111111111111111111111",
+        name: "CreatedByContract",
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        serviceTag: null,
+        publicTag: null,
+        providerTags: [],
+        publicTags: [],
+        verified: false,
+        providerRisk: false,
+        hasTransferFromSelector: true,
+        lowMetadata: true,
+        activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "unknown_contract",
+      confidence: "medium",
+      isBoundary: false
+    });
+  });
+
+  it("does not classify methodMap-only bridge pool methods as service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TMethodMapOnly11111111111111111111111",
+      metadata: {
+        address: "TMethodMapOnly11111111111111111111111",
         name: null,
         tag: null,
         isContract: true,
@@ -67,11 +379,18 @@ describe("forensic service classifier", () => {
       contractProfile: {
         serviceTag: null,
         publicTag: null,
+        providerTags: [],
+        publicTags: [],
         verified: false,
         providerRisk: false,
         hasTransferFromSelector: true,
         lowMetadata: true,
         activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "ClaimRewards()",
+          b2c3d4e5: "Deposit(uint256)",
+          c3d4e5f6: "Withdraw(uint256)"
+        },
         topMethods: []
       }
     });
@@ -79,7 +398,61 @@ describe("forensic service classifier", () => {
     expect(result).toMatchObject({
       category: "unknown_contract",
       confidence: "medium",
+      isBoundary: false
+    });
+  });
+
+  it("classifies USDD PSM GemJoin contracts as protocol boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TUSDDPsm111111111111111111111111111",
+      metadata: {
+        address: "TUSDDPsm111111111111111111111111111",
+        name: null,
+        tag: "USDD: PSM GemJoin (USDT)",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "protocol",
+      identity: "USDD: PSM GemJoin (USDT)",
       isBoundary: true
     });
+  });
+
+  it("keeps a weak unknown contract traceable", () => {
+    const address = "TUnknownContract111111111111111111111";
+    const result = classifyServiceAddress({
+      address,
+      metadata: { address, name: null, tag: null, isContract: true, verified: false },
+      contractProfile: { verified: false, providerRisk: false, lowMetadata: true, topMethods: [] }
+    });
+
+    expect(result).toMatchObject({ category: "unknown_contract", isBoundary: false });
+  });
+
+  it("recognizes the TronLink GasFree provider as pooled infrastructure without metadata", () => {
+    const result = classifyServiceAddress({
+      address: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird"
+    });
+    expect(result).toMatchObject({
+      category: "service",
+      identity: "TronLink GasFree provider",
+      confidence: "high",
+      isBoundary: true
+    });
+    expect(result.evidence).toContain("registry:tronlink_gasfree_provider");
+  });
+
+  it("does not alias a case-mutated TRON address to the registered GasFree provider", () => {
+    const result = classifyServiceAddress({
+      address: "TLNtW9Z59LYY5KEi9cmwk3PKjQga828ird"
+    });
+
+    expect(result.identity).not.toBe("TronLink GasFree provider");
+    expect(result.evidence).not.toContain("registry:tronlink_gasfree_provider");
+    expect(result).not.toMatchObject({ category: "service", confidence: "high", isBoundary: true });
   });
 });

@@ -1,64 +1,588 @@
 import { createHash } from "node:crypto";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import {
-  buildApprovalDrainProvenanceProfile,
+  buildApprovalDrainProvenanceAnalysis,
   observationForApprovalDrainProvenance,
   rawEvidenceForApprovalDrainProvenance
 } from "../forensics/approvalDrainProvenance";
+import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildCounterpartyRiskProfiles } from "../forensics/counterpartyRisk";
+import {
+  buildDirectCounterpartyInteractionProfiles,
+  riskLevelFromScore,
+  selectCounterpartiesForFastSnapshot,
+  type CounterpartySnapshotCandidate
+} from "../forensics/counterpartyInteraction";
+import { buildAssetContinuationProfiles } from "../forensics/assetContinuation";
+import {
+  DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE,
+  DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
+  buildDirectHardEvidenceSnapshots,
+  exactEightDecimalShare,
+  groupDirectPrincipalCounterparties,
+  isPersistableUsdtBlacklistTimelineEvent,
+  type DirectHardEvidenceResult,
+  type DirectHardEvidenceSnapshot
+} from "../forensics/directHardEvidence";
+import { buildSecondLayerRelationshipProfiles } from "../forensics/deepSecondLayerRelationship";
+import {
+  extractGasFreeSettlement,
+  gasFreeMovementForEdge,
+  isGasFreeServiceFeeEdge,
+  type GasFreeSettlement
+} from "../forensics/gasFreeSettlement";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
   observationForStablecoinRestriction,
   rawEvidenceForStablecoinRestriction
 } from "./stablecoinRestriction";
+import { assembleAssetContinuationProfiles } from "./deepForensicAssembly";
+import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
+import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
+import { runMultiHopBoundaryExposureSearch } from "../forensics/multiHopBoundaryExposure";
+import { buildWalletRoleProfile } from "../forensics/walletRoleClassifier";
+import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
 import {
   normalizeTransfer,
   runForensicAddressExposureSearch,
   type RouteSearchTronClient
 } from "../forensics/routeSearch";
-import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
+import {
+  forensicRouteEdgeIdentity,
+  indexedTransferToRouteEdge,
+  mergeForensicRouteEdges
+} from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
-import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
+import { buildDeepCoverageV2 } from "../forensics/forensicCoverageV2";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type { AddressMetadata } from "../storage/repositories";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressExposureReport,
   AddressLabel,
   ApprovalDrainProvenanceProfile,
+  AssetContinuationProfile,
+  BoundaryExposureDepth,
+  BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  CounterpartyRiskSnapshot,
+  ContractDrivenCampaignSummary,
+  ContractDrivenReceiverProfile,
+  ContractDrivenTransferProfile,
+  DirectCounterpartyInteractionProfile,
+  DeepSecondLayerRelationshipProfile,
   ExtendedProvenanceProfile,
+  FastCheckHintAddress,
+  FirstHopBlacklistCoverage,
+  FirstHopBlacklistFact,
+  FirstHopLabelFact,
+  ForensicCoverageV2,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
   InboundProvenanceProfile,
+  OperationalFlowProfile,
   RawEvidenceInput,
   RiskSignalObservationInput,
   ServiceClassification,
-  StablecoinRestrictionProfile
+  StablecoinRestrictionProfile,
+  TimelineBearingStablecoinRestrictionProfile,
+  UsddPsmRouteObservationV1,
+  UsdtBlacklistTimelineEvent,
+  DeepCheckAllTimeCoverage,
+  DeepCheckAllTimeMode,
+  TronAddressUsdtIndexState,
+  WalletRoleProfile
 } from "../types";
 
+export type DeepForensicRunProfile = "bounded_rerun" | "production_full";
+
+export type DeepForensicProviderBudgetReport = {
+  providerCallBudget: number | null;
+  transferCallBudget: number | null;
+  contractCallBudget: number | null;
+  approvalCallBudget: number | null;
+  elapsedTimeBudgetMs: number | null;
+  exhausted: boolean;
+};
+
 export type DeepAddressForensicReport = AddressExposureReport & {
+  scoringPolicyVersion?: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+  runProfile: DeepForensicRunProfile;
+  providerBudget: DeepForensicProviderBudgetReport;
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  contractDrivenReceiverProfile?: ContractDrivenReceiverProfile | null;
+  contractDrivenCampaignSummary?: ContractDrivenCampaignSummary | null;
+  contractDrivenTransferProfiles?: ContractDrivenTransferProfile[];
+  assetContinuationProfiles?: AssetContinuationProfile[];
+  boundaryExposureProfiles: BoundaryExposureProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
+  walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  secondLayerRelationshipProfiles?: DeepSecondLayerRelationshipProfile | null;
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopBlacklistFacts?: FirstHopBlacklistFact[];
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopLabelFacts?: FirstHopLabelFact[];
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopBlacklistCoverage?: FirstHopBlacklistCoverage;
+  coverageV2?: ForensicCoverageV2;
+  /** Timeline-bearing direct restriction snapshots; absent on legacy stored reports. */
+  directHardEvidenceSnapshots?: DirectHardEvidenceSnapshot[];
   coverage: {
     sourceTransferPages: number;
     inboundSendersExpanded: number;
     transferEdges: number;
     extendedIndexedEdges?: number;
     extendedFetchedAddresses?: number;
+    secondLayerRelationshipPaths?: number;
+    secondLayerRelationshipGroups?: number;
     apiKeyConfigured?: boolean;
+    allTime?: DeepCheckAllTimeCoverage;
   };
+  coverageDebug: CoverageDebugReport;
 };
+
+type PersistedDeepFirstHopEvidence = Required<Pick<
+  DeepAddressForensicReport,
+  "firstHopBlacklistFacts" | "firstHopLabelFacts" | "firstHopBlacklistCoverage" | "directHardEvidenceSnapshots"
+>>;
+
+function persistedRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function persistedStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function persistedNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function persistedHashArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(persistedTxHash);
+}
+
+function persistedIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function persistedCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function persistedRawAmount(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) && BigInt(value) <= (1n << 256n) - 1n;
+}
+
+function persistedTxHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function persistedNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function persistedNullableIsoDate(value: unknown): value is string | null {
+  return value === null || persistedIsoDate(value);
+}
+
+function persistedNullableHash(value: unknown): value is string | null {
+  return value === null || persistedTxHash(value);
+}
+
+function persistedShare(value: unknown, semantics: unknown): boolean {
+  if (semantics === "unavailable") return value === null;
+  return (semantics === "exact" || semantics === "lower_bound") &&
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function comparePersistedTimelineEvents(left: UsdtBlacklistTimelineEvent, right: UsdtBlacklistTimelineEvent): number {
+  return Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+    (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+    (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+    left.txHash.localeCompare(right.txHash);
+}
+
+function persistedTimeline(value: unknown): boolean {
+  if (!persistedRecord(value) || !Array.isArray(value.events) || !value.events.every(isPersistableUsdtBlacklistTimelineEvent)) return false;
+  const failures = new Set([
+    "provider_failed",
+    "address_mismatch",
+    "wrong_contract",
+    "transaction_unconfirmed",
+    "event_log_unverified",
+    "state_timeline_inconsistent"
+  ]);
+  const sorted = value.events.every((event, index, events) => index === 0 || comparePersistedTimelineEvents(events[index - 1], event) <= 0);
+  return sorted && (
+    value.pagination === "complete" && value.failureReason === null ||
+    value.pagination === "partial" && typeof value.failureReason === "string" && failures.has(value.failureReason)
+  );
+}
+
+function chronologyRelationValid(value: Record<string, unknown>): boolean {
+  const beforeAmount = BigInt(String(value.beforeEffectiveAmountRaw));
+  const activeAmount = BigInt(String(value.activeAmountRaw));
+  const unknownAmount = BigInt(String(value.unknownTimingAmountRaw));
+  const beforeCount = Number(value.beforeEffectiveTxCount);
+  const activeCount = Number(value.activeTxCount);
+  const unknownCount = Number(value.unknownTimingTxCount);
+  const before = beforeAmount > 0n && beforeCount > 0;
+  const active = activeAmount > 0n && activeCount > 0;
+  const unknown = unknownAmount > 0n && unknownCount > 0;
+  const zeroPairsValid = (beforeAmount === 0n) === (beforeCount === 0) &&
+    (activeAmount === 0n) === (activeCount === 0) &&
+    (unknownAmount === 0n) === (unknownCount === 0);
+  if (!zeroPairsValid) return false;
+  if (value.temporalRelation === "active_at_transfer") return active && !before && !unknown;
+  if (value.temporalRelation === "became_active_after") return before && !active && !unknown;
+  if (value.temporalRelation === "mixed") return before && active && !unknown;
+  return value.temporalRelation === "unknown" && unknown;
+}
+
+function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact {
+  if (!persistedRecord(value)) return false;
+  if (
+    !persistedNonEmptyString(value.counterpartyAddress) ||
+    (value.direction !== "inbound" && value.direction !== "outbound") ||
+    value.evidenceKind !== "usdt_blacklist" ||
+    value.evidenceAuthority !== "official_contract" ||
+    value.statusAtCheck !== "active" ||
+    !["active_at_transfer", "became_active_after", "mixed", "unknown"].includes(String(value.temporalRelation)) ||
+    !persistedNullableIsoDate(value.effectiveAt) ||
+    !persistedNullableHash(value.effectiveTxHash) ||
+    ((value.effectiveAt === null) !== (value.effectiveTxHash === null)) ||
+    !persistedIsoDate(value.checkedAt) ||
+    !persistedRawAmount(value.principalAmountRaw) ||
+    !persistedCount(value.principalTxCount) ||
+    !persistedShare(value.directionalPrincipalShare, value.shareSemantics) ||
+    !persistedHashArray(value.transferTxHashes) ||
+    !persistedRawAmount(value.beforeEffectiveAmountRaw) ||
+    !persistedCount(value.beforeEffectiveTxCount) ||
+    !persistedRawAmount(value.activeAmountRaw) ||
+    !persistedCount(value.activeTxCount) ||
+    !persistedRawAmount(value.unknownTimingAmountRaw) ||
+    !persistedCount(value.unknownTimingTxCount) ||
+    (value.directTransferCoverage !== "complete" && value.directTransferCoverage !== "partial") ||
+    (value.timelineCoverage !== "complete" && value.timelineCoverage !== "partial") ||
+    !Array.isArray(value.timelineEvents) ||
+    !value.timelineEvents.every(isPersistableUsdtBlacklistTimelineEvent)
+  ) return false;
+  const hasDirectionalTotal = Object.prototype.hasOwnProperty.call(value, "directionalPrincipalTotalRaw");
+  if (hasDirectionalTotal) {
+    if (
+      !persistedRawAmount(value.directionalPrincipalTotalRaw) ||
+      BigInt(value.directionalPrincipalTotalRaw) <= 0n ||
+      value.directTransferCoverage !== "complete" ||
+      value.shareSemantics !== "exact" ||
+      typeof value.directionalPrincipalShare !== "number" ||
+      BigInt(value.directionalPrincipalTotalRaw) < BigInt(value.principalAmountRaw) ||
+      exactEightDecimalShare(BigInt(value.principalAmountRaw), BigInt(value.directionalPrincipalTotalRaw)) !== value.directionalPrincipalShare
+    ) return false;
+  }
+  return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
+    value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount &&
+    chronologyRelationValid(value);
+}
+
+const PERSISTED_RISK_LABELS: ReadonlySet<string> = new Set([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "victim",
+  "mule",
+  "collector",
+  "bridge",
+  "exchange",
+  "trusted",
+  "false_positive",
+  "needs_review",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange",
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function persistedRiskLabel(value: unknown): value is AddressLabel["label"] {
+  return typeof value === "string" && PERSISTED_RISK_LABELS.has(value);
+}
+
+function persistedLabelFact(value: unknown): value is FirstHopLabelFact {
+  if (!persistedRecord(value)) return false;
+  return persistedNonEmptyString(value.counterpartyAddress) &&
+    (value.direction === "inbound" || value.direction === "outbound") &&
+    persistedRiskLabel(value.labelCode) &&
+    (value.evidenceAuthority === "exact_internal" || value.evidenceAuthority === "derived") &&
+    persistedIsoDate(value.recordedAt) &&
+    value.effectiveAt === null &&
+    persistedRawAmount(value.principalAmountRaw) &&
+    persistedCount(value.principalTxCount) &&
+    persistedShare(value.directionalPrincipalShare, value.shareSemantics) &&
+    persistedHashArray(value.transferTxHashes) &&
+    typeof value.linkedToSelectedProvenance === "boolean";
+}
+
+function normalizePersistedFirstHopCoverage(value: unknown): FirstHopBlacklistCoverage | null {
+  if (!persistedRecord(value)) return null;
+  const requiredForDecision = !Object.prototype.hasOwnProperty.call(value, "requiredForDecision")
+    ? false
+    : typeof value.requiredForDecision === "boolean"
+      ? value.requiredForDecision
+      : null;
+  if (requiredForDecision === null) return null;
+  const counts = [
+    value.materialCounterpartyCount,
+    value.checkedMaterialCounterpartyCount,
+    value.failedMaterialCounterpartyCount,
+    value.uncheckedMaterialCounterpartyCount,
+    value.confirmedAdverseFactCount,
+    value.completeTimelineFactCount,
+    value.partialTimelineFactCount
+  ];
+  if (!counts.every(persistedCount)) return null;
+  const scopeValid = value.scope === "all_time"
+    ? value.windowStart === null && value.windowEnd === null && value.directPrincipalTransferCoverage === "complete"
+    : value.scope === "checked_window" &&
+      persistedIsoDate(value.windowStart) &&
+      persistedIsoDate(value.windowEnd) &&
+      Date.parse(value.windowStart) <= Date.parse(value.windowEnd) &&
+      value.directPrincipalTransferCoverage === "partial";
+  const structurallyValid = scopeValid &&
+    ["complete", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
+    persistedNullableString(value.incompleteReason) &&
+    Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
+  if (!structurallyValid) return null;
+  return { ...(value as unknown as FirstHopBlacklistCoverage), requiredForDecision };
+}
+
+const PERSISTED_SERVICE_CATEGORIES: ReadonlySet<string> = new Set([
+  "bridge",
+  "bridge_pool",
+  "dex",
+  "router",
+  "cex",
+  "hot_wallet",
+  "swap_adapter",
+  "service",
+  "protocol",
+  "unknown_contract",
+  "none"
+]);
+
+function persistedServiceCategory(value: unknown): value is ServiceClassification["category"] {
+  return typeof value === "string" && PERSISTED_SERVICE_CATEGORIES.has(value);
+}
+
+function persistedClassification(value: unknown): value is ServiceClassification {
+  if (!persistedRecord(value)) return false;
+  return persistedServiceCategory(value.category) &&
+    persistedNullableString(value.identity) &&
+    (value.confidence === "low" || value.confidence === "medium" || value.confidence === "high") &&
+    persistedStringArray(value.evidence) &&
+    typeof value.isBoundary === "boolean";
+}
+
+function normalizePersistedAddressLabel(value: unknown, address: string): AddressLabel | null {
+  if (!persistedRecord(value)) return null;
+  if (
+    value.address !== address ||
+    !persistedRiskLabel(value.label) ||
+    (value.source !== "service_admin" && value.source !== "system") ||
+    !(value.createdByTelegramId === null || persistedNonEmptyString(value.createdByTelegramId)) ||
+    !persistedIsoDate(value.createdAt)
+  ) return null;
+  return {
+    address,
+    label: value.label,
+    source: value.source,
+    createdByTelegramId: value.createdByTelegramId,
+    createdAt: new Date(value.createdAt)
+  };
+}
+
+function persistedRestriction(
+  value: unknown,
+  address: string
+): value is TimelineBearingStablecoinRestrictionProfile {
+  if (!persistedRecord(value)) return false;
+  const methods = persistedRecord(value.methods) ? value.methods : null;
+  return value.subjectAddress === address &&
+    value.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
+    value.tokenSymbol === "USDT" &&
+    value.tokenStandard === "TRC20" &&
+    value.decimals === 6 &&
+    typeof value.isBlacklisted === "boolean" &&
+    (value.balanceRaw === null || persistedRawAmount(value.balanceRaw)) &&
+    persistedIsoDate(value.checkedAt) &&
+    value.evidenceStrength === "exact_contract_state" &&
+    (value.blacklistEventTxHash === undefined || persistedNullableHash(value.blacklistEventTxHash)) &&
+    (value.blacklistEventTimestamp === undefined || persistedNullableIsoDate(value.blacklistEventTimestamp)) &&
+    (value.blacklistEventBlock === undefined || value.blacklistEventBlock === null || persistedCount(value.blacklistEventBlock)) &&
+    methods !== null &&
+    (methods.blacklist === "isBlackListed(address)" || methods.blacklist === "getBlackListStatus(address)") &&
+    (methods.balance === null || methods.balance === "balanceOf(address)") &&
+    (value.blacklistTimeline === undefined || value.blacklistTimeline === null || persistedTimeline(value.blacklistTimeline));
+}
+
+function normalizePersistedDirectSnapshot(value: unknown): DirectHardEvidenceSnapshot | null {
+  if (!persistedRecord(value) || !persistedNonEmptyString(value.address) || !Array.isArray(value.labels)) return null;
+  const address = value.address;
+  const labels = value.labels.map((label) => normalizePersistedAddressLabel(label, address));
+  if (labels.some((label) => label === null)) return null;
+  if (value.classification !== null && !persistedClassification(value.classification)) return null;
+  if (value.usdtRestriction !== null && !persistedRestriction(value.usdtRestriction, address)) return null;
+  if (
+    value.evidenceStatus !== "live_checked" && value.evidenceStatus !== "local_only" ||
+    typeof value.hasHardEvidence !== "boolean" ||
+    !persistedStringArray(value.reasons)
+  ) return null;
+  return {
+    address,
+    labels: labels.filter((label): label is AddressLabel => label !== null),
+    classification: value.classification,
+    usdtRestriction: value.usdtRestriction,
+    evidenceStatus: value.evidenceStatus,
+    hasHardEvidence: value.hasHardEvidence,
+    reasons: value.reasons
+  };
+}
+
+function invalidPersistedFirstHopEvidence(): PersistedDeepFirstHopEvidence {
+  return {
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "provider_failed",
+      incompleteReason: "persisted_first_hop_evidence_invalid",
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    directHardEvidenceSnapshots: []
+  };
+}
+
+function persistedShareMatchesCoverage(
+  item: FirstHopBlacklistFact | FirstHopLabelFact,
+  coverage: FirstHopBlacklistCoverage
+): boolean {
+  return coverage.directPrincipalTransferCoverage === "complete"
+    ? item.shareSemantics === "exact" && item.directionalPrincipalShare !== null
+    : item.shareSemantics === "unavailable" && item.directionalPrincipalShare === null;
+}
+
+function persistedEnvelopeConsistent(input: PersistedDeepFirstHopEvidence): boolean {
+  const { firstHopBlacklistFacts: facts, firstHopLabelFacts: labelFacts, firstHopBlacklistCoverage: coverage, directHardEvidenceSnapshots: snapshots } = input;
+  const snapshotsByAddress = new Map(snapshots.map((snapshot) => [snapshot.address, snapshot]));
+  if (snapshotsByAddress.size !== snapshots.length) return false;
+  const checkedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction !== null).length;
+  const failedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction === null).length;
+  const uncheckedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "local_only").length;
+  if (
+    coverage.materialCounterpartyCount !== snapshots.length ||
+    coverage.checkedMaterialCounterpartyCount !== checkedCount ||
+    coverage.failedMaterialCounterpartyCount !== failedCount ||
+    coverage.uncheckedMaterialCounterpartyCount !== uncheckedCount ||
+    coverage.confirmedAdverseFactCount !== facts.length ||
+    coverage.completeTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "complete").length ||
+    coverage.partialTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "partial").length
+  ) return false;
+  if (coverage.blacklistCheckCoverage === "complete") {
+    if (
+      coverage.directPrincipalTransferCoverage !== "complete" ||
+      coverage.failedMaterialCounterpartyCount !== 0 ||
+      coverage.uncheckedMaterialCounterpartyCount !== 0 ||
+      coverage.incompleteReason !== null ||
+      coverage.partialTimelineFactCount !== 0
+    ) return false;
+  } else if (!persistedNonEmptyString(coverage.incompleteReason)) {
+    return false;
+  }
+  for (const fact of facts) {
+    if (fact.directTransferCoverage !== coverage.directPrincipalTransferCoverage || !persistedShareMatchesCoverage(fact, coverage)) return false;
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const restriction = snapshot?.evidenceStatus === "live_checked" ? snapshot.usdtRestriction : null;
+    if (!restriction?.isBlacklisted || restriction.checkedAt !== fact.checkedAt) return false;
+    const timelineEvents = restriction.blacklistTimeline?.events ?? [];
+    if (JSON.stringify(timelineEvents) !== JSON.stringify(fact.timelineEvents)) return false;
+    const expectedTimelineCoverage = restriction.blacklistTimeline?.pagination === "complete" ? "complete" : "partial";
+    if (fact.timelineCoverage !== expectedTimelineCoverage) return false;
+    const effectiveEvent = [...fact.timelineEvents].reverse().find((event) => event.eventKind === "added") ?? null;
+    const effectiveAt = effectiveEvent?.occurredAt ?? restriction.blacklistEventTimestamp ?? null;
+    const effectiveTxHash = effectiveEvent?.txHash ?? restriction.blacklistEventTxHash ?? null;
+    if (fact.effectiveAt !== effectiveAt || fact.effectiveTxHash !== effectiveTxHash) return false;
+  }
+  for (const fact of labelFacts) {
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const matchingLabel = snapshot?.labels.some((label) =>
+      label.address === fact.counterpartyAddress &&
+      label.label === fact.labelCode &&
+      (label.source === "service_admin" ? "exact_internal" : "derived") === fact.evidenceAuthority &&
+      label.createdAt.toISOString() === fact.recordedAt
+    );
+    if (!matchingLabel || !persistedShareMatchesCoverage(fact, coverage)) return false;
+  }
+  return true;
+}
+
+export function normalizePersistedDeepFirstHopEvidence(
+  record: Record<string, unknown>
+): Partial<PersistedDeepFirstHopEvidence> {
+  const fields = [
+    "firstHopBlacklistFacts",
+    "firstHopLabelFacts",
+    "firstHopBlacklistCoverage",
+    "directHardEvidenceSnapshots"
+  ] as const;
+  if (fields.every((field) => !Object.prototype.hasOwnProperty.call(record, field))) return {};
+  const coverage = normalizePersistedFirstHopCoverage(record.firstHopBlacklistCoverage);
+  if (
+    !Array.isArray(record.firstHopBlacklistFacts) ||
+    !record.firstHopBlacklistFacts.every(persistedBlacklistFact) ||
+    !Array.isArray(record.firstHopLabelFacts) ||
+    !record.firstHopLabelFacts.every(persistedLabelFact) ||
+    coverage === null ||
+    !Array.isArray(record.directHardEvidenceSnapshots)
+  ) return invalidPersistedFirstHopEvidence();
+  const snapshots = record.directHardEvidenceSnapshots.map(normalizePersistedDirectSnapshot);
+  if (snapshots.some((snapshot) => snapshot === null)) return invalidPersistedFirstHopEvidence();
+  const envelope: PersistedDeepFirstHopEvidence = {
+    firstHopBlacklistFacts: record.firstHopBlacklistFacts,
+    firstHopLabelFacts: record.firstHopLabelFacts,
+    firstHopBlacklistCoverage: coverage,
+    directHardEvidenceSnapshots: snapshots.filter((snapshot): snapshot is DirectHardEvidenceSnapshot => snapshot !== null)
+  };
+  return persistedEnvelopeConsistent(envelope) ? envelope : invalidPersistedFirstHopEvidence();
+}
 
 export type DeepAddressForensicDeps = {
   tronClient: RouteSearchTronClient;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getAddressMetadata?(address: string): Promise<AddressMetadata | null>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
-  getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<TimelineBearingStablecoinRestrictionProfile>;
   getTransaction?(txHash: string): Promise<unknown>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   listIndexedUsdtTransfersForAddress?(address: string, options: {
@@ -66,13 +590,21 @@ export type DeepAddressForensicDeps = {
     maxTimestamp: Date;
     limit: number;
     offset?: number;
+    orderBy?: "newest" | "amount_desc";
   }): Promise<IndexedTronUsdtTransfer[]>;
+  getAddressUsdtIndexState?(address: string): Promise<TronAddressUsdtIndexState | null>;
 };
 
 export type RunDeepAddressForensicCheckInput = {
   sourceAddress: string;
   windowStart: Date;
   windowEnd: Date;
+  runProfile?: DeepForensicRunProfile;
+  providerCallBudget?: number | null;
+  transferCallBudget?: number | null;
+  contractCallBudget?: number | null;
+  approvalCallBudget?: number | null;
+  elapsedTimeBudgetMs?: number | null;
   maxDepth?: number;
   maxPagesPerAddress?: number;
   pageLimit?: number;
@@ -84,21 +616,104 @@ export type RunDeepAddressForensicCheckInput = {
   maxInboundSenders?: number;
   maxApprovalDrainCandidates?: number;
   approvalChangeLookupLimit?: number;
+  economicEdgeTransactionInfoFetchLimit?: number;
   extendedSearchMode?: "disabled" | "auto" | "always";
   extendedSearchMaxDepth?: number;
   extendedSearchBeamWidth?: number;
   extendedSearchMaxAddressFetches?: number;
   extendedSearchMinTriggerVolumeRaw?: string;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
+  counterpartyFastSnapshotLimit?: number;
+  counterpartyFastSnapshotActiveLimit?: number;
+  fastCheckHints?: FastCheckHintAddress[];
+  assetContinuationTransferLimit?: number;
   apiKeyConfigured?: boolean;
+  allTimeSubjectIndexState?: TronAddressUsdtIndexState | null;
+  allTimeMode?: DeepCheckAllTimeMode;
+  secondLayerMaxActiveWalletsPerJob?: number;
+  directHardEvidenceLiveLimit?: number;
+  directHardEvidenceConcurrency?: number;
+  usddPsmRouteObservations?: UsddPsmRouteObservationV1[];
   abortSignal?: AbortSignal;
 };
 
-const DEFAULT_MAX_DEPTH = 2;
-const DEFAULT_MAX_PAGES_PER_ADDRESS = 2;
-const DEFAULT_PAGE_LIMIT = 50;
-const DEFAULT_LIMIT = 5;
-const DEFAULT_MAX_INBOUND_SENDERS = 5;
+const DEFAULT_MAX_DEPTH = 3;
+const DEFAULT_MAX_PAGES_PER_ADDRESS = 3;
+const DEFAULT_PAGE_LIMIT = 100;
+const DEFAULT_LIMIT = 10;
+const DEFAULT_MAX_INBOUND_SENDERS = 15;
+const DEFAULT_MAX_APPROVAL_DRAIN_CANDIDATES = 5;
+const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
+// ponytail: 250 bounds all live transaction-detail calls while reserving the
+// configured approval-candidate slice for hard evidence; upgrade by persisting
+// economic roles or locally materializing transaction details.
+export const DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT = 250;
+const COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX = 250;
+
+function contractDrivenCampaignTxInfoFetchLimit(input: {
+  sourceAddress: string;
+  edges: ForensicRouteEdge[];
+  maxApprovalDrainCandidates?: number;
+}): number {
+  const defaultLimit = Math.max(
+    input.maxApprovalDrainCandidates ?? 0,
+    DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT
+  );
+  const subject = input.sourceAddress.toLowerCase();
+  const incomingTxCount = new Set(input.edges
+    .filter((edge) => edge.toAddress.toLowerCase() === subject)
+    .map((edge) => edge.txHash)
+  ).size;
+  return incomingTxCount > 0 &&
+    incomingTxCount <= COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX
+    ? Math.max(defaultLimit, incomingTxCount)
+    : defaultLimit;
+}
+
+function rankedEconomicEdgeCandidateHashes(input: {
+  subjectAddress: string;
+  edges: ForensicRouteEdge[];
+}): string[] {
+  const subject = input.subjectAddress;
+  const groups = new Map<string, {
+    txHash: string;
+    firstIndex: number;
+    movementKeys: Set<string>;
+    hasMethodHint: boolean;
+    subjectAdjacent: boolean;
+  }>();
+  input.edges.forEach((edge, index) => {
+    const group = groups.get(edge.txHash) ?? {
+      txHash: edge.txHash,
+      firstIndex: index,
+      movementKeys: new Set<string>(),
+      hasMethodHint: false,
+      subjectAdjacent: false
+    };
+    group.movementKeys.add(`${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`);
+    group.hasMethodHint ||= edge.method.toLowerCase().replace(/\s+/g, "").includes("permittransfer");
+    group.subjectAdjacent ||= edge.fromAddress === subject || edge.toAddress === subject;
+    groups.set(edge.txHash, group);
+  });
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      hasMultipleMovements: group.movementKeys.size > 1
+    }))
+    .filter((group) => group.hasMultipleMovements || group.subjectAdjacent || group.hasMethodHint)
+    .sort((left, right) =>
+      Number(right.hasMultipleMovements) - Number(left.hasMultipleMovements) ||
+      right.movementKeys.size - left.movementKeys.size ||
+      Number(right.subjectAdjacent) - Number(left.subjectAdjacent) ||
+      Number(right.hasMethodHint) - Number(left.hasMethodHint) ||
+      left.firstIndex - right.firstIndex ||
+      left.txHash.localeCompare(right.txHash)
+    )
+    .map((group) => group.txHash);
+}
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
@@ -112,31 +727,179 @@ function edgeAmount(edge: ForensicRouteEdge): bigint {
   return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
 }
 
+function providerErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecoverableProviderError(error: unknown): boolean {
+  const message = providerErrorMessage(error).toLowerCase();
+  const hardFailures = [
+    "400",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "invalid key",
+    "schema",
+    "column",
+    "deep forensic check aborted",
+    "forensic address exposure check aborted"
+  ];
+  if (hardFailures.some((needle) => message.includes(needle))) return false;
+  return [
+    "408",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "rate limit",
+    "too many requests",
+    "aborterror",
+    "aborted",
+    "operation aborted",
+    "timeout",
+    "timed out",
+    "network error",
+    "socket",
+    "econnreset",
+    "etimedout",
+    "eai_again",
+    "unavailable",
+    "outage",
+    "temporarily"
+  ].some((needle) => message.includes(needle));
+}
+
+function providerPartialNote(scope: string, error: unknown): string {
+  return `${scope} incomplete: ${providerErrorMessage(error)}`;
+}
+
+function emptyAddressExposureReport(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  missingCheck: string;
+}): AddressExposureReport {
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    rawEvidence: [],
+    observations: [],
+    missingChecks: [input.missingCheck],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: []
+  };
+}
+
+function sparseRecentFallbackNote(input: {
+  address: string;
+  windowEdgeCount: number;
+  recentEdgeCount: number;
+  requestedLimit: number;
+}): string {
+  return `30d window had ${input.windowEdgeCount} USDT transfers for ${input.address}; added latest ${input.recentEdgeCount}/${input.requestedLimit} historical USDT transfers for sparse-wallet context.`;
+}
+
 async function fetchEdgesForAddress(
   tronClient: RouteSearchTronClient,
   input: RunDeepAddressForensicCheckInput,
   address: string,
-  maxPages: number
-): Promise<{ edges: ForensicRouteEdge[]; pages: number }> {
+  maxPages: number,
+  options: { allowRecentFallback?: boolean } = {}
+): Promise<{
+  edges: ForensicRouteEdge[];
+  pages: number;
+  missingChecks: string[];
+  windowEdgeCount: number;
+  recentFallbackEdgeCount: number;
+  recentFallbackRequestedLimit: number | null;
+}> {
   const edges: ForensicRouteEdge[] = [];
   let pages = 0;
   const pageLimit = input.pageLimit ?? DEFAULT_PAGE_LIMIT;
+  const fallbackLimit = input.recentFallbackTransferLimit ?? 0;
   for (let page = 0; page < maxPages; page += 1) {
     throwIfAborted(input.abortSignal);
-    const transfers = await tronClient.listRelatedTrc20Transfers(address, {
-      start: page * pageLimit,
-      limit: pageLimit,
-      minTimestamp: input.windowStart.getTime(),
-      endTimestamp: input.windowEnd.getTime()
-    });
+    let transfers: RawTronscanTrc20Transfer[];
+    try {
+      transfers = await tronClient.listRelatedTrc20Transfers(address, {
+        start: page * pageLimit,
+        limit: pageLimit,
+        minTimestamp: input.windowStart.getTime(),
+        endTimestamp: input.windowEnd.getTime()
+      }) as RawTronscanTrc20Transfer[];
+    } catch (error) {
+      if (!isRecoverableProviderError(error)) throw error;
+      return {
+        edges,
+        pages,
+        missingChecks: [providerPartialNote(`Transfer lookup for ${address}`, error)],
+        windowEdgeCount: edges.length,
+        recentFallbackEdgeCount: 0,
+        recentFallbackRequestedLimit: fallbackLimit > 0 ? fallbackLimit : null
+      };
+    }
     pages += 1;
-    for (const transfer of transfers as RawTronscanTrc20Transfer[]) {
+    for (const transfer of transfers) {
       const edge = normalizeTransfer(transfer);
       if (edge) edges.push(edge);
     }
     if (transfers.length < pageLimit) break;
   }
-  return { edges, pages };
+  const minCount = input.recentFallbackMinTransferCount ?? 0;
+  if (!options.allowRecentFallback || minCount <= 0 || fallbackLimit <= 0 || edges.length >= minCount) {
+    return {
+      edges,
+      pages,
+      missingChecks: [],
+      windowEdgeCount: edges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: fallbackLimit > 0 ? fallbackLimit : null
+    };
+  }
+
+  throwIfAborted(input.abortSignal);
+  let recentTransfers: RawTronscanTrc20Transfer[];
+  try {
+    recentTransfers = await tronClient.listRelatedTrc20Transfers(address, {
+      start: 0,
+      limit: fallbackLimit
+    }) as RawTronscanTrc20Transfer[];
+  } catch (error) {
+    if (!isRecoverableProviderError(error)) throw error;
+    return {
+      edges,
+      pages,
+      windowEdgeCount: edges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: fallbackLimit,
+      missingChecks: [providerPartialNote(`Recent transfer fallback for ${address}`, error)]
+    };
+  }
+  pages += 1;
+  const recentEdges: ForensicRouteEdge[] = [];
+  for (const transfer of recentTransfers) {
+    const edge = normalizeTransfer(transfer);
+    if (edge) recentEdges.push(edge);
+  }
+  return {
+    edges: dedupeEdges([...edges, ...recentEdges]),
+    pages,
+    windowEdgeCount: edges.length,
+    recentFallbackEdgeCount: recentEdges.length,
+    recentFallbackRequestedLimit: fallbackLimit,
+    missingChecks: [
+      sparseRecentFallbackNote({
+        address,
+        windowEdgeCount: edges.length,
+        recentEdgeCount: recentEdges.length,
+        requestedLimit: fallbackLimit
+      })
+    ]
+  };
 }
 
 function topIncomingSenders(subjectAddress: string, edges: ForensicRouteEdge[], limit: number): string[] {
@@ -186,11 +949,42 @@ function directCounterpartyAddresses(subjectAddress: string, edges: ForensicRout
 }
 
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const retainedIdentities = new Set(mergeForensicRouteEdges(edges).map(forensicRouteEdgeIdentity));
   const result = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    result.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    const key = forensicRouteEdgeIdentity(edge);
+    if (!retainedIdentities.has(key)) continue;
+    result.set(key, betterDedupeEdge(result.get(key), edge));
   }
   return [...result.values()];
+}
+
+function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: ForensicRouteEdge): ForensicRouteEdge {
+  if (!current) return next;
+  const currentRank = contractDrivenSignalRank(current);
+  const nextRank = contractDrivenSignalRank(next);
+  if (nextRank > currentRank) return next;
+  if (nextRank < currentRank) return current;
+  return next;
+}
+
+function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
+  if (edge.economicProtocol === "tron_gasfree" && edge.economicRole) return 4;
+  const method = edge.method.trim().toLowerCase();
+  if (edge.edgeType === "transfer_from") return 3;
+  if (method.includes("verify20") || method.includes("permit") || method.includes("transferfrom")) return 2;
+  if (method && !methodLooksPlainTransfer(method)) return 1;
+  return 0;
+}
+
+function methodLooksPlainTransfer(method: string): boolean {
+  const compact = method.replace(/\s+/g, "");
+  const canonical = compact.replace(/transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/i, "transfer(address,uint256)");
+  return canonical === "transfer" ||
+    canonical === "transfer(address,uint256)" ||
+    canonical === "a9059cbb" ||
+    canonical === "transfera9059cbb" ||
+    canonical === "transfer(address,uint256)a9059cbb";
 }
 
 function sumEdgeVolume(edges: ForensicRouteEdge[], predicate: (edge: ForensicRouteEdge) => boolean): bigint {
@@ -228,6 +1022,186 @@ function shouldRunExtendedSearch(input: {
     Boolean(input.approvalDrainProfile);
 }
 
+function operationalBoundaryDepth(input: RunDeepAddressForensicCheckInput): BoundaryExposureDepth {
+  const requestedDepth = Math.trunc(input.extendedSearchMaxDepth ?? 6);
+  return Math.min(4, Math.max(1, requestedDepth)) as BoundaryExposureDepth;
+}
+
+async function getServiceClassificationForAddress(
+  address: string,
+  deps: DeepAddressForensicDeps,
+  classificationCache: Map<string, ServiceClassification | null>
+): Promise<ServiceClassification | null> {
+  if (classificationCache.has(address)) return classificationCache.get(address) ?? null;
+  const metadata = await deps.getAddressMetadata?.(address) ?? null;
+  const contractProfile = metadata?.isContract === true
+    ? await deps.getContractIntelligenceProfile?.(address).catch(() => null) ?? null
+    : null;
+  const classification = classifyServiceAddress({ address, metadata, contractProfile });
+  classificationCache.set(address, classification);
+  return classification;
+}
+
+async function fetchIndexedRouteEdges(
+  deps: DeepAddressForensicDeps,
+  input: RunDeepAddressForensicCheckInput,
+  address: string,
+  limit = 200,
+  orderBy: "newest" | "amount_desc" = "newest"
+): Promise<ForensicRouteEdge[]> {
+  const transfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
+    minTimestamp: input.windowStart,
+    maxTimestamp: input.windowEnd,
+    limit,
+    orderBy
+  }) ?? [];
+  return transfers.map(indexedTransferToRouteEdge);
+}
+
+async function fetchAllIndexedEdgesForAddress(
+  deps: DeepAddressForensicDeps,
+  address: string,
+  maxTimestamp: Date,
+  pageSize = DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE
+): Promise<ForensicRouteEdge[]> {
+  if (!deps.listIndexedUsdtTransfersForAddress) return [];
+  const edges: ForensicRouteEdge[] = [];
+  const boundedPageSize = Math.max(1, Math.min(Math.trunc(pageSize), DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE));
+  const boundedMaxRows = DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS;
+  for (let offset = 0; offset < boundedMaxRows; offset += boundedPageSize) {
+    const limit = Math.min(boundedPageSize, boundedMaxRows - offset);
+    if (limit <= 0) break;
+    const rows = await deps.listIndexedUsdtTransfersForAddress(address, {
+      minTimestamp: new Date(0),
+      maxTimestamp,
+      limit,
+      offset,
+      orderBy: "newest"
+    });
+    edges.push(...rows.map(indexedTransferToRouteEdge));
+    if (rows.length < limit) break;
+  }
+  return dedupeEdges(edges);
+}
+
+function edgeWithinDeclaredWindow(
+  edge: ForensicRouteEdge,
+  windowStart: Date,
+  windowEnd: Date
+): boolean {
+  const timestamp = edge.timestamp.getTime();
+  return Number.isFinite(timestamp) &&
+    timestamp >= windowStart.getTime() &&
+    timestamp <= windowEnd.getTime();
+}
+
+function failedClosedDirectHardEvidence(input: {
+  addresses: string[];
+  windowStart: Date;
+  windowEnd: Date;
+  error: unknown;
+}): DirectHardEvidenceResult {
+  const reason = `Direct principal evidence is invalid and cannot support a clean first-hop conclusion: ${providerErrorMessage(input.error)}`;
+  return {
+    status: "local_only_partial",
+    checkedCount: 0,
+    liveCheckedCount: 0,
+    liveFailedCount: 0,
+    serviceCount: 0,
+    blacklistedCount: 0,
+    blacklistFacts: [],
+    labelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString(),
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: input.addresses.length,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: input.addresses.length,
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: reason,
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    snapshots: [],
+    missingChecks: [reason]
+  };
+}
+
+function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
+  return new Set(profiles.flatMap((profile) => profile.flows.map((flow) => flow.subjectTxHash)));
+}
+
+async function buildOperationalIndexedProfiles(input: {
+  deps: DeepAddressForensicDeps;
+  runInput: RunDeepAddressForensicCheckInput;
+  sourceEdges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null>;
+  resolveEconomicEdges?: (edges: ForensicRouteEdge[]) => Promise<ForensicRouteEdge[]>;
+}): Promise<{
+  boundaryProfiles: BoundaryExposureProfile[];
+  flowProfiles: OperationalFlowProfile[];
+}> {
+  const classificationCache = new Map(input.classifications);
+  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
+    const edges = await fetchIndexedRouteEdges(input.deps, input.runInput, address, 200, "amount_desc");
+    return input.resolveEconomicEdges ? input.resolveEconomicEdges(edges) : edges;
+  };
+  const fetchRiskEligibleEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> =>
+    (await fetchEdgesForAddress(address)).filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const getClassificationForAddress = (address: string): Promise<ServiceClassification | null> =>
+    getServiceClassificationForAddress(address, input.deps, classificationCache);
+  const boundaryProfiles = input.deps.listIndexedUsdtTransfersForAddress
+    ? (await Promise.all((["outbound", "inbound"] as const).map((direction) =>
+      runMultiHopBoundaryExposureSearch({
+        subjectAddress: input.runInput.sourceAddress,
+        direction,
+        windowStart: input.runInput.windowStart,
+        windowEnd: input.runInput.windowEnd,
+        maxDepth: operationalBoundaryDepth(input.runInput),
+        beamWidth: input.runInput.extendedSearchBeamWidth ?? 12,
+        maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 150,
+        minAmountPreservationRatio: 0.7,
+        fetchEdgesForAddress: fetchRiskEligibleEdgesForAddress,
+        getClassificationForAddress
+      })
+    ))).filter((profile) => profile.flows.length > 0 || profile.contextScore > 0)
+    : [];
+
+  const sourceIndexedEdges = input.deps.listIndexedUsdtTransfersForAddress
+    ? await fetchEdgesForAddress(input.runInput.sourceAddress)
+    : [];
+  const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
+  const dedupedOperationalEdges = dedupeEdges([
+    ...input.sourceEdges,
+    ...sourceIndexedEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
+    ...boundaryProfilesToOperationalEdges({
+      subjectAddress: input.runInput.sourceAddress,
+      profiles: boundaryProfiles
+    })
+  ]);
+  const operationalEdges = input.resolveEconomicEdges
+    ? await input.resolveEconomicEdges(dedupedOperationalEdges)
+    : dedupedOperationalEdges;
+  if (operationalEdges.length === 0) return { boundaryProfiles, flowProfiles: [] };
+  const flowProfile = buildOperationalFlowProfile({
+    subjectAddress: input.runInput.sourceAddress,
+    windowStart: input.runInput.windowStart,
+    windowEnd: input.runInput.windowEnd,
+    edges: operationalEdges,
+    classifications: classificationCache
+  });
+  const shouldPersistFlowProfile = boundaryProfiles.length > 0 || flowProfile.operationalScore > 0;
+  return {
+    boundaryProfiles,
+    flowProfiles: shouldPersistFlowProfile ? [flowProfile] : []
+  };
+}
+
 async function labelsForAddresses(
   addresses: Iterable<string>,
   getLabelsForAddress: (address: string) => Promise<AddressLabel[]>
@@ -252,6 +1226,218 @@ async function classificationsForAddresses(
     classifications.set(address, classifyServiceAddress({ address, metadata, contractProfile }));
   }
   return classifications;
+}
+
+const criticalCounterpartyLabels = new Set<string>([
+  "scam",
+  "stolen_funds",
+  "phishing",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange"
+]);
+const derivedCounterpartyLabels = new Set<string>([
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function snapshotForLabels(address: string, labels: AddressLabel[] | undefined): CounterpartyRiskSnapshot | null {
+  const label = labels?.find((item) => criticalCounterpartyLabels.has(item.label))
+    ?? labels?.find((item) => derivedCounterpartyLabels.has(item.label))
+    ?? null;
+  if (!label) return null;
+  const derived = derivedCounterpartyLabels.has(label.label);
+  const riskScore = derived ? 80 : 90;
+  return {
+    address,
+    riskScore,
+    riskLevel: riskLevelFromScore(riskScore),
+    source: derived ? "derived_label" : "exact_label",
+    evidenceClass: derived ? "derived_labeled_counterparty" : "exact_labeled_counterparty",
+    reasons: [derived
+      ? `counterparty has derived high-risk label ${label.label}`
+      : `counterparty has exact high-risk label ${label.label}`],
+    partialNotes: []
+  };
+}
+
+function snapshotForService(address: string, classification: ServiceClassification | null): CounterpartyRiskSnapshot | null {
+  const serviceCategory =
+    classification?.isBoundary === true && classification.category !== "none"
+      ? classification.category
+      : null;
+  if (!serviceCategory) return null;
+  return {
+    address,
+    riskScore: 0,
+    riskLevel: "LOW",
+    source: "service_boundary",
+    evidenceClass: "service_boundary_context",
+    reasons: [`counterparty is ${serviceCategory} boundary${classification?.identity ? ` (${classification.identity})` : ""}`],
+    partialNotes: []
+  };
+}
+
+function snapshotForStablecoinRestriction(
+  address: string,
+  restriction: StablecoinRestrictionProfile | null | undefined
+): CounterpartyRiskSnapshot | null {
+  if (!restriction?.isBlacklisted) return null;
+  return {
+    address,
+    riskScore: 90,
+    riskLevel: "CRITICAL",
+    source: "stablecoin_blacklist",
+    evidenceClass: "exact_labeled_counterparty",
+    reasons: ["official TRON USDT contract blacklist state is active for counterparty"],
+    partialNotes: []
+  };
+}
+
+function snapshotCandidatesFromProfiles(
+  profiles: DirectCounterpartyInteractionProfile[]
+): CounterpartySnapshotCandidate[] {
+  return profiles.map((profile) => ({
+    counterpartyAddress: profile.counterpartyAddress,
+    volumeRaw: profile.volumeRaw,
+    volumeRatio: profile.volumeRatio,
+    txCount: profile.txCount,
+    snapshot: profile.snapshot.source === "none" ? null : profile.snapshot
+  }));
+}
+
+function snapshotFromAddressExposureReport(
+  address: string,
+  report: AddressExposureReport
+): CounterpartyRiskSnapshot {
+  const serviceScore = Math.min(50, report.serviceExposureProfiles[0]?.exposureScore ?? 0);
+  const behaviorScore = report.addressBehaviorProfiles[0]
+    ? Math.min(30, addressBehaviorEffectiveScore(report.addressBehaviorProfiles[0]))
+    : 0;
+  const riskScore = Math.max(0, Math.min(100, serviceScore + behaviorScore));
+  const partialNotes = report.missingChecks.filter((check) =>
+    check.toLowerCase().includes("partial") ||
+    check.toLowerCase().includes("incomplete") ||
+    check.toLowerCase().includes("timeout") ||
+    check.toLowerCase().includes("limited")
+  );
+
+  if (riskScore <= 0 && partialNotes.length > 0) {
+    return {
+      address,
+      riskScore: 0,
+      riskLevel: "LOW",
+      source: "fast_address_check",
+      evidenceClass: "provider_partial",
+      reasons: [],
+      partialNotes
+    };
+  }
+
+  return {
+    address,
+    riskScore,
+    riskLevel: riskLevelFromScore(riskScore),
+    source: "fast_address_check",
+    evidenceClass: riskScore > 0 ? "counterparty_behavior_context" : "no_exact_label_or_cached_taint",
+    reasons: [
+      ...(serviceScore > 0 ? ["counterparty fast check found service exposure context"] : []),
+      ...(behaviorScore > 0 ? ["counterparty fast check found behavior context"] : [])
+    ],
+    partialNotes
+  };
+}
+
+async function buildCounterpartyFastSnapshots(input: {
+  deps: DeepAddressForensicDeps;
+  runInput: RunDeepAddressForensicCheckInput;
+  sourceEdges: ForensicRouteEdge[];
+  labelsByAddress: Map<string, AddressLabel[]>;
+  classifications: Map<string, ServiceClassification | null>;
+  resolveEconomicEdges?: (edges: ForensicRouteEdge[]) => Promise<ForensicRouteEdge[]>;
+}): Promise<Map<string, CounterpartyRiskSnapshot>> {
+  const seedProfiles = buildDirectCounterpartyInteractionProfiles({
+    subjectAddress: input.runInput.sourceAddress,
+    edges: input.sourceEdges,
+    snapshotsByAddress: new Map(),
+    classifications: input.classifications
+  });
+  const sparseWallet = seedProfiles.reduce((sum, profile) => sum + profile.txCount, 0) < (input.runInput.recentFallbackMinTransferCount ?? 150);
+  const baseline = new Map<string, CounterpartyRiskSnapshot>();
+  for (const profile of seedProfiles) {
+    const labelSnapshot = snapshotForLabels(profile.counterpartyAddress, input.labelsByAddress.get(profile.counterpartyAddress));
+    const serviceSnapshot = snapshotForService(profile.counterpartyAddress, input.classifications.get(profile.counterpartyAddress) ?? null);
+    if (labelSnapshot) baseline.set(profile.counterpartyAddress, labelSnapshot);
+    else if (serviceSnapshot) baseline.set(profile.counterpartyAddress, serviceSnapshot);
+  }
+
+  const seedAddresses = new Set(seedProfiles.map((profile) => profile.counterpartyAddress));
+  const priorityAddresses = (input.runInput.fastCheckHints ?? [])
+    .map((hint) => hint.address)
+    .filter((address, index, addresses) => seedAddresses.has(address) && addresses.indexOf(address) === index);
+
+  const selected = selectCounterpartiesForFastSnapshot({
+    profiles: snapshotCandidatesFromProfiles(seedProfiles).map((candidate) => ({
+      ...candidate,
+      snapshot: baseline.get(candidate.counterpartyAddress) ?? candidate.snapshot
+    })),
+    sparseWallet,
+    maxSparse: input.runInput.counterpartyFastSnapshotLimit ?? 60,
+    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 30,
+    priorityAddresses
+  });
+  const snapshots = new Map(baseline);
+  for (const address of selected) {
+    const existingSnapshot = snapshots.get(address) ?? null;
+    if (existingSnapshot?.source === "service_boundary") continue;
+    if (existingSnapshot?.riskScore && existingSnapshot.riskScore >= 80) continue;
+    throwIfAborted(input.runInput.abortSignal);
+    if (input.deps.getUsdtRestrictionStatus) {
+      const stablecoinSnapshot = snapshotForStablecoinRestriction(
+        address,
+        await input.deps.getUsdtRestrictionStatus(address).catch(() => null)
+      );
+      if (stablecoinSnapshot) {
+        snapshots.set(address, stablecoinSnapshot);
+        continue;
+      }
+    }
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: address,
+      windowStart: input.runInput.windowStart,
+      windowEnd: input.runInput.windowEnd,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: input.runInput.pageLimit ?? DEFAULT_PAGE_LIMIT,
+      limit: input.runInput.limit ?? DEFAULT_LIMIT,
+      tronClient: input.deps.tronClient,
+      getAddressMetadata: input.deps.getAddressMetadata,
+      getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+      contractProfileFetchLimit: Math.min(input.runInput.contractProfileFetchLimit ?? 2, 2),
+      metadataFetchLimit: Math.min(input.runInput.metadataFetchLimit ?? 4, 4),
+      maxExpandedIntermediates: 0,
+      resolveEconomicEdges: input.resolveEconomicEdges,
+      recentFallbackMinTransferCount: input.runInput.recentFallbackMinTransferCount,
+      recentFallbackTransferLimit: input.runInput.recentFallbackTransferLimit,
+      abortSignal: input.runInput.abortSignal
+    }).catch((error: unknown): AddressExposureReport => ({
+      subjectAddress: address,
+      windowStart: input.runInput.windowStart,
+      windowEnd: input.runInput.windowEnd,
+      rawEvidence: [],
+      observations: [],
+      missingChecks: [`Counterparty fast snapshot incomplete: ${error instanceof Error ? error.message : String(error)}`],
+      serviceExposureProfiles: [],
+      addressBehaviorProfiles: []
+    }));
+    const snapshot = snapshotFromAddressExposureReport(address, report);
+    const existing = snapshots.get(address) ?? null;
+    if (!existing || snapshot.riskScore > existing.riskScore || snapshot.evidenceClass === "provider_partial") {
+      snapshots.set(address, snapshot);
+    }
+  }
+  return snapshots;
 }
 
 function rawEvidenceForInbound(input: {
@@ -296,6 +1482,24 @@ function observationForInbound(input: {
       scoreImpact: Math.min(50, input.profile.score),
       confidence: "high",
       severity: input.profile.score >= 50 ? "critical" : "high",
+      source: "incoming_provenance",
+      policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+      rawEvidenceId: input.rawEvidenceId
+    };
+  }
+  if (topPath?.label === "whitebit") {
+    return {
+      id: stableId(["forensic_whitebit_provenance_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+      subjectChain: "tron",
+      subjectAddress: input.subjectAddress,
+      subjectTxHash: null,
+      observedTransactionHash: topPath.txHashes.at(-1) ?? null,
+      signalGroup: "incoming_context",
+      code: "forensic_whitebit_provenance",
+      message: "Inbound provenance candidate from WhiteBIT high-risk source; manual review required.",
+      scoreImpact: Math.min(50, input.profile.score),
+      confidence: "high",
+      severity: "high",
       source: "incoming_provenance",
       policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
       rawEvidenceId: input.rawEvidenceId
@@ -354,6 +1558,16 @@ function observationForCounterparty(input: {
   rawEvidenceId: string;
 }): RiskSignalObservationInput | null {
   if (input.profile.score <= 0 || !input.profile.label) return null;
+  const code = input.profile.label === "darknet_exchange"
+    ? "forensic_counterparty_darknet_exchange"
+    : input.profile.label === "whitebit"
+      ? "forensic_counterparty_whitebit"
+      : "forensic_counterparty_darknet_exchange_proximity";
+  const message = input.profile.label === "darknet_exchange"
+    ? "Direct counterparty is a manually verified darknet exchange seed."
+    : input.profile.label === "whitebit"
+      ? "Direct counterparty is labeled WhiteBIT high-risk source."
+      : "Direct counterparty has a confirmed darknet exchange proximity marker.";
   return {
     id: stableId([
       "forensic_counterparty_risk_observation",
@@ -368,16 +1582,71 @@ function observationForCounterparty(input: {
     subjectTxHash: null,
     observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
     signalGroup: "incoming_context",
-    code: input.profile.label === "darknet_exchange"
-      ? "forensic_counterparty_darknet_exchange"
-      : "forensic_counterparty_darknet_exchange_proximity",
-    message: input.profile.label === "darknet_exchange"
-      ? "Direct counterparty is a manually verified darknet exchange seed."
-      : "Direct counterparty has a confirmed darknet exchange proximity marker.",
+    code,
+    message,
     scoreImpact: input.profile.score,
     confidence: "high",
     severity: "high",
     source: "counterparty_propagation",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForDirectCounterpartyInteraction(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: DirectCounterpartyInteractionProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_direct_counterparty_interaction_raw",
+      input.subjectAddress,
+      input.profile.direction,
+      input.profile.counterpartyAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_counterparty_fast_snapshot",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: input.profile.txHashes[0] ?? null,
+    observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
+    evidenceJson: {
+      directCounterpartyInteractionProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForDirectCounterpartyInteraction(input: {
+  subjectAddress: string;
+  profile: DirectCounterpartyInteractionProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.scoreContribution <= 0) return null;
+  return {
+    id: stableId([
+      "forensic_direct_counterparty_interaction_observation",
+      input.subjectAddress,
+      input.profile.direction,
+      input.profile.counterpartyAddress,
+      FORENSIC_ROUTE_POLICY_VERSION
+    ]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
+    signalGroup: "incoming_context",
+    code: "forensic_counterparty_fast_snapshot_context",
+    message: "Major direct counterparty has high fast forensic risk; this is interaction context, not exact taint proof.",
+    scoreImpact: input.profile.scoreContribution,
+    confidence: input.profile.scoreContribution >= 60 ? "high" : "medium",
+    severity: input.profile.scoreContribution >= 60 ? "high" : "medium",
+    source: "counterparty_fast_snapshot",
     policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
     rawEvidenceId: input.rawEvidenceId
   };
@@ -442,41 +1711,340 @@ function observationForExtendedProvenance(input: {
   };
 }
 
+function rawEvidenceForBoundaryExposure(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: BoundaryExposureProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_boundary_exposure_raw",
+      input.subjectAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: input.profile.flows[0]?.subjectTxHash ?? null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    evidenceJson: {
+      boundaryExposureProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForBoundaryExposure(input: {
+  subjectAddress: string;
+  profile: BoundaryExposureProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.contextScore <= 0 || input.profile.flows.length === 0) return null;
+  return {
+    id: stableId([
+      "forensic_boundary_exposure_observation",
+      input.subjectAddress,
+      input.profile.flows[0]?.direction ?? "unknown",
+      input.profile.flows[0]?.boundaryTxHash ?? "none",
+      FORENSIC_ROUTE_POLICY_VERSION
+    ]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    signalGroup: "incoming_context",
+    code: "forensic_boundary_exposure_context",
+    message: "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+    scoreImpact: input.profile.contextScore,
+    confidence: "medium",
+    severity: input.profile.contextScore >= 10 ? "low" : "info",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForOperationalFlow(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: OperationalFlowProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_operational_flow_raw",
+      input.subjectAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_operational_profile",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      operationalFlowProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForOperationalFlow(input: {
+  subjectAddress: string;
+  profile: OperationalFlowProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.operationalScore <= 0) return null;
+  return {
+    id: stableId(["forensic_operational_flow_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "behavior",
+    code: "forensic_operational_boundary_flow",
+    message: "Operational flow pattern: 30d counterparty and multi-hop boundary flow indicate terminal liquidity routing; this is not direct blacklist evidence.",
+    scoreImpact: input.profile.operationalScore,
+    confidence: input.profile.operationalScore >= 45 ? "high" : "medium",
+    severity: input.profile.operationalScore >= 60 ? "high" : input.profile.operationalScore >= 30 ? "medium" : "low",
+    source: "forensic_operational_profile",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForWalletRole(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: WalletRoleProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_wallet_role_raw",
+      input.subjectAddress,
+      input.profile.primaryRole,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      walletRoleProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForWalletRole(input: {
+  subjectAddress: string;
+  profile: WalletRoleProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.primaryRole === "unknown") return null;
+  const primary = input.profile.roles.find((role) => role.role === input.profile.primaryRole) ?? input.profile.roles[0] ?? null;
+  return {
+    id: stableId(["forensic_wallet_role_observation", input.subjectAddress, input.profile.primaryRole, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "incoming_context",
+    code: "forensic_wallet_role_context",
+    message: `Wallet role context: ${input.profile.primaryRole} (${primary?.confidence ?? "medium"} confidence).`,
+    scoreImpact: 0,
+    confidence: primary?.confidence ?? "medium",
+    severity: "info",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
 export async function runDeepAddressForensicCheck(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput
 ): Promise<DeepAddressForensicReport> {
-  const exposureReport = await runForensicAddressExposureSearch({
-    sourceAddress: input.sourceAddress,
-    windowStart: input.windowStart,
-    windowEnd: input.windowEnd,
-    maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxPagesPerAddress: input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
-    pageLimit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
-    limit: input.limit ?? DEFAULT_LIMIT,
-    tronClient: deps.tronClient,
-    getAddressMetadata: deps.getAddressMetadata,
-    getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-    contractProfileFetchLimit: input.contractProfileFetchLimit,
-    metadataFetchLimit: input.metadataFetchLimit,
-    maxExpandedIntermediates: input.maxExpandedIntermediates,
-    abortSignal: input.abortSignal
-  });
-  const sourceTransfers = await fetchEdgesForAddress(
-    deps.tronClient,
-    input,
-    input.sourceAddress,
-    input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS
-  );
-  const senders = topIncomingSenders(input.sourceAddress, sourceTransfers.edges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
+  const gasFreeSettlementCache = new Map<string, Promise<GasFreeSettlement | null>>();
+  const requestedEconomicEdgeTransactionInfoFetchLimit = input.economicEdgeTransactionInfoFetchLimit
+    ?? DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT;
+  const economicEdgeTransactionInfoFetchLimit = Number.isFinite(requestedEconomicEdgeTransactionInfoFetchLimit)
+    ? Math.max(0, Math.floor(requestedEconomicEdgeTransactionInfoFetchLimit))
+    : DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT;
+  const requestedMaxApprovalDrainCandidates = input.maxApprovalDrainCandidates ?? DEFAULT_MAX_APPROVAL_DRAIN_CANDIDATES;
+  const normalizedMaxApprovalDrainCandidates = Number.isFinite(requestedMaxApprovalDrainCandidates)
+    ? Math.max(0, Math.floor(requestedMaxApprovalDrainCandidates))
+    : DEFAULT_MAX_APPROVAL_DRAIN_CANDIDATES;
+  const approvalDrainCandidateLimit = normalizedMaxApprovalDrainCandidates;
+  const ordinaryTransactionInfoFetchLimit = economicEdgeTransactionInfoFetchLimit;
+  const skippedEconomicCandidateHashes = new Set<string>();
+  const budgetSkippedTransactionHashes = new Set<string>();
+  const submittedOrdinaryTransactionHashes = new Set<string>();
+  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
+    if (!submittedOrdinaryTransactionHashes.has(txHash) && submittedOrdinaryTransactionHashes.size >= ordinaryTransactionInfoFetchLimit) {
+      budgetSkippedTransactionHashes.add(txHash);
+      return Promise.resolve(null);
+    }
+    submittedOrdinaryTransactionHashes.add(txHash);
+    budgetSkippedTransactionHashes.delete(txHash);
+    return deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
+  };
+  const getHardEvidenceCachedTransaction = (txHash: string): Promise<unknown | null> => {
+    budgetSkippedTransactionHashes.delete(txHash);
+    return deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
+  };
+  const resolveEconomicEdges = async (edges: ForensicRouteEdge[]): Promise<ForensicRouteEdge[]> => {
+    if (!deps.getTransaction) return edges;
+    for (const txHash of rankedEconomicEdgeCandidateHashes({
+      subjectAddress: input.sourceAddress,
+      edges
+    })) {
+      if (gasFreeSettlementCache.has(txHash)) {
+        skippedEconomicCandidateHashes.delete(txHash);
+        continue;
+      }
+      if (budgetSkippedTransactionHashes.has(txHash)) {
+        skippedEconomicCandidateHashes.add(txHash);
+        continue;
+      }
+      if (!submittedOrdinaryTransactionHashes.has(txHash) && submittedOrdinaryTransactionHashes.size >= ordinaryTransactionInfoFetchLimit) {
+        skippedEconomicCandidateHashes.add(txHash);
+        continue;
+      }
+      gasFreeSettlementCache.set(txHash, getCachedTransaction(txHash).then(extractGasFreeSettlement));
+      skippedEconomicCandidateHashes.delete(txHash);
+    }
+    return Promise.all(edges.map(async (edge) => {
+      const settlement = gasFreeSettlementCache.get(edge.txHash);
+      if (!settlement) return edge;
+      const resolvedSettlement = await settlement;
+      const movement = resolvedSettlement ? gasFreeMovementForEdge(resolvedSettlement, edge) : null;
+      return movement
+        ? {
+            ...edge,
+            economicRole: movement.role,
+            economicProtocol: "tron_gasfree" as const
+          }
+        : edge;
+    }));
+  };
+  let exposureReport: AddressExposureReport;
+  try {
+    exposureReport = await runForensicAddressExposureSearch({
+      sourceAddress: input.sourceAddress,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
+      maxPagesPerAddress: input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
+      pageLimit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
+      limit: input.limit ?? DEFAULT_LIMIT,
+      tronClient: deps.tronClient,
+      getAddressMetadata: deps.getAddressMetadata,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      contractProfileFetchLimit: input.contractProfileFetchLimit,
+      metadataFetchLimit: input.metadataFetchLimit,
+      maxExpandedIntermediates: input.maxExpandedIntermediates,
+      resolveEconomicEdges,
+      recentFallbackMinTransferCount: input.recentFallbackMinTransferCount,
+      recentFallbackTransferLimit: input.recentFallbackTransferLimit,
+      abortSignal: input.abortSignal
+    });
+  } catch (error) {
+    if (!isRecoverableProviderError(error)) throw error;
+    exposureReport = emptyAddressExposureReport({
+      subjectAddress: input.sourceAddress,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      missingCheck: providerPartialNote("Address exposure search", error)
+    });
+  }
+  const allTimeSubjectIndexComplete = input.allTimeSubjectIndexState?.coverageMode === "all_time" &&
+    input.allTimeSubjectIndexState.status === "complete";
+  const allTimeSubjectTooLarge = allTimeSubjectIndexComplete &&
+    (input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0) > DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS;
+  const subjectAllTimeComplete = allTimeSubjectIndexComplete && !allTimeSubjectTooLarge;
+  const allTimeDirectBoundaryActive = subjectAllTimeComplete && Boolean(deps.listIndexedUsdtTransfersForAddress);
+  const allTimeSubjectEdges = allTimeDirectBoundaryActive
+    ? await fetchAllIndexedEdgesForAddress(
+      deps,
+      input.sourceAddress,
+      input.windowEnd
+    )
+    : [];
+  const sourceTransfers = allTimeDirectBoundaryActive
+    ? {
+      edges: allTimeSubjectEdges,
+      pages: input.allTimeSubjectIndexState?.fetchedPageCount ?? 0,
+      missingChecks: [],
+      windowEdgeCount: allTimeSubjectEdges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: null
+    }
+    : await fetchEdgesForAddress(
+      deps.tronClient,
+      input,
+      input.sourceAddress,
+      input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
+      { allowRecentFallback: true }
+    );
+  const transferCoverageNotes = [
+    ...sourceTransfers.missingChecks,
+    ...(allTimeSubjectTooLarge
+      ? [`All-time subject index has ${input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0} transfers, over direct-boundary materialization limit ${DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS}; using bounded local DeepCheck path.`]
+      : []),
+    ...(subjectAllTimeComplete && !deps.listIndexedUsdtTransfersForAddress
+      ? ["All-time subject index is complete, but indexed transfer reader is not configured; using bounded live DeepCheck path."]
+      : [])
+  ];
+  let allTokenTransfers: RawTronscanTrc20Transfer[] = [];
+  if (deps.tronClient.listRelatedTrc20TransfersAllTokens) {
+    try {
+      allTokenTransfers = await deps.tronClient.listRelatedTrc20TransfersAllTokens(input.sourceAddress, {
+        start: 0,
+        limit: input.assetContinuationTransferLimit ?? DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT,
+        minTimestamp: input.windowStart.getTime(),
+        endTimestamp: input.windowEnd.getTime()
+      });
+    } catch (error) {
+      transferCoverageNotes.push(`Asset-continuation all-token transfer lookup incomplete: ${error instanceof Error ? error.message : String(error)}`);
+      allTokenTransfers = [];
+    }
+  }
+  const assetContinuationProfiles = allTokenTransfers.length > 0
+    ? await buildAssetContinuationProfiles({
+      subjectAddress: input.sourceAddress,
+      usdtTransfers: allTokenTransfers,
+      allTokenTransfers,
+      getLabelsForAddress: deps.getLabelsForAddress
+    })
+    : [];
+  const directBoundaryEdges = await resolveEconomicEdges(sourceTransfers.edges);
+  const riskEligibleDirectEdges = directBoundaryEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const allDirectCounterpartyAddresses = directCounterpartyAddresses(input.sourceAddress, directBoundaryEdges);
+  const directBoundaryAddresses = directCounterpartyAddresses(input.sourceAddress, riskEligibleDirectEdges);
+  const senders = topIncomingSenders(input.sourceAddress, riskEligibleDirectEdges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
   const upstreamEdges: ForensicRouteEdge[] = [];
   const approvalDrainRootEdges: ForensicRouteEdge[] = [];
+  const expandedAddresses = new Set<string>();
   let inboundSendersExpanded = 0;
   if ((input.inboundDepth ?? 2) >= 2) {
     for (const sender of senders) {
       throwIfAborted(input.abortSignal);
-      const senderTransfers = await fetchEdgesForAddress(deps.tronClient, input, sender, 1);
+      const senderTransfers = await fetchEdgesForAddress(deps.tronClient, input, sender, 1, { allowRecentFallback: true });
       upstreamEdges.push(...senderTransfers.edges);
+      transferCoverageNotes.push(...senderTransfers.missingChecks);
+      expandedAddresses.add(sender);
       inboundSendersExpanded += 1;
     }
   }
@@ -486,30 +2054,35 @@ export async function runDeepAddressForensicCheck(
       subjectAddress: input.sourceAddress,
       directSenders: senders,
       edges: upstreamEdges,
-      limit: input.maxApprovalDrainCandidates ?? 5
+      limit: approvalDrainCandidateLimit
     });
     for (const candidate of rootCandidates) {
       if (alreadyFetched.has(candidate)) continue;
       throwIfAborted(input.abortSignal);
       const candidateTransfers = await fetchEdgesForAddress(deps.tronClient, input, candidate, 1);
       approvalDrainRootEdges.push(...candidateTransfers.edges);
+      transferCoverageNotes.push(...candidateTransfers.missingChecks);
+      expandedAddresses.add(candidate);
       alreadyFetched.add(candidate);
     }
   }
-  const provenanceEdges = dedupeEdges([...sourceTransfers.edges, ...upstreamEdges, ...approvalDrainRootEdges]);
+  const provenanceEdges = dedupeEdges([...directBoundaryEdges, ...upstreamEdges, ...approvalDrainRootEdges]);
   const provenanceAddresses = new Set<string>();
   for (const edge of provenanceEdges) {
     provenanceAddresses.add(edge.fromAddress);
     provenanceAddresses.add(edge.toAddress);
   }
+  for (const edge of directBoundaryEdges) {
+    provenanceAddresses.add(edge.fromAddress);
+    provenanceAddresses.add(edge.toAddress);
+  }
   const labelsByAddress = await labelsForAddresses(provenanceAddresses, deps.getLabelsForAddress);
-  const classificationAddresses = new Set(directCounterpartyAddresses(input.sourceAddress, provenanceEdges));
-  classificationAddresses.add(input.sourceAddress);
-  for (const edge of provenanceEdges) {
-    if (edge.edgeType === "transfer_from") {
-      classificationAddresses.add(edge.fromAddress);
-      classificationAddresses.add(edge.toAddress);
-    }
+  const classificationAddresses = new Set<string>([input.sourceAddress]);
+  for (const address of provenanceAddresses) {
+    classificationAddresses.add(address);
+  }
+  for (const address of directBoundaryAddresses) {
+    classificationAddresses.add(address);
   }
   const classifications = await classificationsForAddresses(classificationAddresses, deps);
   const inboundProfile = buildInboundProvenanceProfile({
@@ -522,6 +2095,85 @@ export async function runDeepAddressForensicCheck(
     subjectAddress: input.sourceAddress,
     edges: provenanceEdges,
     labelsByAddress,
+    classifications
+  });
+  const baselineDirectSnapshots = new Map<string, CounterpartyRiskSnapshot>();
+  for (const address of directBoundaryAddresses) {
+    const labelSnapshot = snapshotForLabels(address, labelsByAddress.get(address));
+    const serviceSnapshot = snapshotForService(address, classifications.get(address) ?? null);
+    if (labelSnapshot) baselineDirectSnapshots.set(address, labelSnapshot);
+    else if (serviceSnapshot) baselineDirectSnapshots.set(address, serviceSnapshot);
+  }
+  const directTransferCoverage = allTimeDirectBoundaryActive ? "complete" as const : "partial" as const;
+  // Sparse fallback rows remain useful Deep context, but first-hop decision evidence is scoped
+  // strictly to the declared checked window unless the exact all-time subject index is active.
+  const firstHopDirectEdges = allTimeDirectBoundaryActive
+    ? riskEligibleDirectEdges
+    : riskEligibleDirectEdges.filter((edge) => edgeWithinDeclaredWindow(edge, input.windowStart, input.windowEnd));
+  let directHardEvidence: DirectHardEvidenceResult;
+  try {
+    const principalGroups = groupDirectPrincipalCounterparties({
+      subjectAddress: input.sourceAddress,
+      edges: firstHopDirectEdges,
+      directTransferCoverage
+    });
+    directHardEvidence = await buildDirectHardEvidenceSnapshots({
+      addresses: directBoundaryAddresses,
+      principalGroups,
+      directTransferCoverage,
+      // Bounds are ignored for genuinely complete evidence and become the fail-closed
+      // checked window if conflicting transaction chronology downgrades that envelope.
+      windowStart: allTimeDirectBoundaryActive ? new Date(0) : input.windowStart,
+      windowEnd: input.windowEnd,
+      requiredForDecision: true,
+      // Deep has no typed selected Where/Incoming identity. A later caller join may populate it;
+      // historical direct transfers and human reason text are deliberately not substitutes.
+      selectedProvenanceTxHashes: [],
+      concurrency: input.directHardEvidenceConcurrency ?? 8,
+      liveLimit: input.directHardEvidenceLiveLimit ?? 250,
+      getLabelsForAddress: async (address) => labelsByAddress.get(address) ?? deps.getLabelsForAddress(address),
+      getClassificationForAddress: async (address) => classifications.get(address) ?? null,
+      getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
+    });
+  } catch (error) {
+    directHardEvidence = failedClosedDirectHardEvidence({
+      addresses: directCounterpartyAddresses(input.sourceAddress, firstHopDirectEdges),
+      windowStart: allTimeDirectBoundaryActive ? new Date(0) : input.windowStart,
+      windowEnd: input.windowEnd,
+      error
+    });
+  }
+  const allTimeCounterpartySnapshots = new Map(baselineDirectSnapshots);
+  for (const snapshot of directHardEvidence.snapshots) {
+    const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
+    const labelSnapshot = snapshotForLabels(snapshot.address, snapshot.labels);
+    const serviceSnapshot = snapshotForService(snapshot.address, snapshot.classification);
+    if (stablecoinSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
+    else if (labelSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, labelSnapshot);
+    else if (serviceSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, serviceSnapshot);
+  }
+  const boundedCounterpartySnapshots = allTimeDirectBoundaryActive
+    ? null
+    : await buildCounterpartyFastSnapshots({
+      deps,
+      runInput: input,
+      sourceEdges: riskEligibleDirectEdges,
+      labelsByAddress,
+      classifications,
+      resolveEconomicEdges
+    });
+  for (const snapshot of directHardEvidence.snapshots) {
+    if (!boundedCounterpartySnapshots) break;
+    const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
+    if (stablecoinSnapshot) boundedCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
+  }
+  const counterpartySnapshots = allTimeDirectBoundaryActive
+    ? allTimeCounterpartySnapshots
+    : boundedCounterpartySnapshots ?? new Map<string, CounterpartyRiskSnapshot>();
+  const directCounterpartyInteractionProfiles = buildDirectCounterpartyInteractionProfiles({
+    subjectAddress: input.sourceAddress,
+    edges: directBoundaryEdges,
+    snapshotsByAddress: counterpartySnapshots,
     classifications
   });
   const inboundEvidence = rawEvidenceForInbound({
@@ -548,20 +2200,49 @@ export async function runDeepAddressForensicCheck(
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
-  const approvalDrainProfile = deps.getTransaction && deps.listTrc20ApprovalChanges
-    ? await buildApprovalDrainProvenanceProfile({
+  const directCounterpartyInteractionEvidence = directCounterpartyInteractionProfiles
+    .filter((profile) => profile.scoreContribution > 0)
+    .map((profile) => rawEvidenceForDirectCounterpartyInteraction({
       subjectAddress: input.sourceAddress,
-      edges: provenanceEdges,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      profile
+    }));
+  const directCounterpartyInteractionObservations = directCounterpartyInteractionEvidence
+    .map((evidence, index) => observationForDirectCounterpartyInteraction({
+      subjectAddress: input.sourceAddress,
+      profile: directCounterpartyInteractionProfiles.filter((profile) => profile.scoreContribution > 0)[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const assetContinuationAssembly = assembleAssetContinuationProfiles({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profiles: assetContinuationProfiles
+  });
+  const hardApprovalEdges = provenanceEdges.filter((edge) => contractDrivenSignalRank(edge) > 0);
+  const optionalApprovalEdges = provenanceEdges
+    .filter((edge) => contractDrivenSignalRank(edge) === 0)
+    .slice(0, approvalDrainCandidateLimit);
+  const approvalParserEdges = dedupeEdges([...hardApprovalEdges, ...optionalApprovalEdges]);
+  const approvalDrainAnalysis = deps.getTransaction && deps.listTrc20ApprovalChanges
+    ? await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: input.sourceAddress,
+      edges: approvalParserEdges,
       classifications,
       deps: {
-        getTransaction: deps.getTransaction,
+        getTransaction: getHardEvidenceCachedTransaction,
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
-      maxCandidates: input.maxApprovalDrainCandidates,
+      maxCandidates: approvalParserEdges.length,
+      candidateRankingMode: "suspicion_aware",
       approvalChangeLookupLimit: input.approvalChangeLookupLimit
-    }).catch(() => null)
-    : null;
+    }).catch(() => ({ profiles: [], reviewFindings: [] }))
+    : { profiles: [], reviewFindings: [] };
+  const approvalDrainProfiles = approvalDrainAnalysis.profiles;
+  const approvalDrainProfile = approvalDrainProfiles[0] ?? null;
   const approvalDrainEvidence = approvalDrainProfile
     ? rawEvidenceForApprovalDrainProvenance({
       subjectAddress: input.sourceAddress,
@@ -586,6 +2267,106 @@ export async function runDeepAddressForensicCheck(
   const stablecoinObservation = stablecoinEvidence && stablecoinRestrictionProfile
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
+  const contractDrivenTxInfoFetchLimit = contractDrivenCampaignTxInfoFetchLimit({
+    sourceAddress: input.sourceAddress,
+    edges: sourceTransfers.edges,
+    maxApprovalDrainCandidates: approvalDrainCandidateLimit
+  });
+  const hardContractEdges = directBoundaryEdges.filter((edge) => contractDrivenSignalRank(edge) > 0);
+  const optionalContractEdges = directBoundaryEdges
+    .filter((edge) => contractDrivenSignalRank(edge) === 0)
+    .slice(0, contractDrivenTxInfoFetchLimit);
+  const contractParserEdges = dedupeEdges([...hardContractEdges, ...optionalContractEdges]);
+  const hardContractTransactionHashes = new Set(hardContractEdges.map((edge) => edge.txHash));
+  const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
+    subjectAddress: input.sourceAddress,
+    edges: contractParserEdges,
+    classifications,
+    approvalDrainProvenanceProfiles: approvalDrainProfiles,
+    getTransaction: deps.getTransaction
+      ? (txHash) => hardContractTransactionHashes.has(txHash)
+        ? getHardEvidenceCachedTransaction(txHash)
+        : getCachedTransaction(txHash)
+      : undefined,
+    fetchEdgesForAddress: async (address) => {
+      const result = await fetchEdgesForAddress(deps.tronClient, input, address, 1, { allowRecentFallback: true });
+      return result.edges;
+    },
+    maxTransactionInfoFetches: new Set(contractParserEdges.map((edge) => edge.txHash)).size,
+    maxSourceActivityChecks: Math.min(20, contractDrivenTxInfoFetchLimit),
+    incomingClassificationMode: "all_incoming"
+  });
+  const directBoundaryExposureProfile = buildBoundaryExposureProfile({
+    subjectAddress: input.sourceAddress,
+    edges: provenanceEdges,
+    classifications
+  });
+  const operationalIndexedProfiles = await buildOperationalIndexedProfiles({
+    deps,
+    runInput: input,
+    sourceEdges: directBoundaryEdges,
+    classifications,
+    resolveEconomicEdges
+  });
+  const boundaryExposureProfiles = [
+    directBoundaryExposureProfile,
+    ...operationalIndexedProfiles.boundaryProfiles
+  ];
+  const boundaryProfileForWalletRole = boundaryExposureProfiles.find((profile) =>
+    profile.contextScore > 0 && profile.flows.length > 0
+  ) ?? boundaryExposureProfiles[0] ?? null;
+  const operationalFlowProfiles = operationalIndexedProfiles.flowProfiles;
+  const walletRoleProfiles = [buildWalletRoleProfile({
+    subjectAddress: input.sourceAddress,
+    approvalDrainProfiles,
+    addressBehaviorProfile: exposureReport.addressBehaviorProfiles[0] ?? null,
+    serviceExposureProfile: exposureReport.serviceExposureProfiles[0] ?? null,
+    boundaryExposureProfile: boundaryProfileForWalletRole,
+    subjectClassification: classifications.get(input.sourceAddress) ?? null
+  })];
+  const persistedBoundaryExposureProfiles = boundaryExposureProfiles.filter((profile) =>
+    profile.contextScore > 0 && profile.flows.length > 0
+  );
+  const persistedWalletRoleProfiles = walletRoleProfiles.filter((profile) => profile.primaryRole !== "unknown");
+  const boundaryEvidence = persistedBoundaryExposureProfiles.map((profile) => rawEvidenceForBoundaryExposure({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const boundaryObservations = boundaryEvidence
+    .map((evidence, index) => observationForBoundaryExposure({
+      subjectAddress: input.sourceAddress,
+      profile: persistedBoundaryExposureProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const operationalFlowEvidence = operationalFlowProfiles.map((profile) => rawEvidenceForOperationalFlow({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const operationalFlowObservations = operationalFlowEvidence
+    .map((evidence, index) => observationForOperationalFlow({
+      subjectAddress: input.sourceAddress,
+      profile: operationalFlowProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const walletRoleEvidence = persistedWalletRoleProfiles.map((profile) => rawEvidenceForWalletRole({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const walletRoleObservations = walletRoleEvidence
+    .map((evidence, index) => observationForWalletRole({
+      subjectAddress: input.sourceAddress,
+      profile: persistedWalletRoleProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
   const extendedProvenanceProfiles: ExtendedProvenanceProfile[] = [];
   if (deps.listIndexedUsdtTransfersForAddress && shouldRunExtendedSearch({
     mode: input.extendedSearchMode ?? "auto",
@@ -612,7 +2393,8 @@ export async function runDeepAddressForensicCheck(
       const transfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
         minTimestamp: input.windowStart,
         maxTimestamp: input.windowEnd,
-        limit: input.pageLimit ?? DEFAULT_PAGE_LIMIT
+        limit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
+        orderBy: "amount_desc"
       }) ?? [];
       return transfers.map(indexedTransferToRouteEdge);
     };
@@ -622,9 +2404,9 @@ export async function runDeepAddressForensicCheck(
         direction,
         windowStart: input.windowStart,
         windowEnd: input.windowEnd,
-        maxDepth: input.extendedSearchMaxDepth ?? 4,
-        beamWidth: input.extendedSearchBeamWidth ?? 8,
-        maxAddressFetches: input.extendedSearchMaxAddressFetches ?? 60,
+        maxDepth: input.extendedSearchMaxDepth ?? 6,
+        beamWidth: input.extendedSearchBeamWidth ?? 12,
+        maxAddressFetches: input.extendedSearchMaxAddressFetches ?? 150,
         fetchEdgesForAddress: fetchIndexedEdges,
         getLabelsForAddress: deps.getLabelsForAddress,
         getClassificationForAddress
@@ -645,37 +2427,199 @@ export async function runDeepAddressForensicCheck(
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const secondLayerBudget = input.secondLayerMaxActiveWalletsPerJob ?? 0;
+  const listSecondLayerIndexedTransfers = deps.listIndexedUsdtTransfersForAddress;
+  const getSecondLayerIndexState = deps.getAddressUsdtIndexState;
+  let secondLayerRelationshipProfiles: DeepSecondLayerRelationshipProfile | null = null;
+  if (secondLayerBudget > 0 && listSecondLayerIndexedTransfers && getSecondLayerIndexState) {
+    throwIfAborted(input.abortSignal);
+    secondLayerRelationshipProfiles = await buildSecondLayerRelationshipProfiles({
+      subjectAddress: input.sourceAddress,
+      directBoundaryAddresses,
+      directCounterpartyProfiles: directCounterpartyInteractionProfiles,
+      classifications,
+      limits: {
+        maxDirectWalletsConsidered: directBoundaryAddresses.length,
+        maxExpandedDirectWallets: secondLayerBudget,
+        maxSecondHopNeighborsPerDirectWallet: 6,
+        maxTotalSecondHopEdges: secondLayerBudget * 6,
+        highDegreeSuppressionThreshold: 500
+      },
+      getIndexState: async (address) => {
+        throwIfAborted(input.abortSignal);
+        const state = await getSecondLayerIndexState(address);
+        throwIfAborted(input.abortSignal);
+        return state;
+      },
+      listIndexedEdges: async (address) => {
+        throwIfAborted(input.abortSignal);
+        const transfers = await listSecondLayerIndexedTransfers(address, {
+          minTimestamp: new Date(0),
+          maxTimestamp: input.windowEnd,
+          limit: 500,
+          orderBy: "amount_desc"
+        });
+        throwIfAborted(input.abortSignal);
+        return transfers.map(indexedTransferToRouteEdge);
+      }
+    });
+  }
+  const allTimeSubjectUniqueDirectWallets = allTimeDirectBoundaryActive
+    ? directBoundaryAddresses.length
+    : allTimeSubjectTooLarge
+      ? input.allTimeSubjectIndexState?.uniqueCounterpartyCount ?? 0
+      : 0;
+  const allTimeCoverage = input.allTimeSubjectIndexState
+    ? {
+      mode: input.allTimeMode ?? "partial",
+      subjectIndexStatus: input.allTimeSubjectIndexState.status,
+      subjectCoverageMode: input.allTimeSubjectIndexState.coverageMode,
+      subjectAllTimeComplete,
+      subjectStatusReason: input.allTimeSubjectIndexState.statusReason,
+      subjectCoveredUntilTimestamp: input.allTimeSubjectIndexState.coveredUntilTimestamp?.toISOString() ?? null,
+      subjectTargetTimestamp: input.allTimeSubjectIndexState.targetTimestamp?.toISOString() ?? null,
+      subjectTransfersFetched: input.allTimeSubjectIndexState.fetchedTransferCount,
+      subjectUniqueDirectWallets: allTimeSubjectUniqueDirectWallets,
+      directWalletsHardEvidenceChecked: directHardEvidence?.checkedCount ?? 0,
+      directWalletsHardEvidenceLiveChecked: directHardEvidence?.liveCheckedCount ?? 0,
+      directHardEvidenceStatus: directHardEvidence?.status ?? "local_only_partial",
+      directWalletsQueuedForIndexing: 0,
+      secondLayerActiveBudget: secondLayerBudget,
+      secondLayerQueued: secondLayerRelationshipProfiles?.counters.queued ?? 0,
+      secondLayerComplete: secondLayerRelationshipProfiles?.counters.complete ?? 0,
+      providerEffectiveRps: null,
+      providerRateLimitedRequests: 0,
+      providerCapHit: input.allTimeSubjectIndexState.providerCapHit,
+      providerInconsistent: input.allTimeSubjectIndexState.providerInconsistent,
+      suppressedServiceWallets: directHardEvidence?.snapshots.filter((snapshot) => snapshot.classification?.isBoundary).length ?? 0,
+      suppressedHighDegreeWallets: 0
+    } satisfies DeepCheckAllTimeCoverage
+    : undefined;
+  const missingChecks = [...new Set([
+    ...exposureReport.missingChecks,
+    ...transferCoverageNotes,
+    ...(directHardEvidence?.missingChecks ?? []),
+    ...(skippedEconomicCandidateHashes.size > 0
+      ? [`Economic edge transaction enrichment limited to ${ordinaryTransactionInfoFetchLimit} optional transaction-detail calls; ${skippedEconomicCandidateHashes.size} plausible GasFree candidate transaction hashes remained ordinary and untagged.`]
+      : []),
+  ])];
+  const coverage = {
+    sourceTransferPages: sourceTransfers.pages,
+    inboundSendersExpanded,
+    transferEdges: provenanceEdges.length,
+    extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
+    extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
+    secondLayerRelationshipPaths: secondLayerRelationshipProfiles?.paths.length ?? 0,
+    secondLayerRelationshipGroups: secondLayerRelationshipProfiles?.groups.length ?? 0,
+    apiKeyConfigured: input.apiKeyConfigured,
+    ...(allTimeCoverage ? { allTime: allTimeCoverage } : {})
+  };
+  const coverageDebug = buildCoverageDebugSnapshot({
+    subjectAddress: input.sourceAddress,
+    status: null,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    sourceTransferPages: sourceTransfers.pages,
+    inboundSendersExpanded,
+    sourceWindowEdgeCount: sourceTransfers.windowEdgeCount,
+    sourceRecentFallbackEdgeCount: sourceTransfers.recentFallbackEdgeCount,
+    sourceRecentFallbackRequestedLimit: sourceTransfers.recentFallbackRequestedLimit ?? 0,
+    sourceEdges: sourceTransfers.edges,
+    provenanceEdges,
+    expandedAddresses,
+    labelsByAddress,
+    classifications,
+    counterpartyRiskProfiles,
+    directCounterpartyInteractionProfiles,
+    serviceExposureProfiles: exposureReport.serviceExposureProfiles,
+    addressBehaviorProfiles: exposureReport.addressBehaviorProfiles,
+    inboundProvenanceProfiles: [inboundProfile],
+    boundaryExposureProfiles,
+    operationalFlowProfiles,
+    walletRoleProfiles,
+    extendedProvenanceProfiles,
+    missingChecks,
+    apiKeyConfigured: input.apiKeyConfigured
+  });
+  const coverageV2 = buildDeepCoverageV2({
+    subjectAddress: input.sourceAddress,
+    sourceEdges: sourceTransfers.edges,
+    subjectAllTimeComplete: input.allTimeSubjectIndexState ? subjectAllTimeComplete : null,
+    authoritativeCoverageExact: input.allTimeSubjectIndexState?.statusReason === "complete_provider_windowed" &&
+      input.allTimeSubjectIndexState.provider !== null &&
+      input.allTimeSubjectIndexState.provider !== "mixed",
+    localMaterializationExact: allTimeDirectBoundaryActive,
+    authoritativeTransferCount: input.allTimeSubjectIndexState?.totalReported !== null &&
+      input.allTimeSubjectIndexState?.totalReported !== undefined &&
+      input.allTimeSubjectIndexState.totalReported === input.allTimeSubjectIndexState.fetchedTransferCount
+      ? input.allTimeSubjectIndexState.totalReported
+      : null,
+    providerCapHit: input.allTimeSubjectIndexState?.providerCapHit,
+    providerInconsistent: input.allTimeSubjectIndexState?.providerInconsistent
+  });
 
   return {
     ...exposureReport,
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+    runProfile: input.runProfile ?? "production_full",
+    providerBudget: {
+      providerCallBudget: input.providerCallBudget ?? null,
+      transferCallBudget: input.transferCallBudget ?? null,
+      contractCallBudget: input.contractCallBudget ?? null,
+      approvalCallBudget: input.approvalCallBudget ?? null,
+      elapsedTimeBudgetMs: input.elapsedTimeBudgetMs ?? null,
+      exhausted: false
+    },
+    missingChecks,
     rawEvidence: [
       ...exposureReport.rawEvidence,
       inboundEvidence,
       ...counterpartyEvidence,
+      ...directCounterpartyInteractionEvidence,
+      ...assetContinuationAssembly.rawEvidence,
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
+      ...boundaryEvidence,
+      ...operationalFlowEvidence,
+      ...walletRoleEvidence,
       ...extendedEvidence
     ],
     observations: [
       ...exposureReport.observations,
       ...(inboundObservation ? [inboundObservation] : []),
       ...counterpartyObservations,
+      ...directCounterpartyInteractionObservations,
+      ...assetContinuationAssembly.observations,
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
+      ...boundaryObservations,
+      ...operationalFlowObservations,
+      ...walletRoleObservations,
       ...extendedObservations
     ],
     inboundProvenanceProfiles: [inboundProfile],
     counterpartyRiskProfiles,
-    approvalDrainProvenanceProfiles: approvalDrainProfile ? [approvalDrainProfile] : [],
+    directCounterpartyInteractionProfiles,
+    approvalDrainProvenanceProfiles: approvalDrainProfiles,
+    contractDrivenReceiverProfile: contractDrivenEvidence.receiverProfile,
+    contractDrivenCampaignSummary: contractDrivenEvidence.campaignSummary,
+    contractDrivenTransferProfiles: contractDrivenEvidence.transferProfiles,
+    assetContinuationProfiles: assetContinuationAssembly.profiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
+    boundaryExposureProfiles,
+    operationalFlowProfiles,
+    walletRoleProfiles,
     extendedProvenanceProfiles,
-    coverage: {
-      sourceTransferPages: sourceTransfers.pages,
-      inboundSendersExpanded,
-      transferEdges: provenanceEdges.length,
-      extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
-      extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
-      apiKeyConfigured: input.apiKeyConfigured
-    }
+    secondLayerRelationshipProfiles,
+    firstHopBlacklistFacts: directHardEvidence.blacklistFacts,
+    firstHopLabelFacts: directHardEvidence.labelFacts,
+    firstHopBlacklistCoverage: directHardEvidence.firstHopBlacklistCoverage,
+    directHardEvidenceSnapshots: directHardEvidence.snapshots,
+    ...(input.usddPsmRouteObservations !== undefined
+      ? { usddPsmRouteObservations: input.usddPsmRouteObservations.filter((observation) => observation.mode === "deep_history") }
+      : {}),
+    coverageV2,
+    coverage,
+    coverageDebug
   };
 }

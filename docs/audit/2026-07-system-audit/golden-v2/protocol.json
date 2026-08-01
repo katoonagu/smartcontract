@@ -1,0 +1,17 @@
+{
+  "version": "golden-pilot-protocol-v2",
+  "reviewersRequired": 2,
+  "attributionCandidates": [
+    "fifo",
+    "lifo",
+    "proportional"
+  ],
+  "exactScoresAllowedBeforeAdjudication": false,
+  "allowedDecisions": [
+    "ACCEPTABLE",
+    "REVIEW",
+    "DECLINE"
+  ],
+  "canonicalFactKeyVersion": "canonical-fact-key-v1",
+  "comparatorContractVersion": "unified-wallet-comparator-v1"
+}

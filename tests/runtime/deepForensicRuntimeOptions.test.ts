@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
+
+describe("deepForensicRuntimeOptions", () => {
+  it("returns expanded production limits and forwards runtime config", () => {
+    const options = deepForensicRuntimeOptions({
+      tronscanPageLimit: 97,
+      crossChainStage2Enabled: true,
+      crossChainStage2MaxProviderCalls: 7
+    }, false);
+
+    expect(options).toEqual({
+      pageLimit: 97,
+      maxPagesPerAddress: 3,
+      maxExpandedIntermediates: 30,
+      metadataFetchLimit: 30,
+      contractProfileFetchLimit: 15,
+      maxInboundSenders: 15,
+      maxApprovalDrainCandidates: 15,
+      approvalChangeLookupLimit: 20,
+      economicEdgeTransactionInfoFetchLimit: 250,
+      extendedSearchMode: "always",
+      extendedSearchMaxDepth: 6,
+      extendedSearchBeamWidth: 12,
+      extendedSearchMaxAddressFetches: 150,
+      recentFallbackMinTransferCount: 150,
+      maxEdgesPerAddress: 100,
+      recentFallbackTransferLimit: 150,
+      counterpartyFastSnapshotLimit: 60,
+      counterpartyFastSnapshotActiveLimit: 30,
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 7,
+      allTimeDeepCheckMode: "partial",
+      secondLayerMaxActiveWalletsPerJob: 0,
+      directHardEvidenceLiveLimit: 250,
+      directHardEvidenceConcurrency: 8,
+      apiKeyConfigured: false
+    });
+  });
+
+  it("uses admin second-layer budget when index-specific budget is unset", () => {
+    const options = deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 0,
+      tronAddressIndexSecondLayerMaxActiveWalletsPerJob: 0,
+      adminSecondLayerMaxActiveWallets: 25
+    }, true);
+
+    expect(options.secondLayerMaxActiveWalletsPerJob).toBe(25);
+  });
+
+  it("prefers explicit index-specific second-layer budget", () => {
+    const options = deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 0,
+      tronAddressIndexSecondLayerMaxActiveWalletsPerJob: 15,
+      adminSecondLayerMaxActiveWallets: 25
+    }, true);
+
+    expect(options.secondLayerMaxActiveWalletsPerJob).toBe(15);
+  });
+});

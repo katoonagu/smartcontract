@@ -11,6 +11,9 @@ import {
 import { TronscanClient } from "../src/tron/tronClient";
 import { resolveContractIntelligenceProfile } from "../src/approvals/contractIntelligence";
 
+const RECENT_FALLBACK_MIN_TRANSFER_COUNT = 10;
+const RECENT_FALLBACK_TRANSFER_LIMIT = 60;
+
 async function main(): Promise<void> {
   const parsed = parseForensicRouteCliArgs(process.argv.slice(2));
   const windowEnd = new Date();
@@ -19,7 +22,9 @@ async function main(): Promise<void> {
   const tronClient = new TronscanClient({
     baseUrl: config.tronscanBaseUrl,
     fullNodeBaseUrl: config.tronFullNodeBaseUrl,
-    apiKey: config.tronscanApiKey,
+    apiKey: config.tronscanApiKeys,
+    apiKeyGroups: config.tronscanApiKeyGroups,
+    accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
     fullNodeApiKey: config.tronFullNodeApiKey,
     timeoutMs: config.tronscanTimeoutMs,
     retryAttempts: config.tronscanRetryAttempts,
@@ -49,7 +54,9 @@ async function main(): Promise<void> {
         limit: parsed.limit,
         tronClient,
         getAddressMetadata: (address) => tronClient.getAddressMetadata(address),
-        getContractIntelligenceProfile: contractProfileResolver
+        getContractIntelligenceProfile: contractProfileResolver,
+        recentFallbackMinTransferCount: RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+        recentFallbackTransferLimit: RECENT_FALLBACK_TRANSFER_LIMIT
       });
 
       console.log(formatAddressExposureReport(report, { dryRun: parsed.dryRun }));
@@ -68,7 +75,9 @@ async function main(): Promise<void> {
       limit: parsed.limit,
       tronClient,
       getAddressMetadata: (address) => tronClient.getAddressMetadata(address),
-      getContractIntelligenceProfile: contractProfileResolver
+      getContractIntelligenceProfile: contractProfileResolver,
+      recentFallbackMinTransferCount: RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: RECENT_FALLBACK_TRANSFER_LIMIT
     });
 
     if (db) {

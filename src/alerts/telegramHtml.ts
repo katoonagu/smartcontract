@@ -1,4 +1,5 @@
 import type { RiskLevel, RiskReport } from "../types";
+import { telegramAddressRef, type AddressRefV1 } from "../telegram/forensicPresentation";
 
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
 export const SAFE_MESSAGE_LIMIT = 3900;
@@ -30,6 +31,12 @@ export function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export function renderTelegramAddressRef(ref: AddressRefV1): string {
+  const canonical = telegramAddressRef(ref.address);
+  if (canonical.url === null) return escapeHtml(canonical.display);
+  return `<a href="${escapeHtml(canonical.url)}">${escapeHtml(canonical.display)}</a>`;
 }
 
 export function bold(value: string): string {

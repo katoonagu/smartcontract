@@ -1,0 +1,1384 @@
+import { describe, expect, it, vi } from "vitest";
+import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
+import { extractGasFreeEdgeContext } from "../../src/forensics/gasFreeSettlement";
+import { traceMoneyOriginPath } from "../../src/forensics/moneyOriginTrace";
+import { baseShareScore } from "../../src/forensics/provenanceScoring";
+import type { AddressLabel, BalanceFormingTransfer, ForensicRouteEdge, ServiceClassification } from "../../src/types";
+
+const subject = "TSubject111111111111111111111111111111";
+const walletB = "TWalletB1111111111111111111111111111";
+const walletC = "TWalletC1111111111111111111111111111";
+const walletD = "TWalletD1111111111111111111111111111";
+const cleanHop = "TCleanHop11111111111111111111111111";
+const htx = "THTX111111111111111111111111111111";
+const binance = "TBinance111111111111111111111111111";
+const bridge = "TBridge1111111111111111111111111111";
+const whitebit = "TWhiteBIT11111111111111111111111111";
+const gasFreeHop1 = "TGasFreeHop111111111111111111111111";
+const gasFreeHop2 = "TGasFreeHop222222222222222222222222";
+const unknownHop2 = "TUnknownHop222222222222222222222222";
+const gasFreeHop3 = "TGasFreeHop333333333333333333333333";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const tlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+
+function edge(
+  id: string,
+  fromAddress: string,
+  toAddress: string,
+  amountRaw = "100000000",
+  timestamp = "2026-07-10T00:00:00.000Z"
+): ForensicRouteEdge {
+  return {
+    id,
+    txHash: id,
+    fromAddress,
+    toAddress,
+    amountRaw,
+    timestamp: new Date(timestamp),
+    method: "transfer",
+    edgeType: "normal_transfer"
+  };
+}
+
+function balanceTransfer(fromAddress: string, txHash = "tx-balance"): BalanceFormingTransfer {
+  return {
+    txHash,
+    fromAddress,
+    toAddress: subject,
+    amountRaw: "5000000000",
+    timestamp: "2026-05-22T10:15:00.000Z",
+    coverageShare: 1,
+    selectedReason: "covers_current_balance"
+  };
+}
+
+function service(category: ServiceClassification["category"], identity: string | null): ServiceClassification {
+  return {
+    category,
+    identity,
+    confidence: "high",
+    evidence: identity ? [`tag:${identity}`] : [],
+    isBoundary: category !== "none"
+  };
+}
+
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
+  };
+}
+
+function gasFreePrincipal(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "principal", economicProtocol: "tron_gasfree" };
+}
+
+function gasFreeFee(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "service_fee", economicProtocol: "tron_gasfree" };
+}
+
+function whitebitLabel(): AddressLabel {
+  return {
+    address: whitebit,
+    label: "whitebit",
+    source: "service_admin",
+    createdByTelegramId: "1",
+    createdAt: new Date("2026-05-01T00:00:00.000Z")
+  };
+}
+
+describe("traceMoneyOriginPath", () => {
+  it("resolves principal roles across GasFree accounts until the Binance boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [gasFreeHop1, [edge("tx-gasfree-2-gasfree-1", gasFreeHop2, gasFreeHop1)]],
+      [gasFreeHop2, [edge("tx-gasfree-3-gasfree-2", gasFreeHop3, gasFreeHop2)]],
+      [gasFreeHop3, [edge("tx-binance-gasfree-3", binance, gasFreeHop3)]]
+    ]);
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreePrincipal(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeHop1, "tx-gasfree-1-subject"),
+        amountRaw: "100000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        if ([gasFreeHop1, gasFreeHop2, gasFreeHop3].includes(address)) return traceableContract("GasFree Account");
+        return service("none", null);
+      },
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext.mock.calls.map(([value]) => value.txHash)).toEqual([
+      "tx-gasfree-1-subject",
+      "tx-gasfree-2-gasfree-1",
+      "tx-gasfree-3-gasfree-2",
+      "tx-binance-gasfree-3"
+    ]);
+    expect(path.pathAddresses).toEqual([binance, gasFreeHop3, gasFreeHop2, gasFreeHop1, subject]);
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+  });
+
+  it("stops an exact GasFree fee seed without fetching payer history", async () => {
+    const fetchEdgesForAddress = vi.fn(async () => [] as ForensicRouteEdge[]);
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreeFee(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-exact-fee"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => traceableContract("GasFree Account"),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(fetchEdgesForAddress).not.toHaveBeenCalled();
+    expect(path).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceType: "unknown",
+      stoppedReason: "service_boundary",
+      riskScoreContribution: 0,
+      reasons: ["Exact GasFree service-fee movement; not payer provenance."]
+    });
+  });
+
+  it("keeps an exact hard label authoritative over GasFree fee context", async () => {
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreeFee(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-labeled-exact-fee"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async (address) => address === gasFreeAccount ? [{
+        address,
+        label: "reported_scam",
+        source: "system",
+        createdByTelegramId: null,
+        createdAt: new Date("2026-07-10T00:00:00.000Z")
+      }] : [],
+      getClassificationForAddress: async () => traceableContract("GasFree Account"),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(path).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "risky_label",
+      stoppedReason: "risky_label_reached"
+    });
+    expect(path.reasons).not.toContain("Exact GasFree service-fee movement; not payer provenance.");
+  });
+
+  it("does not infer GasFree fee context from an ordinary transfer to TLnt", async () => {
+    const transaction = {
+      confirmed: true,
+      contractRet: "SUCCESS",
+      revert: false,
+      contractData: { contract_address: gasFreeAccount, data: "a9059cbb" },
+      trc20TransferInfo: [{
+        from_address: gasFreeAccount,
+        to_address: tlnt,
+        amount_str: "3000000"
+      }]
+    };
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => {
+      const context = extractGasFreeEdgeContext(transaction, value);
+      return context ? gasFreeFee(value) : value;
+    });
+
+    expect(extractGasFreeEdgeContext(transaction, edge("tx-ordinary-tlnt", gasFreeAccount, tlnt, "3000000"))).toBeNull();
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-ordinary-tlnt"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(path.reasons.join(" ")).not.toContain("GasFree service-fee");
+  });
+
+  it("accepts a clean multi-hop EOA chain from an allowlisted CEX", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletD, [edge("tx-c-d", walletC, walletD, "5000000000", "2026-05-22T10:10:00.000Z")]],
+      [walletC, [edge("tx-b-c", walletB, walletC, "5000000000", "2026-05-22T10:05:00.000Z")]],
+      [walletB, [edge("tx-binance-b", binance, walletB, "5000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletD),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached",
+      riskScoreContribution: 5,
+      pathAddresses: [binance, walletB, walletC, walletD, subject],
+      txHashes: ["tx-binance-b", "tx-b-c", "tx-c-d", "tx-balance"],
+      amountPreservationRatio: 1
+    });
+  });
+
+  it("traces through non-boundary contract accounts to the final Binance boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [gasFreeHop1, [edge("tx-unknown-gasfree-1", unknownHop2, gasFreeHop1, "5000000000", "2026-05-22T10:10:00.000Z")]],
+      [unknownHop2, [edge("tx-gasfree-3-unknown", gasFreeHop3, unknownHop2, "5000000000", "2026-05-22T10:05:00.000Z")]],
+      [gasFreeHop3, [edge("tx-binance-gasfree-3", binance, gasFreeHop3, "5000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(gasFreeHop1),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        if (address === unknownHop2) return traceableContract("unknown");
+        if (address === gasFreeHop1 || address === gasFreeHop3) return traceableContract("GasFree Account");
+        return service("none", null);
+      }
+    });
+
+    expect(path.pathAddresses).toEqual([binance, gasFreeHop3, unknownHop2, gasFreeHop1, subject]);
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+    expect(path.reasons.join(" ")).not.toContain("unlabeled_service_boundary");
+  });
+
+  it("declines when the balance-forming path reaches a bridge boundary", async () => {
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(bridge),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === bridge ? service("bridge", "Allbridge") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceAddress: bridge,
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: baseShareScore("bridge_router_dex", 1),
+      exposureSourceKey: "bridge_router_dex",
+      sourceExposureKind: "bridge_router_dex",
+      pathAddresses: [bridge, subject]
+    });
+    expect(path.reasons.join(" ")).toContain("bridge boundary");
+    expect(path.reasons.join(" ")).toContain("source-policy context");
+  });
+
+  it("scores WhiteBIT labels as medium even when the service classification is generic CEX", async () => {
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(whitebit),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async (address) => address === whitebit ? [whitebitLabel()] : [],
+      getClassificationForAddress: async (address) => address === whitebit ? service("cex", "WhiteBIT") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: 60,
+      exposureSourceKey: "whitebit",
+      sourceExposureKind: "whitebit"
+    });
+    expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
+  });
+
+  it("continues sibling branches after a source-policy decline boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletB, [
+        edge("a-tx-htx-walletB", htx, walletB, "2000000000", "2026-05-22T10:14:00.000Z"),
+        edge("b-tx-clean-walletB", cleanHop, walletB, "3000000000", "2026-05-22T10:13:00.000Z")
+      ]],
+      [cleanHop, [edge("tx-binance-clean", binance, cleanHop, "3000000000", "2026-05-22T10:12:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletB),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      }
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
+  });
+
+  it("returns review incomplete when clean EOA tracing exhausts the configured depth", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletD, [edge("tx-c-d", walletC, walletD, "5000000000", "2026-05-22T10:10:00.000Z")]],
+      [walletC, [edge("tx-b-c", walletB, walletC, "5000000000", "2026-05-22T10:05:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletD),
+      maxDepth: 2,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceAddress: walletB,
+      rootSourceType: "incomplete",
+      stoppedReason: "data_budget_exhausted",
+      riskScoreContribution: 45,
+      pathAddresses: [walletB, walletC, walletD, subject]
+    });
+  });
+
+  it("treats weak amount or time continuity as provenance weakness instead of high risk", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletB, [edge("tx-c-b-weak", walletC, walletB, "1000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletB),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("weak_amount_or_time_continuity");
+    expect(path.verdict).toBe("REVIEW");
+    expect(path.riskScoreContribution).toBe(30);
+    expect(path.reasons[0]).toMatch(/Clean CEX origin is not fully proven/i);
+  });
+
+  it("fetches active wallet history at the current hop timestamp instead of only at the job window end", async () => {
+    const activeWallet = "TActiveWallet1111111111111111111111";
+    const laterWindowEdges = [
+      edge("tx-later-out-1", activeWallet, "TLaterOut111111111111111111111111", "9000000000", "2026-05-29T08:00:00.000Z"),
+      edge("tx-later-out-2", activeWallet, "TLaterOut222222222222222222222222", "8000000000", "2026-05-29T07:00:00.000Z")
+    ];
+    const hopTimeEdges = [
+      edge("tx-active-subject", activeWallet, subject, "120000000000", "2026-05-28T08:55:03.000Z"),
+      edge("tx-binance-active", binance, activeWallet, "107238000000", "2026-05-27T17:47:27.000Z")
+    ];
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(activeWallet, "tx-active-subject"),
+        amountRaw: "120000000000",
+        timestamp: "2026-05-28T08:55:03.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address, options?: { latestTimestamp?: Date }) => {
+        if (address !== activeWallet) return [];
+        return options?.latestTimestamp?.toISOString() === "2026-05-28T08:55:03.000Z"
+          ? hopTimeEdges
+          : laterWindowEdges;
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      stoppedReason: "allowlist_cex_reached",
+      txHashes: ["tx-binance-active", "tx-active-subject"]
+    });
+  });
+
+  it("passes the concrete hop transfer into edge fetching", async () => {
+    const activeWallet = "TActiveWalletHopOptions111111111111";
+    const targetHop = edge("tx-active-hop-subject", activeWallet, subject, "120000000000", "2026-05-28T08:55:03.000Z");
+    const funding = edge("tx-binance-active-hop", binance, activeWallet, "120000000000", "2026-05-28T08:00:00.000Z");
+    const fetchCalls: Array<{
+      address: string;
+      options?: {
+        latestTimestamp?: Date;
+        deferBroadTargetedHistory?: boolean;
+        targetEdge?: ForensicRouteEdge | null;
+        expectedAmountRaw?: string | null;
+      };
+    }> = [];
+    const coverageCalls: typeof fetchCalls = [];
+
+    await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(activeWallet, targetHop.txHash),
+        amountRaw: targetHop.amountRaw,
+        timestamp: targetHop.timestamp.toISOString()
+      },
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      fetchEdgesForAddress: async (address, options) => {
+        fetchCalls.push({ address, options });
+        return address === activeWallet ? [targetHop, funding] : [];
+      },
+      getHistoryCoverageForAddress: async (address, options) => {
+        coverageCalls.push({ address, options });
+        return {
+          address,
+          targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+          fetchedTransferCount: 2,
+          fetchedPageCount: 1,
+          oldestFetchedTransferAt: funding.timestamp.toISOString(),
+          reachedTargetHop: true,
+          source: "live",
+          coverageComplete: true,
+          providerCapHit: false,
+          budgetExhausted: false,
+          providerInconsistent: false,
+          statusReason: null
+        };
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(fetchCalls[0]).toMatchObject({
+      address: activeWallet,
+      options: {
+        latestTimestamp: targetHop.timestamp,
+        deferBroadTargetedHistory: false,
+        expectedAmountRaw: targetHop.amountRaw,
+        targetEdge: {
+          id: targetHop.txHash,
+          txHash: targetHop.txHash,
+          fromAddress: activeWallet,
+          toAddress: subject,
+          amountRaw: targetHop.amountRaw,
+          timestamp: targetHop.timestamp,
+          method: "transfer",
+          edgeType: "normal_transfer"
+        }
+      }
+    });
+    expect(coverageCalls[0]).toMatchObject({
+      address: activeWallet,
+      options: fetchCalls[0]?.options
+    });
+  });
+
+  it("allows a larger prior incoming transfer to fund a smaller outgoing hop", async () => {
+    const activeWallet = "TActiveWallet2222222222222222222222";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [activeWallet, [edge("tx-large-binance-active", binance, activeWallet, "2000000000000", "2026-05-28T08:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(activeWallet, "tx-active-subject"),
+        amountRaw: "120000000000",
+        timestamp: "2026-05-28T08:55:03.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      stoppedReason: "allowlist_cex_reached",
+      amountPreservationRatio: 1
+    });
+  });
+
+  it("uses balance-aware funding before stale single-candidate source policy matches", async () => {
+    const tkqq = "TKqq111111111111111111111111111111";
+    const tnsp = "TNsp111111111111111111111111111111";
+    const tm3z = "TM3z111111111111111111111111111111";
+    const tkuvwo = "TKuvwo111111111111111111111111111";
+    const te2abe = "TE2Abe111111111111111111111111111";
+    const tfjqz = "TFJQZ1111111111111111111111111111";
+    const freshTopup = "TFreshTopup11111111111111111111111";
+    const oldHtxTxId = "tx-old-htx-tkqq";
+
+    const targetHop = edge("tx-tkqq-tnsp", tkqq, tnsp, "204047000000", "2026-06-04T11:41:30.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [tkqq, [
+        targetHop,
+        edge(oldHtxTxId, htx, tkqq, "249590000000", "2026-05-14T12:33:42.000Z"),
+        edge("tx-tkqq-tm3z", tkqq, tm3z, "303919000000", "2026-05-14T12:51:06.000Z"),
+        edge("tx-tkuvwo-tkqq", tkuvwo, tkqq, "32006000000", "2026-06-04T10:16:33.000Z"),
+        edge("tx-te2abe-tkqq", te2abe, tkqq, "3500000000", "2026-06-04T10:28:03.000Z"),
+        edge("tx-tfjqz-tkqq", tfjqz, tkqq, "134295624553", "2026-06-04T10:58:27.000Z"),
+        edge("tx-fresh-topup-tkqq", freshTopup, tkqq, "20000000000", "2026-06-04T11:00:00.000Z")
+      ]]
+    ]);
+
+    const result = await traceMoneyOriginPath({
+      subjectAddress: tnsp,
+      balanceTransfer: {
+        ...balanceTransfer(tkqq, "tx-tkqq-tnsp"),
+        toAddress: tnsp,
+        amountRaw: "204047000000",
+        timestamp: "2026-06-04T11:41:30.000Z",
+        coverageShare: 0.42
+      },
+      maxDepth: 3,
+      beamWidth: 8,
+      maxAddressFetches: 20,
+      maxEdgesPerAddress: 20,
+      bundleCoverageThreshold: 0.85,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-14T12:33:42.000Z",
+        reachedTargetHop: true,
+        source: "local_index"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === tfjqz) return service("cex", "Binance");
+        return service("none", null);
+      }
+    });
+
+    expect(result.rootSourceAddress).not.toBe(htx);
+    expect(result.stoppedReason).toBe("allowlist_cex_reached");
+    expect(result.balanceShare).toBeCloseTo(134295624553 / 204047000000, 3);
+    expect(result.fundingBundles?.[0]?.members.map((member) => member.txHash)).not.toContain(oldHtxTxId);
+    expect(result.fundingBundles?.[0]?.coverageRatio).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it("continues through top bundle funders instead of stopping at no previous transfer", async () => {
+    const tv3h25 = "TV3H25";
+    const bundleSubject = "TBundleSubject111111111111111111111";
+    const firstHop = edge("hop-to-subject", tv3h25, bundleSubject, "850000000000", "2026-04-21T12:37:30.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [tv3h25, [
+        firstHop,
+        edge("in-85k", "TKHS", tv3h25, "85013000000", "2026-04-21T12:16:51.000Z"),
+        edge("in-39k", "TRTr", tv3h25, "39116000000", "2026-04-21T12:18:03.000Z"),
+        edge("in-600k", "TF6y", tv3h25, "600000000000", "2026-04-21T12:27:48.000Z"),
+        edge("in-80k", "TFyj", tv3h25, "80500000000", "2026-04-21T12:33:51.000Z")
+      ]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: bundleSubject,
+      balanceTransfer: {
+        ...balanceTransfer(tv3h25, "hop-to-subject"),
+        toAddress: bundleSubject,
+        amountRaw: "850000000000",
+        timestamp: "2026-04-21T12:37:30.000Z"
+      },
+      maxDepth: 1,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      minAmountPreservationRatio: 0.8,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? firstHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-04-21T12:16:51.000Z",
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).not.toBe("no_previous_transfer");
+    expect(path.fundingBundles?.[0]).toMatchObject({
+      hopTxHash: "hop-to-subject",
+      hopAddress: tv3h25
+    });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "hop-to-subject",
+      targetFromAddress: tv3h25,
+      targetToAddress: bundleSubject,
+      proofClass: "exact",
+      stopReason: null,
+      coverageWindow: expect.objectContaining({
+        complete: true,
+        capped: false
+      })
+    });
+    expect(typeof path.fundingBundles?.[0]?.coverageRatio).toBe("number");
+    expect(path.fundingBundles?.[0]?.members.length).toBeGreaterThan(1);
+  });
+
+  it("prefers a dominant source-policy bundle funder over a minor allowlisted CEX funder", async () => {
+    const bundleWallet = "TBundlePolicyWallet111111111111111";
+    const bundleSubject = "TBundlePolicySubject1111111111111";
+    const targetHop = edge("tx-bundle-policy-subject", bundleWallet, bundleSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [bundleWallet, [
+        targetHop,
+        edge("tx-htx-bundle-85", htx, bundleWallet, "850000000", "2026-05-22T10:10:00.000Z"),
+        edge("tx-binance-bundle-15", binance, bundleWallet, "150000000", "2026-05-22T10:11:00.000Z")
+      ]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: bundleSubject,
+      balanceTransfer: {
+        ...balanceTransfer(bundleWallet, "tx-bundle-policy-subject"),
+        toAddress: bundleSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      }
+    });
+
+    expect(path).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceAddress: htx,
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      sourceExposureKind: "htx_huobi"
+    });
+    expect(path.balanceShare).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it("stops bundle expansion when incoming history did not reach the hop timestamp", async () => {
+    const partialBundleWallet = "TPartialBundleHistory111111111111";
+    const partialBundleSubject = "TPartialBundleSubject11111111111";
+    const targetHop = edge("tx-partial-bundle-subject", partialBundleWallet, partialBundleSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [partialBundleWallet, [
+        targetHop,
+        edge("tx-binance-partial-bundle", binance, partialBundleWallet, "1000000000", "2026-05-22T10:10:00.000Z")
+      ]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: partialBundleSubject,
+      balanceTransfer: {
+        ...balanceTransfer(partialBundleWallet, "tx-partial-bundle-subject"),
+        toAddress: partialBundleSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:16:00.000Z",
+        reachedTargetHop: false,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceAddress: partialBundleWallet,
+      rootSourceType: "incomplete",
+      stoppedReason: "incoming_history_not_fetched"
+    });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "tx-partial-bundle-subject",
+      targetFromAddress: partialBundleWallet,
+      targetToAddress: partialBundleSubject,
+      proofClass: "probable",
+      stopReason: "incoming_history_not_fetched",
+      coverageWindow: expect.objectContaining({
+        complete: false
+      })
+    });
+    expect(path.sourceProvenance?.[0]?.reasons).toEqual(expect.arrayContaining([
+      "funding_bundle_amount_covered",
+      "coverage_window_not_exact"
+    ]));
+    expect(path.historyCoverage).toEqual([
+      expect.objectContaining({
+        address: partialBundleWallet,
+        reachedTargetHop: false,
+        source: "live"
+      })
+    ]);
+  });
+
+  it("requests candidate windows for probable funding provenance before returning an unresolved path", async () => {
+    const partialBundleWallet = "TPartialCandidateWallet111111111111";
+    const partialBundleSubject = "TPartialCandidateSubject11111111111";
+    const targetHop = edge("tx-candidate-hop-subject", partialBundleWallet, partialBundleSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-candidate-funder", binance, partialBundleWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [partialBundleWallet, [targetHop, funding]]
+    ]);
+    const requested: unknown[] = [];
+
+    await expect(traceMoneyOriginPath({
+      subjectAddress: partialBundleSubject,
+      balanceTransfer: {
+        ...balanceTransfer(partialBundleWallet, "tx-candidate-hop-subject"),
+        toAddress: partialBundleSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      requestCandidateWindows: async (requests) => {
+        requested.push(...requests);
+        throw new Error("targeted_history_waiting_for_index");
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    })).rejects.toThrow("targeted_history_waiting_for_index");
+
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({
+      address: partialBundleWallet,
+      candidateTxHash: "tx-candidate-funder",
+      relatedHopTxHash: "tx-candidate-hop-subject"
+    });
+  });
+
+  it("waits for queued candidate windows before inline exact-window repair", async () => {
+    const repairWallet = "TRepairBypassWallet111111111111111";
+    const repairSubject = "TRepairBypassSubject111111111111";
+    const targetHop = edge("tx-repair-bypass-hop", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-repair-bypass-funder", binance, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [repairWallet, [targetHop, funding]]
+    ]);
+    const requested: unknown[] = [];
+    let repairCalled = false;
+
+    await expect(traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, "tx-repair-bypass-hop"),
+        toAddress: repairSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      repairSourceProvenanceWindow: async (input) => {
+        repairCalled = true;
+        return repairFundingSourceExactWindow({
+          target: input.target,
+          windowEdges: [funding, targetHop],
+          windowCoverage: {
+            complete: true,
+            fetchedTransferCount: 2,
+            oldestFetchedTransferAt: funding.timestamp.toISOString(),
+            source: "local_index"
+          },
+          downstreamAmountRaw: input.downstreamAmountRaw,
+          minCoverageRatio: input.minCoverageRatio,
+          maxFunders: input.maxFunders
+        });
+      },
+      requestCandidateWindows: async (requests) => {
+        requested.push(...requests);
+        throw new Error("targeted_history_waiting_for_index");
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    })).rejects.toThrow("targeted_history_waiting_for_index");
+
+    expect(repairCalled).toBe(false);
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({
+      address: repairWallet,
+      candidateTxHash: "tx-repair-bypass-funder",
+      relatedHopTxHash: "tx-repair-bypass-hop"
+    });
+  });
+
+  it("uses completed candidate windows for exact-window repair before broad fallback", async () => {
+    const repairWallet = "TRepairAfterWindowWallet11111111111";
+    const repairSubject = "TRepairAfterWindowSubject111111111";
+    const targetHop = edge("tx-repair-after-window-hop", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-repair-after-window-funder", binance, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [repairWallet, [targetHop, funding]]
+    ]);
+    const requested: unknown[] = [];
+    const broadTargets: unknown[] = [];
+    let repairCalled = false;
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, "tx-repair-after-window-hop"),
+        toAddress: repairSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      requestCandidateWindows: async (requests) => {
+        requested.push(...requests);
+        return true;
+      },
+      repairSourceProvenanceWindow: async (input) => {
+        repairCalled = true;
+        return repairFundingSourceExactWindow({
+          target: input.target,
+          windowEdges: [funding, targetHop],
+          windowCoverage: {
+            complete: true,
+            fetchedTransferCount: 2,
+            oldestFetchedTransferAt: funding.timestamp.toISOString(),
+            source: "local_index"
+          },
+          downstreamAmountRaw: input.downstreamAmountRaw,
+          minCoverageRatio: input.minCoverageRatio,
+          maxFunders: input.maxFunders
+        });
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(requested).toHaveLength(1);
+    expect(repairCalled).toBe(true);
+    expect(broadTargets).toEqual([]);
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex"
+    });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      proofClass: "exact",
+      stopReason: null
+    });
+  });
+
+  it("removes an exact GasFree fee member and recomputes a repaired funding window", async () => {
+    const repairWallet = "TRepairGasFreeFeeWallet111111111111";
+    const repairSubject = "TRepairGasFreeFeeSubject11111111111";
+    const broadFunder = "TBroadRepairFunder11111111111111111";
+    const targetHop = edge("tx-repair-gasfree-hop", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const broadFunding = edge("tx-repair-broad-funder", broadFunder, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const repairedFee = edge("tx-repair-exact-fee", gasFreeAccount, repairWallet, "600000000", "2026-05-22T10:12:00.000Z");
+    const repairedPrincipal = edge("tx-repair-exact-principal", binance, repairWallet, "1000000000", "2026-05-22T10:11:00.000Z");
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, targetHop.txHash),
+        toAddress: repairSubject,
+        amountRaw: targetHop.amountRaw,
+        timestamp: targetHop.timestamp.toISOString()
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => address === repairWallet ? [targetHop, broadFunding] : [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: broadFunding.timestamp.toISOString(),
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      requestCandidateWindows: async () => true,
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [repairedFee, repairedPrincipal, targetHop],
+        windowCoverage: {
+          complete: true,
+          fetchedTransferCount: 3,
+          oldestFetchedTransferAt: repairedPrincipal.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      }),
+      resolveEconomicContext: async (value) => value.txHash === repairedFee.txHash ? gasFreeFee(value) : value,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+    expect(path.pathAddresses).toEqual([binance, repairWallet, repairSubject]);
+    expect(path.pathAddresses).not.toContain(gasFreeAccount);
+    expect(path.fundingBundles?.[0]?.members).toEqual([
+      expect.objectContaining({
+        txHash: repairedPrincipal.txHash,
+        usedAmountRaw: "1000000000"
+      })
+    ]);
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      proofClass: "exact",
+      stopReason: null,
+      fundingBundle: expect.objectContaining({
+        coveredAmountRaw: "1000000000",
+        members: [expect.objectContaining({ txHash: repairedPrincipal.txHash })]
+      })
+    });
+  });
+
+  it("does not follow single-candidate fallback while targeted coverage is deferred", async () => {
+    const partialWallet = "TSingleCandidatePartialWallet111111";
+    const partialSubject = "TSingleCandidatePartialSubject11111";
+    const funder = "TSingleCandidateFunder111111111111";
+    const targetHop = edge("tx-single-candidate-hop", partialWallet, partialSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-single-candidate-funder", funder, partialWallet, "700000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [partialWallet, [targetHop, funding]],
+      [funder, [edge("tx-funder-root", binance, funder, "700000000", "2026-05-22T10:05:00.000Z")]]
+    ]);
+    const broadTargets: unknown[] = [];
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: partialSubject,
+      balanceTransfer: {
+        ...balanceTransfer(partialWallet, "tx-single-candidate-hop"),
+        toAddress: partialSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 0.8,
+      minAmountPreservationRatio: 0.7,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceAddress: partialWallet,
+      rootSourceType: "incomplete",
+      stoppedReason: "incoming_history_not_fetched"
+    });
+    expect(path.rootSourceAddress).not.toBe(funder);
+    expect(path.txHashes).not.toContain("tx-single-candidate-funder");
+    expect(broadTargets).toEqual([]);
+  });
+
+  it("uses exact-window repair to turn probable funding provenance into exact trace expansion", async () => {
+    const repairWallet = "TRepairWindowWallet11111111111111111";
+    const repairSubject = "TRepairWindowSubject111111111111111";
+    const targetHop = edge("tx-repair-hop-subject", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-binance-repair-window", binance, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [repairWallet, [targetHop, funding]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, "tx-repair-hop-subject"),
+        toAddress: repairSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        statusReason: "partial_provider_cap"
+      }),
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [funding, targetHop],
+        windowCoverage: {
+          complete: true,
+          fetchedTransferCount: 2,
+          oldestFetchedTransferAt: funding.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      targetTxHash: "tx-repair-hop-subject",
+      proofClass: "exact",
+      stopReason: null,
+      coverageWindow: expect.objectContaining({
+        complete: true,
+        capped: false
+      })
+    });
+    expect(path.sourceProvenance?.[0]?.reasons).toContain("exact_window_repaired");
+  });
+
+  it("uses incoming_history_not_fetched when history did not reach the hop timestamp", async () => {
+    const partialWallet = "TPartialHistory11111111111111111111";
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(partialWallet),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-05-22T10:15:00.000Z",
+        fetchedTransferCount: 50,
+        oldestFetchedTransferAt: "2026-05-22T10:16:00.000Z",
+        reachedTargetHop: false,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("incoming_history_not_fetched");
+  });
+
+  it("uses pre_existing_balance_possible when reached history has no prior inputs", async () => {
+    const emptyWallet = "TEmptyHistory1111111111111111111111";
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(emptyWallet),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-05-22T10:15:00.000Z",
+        fetchedTransferCount: 0,
+        oldestFetchedTransferAt: null,
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("pre_existing_balance_possible");
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetFromAddress: emptyWallet,
+      proofClass: "pre_existing_balance_possible",
+      stopReason: "pre_existing_balance_possible"
+    });
+  });
+
+  it("uses incoming_seen_but_below_continuity for below-threshold prior inputs with reached history", async () => {
+    const weakWallet = "TWeakHistory11111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [weakWallet, [edge("tx-weak-input", walletC, weakWallet, "1000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(weakWallet),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-05-22T10:15:00.000Z",
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:00:00.000Z",
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("incoming_seen_but_below_continuity");
+    expect(path.rejectedCandidates).toEqual([
+      expect.objectContaining({
+        txHash: "tx-weak-input",
+        amountRaw: "1000000000",
+        coverageRatio: 0.2,
+        reasons: ["amount_continuity_below_threshold"]
+      })
+    ]);
+  });
+
+  it("preserves all bundle member transfers for a repeated funder and traces from the oldest member timestamp", async () => {
+    const bundleWallet = "TBundleWallet";
+    const repeatFunder = "TFRepeat";
+    const repeatFirst = edge("repeat-500k", repeatFunder, bundleWallet, "500000000000", "2026-04-21T12:20:00.000Z");
+    const repeatSecond = edge("repeat-250k", repeatFunder, bundleWallet, "250000000000", "2026-04-21T12:30:00.000Z");
+    const repeatFetchTimestamps: Array<string | undefined> = [];
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [bundleWallet, [
+        edge("hop-bundle-subject", bundleWallet, subject, "850000000000", "2026-04-21T12:37:00.000Z"),
+        repeatFirst,
+        repeatSecond
+      ]],
+      [repeatFunder, [
+        edge("tx-binance-repeat", binance, repeatFunder, "750000000000", "2026-04-21T12:10:00.000Z")
+      ]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(bundleWallet, "hop-bundle-subject"),
+        amountRaw: "850000000000",
+        timestamp: "2026-04-21T12:37:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      minAmountPreservationRatio: 0.9,
+      bundleCoverageThreshold: 0.8,
+      fetchEdgesForAddress: async (address, options) => {
+        if (address === repeatFunder) {
+          repeatFetchTimestamps.push(options?.latestTimestamp?.toISOString());
+        }
+        return byAddress.get(address) ?? [];
+      },
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-04-21T12:37:00.000Z",
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: address === repeatFunder
+          ? "2026-04-21T12:10:00.000Z"
+          : "2026-04-21T12:20:00.000Z",
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
+    expect(path.txHashes).toContain("repeat-500k");
+    expect(path.txHashes).toContain("repeat-250k");
+    expect(path.steps.filter((step) => step.fromAddress === repeatFunder).map((step) => step.txHash))
+      .toEqual(expect.arrayContaining(["repeat-500k", "repeat-250k"]));
+    expect(repeatFetchTimestamps).toContain("2026-04-21T12:20:00.000Z");
+  });
+});

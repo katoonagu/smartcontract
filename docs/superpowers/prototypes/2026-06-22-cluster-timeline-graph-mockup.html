@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cluster Timeline Graph Concept</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070b10;
+      --panel: #101821;
+      --panel2: #0b1118;
+      --line: #263443;
+      --text: #eef5ff;
+      --muted: #91a2b6;
+      --blue: #6fa0ff;
+      --green: #80d7a0;
+      --amber: #f4bd66;
+      --purple: #c99cff;
+      --red: #f06d77;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(rgba(96, 125, 157, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(96, 125, 157, .055) 1px, transparent 1px),
+        radial-gradient(circle at 50% 25%, rgba(64, 103, 154, .18), transparent 35%),
+        var(--bg);
+      background-size: 58px 58px, 58px 58px, 100% 100%, 100% 100%;
+      color: var(--text);
+      font: 13px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 18px;
+    }
+
+    .head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .sub {
+      margin-top: 4px;
+      color: var(--muted);
+      max-width: 900px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      min-width: 360px;
+    }
+
+    .pill {
+      border: 1px solid #314154;
+      background: rgba(10, 18, 26, .82);
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: #dce8f8;
+      white-space: nowrap;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 6px;
+      border-radius: 50%;
+      vertical-align: 1px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 270px minmax(620px, 1fr) 330px;
+      gap: 12px;
+      min-height: calc(100vh - 92px);
+    }
+
+    .rail, .graph {
+      border: 1px solid #253445;
+      background: rgba(10, 16, 23, .78);
+      box-shadow: 0 20px 70px rgba(0, 0, 0, .32);
+    }
+
+    .rail {
+      border-radius: 8px;
+      padding: 12px;
+      overflow: hidden;
+    }
+
+    .rail h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+    }
+
+    .job {
+      border: 1px solid #29394b;
+      background: #101923;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .job.selected {
+      border-color: #6fa0ff;
+      background: #16253a;
+    }
+
+    .status {
+      float: right;
+      border: 1px solid rgba(128, 215, 160, .55);
+      color: #91f0b6;
+      border-radius: 999px;
+      font-size: 10px;
+      padding: 2px 7px;
+      text-transform: uppercase;
+    }
+
+    .muted { color: var(--muted); }
+
+    .graph {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 720px;
+    }
+
+    .toolbar {
+      position: absolute;
+      z-index: 3;
+      left: 12px;
+      right: 12px;
+      top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #27394b;
+      border-radius: 8px;
+      background: rgba(7, 12, 18, .88);
+      padding: 8px;
+    }
+
+    button {
+      border: 1px solid #344861;
+      background: #111d2a;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-weight: 700;
+    }
+
+    button.primary {
+      border-color: #6fa0ff;
+      background: #18345b;
+    }
+
+    .stats {
+      color: #c7d5e7;
+      white-space: nowrap;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 720px;
+    }
+
+    .zone {
+      fill: rgba(23, 33, 46, .38);
+      stroke: rgba(80, 107, 137, .28);
+      stroke-width: 1;
+    }
+
+    .zone-title {
+      fill: #9daec2;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .edge {
+      fill: none;
+      stroke-linecap: round;
+      stroke-width: 3;
+      opacity: .86;
+    }
+
+    .edge.main-in { stroke: var(--green); }
+    .edge.main-out { stroke: var(--amber); }
+    .edge.context { stroke: #617187; stroke-dasharray: 7 8; opacity: .48; stroke-width: 2.4; }
+    .edge.peer { stroke: #88d7b1; stroke-dasharray: 2 9; opacity: .58; stroke-width: 1.8; }
+    .edge.risk { stroke: var(--red); stroke-dasharray: 5 7; stroke-width: 2; }
+
+    .node circle, .cluster rect, .service circle {
+      filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .45));
+    }
+
+    .wallet {
+      fill: #344151;
+      stroke: #8494a8;
+      stroke-width: 2;
+    }
+
+    .subject {
+      fill: #17294a;
+      stroke: var(--blue);
+      stroke-width: 3;
+    }
+
+    .cluster-shape {
+      fill: #2d2144;
+      stroke: var(--purple);
+      stroke-width: 2.5;
+    }
+
+    .service-shape {
+      fill: #3a2e22;
+      stroke: var(--amber);
+      stroke-width: 2.5;
+    }
+
+    .stop-shape {
+      fill: #21171a;
+      stroke: var(--red);
+      stroke-width: 2;
+      stroke-dasharray: 4 4;
+    }
+
+    .label {
+      fill: #f6fbff;
+      font-weight: 800;
+      font-size: 11px;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: #071019;
+      stroke-width: 3px;
+      stroke-linejoin: round;
+    }
+
+    .tiny {
+      fill: #a9b8ca;
+      font-size: 10px;
+      font-weight: 700;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: #071019;
+      stroke-width: 3px;
+    }
+
+    .amount {
+      fill: #f4bd66;
+      stroke: #111822;
+      stroke-width: 1;
+    }
+
+    .amount-text {
+      fill: #06101b;
+      font-size: 10px;
+      font-weight: 900;
+      text-anchor: middle;
+    }
+
+    .timeline {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      border: 1px solid #26384a;
+      background: rgba(7, 12, 18, .9);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .timeline .row {
+      display: grid;
+      grid-template-columns: 90px repeat(5, 1fr);
+      align-items: end;
+      gap: 8px;
+      min-height: 62px;
+    }
+
+    .tick {
+      border-left: 1px solid #2d4155;
+      padding-left: 8px;
+      color: #d6e3f2;
+    }
+
+    .bar {
+      width: 100%;
+      border-radius: 3px 3px 0 0;
+      background: linear-gradient(180deg, #7aa7ff, #65d2c6);
+      margin-bottom: 6px;
+    }
+
+    .card {
+      border: 1px solid #29394b;
+      background: #0d151e;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      gap: 5px 8px;
+      margin-top: 7px;
+    }
+
+    .addr {
+      color: #8ec0ff;
+      word-break: break-all;
+      font-weight: 700;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .mini-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-top: 1px solid #223142;
+      padding-top: 6px;
+    }
+
+    .tag {
+      border: 1px solid #33475f;
+      border-radius: 999px;
+      padding: 3px 7px;
+      color: #d9e7f8;
+      white-space: nowrap;
+    }
+
+    .callout {
+      border-color: rgba(201, 156, 255, .45);
+      background: rgba(44, 30, 67, .45);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="head">
+      <div>
+        <h1>Incoming / Where-is-money graph concept</h1>
+        <div class="sub">Default combines cluster reading with time reading. The graph shows meaning first; full address lists, gaps, tx hashes, and bundle contents live in the right rail.</div>
+      </div>
+      <div class="legend">
+        <span class="pill"><span class="dot" style="background:var(--green)"></span>incoming money</span>
+        <span class="pill"><span class="dot" style="background:var(--amber)"></span>outgoing / used</span>
+        <span class="pill"><span class="dot" style="background:#617187"></span>context / inferred</span>
+        <span class="pill"><span class="dot" style="background:#88d7b1"></span>neighbor link</span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <aside class="rail">
+        <h2>Jobs</h2>
+        <div class="job selected">
+          <span class="status">completed</span>
+          <strong>TNMKtwF4Qj...N9tMXJuHCp</strong>
+          <div class="muted">incoming_deposit_check</div>
+          <div class="muted">sender to TYDaeo...</div>
+        </div>
+        <div class="job">
+          <span class="status">partial</span>
+          <strong>TYDaeoSFui...457emWqQPC</strong>
+          <div class="muted">where_is_money_check</div>
+          <div class="muted">route found by system</div>
+        </div>
+        <div class="job">
+          <span class="status">partial</span>
+          <strong>TYDaeoSFui...457emWqQPC</strong>
+          <div class="muted">address_deep_check</div>
+          <div class="muted">profile/context graph</div>
+        </div>
+      </aside>
+
+      <main class="graph">
+        <div class="toolbar">
+          <div>
+            <button class="primary">Cluster timeline</button>
+            <button>Expand selected</button>
+            <button>Show all raw</button>
+            <button>Peer links on</button>
+          </div>
+          <div class="stats">N37 - E51 - clusters 6 - selected bundle 12 wallets</div>
+        </div>
+
+        <svg viewBox="0 0 980 720" role="img" aria-label="Cluster timeline graph concept">
+          <rect class="zone" x="45" y="110" width="205" height="420" rx="16"/>
+          <rect class="zone" x="278" y="110" width="205" height="420" rx="16"/>
+          <rect class="zone" x="512" y="110" width="205" height="420" rx="16"/>
+          <rect class="zone" x="746" y="110" width="180" height="420" rx="16"/>
+          <text class="zone-title" x="148" y="142" text-anchor="middle">sources</text>
+          <text class="zone-title" x="380" y="142" text-anchor="middle">funding clusters</text>
+          <text class="zone-title" x="615" y="142" text-anchor="middle">sender / subject</text>
+          <text class="zone-title" x="835" y="142" text-anchor="middle">services / stops</text>
+
+          <path class="edge main-in" d="M143 260 C230 245, 275 260, 340 302"/>
+          <path class="edge main-in" d="M126 345 C215 344, 282 360, 354 354"/>
+          <path class="edge main-in" d="M156 430 C240 415, 280 390, 360 390"/>
+          <path class="edge peer" d="M143 260 C130 300, 120 325, 126 345"/>
+          <path class="edge peer" d="M126 345 C130 390, 138 410, 156 430"/>
+
+          <path class="edge main-in" d="M390 318 C445 305, 505 310, 586 340"/>
+          <path class="edge main-in" d="M396 386 C462 380, 515 370, 586 357"/>
+          <path class="edge context" d="M408 454 C470 470, 530 432, 592 374"/>
+
+          <path class="edge main-out" d="M624 355 C700 340, 760 322, 825 298"/>
+          <path class="edge context" d="M622 372 C700 420, 780 430, 850 410"/>
+          <path class="edge risk" d="M622 372 C700 480, 790 500, 854 500"/>
+          <path class="edge peer" d="M825 298 C838 338, 845 372, 850 410"/>
+
+          <g class="node">
+            <circle class="wallet" cx="143" cy="260" r="20"/>
+            <text class="label" x="143" y="292">TQoJWs...</text>
+            <text class="tiny" x="143" y="307">185.8K</text>
+          </g>
+          <g class="node">
+            <circle class="wallet" cx="126" cy="345" r="20"/>
+            <text class="label" x="126" y="377">TRWbRt...</text>
+            <text class="tiny" x="126" y="392">168.6K</text>
+          </g>
+          <g class="node">
+            <circle class="wallet" cx="156" cy="430" r="20"/>
+            <text class="label" x="156" y="462">TFcs8o...</text>
+            <text class="tiny" x="156" y="477">250.3K</text>
+          </g>
+
+          <g class="cluster">
+            <rect class="cluster-shape" x="330" y="274" width="118" height="70" rx="18"/>
+            <text class="label" x="389" y="300">Group: 12 wallets</text>
+            <text class="tiny" x="389" y="318">439K - 18 tx</text>
+            <text class="tiny" x="389" y="334">contains peer links</text>
+          </g>
+          <g class="cluster">
+            <rect class="cluster-shape" x="335" y="360" width="122" height="70" rx="18"/>
+            <text class="label" x="396" y="386">Group: 7 wallets</text>
+            <text class="tiny" x="396" y="404">92K - 9 tx</text>
+            <text class="tiny" x="396" y="420">mostly fresh</text>
+          </g>
+          <g class="service">
+            <circle class="service-shape" cx="408" cy="454" r="22"/>
+            <text class="label" x="408" y="489">CEX</text>
+          </g>
+
+          <g class="node">
+            <circle class="wallet" cx="586" cy="340" r="24"/>
+            <text class="label" x="586" y="376">Sender</text>
+            <text class="tiny" x="586" y="392">TNMKtw...</text>
+          </g>
+          <g class="node">
+            <circle class="subject" cx="624" cy="365" r="24"/>
+            <text class="label" x="624" y="402">Subject</text>
+            <text class="tiny" x="624" y="418">TYDaeo...</text>
+          </g>
+
+          <g class="service">
+            <circle class="service-shape" cx="825" cy="298" r="23"/>
+            <text class="label" x="825" y="333">CEX</text>
+            <text class="tiny" x="825" y="348">allowlisted</text>
+          </g>
+          <g class="service">
+            <circle class="service-shape" cx="850" cy="410" r="22"/>
+            <text class="label" x="850" y="445">Bridge</text>
+          </g>
+          <g class="service">
+            <circle class="stop-shape" cx="854" cy="500" r="21"/>
+            <text class="label" x="854" y="535">Stop</text>
+            <text class="tiny" x="854" y="550">clean cex reached</text>
+          </g>
+
+          <rect class="amount" x="225" y="244" width="54" height="18" rx="4"/>
+          <text class="amount-text" x="252" y="257">185.8K</text>
+          <rect class="amount" x="488" y="309" width="46" height="18" rx="4"/>
+          <text class="amount-text" x="511" y="322">64K</text>
+          <rect class="amount" x="704" y="323" width="54" height="18" rx="4"/>
+          <text class="amount-text" x="731" y="336">19.9K</text>
+        </svg>
+
+        <div class="timeline">
+          <div class="row">
+            <strong>Timeline</strong>
+            <div class="tick"><div class="bar" style="height:22px"></div>06-20<br><span class="muted">fresh source</span></div>
+            <div class="tick"><div class="bar" style="height:34px"></div>06-21<br><span class="muted">sender funded</span></div>
+            <div class="tick"><div class="bar" style="height:48px"></div>06-22<br><span class="muted">deposit</span></div>
+            <div class="tick"><div class="bar" style="height:18px"></div>+12m<br><span class="muted">service hit</span></div>
+            <div class="tick"><div class="bar" style="height:10px"></div>+2h<br><span class="muted">stop</span></div>
+          </div>
+        </div>
+      </main>
+
+      <aside class="rail">
+        <h2>Analytics</h2>
+        <div class="card">
+          <h3>Selected job</h3>
+          <div class="kv">
+            <span class="muted">Mode</span><strong>Incoming deposit</strong>
+            <span class="muted">Risk</span><strong>45 / medium</strong>
+            <span class="muted">Meaning</span><strong>Deposit-origin trace</strong>
+          </div>
+        </div>
+        <div class="card callout">
+          <h3>Selected bundle</h3>
+          <div class="kv">
+            <span class="muted">Type</span><strong>Group, not wallet</strong>
+            <span class="muted">Inside</span><strong>12 wallets, 18 tx</strong>
+            <span class="muted">Total</span><strong>439K USDT</strong>
+            <span class="muted">Period</span><strong>06-20 13:10Z - 06-22 07:36Z</strong>
+          </div>
+          <div class="mini-list">
+            <div class="mini-row"><span class="addr">TFcs8oa...te6NwCy</span><span class="tag">250K</span></div>
+            <div class="mini-row"><span class="addr">TQoJWs...ipHVw4z</span><span class="tag">185.8K</span></div>
+            <div class="mini-row"><span class="addr">TRWbRt...pQVBYnH</span><span class="tag">168.6K</span></div>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <button class="primary">Expand bundle</button>
+            <button>Show internal links</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Selected flow</h3>
+          <div class="kv">
+            <span class="muted">Amount</span><strong>19.9K USDT</strong>
+            <span class="muted">Time</span><strong>2026-06-22 07:36Z</strong>
+            <span class="muted">Gap</span><strong>12m after funding</strong>
+            <span class="muted">Tx</span><span class="addr">2a000a39...b2908aad</span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Encoding rules</h3>
+          <div class="mini-list">
+            <div class="mini-row"><span>Line width</span><span class="muted">capped; no huge ropes</span></div>
+            <div class="mini-row"><span>Graph labels</span><span class="muted">amount only</span></div>
+            <div class="mini-row"><span>Time/gap</span><span class="muted">timeline + right rail</span></div>
+            <div class="mini-row"><span>Bundle</span><span class="muted">expandable group</span></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</body>
+</html>

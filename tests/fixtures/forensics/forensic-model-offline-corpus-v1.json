@@ -1,0 +1,1506 @@
+{
+  "schemaVersion": "forensic-model-offline-corpus-v1",
+  "ledgerCases": [
+    {
+      "id": "pacgy-recorded-chronology",
+      "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md#cashflow-replay",
+      "subjectAddressSuffix": "PacGy",
+      "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      "tokenDecimals": 6,
+      "historyCompleteness": {
+        "providerExhaustionProven": false,
+        "zeroOpeningWitnessProven": false
+      },
+      "expectedAuthoritativeState": "history_incomplete",
+      "observedChronology": [
+        {
+          "order": 1,
+          "direction": "in",
+          "amountRaw": "300000000",
+          "counterpartyAddress": "TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL"
+        },
+        {
+          "order": 2,
+          "direction": "out",
+          "amountRaw": "70000000"
+        },
+        {
+          "order": 3,
+          "direction": "out",
+          "amountRaw": "12000000"
+        },
+        {
+          "order": 4,
+          "direction": "out",
+          "amountRaw": "180000000",
+          "counterpartyAddress": "TYDaeoSFuipFoJ2bzVdJ8daG457emWqQPC"
+        },
+        {
+          "order": 5,
+          "direction": "out",
+          "amountRaw": "38000000"
+        },
+        {
+          "order": 6,
+          "direction": "in",
+          "amountRaw": "82700000",
+          "counterpartyAddressSuffix": "gsFCa"
+        }
+      ],
+      "duplicateReceiptBinding": {
+        "providerAliasCount": 2,
+        "providerEventIndexIsCanonical": false,
+        "providerAliases": [
+          {
+            "provider": "tronscan",
+            "transferId": "tronscan:f6b8fb0fade1546d2fdb02d1944e2a36251440599f99ab2121705294fe6c57ff",
+            "eventIndex": 34519656,
+            "providerRowOrdinalInTx": 32,
+            "boundCanonicalIdentity": {
+              "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+              "officialUsdtLogOrdinal": 0,
+              "officialUsdtLogCount": 1,
+              "amountRaw": "180000000",
+              "authority": "full_node_receipt"
+            }
+          },
+          {
+            "provider": "tronscan",
+            "transferId": "tronscan:7a598b7a841999cee379876b0e7cb3f4950fdd8cf6184ee3fba337aef000645c",
+            "eventIndex": 245433617,
+            "providerRowOrdinalInTx": 1,
+            "boundCanonicalIdentity": {
+              "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+              "officialUsdtLogOrdinal": 0,
+              "officialUsdtLogCount": 1,
+              "amountRaw": "180000000",
+              "authority": "full_node_receipt"
+            }
+          }
+        ],
+        "canonicalIdentity": {
+          "txHash": "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+          "officialUsdtLogOrdinal": 0,
+          "officialUsdtLogCount": 1,
+          "amountRaw": "180000000",
+          "authority": "full_node_receipt"
+        }
+      },
+      "episodeCalibration": {
+        "targetAmountRaw": "180000000",
+        "recordedCoveredAmountRaw": "180000000",
+        "sourceLotAmountRaw": "300000000",
+        "recordedSourceUtilizationNumerator": 60,
+        "recordedSourceUtilizationDenominator": 100
+      },
+      "currentBalanceObservation": {
+        "amountRaw": "82700000",
+        "solidifiedHead": 84888238,
+        "authority": "diagnostic_non_pinned",
+        "expectedState": "unresolved"
+      },
+      "recordedNonAuthoritativeCalibration": {
+        "targetRaw": "180000000",
+        "coveredRaw": "180000000",
+        "sourceOriginalRaw": "300000000",
+        "sourceUtilizedRaw": "180000000"
+      },
+      "replayInput": {
+        "subjectAddress": "recorded:PacGy",
+        "snapshotBlockNumber": 83711746,
+        "snapshotBlockHash": "unavailable:not-authoritative",
+        "snapshotEvidenceRef": "docs/superpowers/verification/2026-07-30-pacgy-canonical-tape-acceptance.json",
+        "historyCompleteness": "partial",
+        "openingBalanceRaw": "0",
+        "events": []
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "180000000",
+        "exactEventId": "receipt:676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "history_incomplete_before_anchor",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
+    },
+    {
+      "id": "pacgy-synthetic-zero-opening-control",
+      "evidenceClass": "synthetic_edge_case",
+      "openingBalanceRaw": "0",
+      "events": [
+        {
+          "eventId": "in-300",
+          "order": 1,
+          "direction": "in",
+          "source": "funder-old",
+          "amountRaw": "300000000"
+        },
+        {
+          "eventId": "out-70",
+          "order": 2,
+          "direction": "out",
+          "amountRaw": "70000000"
+        },
+        {
+          "eventId": "out-12",
+          "order": 3,
+          "direction": "out",
+          "amountRaw": "12000000"
+        },
+        {
+          "eventId": "out-180",
+          "order": 4,
+          "direction": "out",
+          "amountRaw": "180000000"
+        },
+        {
+          "eventId": "out-38",
+          "order": 5,
+          "direction": "out",
+          "amountRaw": "38000000"
+        },
+        {
+          "eventId": "in-82-7",
+          "order": 6,
+          "direction": "in",
+          "source": "funder-new",
+          "amountRaw": "82700000"
+        }
+      ],
+      "expected": {
+        "state": "complete",
+        "episodeCoveredAmountRaw": "180000000",
+        "oldLotRemainingAmountRaw": "0",
+        "currentBalanceAmountRaw": "82700000",
+        "currentSource": "funder-new"
+      },
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-300"], "txHash": "in-300", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "old", "toAddress": "subject", "amountRaw": "300000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-70"], "txHash": "out-70", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "sink-70", "amountRaw": "70000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-12"], "txHash": "out-12", "blockNumber": 3, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 3000, "fromAddress": "subject", "toAddress": "sink-12", "amountRaw": "12000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-180"], "txHash": "out-180", "blockNumber": 4, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 4000, "fromAddress": "subject", "toAddress": "sink-180", "amountRaw": "180000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-38"], "txHash": "out-38", "blockNumber": 5, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 5000, "fromAddress": "subject", "toAddress": "sink-38", "amountRaw": "38000000" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-82-7"], "txHash": "in-82-7", "blockNumber": 6, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 6000, "fromAddress": "new", "toAddress": "subject", "amountRaw": "82700000" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "180000000",
+        "exactEventId": "receipt:out-180:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "180000000",
+        "coveredRaw": "180000000",
+        "allocations": [
+          { "lotId": "receipt:in-300:0", "sourceEventId": "receipt:in-300:0", "sourceAddress": "old", "usedAmountRaw": "180000000", "sourceOriginalRaw": "300000000" }
+        ]
+      }
+    },
+    {
+      "id": "integer-remainder-control",
+      "evidenceClass": "synthetic_edge_case",
+      "openingBalanceRaw": "0",
+      "lots": [
+        {
+          "source": "a",
+          "amountRaw": "1"
+        },
+        {
+          "source": "b",
+          "amountRaw": "2"
+        }
+      ],
+      "debitAmountRaw": "2",
+      "expectedAllocations": [
+        {
+          "source": "a",
+          "amountRaw": "1"
+        },
+        {
+          "source": "b",
+          "amountRaw": "1"
+        }
+      ],
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-a"], "txHash": "in-a", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "a", "toAddress": "subject", "amountRaw": "1" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-b"], "txHash": "in-b", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "b", "toAddress": "subject", "amountRaw": "2" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-2"], "txHash": "out-2", "blockNumber": 3, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 3000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "2" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "2",
+        "exactEventId": "receipt:out-2:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "2",
+        "coveredRaw": "2",
+        "allocations": [
+          { "lotId": "receipt:in-a:0", "sourceEventId": "receipt:in-a:0", "sourceAddress": "a", "usedAmountRaw": "1", "sourceOriginalRaw": "1" },
+          { "lotId": "receipt:in-b:0", "sourceEventId": "receipt:in-b:0", "sourceAddress": "b", "usedAmountRaw": "1", "sourceOriginalRaw": "2" }
+        ]
+      }
+    },
+    {
+      "id": "exact-self-transfer-control",
+      "evidenceClass": "synthetic_edge_case",
+      "openingBalanceRaw": "10",
+      "event": {
+        "from": "subject",
+        "to": "subject",
+        "amountRaw": "7"
+      },
+      "expectedBalanceAmountRaw": "10",
+      "expectedEffect": "cashflow_no_op",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:self-7"], "txHash": "self-7", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "subject", "amountRaw": "7" }
+        ]
+      },
+      "query": {
+        "purpose": "current_balance",
+        "snapshotBalanceWitness": {
+          "amountRaw": "10",
+          "pinned": true,
+          "independent": true,
+          "subjectAddress": "subject",
+          "snapshotBlockNumber": 99,
+          "snapshotBlockHash": "synthetic-block-99",
+          "evidenceRef": "synthetic:independent-balance:99"
+        },
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "complete",
+        "reason": null,
+        "authoritative": true,
+        "targetRaw": "10",
+        "coveredRaw": "10",
+        "allocations": [
+          { "lotId": "receipt:in-10:0", "sourceEventId": "receipt:in-10:0", "sourceAddress": "funder", "usedAmountRaw": "10", "sourceOriginalRaw": "10" }
+        ]
+      }
+    },
+    {
+      "id": "identity-collision-control",
+      "evidenceClass": "synthetic_edge_case",
+      "events": [
+        {
+          "canonicalIdentity": {
+            "txHash": "synthetic-shared-tx",
+            "logIndex": 0
+          },
+          "amountRaw": "5"
+        },
+        {
+          "canonicalIdentity": {
+            "txHash": "synthetic-shared-tx",
+            "logIndex": 0
+          },
+          "amountRaw": "7"
+        }
+      ],
+      "expectedState": "identity_collision",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:shared"], "txHash": "shared", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "5" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:shared"], "txHash": "shared", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "7" }
+        ]
+      },
+      "query": {
+        "purpose": "amount_only",
+        "requestedAmountRaw": "1",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "canonical_event_identity_unresolved",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
+    },
+    {
+      "id": "missing-order-control",
+      "evidenceClass": "synthetic_edge_case",
+      "events": [
+        {
+          "blockNumber": 10,
+          "direction": "in",
+          "amountRaw": "10"
+        },
+        {
+          "blockNumber": 10,
+          "direction": "out",
+          "amountRaw": "8"
+        }
+      ],
+      "expectedState": "temporal_order_unresolved",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 10, "transactionIndex": null, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 10000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-8"], "txHash": "out-8", "blockNumber": 10, "transactionIndex": null, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 10000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "8" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "8",
+        "exactEventId": "receipt:out-8:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "temporal_order_unresolved",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
+    },
+    {
+      "id": "debit-over-inventory-control",
+      "evidenceClass": "synthetic_edge_case",
+      "openingBalanceRaw": "0",
+      "incomingAmountRaw": "10",
+      "debitAmountRaw": "11",
+      "expectedState": "history_incomplete",
+      "expectedReason": "debit_over_inventory",
+      "replayInput": {
+        "subjectAddress": "subject",
+        "snapshotBlockNumber": 99,
+        "snapshotBlockHash": "synthetic-block-99",
+        "snapshotEvidenceRef": "synthetic:snapshot:99",
+        "historyCompleteness": "genesis_complete",
+        "openingBalanceRaw": "0",
+        "events": [
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:in-10"], "txHash": "in-10", "blockNumber": 1, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 1000, "fromAddress": "funder", "toAddress": "subject", "amountRaw": "10" },
+          { "canonicalEventId": null, "providerEventIds": ["synthetic:out-11"], "txHash": "out-11", "blockNumber": 2, "transactionIndex": 0, "eventIndex": 0, "eventIndexAuthority": "receipt_log_index", "occurredAtMs": 2000, "fromAddress": "subject", "toAddress": "sink", "amountRaw": "11" }
+        ]
+      },
+      "query": {
+        "purpose": "exact_episode",
+        "requestedAmountRaw": "11",
+        "exactEventId": "receipt:out-11:0",
+        "exactRedContributorLotIds": []
+      },
+      "expectedActual": {
+        "state": "unresolved",
+        "reason": "outgoing_exceeds_reconstructed_inventory",
+        "authoritative": false,
+        "targetRaw": "0",
+        "coveredRaw": "0",
+        "allocations": []
+      }
+    }
+  ],
+  "serviceCases": [
+    {
+      "id": "w8srl-two-window-calibration",
+      "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md#главный-новый-case-w8srl",
+      "address": "TPkv2PcELr6uq5vqdYJ3UwKnnhdV2W8SRL",
+      "rawProviderPagesFrozen": false,
+      "authoritativeWouldAction": null,
+      "estimatedWouldAction": "continue_full",
+      "behaviorClassification": "high_service_behavior",
+      "windows": [
+        {
+          "kind": "recent",
+          "physicalRowCount": 100,
+          "incomingCount": 12,
+          "outgoingCount": 88,
+          "uniqueCounterparties": 35,
+          "medianAllGapSeconds": 75,
+          "medianOutgoingGapSeconds": 93,
+          "distinctUtcHoursOfDay": 16,
+          "repeated1496OutgoingCount": 21,
+          "predicate": {
+            "cadence": true,
+            "breadth": true,
+            "geometry": true,
+            "hours": true,
+            "repetition": true,
+            "extremeThroughput": false
+          },
+          "canonicalEventCount": 100,
+          "featureEligibleEventCount": 100,
+          "uniqueSenders": 3,
+          "uniqueRecipients": 32,
+          "largestCounterparty": {
+            "count": 20,
+            "shareDenominator": 100
+          },
+          "dominantDirection": "outgoing",
+          "dominantDirectionCount": 88,
+          "uniqueDominantCounterparties": 32,
+          "dominantShareDenominator": 100,
+          "medianDominantDirectionGapSeconds": {
+            "numerator": 93,
+            "denominator": 1
+          },
+          "maxDominantDirectionEventsPerHour": 15,
+          "activeUtcHourOfDayCount": 16,
+          "dominantExactAmount": {
+            "amountRaw": "1496000000",
+            "count": 21,
+            "shareDenominator": 88
+          },
+          "observedStartTimestamp": "2026-07-23T07:02:54.000Z",
+          "observedEndTimestamp": "2026-07-24T16:06:51.000Z",
+          "observedWindowDurationSeconds": 119037,
+          "recordedPredicate": {
+            "C": true,
+            "B": true,
+            "G": true,
+            "H": true,
+            "R": true,
+            "X": false,
+            "P": true
+          },
+          "source": {
+            "classification": "recovered_fixed_cutoff_provider_vector",
+            "provider": "tronscan",
+            "endpoint": "/api/token_trc20/transfers",
+            "rawPagesPersisted": false,
+            "pageStarts": [
+              0,
+              50
+            ],
+            "pageLimit": 50,
+            "requestEndTimestamp": "2026-07-24T16:06:51.000Z",
+            "rawResponseSha256": [
+              "5559d193141bd8eb632e51590d73e79b1e0edb0c4857902a348b857e4e3b1c04",
+              "049420e76a6245738a87eace75f7489298a5fb2749f4cb91b4871d5864ee2220"
+            ],
+            "canonicalTransferSha256": [
+              "60065849ddc5601f46746b10e5a13fc34e978d42f0f3c4c31089468710557b88",
+              "0ca65fbfb4d3f621b25155c0ece27b1f8d7cefbaeb6c1c7c102bd9befc67ab03"
+            ]
+          }
+        },
+        {
+          "kind": "historical",
+          "physicalRowCount": 100,
+          "incomingCount": 20,
+          "outgoingCount": 80,
+          "uniqueCounterparties": 36,
+          "medianAllGapSeconds": 21,
+          "medianOutgoingGapSeconds": 21,
+          "distinctUtcHoursOfDay": 13,
+          "repeated1496OutgoingCount": 14,
+          "predicate": {
+            "cadence": true,
+            "breadth": true,
+            "geometry": true,
+            "hours": true,
+            "repetition": true,
+            "extremeThroughput": false
+          },
+          "canonicalEventCount": 100,
+          "featureEligibleEventCount": 100,
+          "uniqueSenders": 7,
+          "uniqueRecipients": 29,
+          "largestCounterparty": {
+            "count": 13,
+            "shareDenominator": 100
+          },
+          "dominantDirection": "outgoing",
+          "dominantDirectionCount": 80,
+          "uniqueDominantCounterparties": 29,
+          "dominantShareDenominator": 100,
+          "medianDominantDirectionGapSeconds": {
+            "numerator": 21,
+            "denominator": 1
+          },
+          "maxDominantDirectionEventsPerHour": 15,
+          "activeUtcHourOfDayCount": 13,
+          "dominantExactAmount": {
+            "amountRaw": "1496000000",
+            "count": 14,
+            "shareDenominator": 80
+          },
+          "observedStartTimestamp": "2026-07-15T08:35:51.000Z",
+          "observedEndTimestamp": "2026-07-15T22:04:54.000Z",
+          "observedWindowDurationSeconds": 48543,
+          "recordedPredicate": {
+            "C": true,
+            "B": true,
+            "G": true,
+            "H": true,
+            "R": true,
+            "X": false,
+            "P": true
+          },
+          "source": {
+            "classification": "recovered_fixed_cutoff_provider_vector",
+            "provider": "tronscan",
+            "endpoint": "/api/token_trc20/transfers",
+            "rawPagesPersisted": false,
+            "pageStarts": [
+              0,
+              50
+            ],
+            "pageLimit": 50,
+            "requestEndTimestamp": "2026-07-16T07:02:54.000Z",
+            "rawResponseSha256": [
+              "ed865dec7e02ead419d364ab626722d8383ac869d31393f8842685eda331185e",
+              "4aa4f1e341eb01be62709c6c69ff279d6097deccc83645c480ece709683dfc4b"
+            ],
+            "canonicalTransferSha256": [
+              "5f87296a3ebea83473e12847d14c9859fb933d3434af707c27044ab2b915367d",
+              "14a268d5d99c4dbbc8377e93680d097ac09c71fcc040493f7c9919a0f3f52a29"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "csv-SqPaM9",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TAAvdgWLxVVRCZmFBVVRBkT8dRYHSqPaM9",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (3).csv",
+        "sha256": "387967f6cf09a73d510bd95f799923c13e22ef70543fcc4b5fa2f2743e846cf5",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 8,
+        "canonicalEventCount": 8,
+        "featureEligibleEventCount": 8,
+        "incomingCount": 6,
+        "outgoingCount": 2,
+        "uniqueSenders": 5,
+        "uniqueRecipients": 2,
+        "uniqueCounterparties": 7,
+        "largestCounterparty": {
+          "count": 2,
+          "shareDenominator": 8
+        },
+        "dominantDirection": "incoming",
+        "dominantDirectionCount": 6,
+        "uniqueDominantCounterparties": 5,
+        "dominantShareDenominator": 8,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 6936,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 2,
+        "activeUtcHourOfDayCount": 4,
+        "dominantExactAmount": {
+          "amountRaw": "250000000",
+          "count": 1,
+          "shareDenominator": 6
+        },
+        "observedStartTimestamp": "2026-05-15T13:16:57.000Z",
+        "observedEndTimestamp": "2026-06-25T16:41:33.000Z",
+        "observedWindowDurationSeconds": 3554676,
+        "recordedPredicate": {
+          "C": false,
+          "B": false,
+          "G": false,
+          "H": false,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 8,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-hQBSuW",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TAiwzmuZ1fHQYumdPktihWjtF2uEhQBSuW",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (4).csv",
+        "sha256": "e7c0f893317b2b13779eeaf12eb1da154c94dd6d1a63cfdbd8b4c0bead44fd7f",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 53,
+        "canonicalEventCount": 53,
+        "featureEligibleEventCount": 53,
+        "incomingCount": 23,
+        "outgoingCount": 30,
+        "uniqueSenders": 12,
+        "uniqueRecipients": 17,
+        "uniqueCounterparties": 27,
+        "largestCounterparty": {
+          "count": 5,
+          "shareDenominator": 53
+        },
+        "dominantDirection": "outgoing",
+        "dominantDirectionCount": 30,
+        "uniqueDominantCounterparties": 17,
+        "dominantShareDenominator": 53,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 505632,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 2,
+        "activeUtcHourOfDayCount": 18,
+        "dominantExactAmount": {
+          "amountRaw": "1000000000",
+          "count": 9,
+          "shareDenominator": 30
+        },
+        "observedStartTimestamp": "2024-09-20T08:31:45.000Z",
+        "observedEndTimestamp": "2026-07-11T15:54:42.000Z",
+        "observedWindowDurationSeconds": 56964177,
+        "recordedPredicate": {
+          "C": false,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 53,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-owfnme",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TA6RLjNCy6EMg4q3YhGmtGUCu3Cfowfnme",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (2).csv",
+        "sha256": "39c6760a67ed7384ad825cfd4635d006b12b80020e34269d2c6c7df72d93e798",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 1175,
+        "canonicalEventCount": 1175,
+        "featureEligibleEventCount": 1175,
+        "incomingCount": 691,
+        "outgoingCount": 484,
+        "uniqueSenders": 240,
+        "uniqueRecipients": 151,
+        "uniqueCounterparties": 323,
+        "largestCounterparty": {
+          "count": 91,
+          "shareDenominator": 1175
+        },
+        "dominantDirection": "incoming",
+        "dominantDirectionCount": 691,
+        "uniqueDominantCounterparties": 240,
+        "dominantShareDenominator": 1175,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 1833,
+          "denominator": 2
+        },
+        "maxDominantDirectionEventsPerHour": 20,
+        "activeUtcHourOfDayCount": 16,
+        "dominantExactAmount": {
+          "amountRaw": "100000000",
+          "count": 16,
+          "shareDenominator": 691
+        },
+        "observedStartTimestamp": "2024-08-27T07:42:33.000Z",
+        "observedEndTimestamp": "2026-07-25T08:02:57.000Z",
+        "observedWindowDurationSeconds": 60222024,
+        "recordedPredicate": {
+          "C": true,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": true
+        },
+        "confirmedRowCount": 1175,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-cKQz2J",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TJZHaDdabnMo711NQvZkMMqvVE79cKQz2J",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (21).csv",
+        "sha256": "393e37d7665f1dde66a1dfa11ab05d5535a296b03f8222c975ed5029e426ed2a",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 1451,
+        "canonicalEventCount": 1451,
+        "featureEligibleEventCount": 1451,
+        "incomingCount": 409,
+        "outgoingCount": 1042,
+        "uniqueSenders": 116,
+        "uniqueRecipients": 131,
+        "uniqueCounterparties": 231,
+        "largestCounterparty": {
+          "count": 153,
+          "shareDenominator": 1451
+        },
+        "dominantDirection": "outgoing",
+        "dominantDirectionCount": 1042,
+        "uniqueDominantCounterparties": 131,
+        "dominantShareDenominator": 1451,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 735,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 11,
+        "activeUtcHourOfDayCount": 14,
+        "dominantExactAmount": {
+          "amountRaw": "500000000",
+          "count": 90,
+          "shareDenominator": 1042
+        },
+        "observedStartTimestamp": "2025-11-04T10:22:42.000Z",
+        "observedEndTimestamp": "2026-07-26T06:44:03.000Z",
+        "observedWindowDurationSeconds": 22796481,
+        "recordedPredicate": {
+          "C": false,
+          "B": false,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 1451,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {"id":"csv-eXDwoq","calibrationSet":"csv-addresses-2026-07-26","address":"TJZxcWCDxf5zgYMA1snogPWxyR9MeXDwoq","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (20).csv","sha256":"2270c4609db088ae7ba919e8b9130e813afab1fc7bc693698cb94b0b0603a6b2","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":583,"canonicalEventCount":583,"featureEligibleEventCount":583,"incomingCount":127,"outgoingCount":456,"uniqueSenders":73,"uniqueRecipients":184,"uniqueCounterparties":245,"largestCounterparty":{"count":27,"shareDenominator":583},"dominantDirection":"outgoing","dominantDirectionCount":456,"uniqueDominantCounterparties":184,"dominantShareDenominator":583,"medianDominantDirectionGapSeconds":{"numerator":438,"denominator":1},"maxDominantDirectionEventsPerHour":17,"activeUtcHourOfDayCount":14,"dominantExactAmount":{"amountRaw":"10000000","count":174,"shareDenominator":456},"observedStartTimestamp":"2026-05-26T10:34:24.000Z","observedEndTimestamp":"2026-07-24T15:42:27.000Z","observedWindowDurationSeconds":5116083,"recordedPredicate":{"C":true,"B":true,"G":true,"H":true,"R":true,"X":false,"P":true},"confirmedRowCount":583,"unconfirmedRowCount":0}},
+    {"id":"csv-m7MWZv","calibrationSet":"csv-addresses-2026-07-26","address":"TCTeFzERHFoyHb7uNYKjLRxMSNUxm7MWZv","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (8).csv","sha256":"3c1b6622dfc3a4fc3d663c86951f0b01e9c0f0122f35755c7a79a4244ad74ab9","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":90,"canonicalEventCount":90,"featureEligibleEventCount":90,"incomingCount":40,"outgoingCount":50,"uniqueSenders":28,"uniqueRecipients":20,"uniqueCounterparties":47,"largestCounterparty":{"count":5,"shareDenominator":90},"dominantDirection":"outgoing","dominantDirectionCount":50,"uniqueDominantCounterparties":20,"dominantShareDenominator":90,"medianDominantDirectionGapSeconds":{"numerator":228,"denominator":1},"maxDominantDirectionEventsPerHour":10,"activeUtcHourOfDayCount":11,"dominantExactAmount":{"amountRaw":"1000000000","count":2,"shareDenominator":50},"observedStartTimestamp":"2026-07-13T08:43:30.000Z","observedEndTimestamp":"2026-07-13T18:25:18.000Z","observedWindowDurationSeconds":34908,"recordedPredicate":{"C":false,"B":true,"G":true,"H":false,"R":false,"X":false,"P":false},"confirmedRowCount":90,"unconfirmedRowCount":0}},
+    {"id":"csv-JJpBXh","calibrationSet":"csv-addresses-2026-07-26","address":"TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (9).csv","sha256":"657f71ba03500283b81514e34501901c9673bbde00882a0d0ce1b546c987ff91","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":10000,"canonicalEventCount":10000,"featureEligibleEventCount":10000,"incomingCount":1,"outgoingCount":9999,"uniqueSenders":1,"uniqueRecipients":8875,"uniqueCounterparties":8876,"largestCounterparty":{"count":21,"shareDenominator":10000},"dominantDirection":"outgoing","dominantDirectionCount":9999,"uniqueDominantCounterparties":8875,"dominantShareDenominator":10000,"medianDominantDirectionGapSeconds":{"numerator":12,"denominator":2},"maxDominantDirectionEventsPerHour":863,"activeUtcHourOfDayCount":19,"dominantExactAmount":{"amountRaw":"98500000","count":201,"shareDenominator":9999},"observedStartTimestamp":"2026-07-25T13:05:30.000Z","observedEndTimestamp":"2026-07-26T07:54:48.000Z","observedWindowDurationSeconds":67758,"recordedPredicate":{"C":true,"B":true,"G":true,"H":true,"R":false,"X":true,"P":true},"confirmedRowCount":9987,"unconfirmedRowCount":13}},
+    {"id":"csv-H14eaf","calibrationSet":"csv-addresses-2026-07-26","address":"TBXv9qAU1UtbqAWDYEanLKoAjSVSH14eaf","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (7).csv","sha256":"77700117ea3b39ef67849ef586073088a3586ea6e991362a30fb7bd82fb1a3d6","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":5266,"canonicalEventCount":5266,"featureEligibleEventCount":5266,"incomingCount":2457,"outgoingCount":2809,"uniqueSenders":78,"uniqueRecipients":856,"uniqueCounterparties":902,"largestCounterparty":{"count":349,"shareDenominator":5266},"dominantDirection":"outgoing","dominantDirectionCount":2809,"uniqueDominantCounterparties":856,"dominantShareDenominator":5266,"medianDominantDirectionGapSeconds":{"numerator":3066,"denominator":2},"maxDominantDirectionEventsPerHour":12,"activeUtcHourOfDayCount":24,"dominantExactAmount":{"amountRaw":"100000000","count":297,"shareDenominator":2809},"observedStartTimestamp":"2026-02-03T07:35:15.000Z","observedEndTimestamp":"2026-07-26T07:28:09.000Z","observedWindowDurationSeconds":14946774,"recordedPredicate":{"C":false,"B":false,"G":true,"H":true,"R":true,"X":false,"P":false},"confirmedRowCount":5266,"unconfirmedRowCount":0}},
+    {"id":"csv-EMCMLc","calibrationSet":"csv-addresses-2026-07-26","address":"TASqsQCH7Q75yLZqHBvRj8juXPSkEMCMLc","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (5).csv","sha256":"f1b796a6cff3098ab0f70176eb3fa0907f7524c46a36656a2a7a89c66a864dc5","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":27,"canonicalEventCount":27,"featureEligibleEventCount":27,"incomingCount":5,"outgoingCount":22,"uniqueSenders":2,"uniqueRecipients":14,"uniqueCounterparties":15,"largestCounterparty":{"count":4,"shareDenominator":27},"dominantDirection":"outgoing","dominantDirectionCount":22,"uniqueDominantCounterparties":14,"dominantShareDenominator":27,"medianDominantDirectionGapSeconds":{"numerator":1203,"denominator":1},"maxDominantDirectionEventsPerHour":6,"activeUtcHourOfDayCount":8,"dominantExactAmount":{"amountRaw":"12260000","count":1,"shareDenominator":22},"observedStartTimestamp":"2026-07-13T10:49:12.000Z","observedEndTimestamp":"2026-07-14T15:55:21.000Z","observedWindowDurationSeconds":104769,"recordedPredicate":{"C":false,"B":false,"G":false,"H":false,"R":false,"X":false,"P":false},"confirmedRowCount":27,"unconfirmedRowCount":0}},
+    {"id":"csv-DbNGMf","calibrationSet":"csv-addresses-2026-07-26","address":"TC3dkHK8kqgv81Fko7AG31Qd2EyRDbNGMf","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (6).csv","sha256":"66ae46f26bee3299d87f68694a09abcb188d5055158e14cf369ef886f4ba2f83","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":125,"canonicalEventCount":125,"featureEligibleEventCount":125,"incomingCount":55,"outgoingCount":70,"uniqueSenders":36,"uniqueRecipients":34,"uniqueCounterparties":69,"largestCounterparty":{"count":13,"shareDenominator":125},"dominantDirection":"outgoing","dominantDirectionCount":70,"uniqueDominantCounterparties":34,"dominantShareDenominator":125,"medianDominantDirectionGapSeconds":{"numerator":14334,"denominator":1},"maxDominantDirectionEventsPerHour":2,"activeUtcHourOfDayCount":17,"dominantExactAmount":{"amountRaw":"30000000000","count":2,"shareDenominator":70},"observedStartTimestamp":"2026-04-16T13:12:15.000Z","observedEndTimestamp":"2026-06-30T15:58:39.000Z","observedWindowDurationSeconds":6489984,"recordedPredicate":{"C":false,"B":true,"G":true,"H":true,"R":false,"X":false,"P":false},"confirmedRowCount":125,"unconfirmedRowCount":0}},
+    {"id":"csv-Yw8Pet","calibrationSet":"csv-addresses-2026-07-26","address":"THRSTA7nfbBNsM8tCL4yfA4jsFC4Yw8Pet","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (19).csv","sha256":"934a76610d9cc159962a8c972f16655a645554c3df386aa4b9754b9b7eb7b14f","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":1459,"canonicalEventCount":1459,"featureEligibleEventCount":1459,"incomingCount":713,"outgoingCount":746,"uniqueSenders":358,"uniqueRecipients":302,"uniqueCounterparties":597,"largestCounterparty":{"count":69,"shareDenominator":1459},"dominantDirection":"outgoing","dominantDirectionCount":746,"uniqueDominantCounterparties":302,"dominantShareDenominator":1459,"medianDominantDirectionGapSeconds":{"numerator":8505,"denominator":1},"maxDominantDirectionEventsPerHour":5,"activeUtcHourOfDayCount":24,"dominantExactAmount":{"amountRaw":"10000000","count":18,"shareDenominator":746},"observedStartTimestamp":"2025-09-29T15:54:12.000Z","observedEndTimestamp":"2026-05-15T20:05:18.000Z","observedWindowDurationSeconds":19714266,"recordedPredicate":{"C":false,"B":true,"G":true,"H":true,"R":false,"X":false,"P":false},"confirmedRowCount":1459,"unconfirmedRowCount":0}},
+    {"id":"csv-A94s8d","calibrationSet":"csv-addresses-2026-07-26","address":"TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (12).csv","sha256":"677aeb6f50c68626473b0255bb5d8f2853b826a49641b6d7ade1c1bdcbc9c37d","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":1215,"canonicalEventCount":1215,"featureEligibleEventCount":1215,"incomingCount":751,"outgoingCount":464,"uniqueSenders":306,"uniqueRecipients":214,"uniqueCounterparties":506,"largestCounterparty":{"count":130,"shareDenominator":1215},"dominantDirection":"incoming","dominantDirectionCount":751,"uniqueDominantCounterparties":306,"dominantShareDenominator":1215,"medianDominantDirectionGapSeconds":{"numerator":1524,"denominator":2},"maxDominantDirectionEventsPerHour":10,"activeUtcHourOfDayCount":18,"dominantExactAmount":{"amountRaw":"1000000000","count":37,"shareDenominator":751},"observedStartTimestamp":"2026-04-10T14:44:30.000Z","observedEndTimestamp":"2026-05-09T10:34:00.000Z","observedWindowDurationSeconds":2490570,"recordedPredicate":{"C":false,"B":true,"G":true,"H":true,"R":false,"X":false,"P":false},"confirmedRowCount":1215,"unconfirmedRowCount":0}},
+    {"id":"csv-Fa5pk8","calibrationSet":"csv-addresses-2026-07-26","address":"TEG5DEvGUQ33ZPug7wwfbp2Quf2VFa5pk8","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (13).csv","sha256":"ad7db2c76ff0a33aebc8dd8ea96748bb46d638b74b6c59632efbb6006168d5c8","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":435,"canonicalEventCount":435,"featureEligibleEventCount":435,"incomingCount":202,"outgoingCount":233,"uniqueSenders":99,"uniqueRecipients":158,"uniqueCounterparties":238,"largestCounterparty":{"count":13,"shareDenominator":435},"dominantDirection":"outgoing","dominantDirectionCount":233,"uniqueDominantCounterparties":158,"dominantShareDenominator":435,"medianDominantDirectionGapSeconds":{"numerator":5025,"denominator":2},"maxDominantDirectionEventsPerHour":4,"activeUtcHourOfDayCount":16,"dominantExactAmount":{"amountRaw":"100000000000","count":12,"shareDenominator":233},"observedStartTimestamp":"2026-06-04T18:19:21.000Z","observedEndTimestamp":"2026-07-06T13:46:30.000Z","observedWindowDurationSeconds":2748429,"recordedPredicate":{"C":false,"B":true,"G":true,"H":true,"R":false,"X":false,"P":false},"confirmedRowCount":435,"unconfirmedRowCount":0}},
+    {"id":"csv-aEGqTr","calibrationSet":"csv-addresses-2026-07-26","address":"TDEA1UnGUPETFiYs2uoZqjPjphJEaEGqTr","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (11).csv","sha256":"f816a11d264b6438e890e03b9ac1a8381d3503a7af21c5d1b7e0eb6e0a6dd80e","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":10000,"canonicalEventCount":10000,"featureEligibleEventCount":10000,"incomingCount":8368,"outgoingCount":1632,"uniqueSenders":4344,"uniqueRecipients":1142,"uniqueCounterparties":5485,"largestCounterparty":{"count":20,"shareDenominator":10000},"dominantDirection":"incoming","dominantDirectionCount":8368,"uniqueDominantCounterparties":4344,"dominantShareDenominator":10000,"medianDominantDirectionGapSeconds":{"numerator":0,"denominator":1},"maxDominantDirectionEventsPerHour":256,"activeUtcHourOfDayCount":24,"dominantExactAmount":{"amountRaw":"10000000","count":314,"shareDenominator":8368},"observedStartTimestamp":"2026-07-24T04:01:21.000Z","observedEndTimestamp":"2026-07-26T07:54:27.000Z","observedWindowDurationSeconds":186786,"recordedPredicate":{"C":true,"B":true,"G":true,"H":true,"R":false,"X":true,"P":true},"confirmedRowCount":10000,"unconfirmedRowCount":0}},
+    {"id":"csv-Riiwed","calibrationSet":"csv-addresses-2026-07-26","address":"TZJg5no8di9yZjQX7pwP2QiWFaqPRiiwed","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (1).csv","sha256":"b26503ffa02ac32f279a6fe8a31f155011ff2afc381bd66d586b72ae63f3a57c","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":12,"canonicalEventCount":12,"featureEligibleEventCount":12,"incomingCount":5,"outgoingCount":7,"uniqueSenders":3,"uniqueRecipients":5,"uniqueCounterparties":8,"largestCounterparty":{"count":3,"shareDenominator":12},"dominantDirection":"outgoing","dominantDirectionCount":7,"uniqueDominantCounterparties":5,"dominantShareDenominator":12,"medianDominantDirectionGapSeconds":{"numerator":98874,"denominator":2},"maxDominantDirectionEventsPerHour":2,"activeUtcHourOfDayCount":4,"dominantExactAmount":{"amountRaw":"100000000","count":1,"shareDenominator":7},"observedStartTimestamp":"2026-07-14T11:09:51.000Z","observedEndTimestamp":"2026-07-24T11:47:48.000Z","observedWindowDurationSeconds":866277,"recordedPredicate":{"C":false,"B":false,"G":false,"H":false,"R":false,"X":false,"P":false},"confirmedRowCount":12,"unconfirmedRowCount":0}},
+    {"id":"csv-q98cdn","calibrationSet":"csv-addresses-2026-07-26","address":"TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn","evidenceClass":"recorded_calibration_vector","source":{"kind":"tronscan_csv_export","fileName":"Transfers_20260726 (10).csv","sha256":"1382eb64262bf48d32ef86664c800731a2f1e7e34e37020dc885cf05a019357e","capturedDate":"2026-07-26","runtimeInput":false,"classification":"whole_export_x_calibration_non_authoritative","canonicalization":"exact_export_row_v1","eligibilityPolicy":"worksheet_valid_target_rows_including_exported_confirmation_status_v1"},"observedVector":{"physicalRowCount":10000,"canonicalEventCount":10000,"featureEligibleEventCount":10000,"incomingCount":2,"outgoingCount":9998,"uniqueSenders":1,"uniqueRecipients":8557,"uniqueCounterparties":8557,"largestCounterparty":{"count":16,"shareDenominator":10000},"dominantDirection":"outgoing","dominantDirectionCount":9998,"uniqueDominantCounterparties":8557,"dominantShareDenominator":10000,"medianDominantDirectionGapSeconds":{"numerator":9,"denominator":1},"maxDominantDirectionEventsPerHour":619,"activeUtcHourOfDayCount":24,"dominantExactAmount":{"amountRaw":"1010001","count":942,"shareDenominator":9998},"observedStartTimestamp":"2026-07-24T08:54:06.000Z","observedEndTimestamp":"2026-07-26T07:56:06.000Z","observedWindowDurationSeconds":169320,"recordedPredicate":{"C":true,"B":true,"G":true,"H":true,"R":false,"X":true,"P":true},"confirmedRowCount":9998,"unconfirmedRowCount":2}},
+    {
+      "id": "csv-k1Hjbo",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "THCsQev8X2gKybwWLpeGUDq1w4xGk1Hjbo",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (17).csv",
+        "sha256": "a1182ca9b5290ddc1df8bdb071cd6badc81b2f4d72082f0d37fba3dfba87097e",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 339,
+        "canonicalEventCount": 339,
+        "featureEligibleEventCount": 339,
+        "incomingCount": 182,
+        "outgoingCount": 157,
+        "uniqueSenders": 75,
+        "uniqueRecipients": 50,
+        "uniqueCounterparties": 106,
+        "largestCounterparty": {
+          "count": 49,
+          "shareDenominator": 339
+        },
+        "dominantDirection": "incoming",
+        "dominantDirectionCount": 182,
+        "uniqueDominantCounterparties": 75,
+        "dominantShareDenominator": 339,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 3933,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 5,
+        "activeUtcHourOfDayCount": 21,
+        "dominantExactAmount": {
+          "amountRaw": "200000000000",
+          "count": 7,
+          "shareDenominator": 182
+        },
+        "observedStartTimestamp": "2026-05-20T14:02:48.000Z",
+        "observedEndTimestamp": "2026-07-26T06:32:09.000Z",
+        "observedWindowDurationSeconds": 5761761,
+        "recordedPredicate": {
+          "C": false,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 339,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-r7RZVx",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "THEPxoMWVkaywy7ZH7zYG7pYNXDwr7RZVx",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (18).csv",
+        "sha256": "11059514b352aa9458a182703a6874b3e7950307448fac62970d8df6683814e5",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 251,
+        "canonicalEventCount": 251,
+        "featureEligibleEventCount": 251,
+        "incomingCount": 73,
+        "outgoingCount": 178,
+        "uniqueSenders": 37,
+        "uniqueRecipients": 83,
+        "uniqueCounterparties": 108,
+        "largestCounterparty": {
+          "count": 17,
+          "shareDenominator": 251
+        },
+        "dominantDirection": "outgoing",
+        "dominantDirectionCount": 178,
+        "uniqueDominantCounterparties": 83,
+        "dominantShareDenominator": 251,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 1416,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 6,
+        "activeUtcHourOfDayCount": 16,
+        "dominantExactAmount": {
+          "amountRaw": "10000000000",
+          "count": 10,
+          "shareDenominator": 178
+        },
+        "observedStartTimestamp": "2026-07-15T16:56:57.000Z",
+        "observedEndTimestamp": "2026-07-25T19:39:30.000Z",
+        "observedWindowDurationSeconds": 873753,
+        "recordedPredicate": {
+          "C": false,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 251,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-axRTDo",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TGqBZRxoaMHncjkUxRnP1CMBmrchaxRTDo",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (16).csv",
+        "sha256": "cfeb5d0a5f5f35dbec1f07cc819c34cacb59854fc4ea329bbb428cc9156cf2f7",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 2173,
+        "canonicalEventCount": 2173,
+        "featureEligibleEventCount": 2173,
+        "incomingCount": 1182,
+        "outgoingCount": 991,
+        "uniqueSenders": 316,
+        "uniqueRecipients": 230,
+        "uniqueCounterparties": 457,
+        "largestCounterparty": {
+          "count": 96,
+          "shareDenominator": 2173
+        },
+        "dominantDirection": "incoming",
+        "dominantDirectionCount": 1182,
+        "uniqueDominantCounterparties": 316,
+        "dominantShareDenominator": 2173,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 780,
+          "denominator": 1
+        },
+        "maxDominantDirectionEventsPerHour": 14,
+        "activeUtcHourOfDayCount": 23,
+        "dominantExactAmount": {
+          "amountRaw": "100000000",
+          "count": 110,
+          "shareDenominator": 1182
+        },
+        "observedStartTimestamp": "2026-05-15T16:03:24.000Z",
+        "observedEndTimestamp": "2026-07-26T07:20:00.000Z",
+        "observedWindowDurationSeconds": 6189396,
+        "recordedPredicate": {
+          "C": false,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 2173,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "csv-oqZ4dZ",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TEcYDjKkdu18NFzT95jq4R9TLvdYoqZ4dZ",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (14).csv",
+        "sha256": "bd3780728a865c0b2d32aa13c02602bc3e60d6fafe3af03cf55d3d67a0bb397c",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 3493,
+        "canonicalEventCount": 3493,
+        "featureEligibleEventCount": 3493,
+        "incomingCount": 1861,
+        "outgoingCount": 1632,
+        "uniqueSenders": 428,
+        "uniqueRecipients": 291,
+        "uniqueCounterparties": 580,
+        "largestCounterparty": {
+          "count": 185,
+          "shareDenominator": 3493
+        },
+        "dominantDirection": "incoming",
+        "dominantDirectionCount": 1861,
+        "uniqueDominantCounterparties": 428,
+        "dominantShareDenominator": 3493,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 1890,
+          "denominator": 2
+        },
+        "maxDominantDirectionEventsPerHour": 63,
+        "activeUtcHourOfDayCount": 21,
+        "dominantExactAmount": {
+          "amountRaw": "100000000",
+          "count": 78,
+          "shareDenominator": 1861
+        },
+        "observedStartTimestamp": "2024-05-24T11:39:45.000Z",
+        "observedEndTimestamp": "2026-07-20T12:44:09.000Z",
+        "observedWindowDurationSeconds": 68000664,
+        "recordedPredicate": {
+          "C": true,
+          "B": false,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 3492,
+        "unconfirmedRowCount": 1
+      }
+    },
+    {
+      "id": "csv-ujBwhV",
+      "calibrationSet": "csv-addresses-2026-07-26",
+      "address": "TGMSLW7VPniHReSd3DPFCEXH5fuCujBwhV",
+      "evidenceClass": "recorded_calibration_vector",
+      "source": {
+        "kind": "tronscan_csv_export",
+        "fileName": "Transfers_20260726 (15).csv",
+        "sha256": "911231eca04f7d074ae7c024b3cf13c31cbc9f3f5e40053cb7191f9238b5346b",
+        "capturedDate": "2026-07-26",
+        "runtimeInput": false,
+        "classification": "whole_export_x_calibration_non_authoritative",
+        "canonicalization": "exact_export_row_v1",
+        "eligibilityPolicy": "worksheet_valid_target_rows_including_exported_confirmation_status_v1"
+      },
+      "observedVector": {
+        "physicalRowCount": 272,
+        "canonicalEventCount": 272,
+        "featureEligibleEventCount": 272,
+        "incomingCount": 135,
+        "outgoingCount": 137,
+        "uniqueSenders": 89,
+        "uniqueRecipients": 73,
+        "uniqueCounterparties": 148,
+        "largestCounterparty": {
+          "count": 13,
+          "shareDenominator": 272
+        },
+        "dominantDirection": "outgoing",
+        "dominantDirectionCount": 137,
+        "uniqueDominantCounterparties": 73,
+        "dominantShareDenominator": 272,
+        "medianDominantDirectionGapSeconds": {
+          "numerator": 7758,
+          "denominator": 2
+        },
+        "maxDominantDirectionEventsPerHour": 3,
+        "activeUtcHourOfDayCount": 17,
+        "dominantExactAmount": {
+          "amountRaw": "10000000",
+          "count": 10,
+          "shareDenominator": 137
+        },
+        "observedStartTimestamp": "2026-07-01T16:12:48.000Z",
+        "observedEndTimestamp": "2026-07-26T06:18:09.000Z",
+        "observedWindowDurationSeconds": 2124321,
+        "recordedPredicate": {
+          "C": false,
+          "B": true,
+          "G": true,
+          "H": true,
+          "R": false,
+          "X": false,
+          "P": false
+        },
+        "confirmedRowCount": 272,
+        "unconfirmedRowCount": 0
+      }
+    },
+    {
+      "id": "tqr-d7nzp-recorded-control",
+      "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29",
+      "address": "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      "rawProviderPagesFrozen": false,
+      "authoritativeWouldAction": null,
+      "behaviorClassification": "non_service_profile",
+      "estimatedWouldAction": "continue_full",
+      "recordedPartialVector": {
+        "cadencePredicate": false,
+        "checkedSubject": true,
+        "currentHtxTaggedCounterpartiesObserved": true,
+        "eventTimeLabelAuthorityProven": false
+      },
+      "source": {
+        "kind": "manual_corpus_replay_summary",
+        "capturedDate": "2026-07-29",
+        "runtimeInput": false,
+        "refs": [
+          {
+            "file": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            "line": 97
+          },
+          {
+            "file": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            "line": 819
+          }
+        ]
+      },
+      "limitations": [
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded",
+        "event_time_htx_authority_unproven",
+        "checked_subject_cannot_be_inferred_boundary"
+      ]
+    },
+    {
+      "id": "txc-vusxvhd-recorded-control",
+      "evidenceClass": "recorded_calibration_vector",
+      "sourceRef": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29",
+      "address": "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      "rawProviderPagesFrozen": false,
+      "authoritativeWouldAction": null,
+      "behaviorClassification": "insufficient_data",
+      "estimatedWouldAction": "continue_full",
+      "recordedPartialVector": {
+        "recentObservedRowCount": 73,
+        "historicalBaselineState": "empty"
+      },
+      "source": {
+        "kind": "manual_corpus_replay_summary",
+        "capturedDate": "2026-07-29",
+        "runtimeInput": false,
+        "refs": [
+          {
+            "file": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            "line": 98
+          },
+          {
+            "file": "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            "line": 820
+          }
+        ]
+      },
+      "limitations": [
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded",
+        "recent_window_below_100_rows",
+        "historical_baseline_empty"
+      ]
+    }
+  ],
+  "adverseCases": [
+    {
+      "id": "exact-binance-label",
+      "evidenceClass": "exact_frozen_rows",
+      "rawEvidenceRef": "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json",
+      "rawEvidenceArtifactSha256": "eba27f37c5bd8ad7e97623c26fbf4e6d7717a26041af4aca2c2edfd7c11cff8b",
+      "labelDatasetSha256": "45ad3d1a1174ded21f53f9f8c354188f4d0e02311422cfd14fe9b56555232ac1",
+      "frozenRowHashConvention": "sha256(canonicalizeArtifactJson(frozenRow))",
+      "frozenRowSha256": "fc6c930e3926a6fb9235007cfd4bc66b13c8ba172849f76fc2b0262cdaad14e0",
+      "frozenRow": {
+        "address": "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
+        "label": "Binance-Hot 10",
+        "authority": "tronscan-metadata",
+        "category": "service_metadata",
+        "validFrom": "2026-07-20T08:05:34.930Z",
+        "validTo": null
+      },
+      "expectedClassification": "exact_service_label"
+    },
+    {
+      "id": "exact-htx-label",
+      "evidenceClass": "exact_frozen_rows",
+      "rawEvidenceRef": "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json",
+      "rawEvidenceArtifactSha256": "eba27f37c5bd8ad7e97623c26fbf4e6d7717a26041af4aca2c2edfd7c11cff8b",
+      "labelDatasetSha256": "45ad3d1a1174ded21f53f9f8c354188f4d0e02311422cfd14fe9b56555232ac1",
+      "frozenRowHashConvention": "sha256(canonicalizeArtifactJson(frozenRow))",
+      "frozenRowSha256": "4b921abb32284509f8572b42e80c42e9e8b41232013d79c4c212a068837253c8",
+      "frozenRow": {
+        "address": "TFTWNgDBkQ5wQoP8RXpRznnHvAVV8x5jLu",
+        "label": "HTX 4",
+        "authority": "tronscan-metadata",
+        "category": "service_metadata",
+        "validFrom": "2026-06-24T19:07:31.675Z",
+        "validTo": null
+      },
+      "expectedClassification": "exact_service_label_not_backdated"
+    },
+    {
+      "id": "event-time-blacklist-partitions",
+      "evidenceClass": "synthetic_edge_case",
+      "subjectAddress": "synthetic-subject",
+      "partitions": {
+        "beforeActivationAmountRaw": "900000",
+        "activeAtEventAmountRaw": "100000",
+        "unknownTimeAmountRaw": "50000"
+      },
+      "expectedHardEvidenceAmountRaw": "100000",
+      "expectedRule": "only_active_at_event_partition_is_authoritative",
+      "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      "listedAddress": "synthetic-listed-counterparty",
+      "timelineEvidence": {
+        "verificationStatus": "verified",
+        "historyComplete": true,
+        "canonicalOrderVerified": true,
+        "coverageStartTimestamp": "2025-12-01T00:00:00.000Z",
+        "coverageEndTimestamp": "2026-02-01T00:00:00.000Z"
+      },
+      "principalTransfers": [
+        {
+          "txHash": "fbe9626109019b19279d716454ee66e4137185e7c66ffd6d8e26cbdb196149ed",
+          "logIndex": 0,
+          "occurredAt": "2026-01-01T00:00:00.000Z",
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "fromAddress": "synthetic-subject",
+          "toAddress": "synthetic-listed-counterparty",
+          "amountRaw": "900000",
+          "confirmed": true,
+          "successful": true,
+          "expectedTemporalClass": "before_activation"
+        },
+        {
+          "txHash": "cf2295cce663661c6dc67ab82620c248de4ea0482239f0603a646dcbaf4b2516",
+          "logIndex": 0,
+          "occurredAt": "2026-01-03T00:00:00.000Z",
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "fromAddress": "synthetic-subject",
+          "toAddress": "synthetic-listed-counterparty",
+          "amountRaw": "100000",
+          "confirmed": true,
+          "successful": true,
+          "expectedTemporalClass": "active_at_event"
+        },
+        {
+          "txHash": "77e6502080d8e9b3928f47c2bcec3041ab68080ff7e66bd4dc0f83b68074b4d4",
+          "logIndex": 0,
+          "occurredAt": null,
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "fromAddress": "synthetic-subject",
+          "toAddress": "synthetic-listed-counterparty",
+          "amountRaw": "50000",
+          "confirmed": true,
+          "successful": true,
+          "expectedTemporalClass": "unknown_time"
+        }
+      ],
+      "timelineEvents": [
+        {
+          "txHash": "9dff00e0cc4dde4d843cc8bf6e4e1c6271386c6a17fc2ed34863b219bdd8c850",
+          "logIndex": 0,
+          "occurredAt": "2026-01-02T00:00:00.000Z",
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "subjectAddress": "synthetic-listed-counterparty",
+          "eventKind": "added",
+          "confirmed": true,
+          "successful": true
+        },
+        {
+          "txHash": "dd0f84115674719e4f268e7d87cac475f5b22875aa5b91c277bb8c41d101b63b",
+          "logIndex": 0,
+          "occurredAt": "2026-01-04T00:00:00.000Z",
+          "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          "subjectAddress": "synthetic-listed-counterparty",
+          "eventKind": "removed",
+          "confirmed": true,
+          "successful": true
+        }
+      ]
+    },
+    {
+      "id": "gasfree-principal-fee-classification",
+      "evidenceClass": "synthetic_edge_case",
+      "sourceRef": "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md#gasfree",
+      "ledgerExecutionCase": false,
+      "settlement": {
+        "subjectAddressSuffix": "MnxP",
+        "principalAmountRaw": "4691000000",
+        "feeAmountRaw": "1500000"
+      },
+      "expectedRoles": {
+        "principal": "aml_money_path",
+        "fee": "accounting_only_consumption"
+      },
+      "expectedCurrentProvenanceState": "unresolved",
+      "sceneClassification": "synthetic_parser_scene_derived_from_recorded_amount_vector",
+      "transactionInfo": {
+        "confirmed": true,
+        "contractRet": "SUCCESS",
+        "revert": false,
+        "status": 0,
+        "contractData": {
+          "contract_address": "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U",
+          "data": "6f21b898000000000000000000000000a614f803b6fd780986a42c78ec9c7f77e6ded13c000000000000000000000000dbfceb1dfb89acebb63adc461ad56c1a54342cbc000000000000000000000000835a36c92b94027a25f3fbb6c3c3327ecfd5bd3700000000000000000000000000000000000000000000000000000001179afac0000000000000000000000000000000000000000000000000000000000016e360000000000000000000000000000000000000000000000000000000006b49d2000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000900000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000041111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000"
+        },
+        "trc20TransferInfo": [
+          {
+            "from_address": "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+            "to_address": "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq",
+            "amount_str": "4691000000",
+            "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            "status": 0,
+            "tokenInfo": {
+              "tokenId": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+              "tokenAbbr": "USDT",
+              "tokenType": "trc20"
+            }
+          },
+          {
+            "from_address": "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+            "to_address": "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+            "amount_str": "1500000",
+            "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            "status": 0,
+            "tokenInfo": {
+              "tokenId": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+              "tokenAbbr": "USDT",
+              "tokenType": "trc20"
+            }
+          }
+        ]
+      },
+      "replayEdges": [
+        {
+          "fromAddress": "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+          "toAddress": "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq",
+          "amountRaw": "4691000000",
+          "economicProtocol": "tron_gasfree",
+          "economicRole": "principal"
+        },
+        {
+          "fromAddress": "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+          "toAddress": "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+          "amountRaw": "1500000",
+          "economicProtocol": "tron_gasfree",
+          "economicRole": "service_fee"
+        }
+      ]
+    },
+    {
+      "id": "drainer-method-only",
+      "evidenceClass": "synthetic_edge_case",
+      "observed": {
+        "method": "transferFrom",
+        "methodId": "23b872dd"
+      },
+      "expectedEvidenceLevel": "context_only",
+      "expectedExactDrainerAuthority": false,
+      "methodEvidence": {
+        "contractAddress": "synthetic-spender",
+        "bytecodeFingerprint": "synthetic:sha256:001f3940a5ec3d9edb0f0dcd6e0f3b25fef58a423d07a93f7ba66edc129e3c16",
+        "methodMap": [
+          {
+            "selector": "23b872dd",
+            "signature": "transferFrom(address,address,uint256)"
+          }
+        ]
+      },
+      "requiredExactEvidence": {
+        "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "ownerAddress": "synthetic-victim",
+        "receiverAddress": "synthetic-drainer-receiver"
+      },
+      "approvalCall": null,
+      "transferFromCall": null,
+      "movement": null
+    },
+    {
+      "id": "drainer-complete-evidence",
+      "evidenceClass": "synthetic_edge_case",
+      "observed": {
+        "approvalBoundToSubject": true,
+        "transferFromDebitBoundToSubject": true,
+        "ingressAmountRaw": "669889034",
+        "debitAmountRaw": "669000000",
+        "remainingAmountRaw": "889034"
+      },
+      "expectedEvidenceLevel": "exact_approval_drain",
+      "expectedExactDrainerAuthority": true,
+      "methodEvidence": {
+        "contractAddress": "synthetic-spender",
+        "bytecodeFingerprint": "synthetic:sha256:001f3940a5ec3d9edb0f0dcd6e0f3b25fef58a423d07a93f7ba66edc129e3c16",
+        "methodMap": [
+          {
+            "selector": "5082dd12",
+            "signature": "Verify20(address,address,address,uint256)"
+          },
+          {
+            "selector": "fc61dd23",
+            "signature": "Verify10(address,uint256)"
+          },
+          {
+            "selector": "ea4418d9",
+            "signature": "withdrawAllTrxTo(address)"
+          },
+          {
+            "selector": "f2fde38b",
+            "signature": "transferOwnership(address)"
+          }
+        ]
+      },
+      "approvalCall": {
+        "txHash": "synthetic-approval-tx",
+        "callIndex": 0,
+        "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "ownerAddress": "synthetic-victim",
+        "spenderAddress": "synthetic-spender",
+        "amountRaw": "669000000",
+        "confirmed": true,
+        "successful": true
+      },
+      "transferFromCall": {
+        "txHash": "synthetic-drain-tx",
+        "callIndex": 0,
+        "contractAddress": "synthetic-spender",
+        "selector": "5082dd12",
+        "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "fromAddress": "synthetic-victim",
+        "toAddress": "synthetic-drainer-receiver",
+        "receiverAddress": "synthetic-drainer-receiver",
+        "amountRaw": "669000000",
+        "confirmed": true,
+        "successful": true
+      },
+      "movement": {
+        "txHash": "synthetic-drain-tx",
+        "logIndex": 0,
+        "tokenContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "fromAddress": "synthetic-victim",
+        "toAddress": "synthetic-drainer-receiver",
+        "amountRaw": "669000000",
+        "confirmed": true,
+        "successful": true
+      }
+    }
+  ]
+}

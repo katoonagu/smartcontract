@@ -6,6 +6,7 @@ Read-only Telegram bot for monitoring incoming TRC20 USDT transfers on watched T
 
 - Adds watched TRON wallets from Telegram.
 - Polls incoming official TRC20 USDT transfers.
+- Warns when a small incoming USDT transfer may be an address-poisoning lure.
 - Monitors confirmed official TRON USDT approvals for watched wallets.
 - Sends risk level, score, and reasons for each new incoming transfer.
 - Supports per-wallet alert modes: realtime, risk-only, digest, and paused.
@@ -37,21 +38,25 @@ Set these values in `.env`:
 
 ```text
 BOT_TOKEN=...
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/tron_guard
+DATABASE_URL=postgres://postgres:postgres@localhost:55433/tron_guard
 TRONSCAN_BASE_URL=https://apilist.tronscanapi.com
 TRON_FULLNODE_BASE_URL=https://api.trongrid.io
-TRONSCAN_API_KEY=
+TRONSCAN_API_KEY=key_a,key_b
+TRONSCAN_API_KEY_GROUPS=account_a:key_a;account_b:key_b
 TRON_FULLNODE_API_KEY=
 TRONSCAN_REQUEST_MIN_INTERVAL_MS=250
+TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS=280
+TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS=250
 TRONSCAN_RATE_LIMIT_COOLDOWN_MS=30000
 TRONSCAN_DASHBOARD_CACHE_TTL_MS=300000
 TRONSCAN_DASHBOARD_MAX_PAGES=5
 TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS=60000
 POLL_INTERVAL_MS=60000
+ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT=100
 SERVICE_ADMIN_TG_IDS=123456789,987654321
 ```
 
-`TRONSCAN_API_KEY` is optional for local testing, but should be configured for production reliability.
+`TRONSCAN_API_KEY` is optional for local testing, but should be configured for production reliability. Multiple keys can be separated by commas. Use `TRONSCAN_API_KEY_GROUPS` to model provider-side quota buckets: keys from the same TronScan account should share one group, while keys from independent accounts should use separate groups. The scheduler applies global and endpoint pacing per group, and a 429 cooldown only stops the affected group instead of the whole pool.
 
 ## Telegram UX
 
@@ -134,7 +139,8 @@ Use this checklist only with a real Telegram bot token, a reachable Postgres dat
    - `DATABASE_URL` for the local or staging Postgres instance.
    - `TRONSCAN_BASE_URL=https://apilist.tronscanapi.com`.
    - `TRON_FULLNODE_BASE_URL=https://api.trongrid.io`.
-   - `TRONSCAN_API_KEY` if available.
+   - `TRONSCAN_API_KEY` if available. Use comma-separated values for a key pool.
+   - `TRONSCAN_API_KEY_GROUPS` when the pool contains keys from separate TronScan accounts.
    - `TRON_FULLNODE_API_KEY` if your full node provider requires a separate key.
    - `SERVICE_ADMIN_TG_IDS` with your Telegram numeric ID for admin-only commands.
 2. Start Postgres and apply migrations:
@@ -243,6 +249,31 @@ Wallet alert modes:
 - `paused`: incoming transfers and risk snapshots are stored, but owner alerts are not sent.
 
 Approval Guard follows the same wallet pause rule for owner/customer alerts, but sends every confirmed USDT approval level to the owner and configured customer alert admins because approvals are low-volume and safety-relevant. HIGH and CRITICAL approval events are still sent best-effort to service admins for service-side review.
+
+## Address-Poisoning Protection
+
+For fresh small incoming official-USDT transfers, the bot checks whether the
+sender looks like a recipient that the watched wallet used during the previous
+24 hours. The default lure threshold is 100 USDT and can be changed with
+`ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT`. The check runs in a separate
+bounded worker, so TronScan history lookup and Telegram delivery do not block
+normal wallet polling or Incoming Deposit analysis.
+
+A matching sender produces a separate Russian or English safety warning with
+the full suspicious address and the previously used recipient address, both
+TronScan transaction links, and owner-only buttons to mark the address as
+familiar or as a replacement.
+`realtime`, `risk_only`, and `digest` receive this warning immediately;
+`paused` does not. Failed deliveries retry. In a rare process-restart window,
+the same warning may be delivered more than once, but retry attempts are
+bounded. See the
+[delivery details](docs/knowledge/08-admin-and-bot-ux.md#address-poisoning-warning).
+
+This signal is wallet safety, not AML. It is stored with score impact `0` and
+does not change Fast, Deep, Where, Incoming, or unified risk results. USDD/USDD
+PSM can be later route evidence but never triggers the initial warning. Checking
+a recipient before a transfer is planned for the next phase and will reuse the
+saved evidence.
 
 Customer alert admin modes:
 

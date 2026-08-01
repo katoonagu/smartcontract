@@ -7,6 +7,7 @@ import type {
   RouteScoreFeature,
   ServiceClassification
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type BuildCounterpartyRiskProfilesInput = {
   subjectAddress: string;
@@ -21,7 +22,7 @@ export type BuildCounterpartyRiskProfilesInput = {
 const DEFAULT_MIN_MEANINGFUL_RAW = 100_000_000n;
 const DEFAULT_ABSOLUTE_MEANINGFUL_RAW = 10_000_000_000n;
 const DEFAULT_MIN_MEANINGFUL_RATIO = 0.01;
-const highRiskCounterpartyLabels = new Set<RiskLabel>(["darknet_exchange", "darknet_exchange_proximity"]);
+const highRiskCounterpartyLabels = new Set<RiskLabel>(["darknet_exchange", "whitebit", "darknet_exchange_proximity"]);
 
 function parseAmount(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
@@ -47,8 +48,21 @@ function addFeature(features: RouteScoreFeature[], code: string, label: string, 
 function selectedLabel(labels: AddressLabel[] | undefined): RiskLabel | null {
   const active = labels ?? [];
   return active.find((label) => label.label === "darknet_exchange")?.label
+    ?? active.find((label) => label.label === "whitebit")?.label
     ?? active.find((label) => label.label === "darknet_exchange_proximity")?.label
     ?? null;
+}
+
+function featureCodeForLabel(label: RiskLabel): string {
+  if (label === "darknet_exchange") return "counterparty_direct_darknet_exchange";
+  if (label === "whitebit") return "counterparty_direct_whitebit";
+  return "counterparty_direct_darknet_exchange_proximity";
+}
+
+function featureLabelForLabel(label: RiskLabel): string {
+  if (label === "darknet_exchange") return "Direct counterparty is a manually verified darknet exchange seed.";
+  if (label === "whitebit") return "Direct counterparty is labeled WhiteBIT high-risk source.";
+  return "Direct counterparty has a confirmed darknet exchange proximity marker.";
 }
 
 function isMeaningful(input: {
@@ -87,7 +101,10 @@ function groupedProfiles(input: {
     const volumeRatio = ratio(amountRaw, input.directionalVolumeRaw);
     const label = selectedLabel(input.labelsByAddress.get(counterpartyAddress));
     const classification = input.classifications?.get(counterpartyAddress) ?? null;
-    const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+    const serviceCategory =
+      classification?.isBoundary === true && classification.category !== "none"
+        ? classification.category
+        : null;
     const identity = classification?.identity ?? null;
     const meaningful = isMeaningful({
       amountRaw,
@@ -103,10 +120,8 @@ function groupedProfiles(input: {
       score = 80;
       addFeature(
         features,
-        label === "darknet_exchange" ? "counterparty_direct_darknet_exchange" : "counterparty_direct_darknet_exchange_proximity",
-        label === "darknet_exchange"
-          ? "Direct counterparty is a manually verified darknet exchange seed."
-          : "Direct counterparty has a confirmed darknet exchange proximity marker.",
+        featureCodeForLabel(label),
+        featureLabelForLabel(label),
         80,
         volumeRatio
       );
@@ -140,10 +155,15 @@ function groupedProfiles(input: {
 }
 
 export function buildCounterpartyRiskProfiles(input: BuildCounterpartyRiskProfilesInput): CounterpartyRiskProfile[] {
-  const incoming = input.edges.filter((edge) => edge.toAddress === input.subjectAddress);
-  const outgoing = input.edges.filter((edge) => edge.fromAddress === input.subjectAddress);
-  const incomingVolumeRaw = incoming.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
-  const outgoingVolumeRaw = outgoing.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const outgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const incomingVolumeRaw = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+  const outgoingVolumeRaw = input.edges
+    .filter((edge) => edge.fromAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
   const options = {
     subjectAddress: input.subjectAddress,
     labelsByAddress: input.labelsByAddress,

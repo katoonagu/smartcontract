@@ -1,6 +1,16 @@
 node_modules/
 dist/
 coverage/
+artifacts/
 .env
 *.log
 .worktrees/
+.codegraph/
+.tmp/
+tmp/
+.gstack/
+.runtime/
+.superpowers/
+runtime-logs/
+logs/tronscan-probe/
+output/

@@ -14,10 +14,14 @@ export type RawTronscanTrc20Transfer = {
   finalResult?: string;
   revert?: boolean;
   status?: number | string;
+  riskTransaction?: boolean;
+  fromAddressIsContract?: boolean;
+  toAddressIsContract?: boolean;
   tokenInfo?: {
     tokenAbbr?: string;
     tokenDecimal?: number;
     tokenId?: string;
+    tokenName?: string;
     tokenType?: string;
   };
   trigger_info?: unknown;

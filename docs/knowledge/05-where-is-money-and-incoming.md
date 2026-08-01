@@ -1,0 +1,180 @@
+---
+status: current
+last_verified: 2026-07-29
+owner_area: forensics
+code_refs:
+  - src/index.ts
+  - src/bot/createBot.ts
+  - src/forensics/moneyOriginTrace.ts
+  - src/forensics/balanceFormingTransfers.ts
+  - src/forensics/incomingDepositCashflow.ts
+  - src/forensics/incomingDepositJob.ts
+  - src/forensics/provenanceTracingConfig.ts
+  - src/forensics/forensicCoverageV2.ts
+  - src/forensics/recentFlowProvenanceSelection.ts
+  - src/forensics/selectiveTransactionEnrichment.ts
+  - src/storage/repositories.ts
+  - src/unifiedCheck/branchAdapters.ts
+  - src/unifiedCheck/productionCompletion.ts
+  - src/unifiedCheck/productionTraversal.ts
+  - src/unifiedCheck/traversal.ts
+  - src/unifiedCheck/report.ts
+  - src/unifiedCheck/presentation.ts
+---
+
+# Where Is Money And Incoming Deposit
+
+## Questions
+
+Where Is Money is an origin check: it explains which incoming funds formed the
+wallet's current balance, requested amount, or selected recent-flow episode and
+follows those sources backward. Incoming Deposit starts from one concrete
+received deposit and explains its sender-side source path. The modes use related
+transfer evidence but have different subjects, denominators, and anchors.
+
+## Production Truth
+
+Production uses both Unified and legacy provenance paths. The Where analysis
+started by an address `/check` is a non-delivering Unified child. Legacy
+`where_is_money_check` and `incoming_deposit_check` workers still run for
+transaction checks, monitoring, explicit legacy flows, and existing jobs,
+retaining their current coverage and score-validity rules. Delivery follows
+the chat/address generation fence; a technical coverage stop is not a clean
+verdict. Unknown labels are not evidence of safety or risk by themselves.
+
+## Unified Where And Incoming
+
+Where and balance-origin analysis are evidence-only Unified children. They may
+fetch and resume work but cannot send Telegram or choose the final score. Their
+facts are normalized and deduplicated with Fast and Deep before scoring.
+
+The report aggregates repeated direct transfers by service and direction,
+showing amount, share, and transaction count. Direct incoming, direct outgoing,
+and indirect paths remain semantically distinct. Confirmed CEX/DEX/bridge
+labels are shown with their direction; unknown counterparties remain neutral
+unless behavior supplies a separate risk pattern.
+
+Without a requested amount, legacy Where currently switches internally at a
+1,000-USDT balance threshold. A known balance below that threshold uses bounded
+recent-flow selection; a known balance at or above it selects newest inbound
+transfers until the numeric balance target is covered. Recent-flow is a separate
+scope and is not current-balance attribution.
+
+Coverage remains a factual denominator, not a risk floor or publication gate.
+`COMPLETED` requires traversal closure and produces one parent score.
+Provider/execution failure remains `FAILED_TECHNICAL` without a partial report.
+
+## Current Attribution Limits
+
+Production does not yet use one common chronological cashflow ledger. Legacy
+current-balance selection takes newest inbound transfers until the target is
+covered and does not debit those source lots for later outgoing transfers.
+Unified traversal starts from all direct incoming and outgoing events and uses
+a separate greedy hop allocation; completion may separately present a
+proportional inbound aggregate, but neither shares one chronological source
+inventory. Intermediate legacy tracing uses a third, newest-first
+spend-overhang bundle with an 80% default threshold and at most three funders.
+These are current implementations, not the approved target model.
+
+The approved target replacement is documented in
+`docs/superpowers/specs/2026-07-29-chronological-proportional-balance-provenance-design.md`.
+It is not implemented and does not describe current production behavior. The
+2026-07-29 manual corpus replay is recorded in
+`docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md`.
+That replay proved why exact-episode coverage and current-balance origin must be
+separate: `180 USDT` sent from `…PacGy` was fully covered by an older `300 USDT`
+lot, while the later current balance `82.7 USDT` came from a different funder.
+
+Exact TRON movement and traced-coverage proof requires rich identity on every
+contributing on-chain edge: a transfer ID, an event index, or a provider plus
+its row ordinal within the transaction. Legacy transaction/from/to/amount
+tuples remain valid for traversal and compatibility deduplication, but cannot
+by themselves prove exactly one emitted movement or contribute exact traced
+coverage.
+
+When a legacy row's tuple matches one or more rich rows, the legacy shadow is
+suppressed while each distinct rich event remains separate. Legacy-only
+duplicates continue to use the compatibility tuple for deduplication.
+
+Route assertion lookup uses only active assertion records linked by an exact
+route address or exact `approvalTxHash`, `drainTxHash`, or `pathTxHashes`
+value. Inputs are validated and deduplicated, malformed JSON shapes are ignored
+safely, and rows are returned in deterministic assertion-ID order. Flat address
+labels and suggestive category/name text are not assertion authority; the
+selective enrichment policy must repeat its own strict rich-evidence match.
+
+Exact approval-drain authority requires an approval plus transferFrom profile
+bound to the checked subject at hop zero. Route-linked profiles and flat
+approval-proximity markers remain review context. A saved proof level, source
+type, label, aggregate share, feature code, or receiver count cannot recreate
+exact authority without that direct profile and its overlapping evidence.
+
+Legacy Where and Incoming risky-label or local-sanctions artifacts are hard
+only when an authoritative origin path overlaps their evidence IDs. Incoming
+recomputes risky-label share from those bound paths before applying its
+materiality threshold; a larger stale aggregate cannot add authority. Local
+sanctions additionally require one consistently resolved registry service that
+was active at the path's event time. Missing, invalid, inactive, conflicting,
+or non-overlapping sanctions evidence remains context.
+
+The selective enrichment policy deduplicates route candidates by normalized
+transaction hash and processes known hard candidates before optional context.
+Subject analysis has no numeric ceiling that can drop a hard full-information
+trigger. Intermediate-boundary analysis permits at most five triggered full
+requests; overflow remains explicit missing evidence, keeps the adverse gate
+incomplete, forbids an inferred stop, and continues traversal. A finalized
+failed or reverted transaction is proven technical evidence but never clean;
+unavailable, non-final, conflicting, or corrupt evidence remains technical
+unknown and incomplete.
+
+This contract is implemented and tested. Delivery ownership is separate from
+the analysis path and does not gate isolated execution.
+
+Stage B Where and Incoming use the shared selective resolver for
+balance-forming, money-origin, GasFree, approval, and contract context. Plain
+`REVIEW` paths receive raw proof without automatically fetching full details.
+All eight hard triggers still reach full evidence and the existing semantic
+parsers; optional context may be capped, but hard subject evidence is not.
+Exact route-linked active assertions override optional approval mode, while
+flat labels do not authorize a full request.
+
+Incoming merges selective results from its deposit/funding pre-processing and
+post-processing with the nested Where result. Those outer calls pass exact
+active assertions and emit claim-fenced heartbeat progress. Their evidence IDs
+are completion-owned too; an incomplete outer result makes the combined
+transaction coverage partial instead of being hidden by a complete Where run.
+
+If raw and full providers both fail to produce final evidence, the report keeps
+a stable transaction-evidence-incomplete note, sets local coverage partial,
+and publishes no clean enrichment fact. Where and Incoming completion persist
+the resolver evidence IDs alongside IDs already owned by the job.
+This structured incomplete/technical coverage has zero direct score impact: it
+cannot add risk, prove safety, authorize a service boundary, or be converted
+into a clean transaction conclusion. Finalized failed/reverted evidence is
+reusable technical-proven evidence, but it remains adverse/incomplete rather
+than proving `plain_usdt_raw_proven`.
+
+Where and Incoming runner-owned writes require the non-null claim generation
+returned by PostgreSQL. Claim loss stops traversal/enrichment at the worker
+boundary: an in-flight shared provider promise may settle only as reusable
+immutable evidence, while no later fallback, risk record, result, or Telegram
+delivery intent may be attached to the reclaimed job.
+
+Where terminal progress stores count-only queue/slot, enrichment, and
+scheduler timing under `performanceTiming`; the matching lifecycle logs contain
+no address, transaction hash, chat/key identifier, label, or username.
+Incoming keeps its separate lane and existing `queueWaitMs`/stage timing. Its
+timing log is aggregate-only and no longer repeats job, deposit, wallet,
+sender, or Telegram identities.
+Where and Incoming `queueWaitMs` use the persisted post-index runnable
+transition, so targeted-index waiting is not reported as runnable queue delay;
+jobs that never waited retain creation-to-claim timing.
+
+Stage B behavior is code-complete, while live rollout evidence is separate.
+The real PostgreSQL claim/fairness gate passed on schema 037, but the real TXc
+replay remains blocked by both the missing completed source job and an
+unresolved historical recorder identity mismatch. Where remains at concurrency
+1; the repository has no deployment-owned adapter/bridge or attributable
+observer with which to run an accepted concurrency-two canary. Deep remains a
+singleton and its residual queue latency has not been measured; no Where test
+or synthetic runtime result may stand in for that measurement.

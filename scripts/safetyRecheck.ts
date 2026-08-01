@@ -43,7 +43,9 @@ async function main(): Promise<void> {
   const tronClient = new TronscanClient({
     baseUrl: config.tronscanBaseUrl,
     fullNodeBaseUrl: config.tronFullNodeBaseUrl,
-    apiKey: config.tronscanApiKey,
+    apiKey: config.tronscanApiKeys,
+    apiKeyGroups: config.tronscanApiKeyGroups,
+    accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
     fullNodeApiKey: config.tronFullNodeApiKey,
     timeoutMs: config.tronscanTimeoutMs,
     retryAttempts: config.tronscanRetryAttempts,

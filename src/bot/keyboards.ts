@@ -1,6 +1,8 @@
 import { InlineKeyboard } from "grammy";
 import type { WalletAlertMode, WatchedWallet } from "../types";
 import type { CustomerAlertMode, CustomerAlertRecipient } from "../storage/repositories";
+import { tronscanAddressUrl, tronscanApprovalsUrl } from "../alerts/keyboards";
+import { DEFAULT_BOT_LOCALE, t, type BotLocale } from "./i18n";
 
 export type BotCallback =
   | { kind: "home" }
@@ -20,12 +22,25 @@ export type BotCallback =
   | { kind: "wallet_remove_confirm"; walletId: string }
   | { kind: "check_address" }
   | { kind: "check_address_value"; address: string }
+  | { kind: "check_cross_bridge"; address: string }
+  | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
+  | { kind: "theft_start" }
+  | { kind: "theft_confirm"; reportId: string }
+  | { kind: "theft_change_tx"; reportId: string }
+  | { kind: "theft_comment"; reportId: string }
+  | { kind: "theft_cancel"; reportId: string }
+  | { kind: "theft_deposit_sent"; reportId: string }
+  | { kind: "theft_guide"; reportId: string }
+  | { kind: "theft_admin"; reportId: string }
   | { kind: "settings" }
   | { kind: "settings_alerts" }
   | { kind: "settings_add_admin"; alertMode: CustomerAlertMode | null }
+  | { kind: "settings_language"; locale: BotLocale }
   | { kind: "settings_remove_admin" }
   | { kind: "settings_remove_admin_value"; recipientTelegramUserId: string }
+  | { kind: "address_poisoning_dismiss"; callbackToken: string }
+  | { kind: "address_poisoning_confirm"; callbackToken: string }
   | { kind: "cancel" };
 
 export function shortAddress(address: string): string {
@@ -42,8 +57,11 @@ export function parseCallbackData(data: string): BotCallback | null {
   if (data === "wl:add") return { kind: "wallet_add" };
   if (data === "check:addr") return { kind: "check_address" };
   if (data === "check:tx") return { kind: "check_tx" };
+  if (data === "theft:start") return { kind: "theft_start" };
   if (data === "settings") return { kind: "settings" };
   if (data === "settings:alerts") return { kind: "settings_alerts" };
+  if (data === "settings:language:ru") return { kind: "settings_language", locale: "ru" };
+  if (data === "settings:language:en") return { kind: "settings_language", locale: "en" };
   if (data === "settings:add_admin") return { kind: "settings_add_admin", alertMode: null };
   if (data === "settings:add_admin:all") return { kind: "settings_add_admin", alertMode: "all" };
   if (data === "settings:add_admin:suspicious" || data === "settings:add_admin:suspicious_only") {
@@ -59,6 +77,42 @@ export function parseCallbackData(data: string): BotCallback | null {
 
   const addressCheckMatch = /^check:addr:(T[a-zA-Z0-9]{33})$/.exec(data);
   if (addressCheckMatch) return { kind: "check_address_value", address: addressCheckMatch[1] };
+
+  const crossBridgeCheckMatch = /^check:xbridge:(T[a-zA-Z0-9]{33})$/.exec(data);
+  if (crossBridgeCheckMatch) return { kind: "check_cross_bridge", address: crossBridgeCheckMatch[1] };
+
+  const depositCheckMatch = /^check:deposit:([0-9a-fA-F-]{36})$/.exec(data);
+  if (depositCheckMatch) return { kind: "check_deposit_job", jobId: depositCheckMatch[1] };
+
+  const theftMatch = /^theft:(confirm|change_tx|comment|cancel|deposit_sent|guide|admin):([^:]+)$/.exec(data);
+  if (theftMatch) {
+    switch (theftMatch[1]) {
+      case "confirm":
+        return { kind: "theft_confirm", reportId: theftMatch[2] };
+      case "change_tx":
+        return { kind: "theft_change_tx", reportId: theftMatch[2] };
+      case "comment":
+        return { kind: "theft_comment", reportId: theftMatch[2] };
+      case "cancel":
+        return { kind: "theft_cancel", reportId: theftMatch[2] };
+      case "deposit_sent":
+        return { kind: "theft_deposit_sent", reportId: theftMatch[2] };
+      case "guide":
+        return { kind: "theft_guide", reportId: theftMatch[2] };
+      case "admin":
+        return { kind: "theft_admin", reportId: theftMatch[2] };
+      default:
+        return null;
+    }
+  }
+
+  const poisoningMatch = /^poison:(dismiss|confirm):([A-Za-z0-9_-]{16,24})$/.exec(data);
+  if (poisoningMatch) {
+    return {
+      kind: poisoningMatch[1] === "confirm" ? "address_poisoning_confirm" : "address_poisoning_dismiss",
+      callbackToken: poisoningMatch[2]
+    };
+  }
 
   const alertModeSetMatch = /^wl:mode:([^:]+):(realtime|risk_only|digest|paused)(?::(\d{1,2}))?$/.exec(data);
   if (alertModeSetMatch) {
@@ -100,101 +154,146 @@ export function parseCallbackData(data: string): BotCallback | null {
   }
 }
 
-export function mainMenuKeyboard(): InlineKeyboard {
+export function mainMenuKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("📁 Wallets", "wl:list")
-    .text("➕ Add", "wl:add")
+    .text(t(locale, "button.wallets"), "wl:list")
+    .text(t(locale, "button.add"), "wl:add")
     .row()
-    .text("🔎 Address", "check:addr")
-    .text("🧾 Tx", "check:tx")
+    .text(t(locale, "button.address"), "check:addr")
+    .text(t(locale, "button.tx"), "check:tx")
     .row()
-    .text("🛡 Risk intel", "risk:intel")
-    .text("👤 Profile", "profile")
+    .text(t(locale, "button.reportTheft"), "theft:start")
     .row()
-    .text("⚙️ Settings", "settings")
-    .text("❔ Help", "help");
+    .text(t(locale, "button.riskIntel"), "risk:intel")
+    .text(t(locale, "button.profile"), "profile")
+    .row()
+    .text(t(locale, "button.settings"), "settings")
+    .text(t(locale, "button.help"), "help");
 }
 
-export function walletsKeyboard(wallets: WatchedWallet[]): InlineKeyboard {
+export function walletsKeyboard(wallets: WatchedWallet[], locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (const wallet of wallets) {
     keyboard.text(shortAddress(wallet.address), `wl:view:${wallet.id}`).row();
   }
-  keyboard.text("➕ Add", "wl:add").text("⬅️ Menu", "home");
+  keyboard.text(t(locale, "button.add"), "wl:add").text(t(locale, "button.menu"), "home");
   return keyboard;
 }
 
-export function walletDashboardKeyboard(walletId: string): InlineKeyboard {
+export function walletDashboardKeyboard(walletId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("🛡 Safety", `wl:safety:${walletId}`)
-    .text("📊 Analytics", `wl:analytics:${walletId}`)
+    .text(t(locale, "button.safety"), `wl:safety:${walletId}`)
+    .text(t(locale, "button.analytics"), `wl:analytics:${walletId}`)
     .row()
-    .text("🔄 Refresh", `wl:refresh:${walletId}`)
-    .text("🔔 Alert mode", `wl:alerts:${walletId}`)
+    .text(t(locale, "button.refresh"), `wl:refresh:${walletId}`)
+    .text(t(locale, "button.alertMode"), `wl:alerts:${walletId}`)
     .row()
-    .text("🔎 Address", "check:addr")
-    .text("🧾 Tx", "check:tx")
+    .text(t(locale, "button.address"), "check:addr")
+    .text(t(locale, "button.tx"), "check:tx")
     .row()
-    .text("📁 Wallets", "wl:list")
-    .text("⚙️ Settings", "settings")
+    .text(t(locale, "button.wallets"), "wl:list")
+    .text(t(locale, "button.settings"), "settings")
     .row()
-    .text("🗑 Remove", `wl:remove:${walletId}`);
+    .text(t(locale, "button.remove"), `wl:remove:${walletId}`);
 }
 
-export function walletAlertModeKeyboard(wallet: WatchedWallet): InlineKeyboard {
+export function walletAlertModeKeyboard(wallet: WatchedWallet, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Realtime", `wl:mode:${wallet.id}:realtime`)
-    .text("Risk only", `wl:mode:${wallet.id}:risk_only`)
+    .text(t(locale, "button.realtime"), `wl:mode:${wallet.id}:realtime`)
+    .text(t(locale, "button.riskOnly"), `wl:mode:${wallet.id}:risk_only`)
     .row()
-    .text("Digest 10m", `wl:mode:${wallet.id}:digest:10`)
-    .text("Paused", `wl:mode:${wallet.id}:paused`)
+    .text(t(locale, "button.digest10m"), `wl:mode:${wallet.id}:digest:10`)
+    .text(t(locale, "button.paused"), `wl:mode:${wallet.id}:paused`)
     .row()
-    .text("⬅️ Back", `wl:view:${wallet.id}`);
+    .text(t(locale, "button.back"), `wl:view:${wallet.id}`);
 }
 
-export function walletRemoveKeyboard(walletId: string): InlineKeyboard {
+export function walletRemoveKeyboard(walletId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("🗑 Remove wallet", `wl:remove_yes:${walletId}`)
-    .text("↩️ Back", `wl:view:${walletId}`);
+    .text(t(locale, "button.removeWallet"), `wl:remove_yes:${walletId}`)
+    .text(t(locale, "button.back"), `wl:view:${walletId}`);
 }
 
-export function cancelKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text("🚫 Cancel", "cancel");
+export function cancelKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard().text(t(locale, "button.cancel"), "cancel");
 }
 
-export function profileKeyboard(): InlineKeyboard {
+export function addressCheckResultKeyboard(address: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("📁 Wallets", "wl:list")
-    .text("⚙️ Settings", "settings")
+    .text(locale === "en" ? "Start cross-bridge" : "Запустить кроссбридж", `check:xbridge:${address}`)
     .row()
-    .text("🔔 Alert admins", "settings:alerts")
-    .text("❔ Help", "help")
-    .row()
-    .text("⬅️ Menu", "home");
+    .text(t(locale, "button.menu"), "home");
 }
 
-export function backToWalletKeyboard(walletId: string): InlineKeyboard {
-  return new InlineKeyboard().text("⬅️ Wallet", `wl:view:${walletId}`).text("📁 Wallets", "wl:list");
-}
-
-export function settingsKeyboard(): InlineKeyboard {
+export function theftReportCardKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard()
-    .text("👥 Alert admins", "settings:alerts")
+    .text(t(locale, "button.confirm"), `theft:confirm:${reportId}`)
     .row()
-    .text("➕ Suspicious admin", "settings:add_admin:suspicious")
+    .text(t(locale, "button.changeTx"), `theft:change_tx:${reportId}`)
+    .text(t(locale, "button.addComment"), `theft:comment:${reportId}`)
     .row()
-    .text("➕ All alerts admin", "settings:add_admin:all")
-    .text("➖ Remove admin", "settings:remove_admin")
-    .row()
-    .text("⬅️ Menu", "home");
+    .text(t(locale, "button.cancel"), `theft:cancel:${reportId}`);
 }
 
-export function alertAdminsKeyboard(recipients: CustomerAlertRecipient[] = []): InlineKeyboard {
+export function theftReportDepositKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.sent"), `theft:deposit_sent:${reportId}`)
+    .text(t(locale, "button.cancel"), `theft:cancel:${reportId}`);
+}
+
+export function theftReportNextStepsKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.guide"), `theft:guide:${reportId}`)
+    .text(t(locale, "button.contactAdmin"), `theft:admin:${reportId}`)
+    .row()
+    .text(t(locale, "button.menu"), "home");
+}
+
+export function profileKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.wallets"), "wl:list")
+    .text(t(locale, "button.settings"), "settings")
+    .row()
+    .text(t(locale, "button.alertAdmins"), "settings:alerts")
+    .text(t(locale, "button.help"), "help")
+    .row()
+    .text(t(locale, "button.menu"), "home");
+}
+
+export function backToWalletKeyboard(walletId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard().text(t(locale, "button.wallet"), `wl:view:${walletId}`).text(t(locale, "button.wallets"), "wl:list");
+}
+
+export function walletSafetyKeyboard(wallet: Pick<WatchedWallet, "id" | "address">, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .url(locale === "en" ? "Open approvals" : "Открыть approvals", tronscanApprovalsUrl(wallet.address))
+    .url(locale === "en" ? "Open wallet" : "Открыть кошелёк", tronscanAddressUrl(wallet.address))
+    .row()
+    .text(t(locale, "button.wallet"), `wl:view:${wallet.id}`)
+    .text(t(locale, "button.wallets"), "wl:list");
+}
+
+export function settingsKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.language.ru"), "settings:language:ru")
+    .text(t(locale, "button.language.en"), "settings:language:en")
+    .row()
+    .text(t(locale, "button.alertAdmins"), "settings:alerts")
+    .row()
+    .text(t(locale, "button.suspiciousAdmin"), "settings:add_admin:suspicious")
+    .row()
+    .text(t(locale, "button.allAlertsAdmin"), "settings:add_admin:all")
+    .text(t(locale, "button.removeAdmin"), "settings:remove_admin")
+    .row()
+    .text(t(locale, "button.menu"), "home");
+}
+
+export function alertAdminsKeyboard(recipients: CustomerAlertRecipient[] = [], locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   const keyboard = new InlineKeyboard()
-    .text("➕ Suspicious admin", "settings:add_admin:suspicious")
+    .text(t(locale, "button.suspiciousAdmin"), "settings:add_admin:suspicious")
     .row()
-    .text("➕ All alerts admin", "settings:add_admin:all")
-    .text("➖ Remove admin", "settings:remove_admin")
+    .text(t(locale, "button.allAlertsAdmin"), "settings:add_admin:all")
+    .text(t(locale, "button.removeAdmin"), "settings:remove_admin")
     .row();
 
   for (const recipient of recipients) {
@@ -202,6 +301,6 @@ export function alertAdminsKeyboard(recipients: CustomerAlertRecipient[] = []): 
   }
 
   return keyboard
-    .text("⚙️ Settings", "settings")
-    .text("⬅️ Menu", "home");
+    .text(t(locale, "button.settings"), "settings")
+    .text(t(locale, "button.menu"), "home");
 }

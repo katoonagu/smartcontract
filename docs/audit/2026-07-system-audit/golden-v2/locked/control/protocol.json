@@ -1,0 +1,1 @@
+{"allowedDecisions":["ACCEPTABLE","REVIEW","DECLINE"],"attributionCandidates":["fifo","lifo","proportional"],"canonicalFactKeyVersion":"canonical-fact-key-v1","comparatorContractVersion":"unified-wallet-comparator-v1","exactScoresAllowedBeforeAdjudication":false,"reviewersRequired":2,"version":"golden-pilot-protocol-v2"}

@@ -1,0 +1,1010 @@
+import {
+  appendUnifiedPlannerDiscovery,
+  canonicalOrderedTaskDiscoveries,
+  selectBoundedReadyPrefix
+} from "./planner";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
+import type {
+  UnifiedQueryable,
+  UnifiedTransactionalQueryable
+} from "./repository";
+
+export type UnifiedOrderedTaskPlanInput = {
+  readonly taskId: string;
+  readonly kind: string;
+  readonly logicalKey: string;
+  readonly priorityLane: "interactive" | "repair" | "background";
+  readonly checkpoint: unknown;
+};
+
+export type UnifiedOrderedTaskDiscoveryInput =
+  UnifiedOrderedTaskPlanInput & {
+    readonly parentCanonicalSequence: number;
+  };
+
+type PlannedTask = {
+  taskId: string;
+  canonicalSequence: number;
+};
+
+export type UnifiedOrderedReadyEntry = {
+  readonly canonicalSequence: number;
+  readonly taskId: string;
+  readonly taskKind: string;
+  readonly logicalKey: string;
+  readonly acceptedAttemptId: string;
+  readonly artifactSha256: string;
+  readonly artifactKind: string;
+  readonly artifactSchemaVersion: string;
+  readonly artifact: unknown;
+  readonly resultBytes: number;
+};
+
+function orderedArtifactEntry(
+  row: Record<string, unknown>,
+  expected: {
+    readonly taskKind: string;
+    readonly artifactKind: string;
+    readonly artifactSchemaVersion: string;
+  }
+): UnifiedOrderedReadyEntry {
+  const canonicalSequence = sequence(row.canonical_sequence);
+  if (row.result_bytes === null || row.result_bytes === undefined) {
+    throw new Error("unified_planner_ready_result_bytes_missing");
+  }
+  const resultBytes = safeNonNegativeInteger(
+    Number(row.result_bytes),
+    "unified_planner_result_bytes_invalid"
+  );
+  const taskId = requiredText(
+    row.task_id,
+    "unified_planner_ready_task_invalid"
+  );
+  const taskKind = requiredText(
+    row.task_kind,
+    "unified_planner_ready_task_kind_invalid"
+  );
+  const logicalKey = requiredText(
+    row.task_logical_key,
+    "unified_planner_ready_logical_key_invalid"
+  );
+  const acceptedAttemptId = requiredText(
+    row.accepted_attempt_id,
+    "unified_planner_ready_attempt_invalid"
+  );
+  const artifactSha256 = requiredText(
+    row.artifact_sha256,
+    "unified_planner_ready_artifact_invalid"
+  );
+  const artifactKind = requiredText(
+    row.artifact_kind,
+    "unified_planner_ready_artifact_kind_invalid"
+  );
+  const artifactSchemaVersion = requiredText(
+    row.artifact_schema_version,
+    "unified_planner_ready_artifact_schema_invalid"
+  );
+  const artifact = row.artifact_json;
+  if (
+    taskKind !== expected.taskKind ||
+    row.task_status !== "COMPLETED" ||
+    row.attempt_id !== acceptedAttemptId ||
+    row.attempt_task_id !== taskId ||
+    row.artifact_kind !== expected.artifactKind ||
+    row.artifact_schema_version !== expected.artifactSchemaVersion ||
+    fingerprintCanonicalArtifact(artifact) !== artifactSha256 ||
+    Buffer.byteLength(canonicalizeArtifactJson(artifact), "utf8") !==
+      resultBytes
+  ) {
+    throw new Error("unified_planner_ready_identity_mismatch");
+  }
+  return {
+    canonicalSequence,
+    taskId,
+    taskKind,
+    logicalKey,
+    acceptedAttemptId,
+    artifactSha256,
+    artifactKind,
+    artifactSchemaVersion,
+    artifact,
+    resultBytes
+  };
+}
+
+function requiredText(value: unknown, code: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(code);
+  }
+  return value;
+}
+
+function safeNonNegativeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TypeError(code);
+  }
+  return value as number;
+}
+
+function checkpointJson(value: unknown): string {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    throw new TypeError("unified_planner_checkpoint_invalid");
+  }
+  if (json === undefined) throw new TypeError("unified_planner_checkpoint_invalid");
+  return json;
+}
+
+async function lockRun(db: UnifiedQueryable, runId: string): Promise<void> {
+  const result = await db.query(
+    "select id from unified_check_runs where id = $1 for update",
+    [runId]
+  );
+  if (!result.rows[0]) throw new Error("unified_planner_run_missing");
+}
+
+function sequence(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("unified_planner_sequence_invalid");
+  }
+  return parsed;
+}
+
+function positiveSafeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new TypeError(code);
+  }
+  return value as number;
+}
+
+export async function loadUnifiedDurableOrderedLogicalKeys(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly logicalKeys: readonly string[];
+  }
+): Promise<Set<string>> {
+  const identities = input.logicalKeys.map((logicalKey) => ({
+    kind: "address_history",
+    logicalKey
+  }));
+  const durable = await loadUnifiedDurableOrderedTaskIdentities(db, {
+    runId: input.runId,
+    identities
+  });
+  return new Set(identities.flatMap(({ kind, logicalKey }) =>
+    durable.has(JSON.stringify([kind, logicalKey])) ? [logicalKey] : []
+  ));
+}
+
+export async function loadUnifiedDurableOrderedTaskIdentities(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly identities: readonly {
+      readonly kind: string;
+      readonly logicalKey: string;
+    }[];
+  }
+): Promise<Set<string>> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const identities = [...new Map(input.identities.map((identity) => {
+    const kind = requiredText(identity.kind, "unified_planner_kind_invalid");
+    const logicalKey = requiredText(
+      identity.logicalKey,
+      "unified_planner_logical_key_invalid"
+    );
+    return [JSON.stringify([kind, logicalKey]), { kind, logicalKey }];
+  })).values()].sort((left, right) =>
+    left.kind.localeCompare(right.kind) ||
+    left.logicalKey.localeCompare(right.logicalKey)
+  );
+  if (identities.length === 0) return new Set();
+  const result = await db.query(
+    `with requested(kind, logical_key) as (
+       select * from unnest($2::text[], $3::text[])
+     )
+     select task.kind, task.logical_key
+       from requested
+       join unified_check_tasks task
+         on task.run_id = $1
+        and task.kind = requested.kind
+        and task.logical_key = requested.logical_key
+       join unified_check_planner_entries entry
+         on entry.run_id = task.run_id and entry.task_id = task.id
+      order by task.kind, task.logical_key`,
+    [
+      runId,
+      identities.map(({ kind }) => kind),
+      identities.map(({ logicalKey }) => logicalKey)
+    ]
+  );
+  return new Set(result.rows.map((row) =>
+    JSON.stringify([
+      requiredText(row.kind, "unified_planner_kind_invalid"),
+      requiredText(row.logical_key, "unified_planner_logical_key_invalid")
+    ])
+  ));
+}
+
+export async function loadUnifiedCommittedArtifacts(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly identities: readonly {
+      readonly kind: string;
+      readonly logicalKey: string;
+    }[];
+    readonly expectedArtifactKind: string;
+    readonly expectedArtifactSchemaVersion: string;
+  }
+): Promise<UnifiedOrderedReadyEntry[]> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const expectedArtifactKind = requiredText(
+    input.expectedArtifactKind,
+    "unified_planner_artifact_kind_invalid"
+  );
+  const expectedArtifactSchemaVersion = requiredText(
+    input.expectedArtifactSchemaVersion,
+    "unified_planner_artifact_schema_invalid"
+  );
+  const identities = [...new Map(input.identities.map((identity) => {
+    const kind = requiredText(identity.kind, "unified_planner_kind_invalid");
+    const logicalKey = requiredText(
+      identity.logicalKey,
+      "unified_planner_logical_key_invalid"
+    );
+    return [JSON.stringify([kind, logicalKey]), { kind, logicalKey }];
+  })).values()].sort((left, right) =>
+    left.kind.localeCompare(right.kind) ||
+    left.logicalKey.localeCompare(right.logicalKey)
+  );
+  if (identities.length === 0) return [];
+  const result = await db.query(
+    `with requested(kind, logical_key) as (
+       select * from unnest($2::text[], $3::text[])
+     )
+     select entry.canonical_sequence, entry.result_bytes, entry.task_id,
+            task.kind as task_kind, task.logical_key as task_logical_key,
+            task.status as task_status, task.accepted_attempt_id,
+            attempt.id as attempt_id, attempt.task_id as attempt_task_id,
+            attempt.artifact_sha256,
+            artifact.kind as artifact_kind,
+            artifact.schema_version as artifact_schema_version,
+            artifact.artifact_json
+       from requested
+       join unified_check_tasks task
+         on task.run_id = $1
+        and task.kind = requested.kind
+        and task.logical_key = requested.logical_key
+       join unified_check_planner_entries entry
+         on entry.run_id = task.run_id and entry.task_id = task.id
+       left join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+        and attempt.task_id = task.id
+       left join unified_check_artifacts artifact
+         on artifact.sha256 = attempt.artifact_sha256
+      where entry.planner_state = 'committed'
+      order by entry.canonical_sequence`,
+    [
+      runId,
+      identities.map(({ kind }) => kind),
+      identities.map(({ logicalKey }) => logicalKey)
+    ]
+  );
+  return result.rows.map((row) => orderedArtifactEntry(row, {
+    taskKind: String(row.task_kind),
+    artifactKind: expectedArtifactKind,
+    artifactSchemaVersion: expectedArtifactSchemaVersion
+  }));
+}
+
+export async function loadUnifiedBoundedReadyPrefix(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly maxEntries: number;
+    readonly maxBytes: number;
+    readonly expectedTaskKind: string;
+    readonly expectedArtifactKind: string;
+    readonly expectedArtifactSchemaVersion: string;
+  }
+): Promise<UnifiedOrderedReadyEntry[]> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const expectedTaskKind = requiredText(
+    input.expectedTaskKind,
+    "unified_planner_kind_invalid"
+  );
+  const expectedArtifactKind = requiredText(
+    input.expectedArtifactKind,
+    "unified_planner_artifact_kind_invalid"
+  );
+  const expectedArtifactSchemaVersion = requiredText(
+    input.expectedArtifactSchemaVersion,
+    "unified_planner_artifact_schema_invalid"
+  );
+  const maxEntries = positiveSafeInteger(
+    input.maxEntries,
+    "unified_planner_commit_entries_invalid"
+  );
+  const maxBytes = positiveSafeInteger(
+    input.maxBytes,
+    "unified_planner_commit_bytes_invalid"
+  );
+  const result = await db.query(
+    `with head as (
+       select min(canonical_sequence) as canonical_sequence
+         from unified_check_planner_entries
+        where run_id = $1 and planner_state <> 'committed'
+     )
+     select entry.canonical_sequence, entry.planner_state,
+            entry.result_bytes, entry.task_id,
+            task.kind as task_kind, task.logical_key as task_logical_key,
+            task.status as task_status, task.accepted_attempt_id,
+            attempt.id as attempt_id, attempt.task_id as attempt_task_id,
+            attempt.artifact_sha256,
+            artifact.kind as artifact_kind,
+            artifact.schema_version as artifact_schema_version,
+            artifact.artifact_json
+       from unified_check_planner_entries entry
+       join head
+         on entry.canonical_sequence >= head.canonical_sequence
+       join unified_check_tasks task
+         on task.run_id = entry.run_id and task.id = entry.task_id
+       left join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+        and attempt.task_id = task.id
+       left join unified_check_artifacts artifact
+         on artifact.sha256 = attempt.artifact_sha256
+      where entry.run_id = $1
+      order by entry.canonical_sequence
+      limit $2`,
+    [runId, maxEntries]
+  );
+  const candidates = result.rows.map((row) => ({
+    row,
+    canonicalSequence: sequence(row.canonical_sequence),
+    plannerState: String(row.planner_state) as "planned" | "ready" | "committed",
+    resultBytes: row.result_bytes === null
+      ? null
+      : safeNonNegativeInteger(
+          Number(row.result_bytes),
+          "unified_planner_result_bytes_invalid"
+        )
+  }));
+  const selected = selectBoundedReadyPrefix(candidates, {
+    maxEntries,
+    maxBytes
+  });
+  return selected.map(({ row, resultBytes }) => {
+    if (resultBytes === null) {
+      throw new Error("unified_planner_ready_result_bytes_missing");
+    }
+    return orderedArtifactEntry(row, {
+      taskKind: expectedTaskKind,
+      artifactKind: expectedArtifactKind,
+      artifactSchemaVersion: expectedArtifactSchemaVersion
+    });
+  });
+}
+
+export function canonicalOrderedDiscoveries(
+  tasks: readonly UnifiedOrderedTaskDiscoveryInput[]
+): UnifiedOrderedTaskDiscoveryInput[] {
+  return canonicalOrderedTaskDiscoveries(tasks);
+}
+
+export async function planUnifiedOrderedTasksInTransaction(
+  client: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly tasks: readonly UnifiedOrderedTaskDiscoveryInput[];
+  }
+): Promise<PlannedTask[]> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const ordered = canonicalOrderedDiscoveries(input.tasks);
+  if (ordered.length === 0) return [];
+  const maxRow = (
+    await client.query(
+      `select max(canonical_sequence) as max_sequence
+         from unified_check_planner_entries
+        where run_id = $1`,
+      [runId]
+    )
+  ).rows[0];
+  let lastCanonicalSequence = maxRow?.max_sequence === null ||
+    maxRow?.max_sequence === undefined
+    ? null
+    : sequence(maxRow.max_sequence);
+  const result: PlannedTask[] = [];
+
+  for (const task of ordered) {
+    if (!["interactive", "repair", "background"].includes(task.priorityLane)) {
+      throw new TypeError("unified_planner_priority_lane_invalid");
+    }
+    const insertedTask = await client.query(
+      `insert into unified_check_tasks (
+        id, run_id, kind, status, priority_lane, logical_key, checkpoint_json
+      ) values ($1,$2,$3,'QUEUED',$4,$5,$6::jsonb)
+      on conflict (run_id, kind, logical_key) do nothing
+      returning id, status, accepted_attempt_id`,
+      [
+        task.taskId,
+        runId,
+        task.kind,
+        task.priorityLane,
+        task.logicalKey,
+        checkpointJson(task.checkpoint)
+      ]
+    );
+    const durableTask = insertedTask.rows[0] ?? (
+      await client.query(
+        `select id, status, accepted_attempt_id
+           from unified_check_tasks
+          where run_id = $1 and kind = $2 and logical_key = $3
+          for update`,
+        [runId, task.kind, task.logicalKey]
+      )
+    ).rows[0];
+    if (!durableTask) throw new Error("unified_planner_task_reuse_failed");
+    const taskId = String(durableTask.id);
+    let planner = (
+      await client.query(
+        `select canonical_sequence
+           from unified_check_planner_entries
+          where run_id = $1 and task_id = $2
+          for update`,
+        [runId, taskId]
+      )
+    ).rows[0];
+    if (!planner) {
+      if (
+        !["QUEUED", "WAITING_RETRY"].includes(String(durableTask.status)) ||
+        durableTask.accepted_attempt_id !== null
+      ) {
+        throw new Error("unified_planner_task_not_plannable");
+      }
+      const plannedEntry = appendUnifiedPlannerDiscovery(
+        lastCanonicalSequence,
+        { ...task, taskId }
+      );
+      planner = (
+        await client.query(
+          `insert into unified_check_planner_entries (
+            run_id, canonical_sequence, task_id, planner_state
+          ) values ($1,$2,$3,$4)
+          returning canonical_sequence`,
+          [
+            runId,
+            plannedEntry.canonicalSequence,
+            plannedEntry.taskId,
+            plannedEntry.plannerState
+          ]
+        )
+      ).rows[0];
+      lastCanonicalSequence = plannedEntry.canonicalSequence;
+    }
+    if (!planner) throw new Error("unified_planner_entry_insert_failed");
+    result.push({
+      taskId,
+      canonicalSequence: sequence(planner.canonical_sequence)
+    });
+  }
+  return result;
+}
+
+export async function planUnifiedOrderedTasks(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    readonly runId: string;
+    readonly tasks: readonly UnifiedOrderedTaskPlanInput[];
+  }
+): Promise<PlannedTask[]> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  return db.transaction(async (client) => {
+    await lockRun(client, runId);
+    return planUnifiedOrderedTasksInTransaction(client, {
+      runId,
+      tasks: input.tasks.map((task) => ({
+        ...task,
+        parentCanonicalSequence: -1
+      }))
+    });
+  });
+}
+
+export async function admitBarrierHead(
+  db: UnifiedTransactionalQueryable,
+  input: { readonly runId: string; readonly reservedBytes: number }
+): Promise<boolean> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const reservedBytes = safeNonNegativeInteger(
+    input.reservedBytes,
+    "unified_planner_reserved_bytes_invalid"
+  );
+  return db.transaction(async (client) => {
+    await lockRun(client, runId);
+    return (await admitBarrierHeadInTransaction(client, {
+      runId,
+      reservedBytes
+    })).newlyAdmitted;
+  });
+}
+
+export async function admitBarrierHeadInTransaction(
+  db: UnifiedQueryable,
+  input: { readonly runId: string; readonly reservedBytes: number }
+): Promise<{ readonly newlyAdmitted: boolean }> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  const reservedBytes = safeNonNegativeInteger(
+    input.reservedBytes,
+    "unified_planner_reserved_bytes_invalid"
+  );
+  const head = (
+    await db.query(
+      `select entry.canonical_sequence, entry.planner_state,
+              entry.admitted_at, entry.reserved_bytes, entry.result_bytes,
+              entry.ready_at, entry.committed_at,
+              task.id as task_id, task.status as task_status,
+              task.accepted_attempt_id,
+              accepted_attempt.id as verified_attempt_id,
+              accepted_attempt.task_id as verified_attempt_task_id
+         from unified_check_planner_entries entry
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+         left join unified_check_attempts accepted_attempt
+           on accepted_attempt.id = task.accepted_attempt_id
+          and accepted_attempt.task_id = task.id
+        where entry.run_id = $1
+          and entry.planner_state <> 'committed'
+        order by entry.canonical_sequence
+        limit 1
+        for update of entry, task`,
+      [runId]
+    )
+  ).rows[0];
+  if (!head) return { newlyAdmitted: false };
+
+  if (head.planner_state === "ready") {
+    if (
+      head.admitted_at === null ||
+      head.reserved_bytes !== null ||
+      head.result_bytes === null ||
+      head.ready_at === null ||
+      head.committed_at !== null ||
+      head.task_status !== "COMPLETED" ||
+      head.accepted_attempt_id === null ||
+      head.verified_attempt_id !== head.accepted_attempt_id ||
+      head.verified_attempt_task_id !== head.task_id
+    ) {
+      throw new Error("unified_ordered_next_head_not_admissible");
+    }
+    return { newlyAdmitted: false };
+  }
+  if (
+    head.planner_state !== "planned" ||
+    head.accepted_attempt_id !== null ||
+    head.result_bytes !== null
+  ) {
+    throw new Error("unified_ordered_next_head_not_admissible");
+  }
+  if (head.admitted_at !== null) {
+    if (
+      !["QUEUED", "WAITING_RETRY", "LEASED"].includes(
+        String(head.task_status)
+      ) ||
+      Number(head.reserved_bytes) !== reservedBytes
+    ) {
+      throw new Error("unified_ordered_next_head_not_admissible");
+    }
+    return { newlyAdmitted: false };
+  }
+  if (
+    !["QUEUED", "WAITING_RETRY"].includes(String(head.task_status)) ||
+    head.reserved_bytes !== null
+  ) {
+    throw new Error("unified_ordered_next_head_not_admissible");
+  }
+  const admitted = await db.query(
+    `update unified_check_planner_entries
+        set admitted_at = greatest(statement_timestamp(), planned_at),
+            reserved_bytes = $3
+      where run_id = $1
+        and canonical_sequence = $2
+        and planner_state = 'planned'
+        and admitted_at is null
+      returning task_id`,
+    [runId, head.canonical_sequence, reservedBytes]
+  );
+  if (admitted.rows.length !== 1) {
+    throw new Error("unified_ordered_next_head_not_admissible");
+  }
+  return { newlyAdmitted: true };
+}
+
+export async function deAdmitUnleasedPlannerTail(
+  db: UnifiedTransactionalQueryable,
+  input: { readonly runId: string; readonly keepThroughSequence: number }
+): Promise<number> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  if (
+    !Number.isSafeInteger(input.keepThroughSequence) ||
+    input.keepThroughSequence < -1
+  ) {
+    throw new TypeError("unified_planner_keep_sequence_invalid");
+  }
+  return db.transaction(async (client) => {
+    await lockRun(client, runId);
+    const cleared = await client.query(
+      `update unified_check_planner_entries entry
+          set admitted_at = null, reserved_bytes = null
+         from unified_check_tasks task
+        where entry.run_id = $1
+          and entry.canonical_sequence > $2
+          and entry.planner_state = 'planned'
+          and entry.admitted_at is not null
+          and task.run_id = entry.run_id
+          and task.id = entry.task_id
+          and task.status <> 'LEASED'
+        returning entry.task_id`,
+      [runId, input.keepThroughSequence]
+    );
+    return cleared.rows.length;
+  });
+}
+
+export type UnifiedOrderedAdmissionBlocker =
+  | "merge_buffer_full"
+  | "reservation_full"
+  | "no_provider_capacity"
+  | "no_ready_work"
+  | "canonical_head_wait";
+
+type OrderedAdmissionRow = {
+  canonicalSequence: number;
+  taskId: string;
+  plannerState: "planned" | "ready" | "committed";
+  admitted: boolean;
+  reservedBytes: bigint;
+  taskStatus: string;
+  taskLeaseActive: boolean;
+  taskClaimEligible: boolean;
+  readyAt: Date;
+  acceptedAttemptId: string | null;
+};
+
+function admissionRow(row: Record<string, unknown>): OrderedAdmissionRow {
+  const plannerState = String(row.planner_state);
+  if (!["planned", "ready", "committed"].includes(plannerState)) {
+    throw new Error("unified_planner_admission_state_invalid");
+  }
+  const readyAt = new Date(String(row.task_ready_at));
+  if (Number.isNaN(readyAt.getTime())) {
+    throw new Error("unified_planner_admission_ready_at_invalid");
+  }
+  let reservedBytes = 0n;
+  if (row.reserved_bytes !== null && row.reserved_bytes !== undefined) {
+    try {
+      reservedBytes = BigInt(String(row.reserved_bytes));
+    } catch {
+      throw new Error("unified_planner_reserved_bytes_invalid");
+    }
+    if (reservedBytes < 0n) {
+      throw new Error("unified_planner_reserved_bytes_invalid");
+    }
+  }
+  return {
+    canonicalSequence: sequence(row.canonical_sequence),
+    taskId: requiredText(row.task_id, "unified_planner_task_id_invalid"),
+    plannerState: plannerState as OrderedAdmissionRow["plannerState"],
+    admitted: row.admitted_at !== null && row.admitted_at !== undefined,
+    reservedBytes,
+    taskStatus: String(row.task_status),
+    taskLeaseActive: row.task_lease_active === true,
+    taskClaimEligible: row.task_claim_eligible === true,
+    readyAt,
+    acceptedAttemptId: row.accepted_attempt_id === null ||
+      row.accepted_attempt_id === undefined
+      ? null
+      : String(row.accepted_attempt_id)
+  };
+}
+
+function nonNegativeBigint(value: unknown, code: string): bigint {
+  try {
+    const parsed = BigInt(String(value ?? 0));
+    if (parsed < 0n) throw new Error(code);
+    return parsed;
+  } catch {
+    throw new Error(code);
+  }
+}
+
+export async function refillOrderedAdmissions(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    readonly runId: string;
+    readonly policy: "barrier" | "rolling";
+    readonly lookaheadTarget: number;
+    readonly readyBufferMaxEntries: number;
+    readonly readyBufferMaxBytes: number;
+    readonly reservedBufferMaxBytes: number;
+    readonly reservationBytesPerTask: number;
+    readonly now: Date;
+  }
+): Promise<{
+  readonly admittedTaskIds: string[];
+  readonly deAdmittedTaskIds: string[];
+  readonly blocker: UnifiedOrderedAdmissionBlocker | null;
+}> {
+  const runId = requiredText(input.runId, "unified_planner_run_id_invalid");
+  if (!["barrier", "rolling"].includes(input.policy)) {
+    throw new TypeError("unified_planner_admission_policy_invalid");
+  }
+  for (const [value, code] of [
+    [input.lookaheadTarget, "unified_planner_lookahead_invalid"],
+    [input.readyBufferMaxEntries, "unified_planner_ready_entries_invalid"],
+    [input.readyBufferMaxBytes, "unified_planner_ready_bytes_invalid"],
+    [input.reservedBufferMaxBytes, "unified_planner_reserved_limit_invalid"],
+    [input.reservationBytesPerTask, "unified_planner_reservation_invalid"]
+  ] as const) {
+    safeNonNegativeInteger(value, code);
+  }
+  if (
+    !(input.now instanceof Date) ||
+    Number.isNaN(input.now.getTime())
+  ) {
+    throw new TypeError("unified_planner_admission_now_invalid");
+  }
+  const target = input.lookaheadTarget === 0
+    ? 0
+    : input.policy === "barrier"
+      ? 1
+      : input.lookaheadTarget;
+  const reservationBytes = BigInt(input.reservationBytesPerTask);
+  const reservationLimit = BigInt(input.reservedBufferMaxBytes);
+
+  return db.transaction(async (client) => {
+    await lockRun(client, runId);
+    const usage = (
+      await client.query(
+        `select
+           count(*) filter (
+             where planner_state = 'ready'
+           )::bigint as ready_count,
+           coalesce(sum(result_bytes) filter (
+             where planner_state = 'ready'
+           ), 0)::bigint as ready_bytes
+         from unified_check_planner_entries
+        where run_id = $1 and planner_state <> 'committed'`,
+        [runId]
+      )
+    ).rows[0] ?? {};
+    const readyCount = nonNegativeBigint(
+      usage.ready_count,
+      "unified_planner_ready_entries_invalid"
+    );
+    const readyBytes = nonNegativeBigint(
+      usage.ready_bytes,
+      "unified_planner_ready_bytes_invalid"
+    );
+    const readyBufferFull =
+      readyCount >= BigInt(input.readyBufferMaxEntries) ||
+      readyBytes >= BigInt(input.readyBufferMaxBytes);
+
+    const headResult = await client.query(
+      `select true as canonical_head,
+              entry.canonical_sequence, entry.planner_state,
+              entry.task_id, entry.admitted_at, entry.reserved_bytes,
+              task.status as task_status, task.ready_at as task_ready_at,
+              task.status = 'LEASED'
+                and task.lease_expires_at > statement_timestamp()
+                as task_lease_active,
+              (
+                task.status in ('QUEUED', 'WAITING_RETRY')
+                and task.ready_at <= least($2::timestamptz, statement_timestamp())
+              ) or (
+                task.status = 'LEASED'
+                and task.lease_expires_at <= statement_timestamp()
+              ) as task_claim_eligible,
+              task.accepted_attempt_id
+         from unified_check_planner_entries entry
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+        where entry.run_id = $1
+          and entry.planner_state <> 'committed'
+        order by entry.canonical_sequence
+        limit 1
+        for update of entry, task`,
+      [runId, input.now]
+    );
+    const head = headResult.rows[0]
+      ? admissionRow(headResult.rows[0])
+      : null;
+
+    const admittedResult = await client.query(
+      `select entry.canonical_sequence, entry.planner_state,
+              entry.task_id, entry.admitted_at, entry.reserved_bytes,
+              task.status as task_status, task.ready_at as task_ready_at,
+              task.status = 'LEASED'
+                and task.lease_expires_at > statement_timestamp()
+                as task_lease_active,
+              (
+                task.status in ('QUEUED', 'WAITING_RETRY')
+                and task.ready_at <= least($2::timestamptz, statement_timestamp())
+              ) or (
+                task.status = 'LEASED'
+                and task.lease_expires_at <= statement_timestamp()
+              ) as task_claim_eligible,
+              task.accepted_attempt_id
+         from unified_check_planner_entries entry
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+        where entry.run_id = $1
+          and entry.planner_state = 'planned'
+          and entry.admitted_at is not null
+        order by entry.canonical_sequence
+        for update of entry, task`,
+      [runId, input.now]
+    );
+    const admitted = admittedResult.rows.map(admissionRow);
+    const headTaskId = head?.plannerState === "planned"
+      ? head.taskId
+      : null;
+    const keep = new Set<string>();
+    for (const row of admitted) {
+      if (row.taskLeaseActive) keep.add(row.taskId);
+    }
+    if (
+      target > 0 &&
+      headTaskId !== null &&
+      admitted.some((row) =>
+        row.taskId === headTaskId && row.taskClaimEligible
+      )
+    ) {
+      keep.add(headTaskId);
+    }
+    if (input.policy === "rolling" && !readyBufferFull) {
+      for (const row of admitted) {
+        if (keep.size >= target) break;
+        if (row.taskClaimEligible) keep.add(row.taskId);
+      }
+    }
+
+    const deAdmittedTaskIds: string[] = [];
+    for (const row of [...admitted].reverse()) {
+      if (keep.has(row.taskId) || row.taskLeaseActive) continue;
+      const cleared = await client.query(
+        `update unified_check_planner_entries entry
+            set admitted_at = null, reserved_bytes = null
+           from unified_check_tasks task
+          where entry.run_id = $1
+            and entry.task_id = $2
+            and entry.planner_state = 'planned'
+            and entry.admitted_at is not null
+            and task.run_id = entry.run_id
+            and task.id = entry.task_id
+            and (
+              task.status <> 'LEASED'
+              or task.lease_expires_at <= statement_timestamp()
+            )
+          returning entry.task_id`,
+        [runId, row.taskId]
+      );
+      if (cleared.rows.length !== 1) {
+        throw new Error("unified_planner_de_admission_conflict");
+      }
+      deAdmittedTaskIds.push(row.taskId);
+    }
+
+    const keptAdmissions = admitted.filter((row) => keep.has(row.taskId));
+    let reservedBytes = keptAdmissions.reduce(
+      (total, row) => total + row.reservedBytes,
+      0n
+    );
+    let activeAdmissions = keptAdmissions.length;
+    const candidateResult = target === 0
+      ? { rows: [] as Array<Record<string, unknown>> }
+      : await client.query(
+          `select entry.canonical_sequence, entry.planner_state,
+                  entry.task_id, entry.admitted_at, entry.reserved_bytes,
+                  task.status as task_status, task.ready_at as task_ready_at,
+                  task.status = 'LEASED'
+                    and task.lease_expires_at > statement_timestamp()
+                    as task_lease_active,
+                  (
+                    task.status in ('QUEUED', 'WAITING_RETRY')
+                    and task.ready_at <= least($2::timestamptz, statement_timestamp())
+                  ) or (
+                    task.status = 'LEASED'
+                    and task.lease_expires_at <= statement_timestamp()
+                  ) as task_claim_eligible,
+                  task.accepted_attempt_id
+             from unified_check_planner_entries entry
+             join unified_check_tasks task
+               on task.run_id = entry.run_id and task.id = entry.task_id
+            where entry.run_id = $1
+              and entry.planner_state = 'planned'
+              and entry.admitted_at is null
+              and task.accepted_attempt_id is null
+              and (
+                (
+                  task.status in ('QUEUED', 'WAITING_RETRY')
+                  and task.ready_at <= least($2::timestamptz, statement_timestamp())
+                ) or (
+                  task.status = 'LEASED'
+                  and task.lease_expires_at <= statement_timestamp()
+                )
+              )
+            order by entry.canonical_sequence
+            limit $3
+            for update of entry, task`,
+          [runId, input.now, Math.max(1, target)]
+        );
+    const candidates = candidateResult.rows.map(admissionRow);
+    const admittedTaskIds: string[] = [];
+    let mergeBufferBlocked = false;
+    let reservationBlocked = false;
+
+    for (const candidate of candidates) {
+      if (activeAdmissions >= target) break;
+      const isHead = candidate.taskId === headTaskId;
+      if (input.policy === "barrier" && !isHead) continue;
+      if (readyBufferFull && !isHead) {
+        mergeBufferBlocked = true;
+        continue;
+      }
+      if (reservedBytes + reservationBytes > reservationLimit) {
+        reservationBlocked = true;
+        continue;
+      }
+      const changed = await client.query(
+        `update unified_check_planner_entries
+            set admitted_at = greatest(statement_timestamp(), planned_at),
+                reserved_bytes = $3
+          where run_id = $1
+            and task_id = $2
+            and planner_state = 'planned'
+            and admitted_at is null
+          returning task_id`,
+        [runId, candidate.taskId, input.reservationBytesPerTask]
+      );
+      if (changed.rows.length !== 1) {
+        throw new Error("unified_planner_admission_conflict");
+      }
+      admittedTaskIds.push(candidate.taskId);
+      activeAdmissions += 1;
+      reservedBytes += reservationBytes;
+    }
+    if (
+      readyBufferFull &&
+      candidates.some((candidate) => candidate.taskId !== headTaskId)
+    ) {
+      mergeBufferBlocked = true;
+    }
+
+    let blocker: UnifiedOrderedAdmissionBlocker | null = null;
+    if (target === 0) {
+      blocker = "no_provider_capacity";
+    } else if (reservationBlocked) {
+      blocker = "reservation_full";
+    } else if (mergeBufferBlocked) {
+      blocker = "merge_buffer_full";
+    } else if (activeAdmissions === 0) {
+      blocker = head !== null && !head.taskClaimEligible
+        ? "canonical_head_wait"
+        : "no_ready_work";
+    }
+    return {
+      admittedTaskIds,
+      deAdmittedTaskIds,
+      blocker
+    };
+  });
+}

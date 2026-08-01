@@ -5,6 +5,7 @@ import {
   calculateFeeSummary,
   calculateUsdtTransferFlow,
   calculateWalletSafetyReport,
+  canonicalizeUnifiedWalletMetrics,
   parseAccountMetrics
 } from "../../src/wallet/metrics";
 
@@ -163,7 +164,7 @@ describe("wallet dashboard metrics", () => {
     expect(fees.feeUsd).toBe("0.625");
   });
 
-  it("builds a limited-confidence safety report from internal labels and strict activity thresholds", () => {
+  it("builds a bounded limited-confidence safety report from internal labels and strict activity thresholds", () => {
     const labels: AddressLabel[] = [
       {
         address: walletAddress,
@@ -188,8 +189,8 @@ describe("wallet dashboard metrics", () => {
       thirtyDayUsdtVolumeMicro: 50000000001n
     });
 
-    expect(report.level).toBe("HIGH");
-    expect(report.score).toBe(75);
+    expect(report.level).toBe("LOW");
+    expect(report.score).toBe(20);
     expect(report.reasons.map((reason) => reason.code)).toEqual([
       "internal_label_mule",
       "new_wallet_high_volume",
@@ -223,5 +224,54 @@ describe("wallet dashboard metrics", () => {
 
     expect(report.score).toBe(0);
     expect(report.reasons).toEqual([]);
+  });
+
+  it("keeps snapshot and later live profile observations explicitly scoped", () => {
+    const metrics = canonicalizeUnifiedWalletMetrics({
+      version: "unified-wallet-metrics-v1",
+      asOfBlock: "84713573",
+      observedAt: "2026-07-23T12:53:54.000Z",
+      consistency: "snapshot_exact",
+      profile: {
+        createdAt: "2024-03-14T00:00:00.000Z",
+        firstUsdtActivityAt: "2024-03-16T00:00:00.000Z",
+        lastUsdtActivityAt: "2026-07-21T00:00:00.000Z",
+        incomingUsdtTransferCount: 436,
+        outgoingUsdtTransferCount: 194,
+        snapshotUsdtBalanceRaw: "82410000",
+        snapshotTrxBalanceSun: "117300000",
+        liveBalanceObservation: {
+          usdtBalanceRaw: "90000000",
+          trxBalanceSun: "120000000",
+          asOfBlock: null,
+          observedAt: "2026-07-23T13:10:00.000Z",
+          consistency: "profile_only"
+        }
+      },
+      scoreDrivers: [],
+      currentBalanceAttribution: {
+        scope: "current_balance_attribution",
+        denominatorRaw: "82410000",
+        rows: []
+      },
+      outgoingMovement: {
+        scope: "all_direct_outgoing_to_snapshot",
+        denominatorRaw: "0",
+        rows: []
+      },
+      serviceLinks: [],
+      contractsAndApprovals: [],
+      behaviorAndConnections: [],
+      coverage: [],
+      principalInboundEvents: [],
+      negativeFacts: []
+    });
+
+    expect(metrics.profile.snapshotUsdtBalanceRaw).toBe("82410000");
+    expect(metrics.profile.liveBalanceObservation).toMatchObject({
+      asOfBlock: null,
+      consistency: "profile_only"
+    });
+    expect(metrics.asOfBlock).toBe("84713573");
   });
 });

@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildApprovalDrainProvenanceProfile } from "../../src/forensics/approvalDrainProvenance";
-import type { ForensicRouteEdge, ServiceClassification } from "../../src/types";
+import {
+  authoritativeApprovalDrainEvidenceBinding,
+  buildApprovalDrainProvenanceAnalysis,
+  buildApprovalDrainProvenanceProfile,
+  buildApprovalDrainProvenanceProfiles,
+  isApprovalDrainEvidenceRefBoundToDirectProfile,
+  isAuthoritativeDirectApprovalDrainProfile,
+  observationForApprovalDrainProvenance,
+  rawEvidenceForApprovalDrainProvenance
+} from "../../src/forensics/approvalDrainProvenance";
+import type { ApprovalDrainProvenanceProfile, ForensicRouteEdge, ServiceClassification } from "../../src/types";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
@@ -10,6 +19,14 @@ const firstReceiver = "TReceiver1111111111111111111111111111";
 const intermediate = "TInter111111111111111111111111111111";
 const subject = "TSubject111111111111111111111111111111";
 const service = "TRouter111111111111111111111111111111";
+const secondVictim = "TVictim222222222222222222222222222222";
+const secondSpender = "TSpender22222222222222222222222222222";
+const operator = "TOperator1111111111111111111111111111";
+const wrapperContract = "TWrapper11111111111111111111111111111";
+const markerToken = "TMarker111111111111111111111111111111";
+const layerZeroExecutor = "TLayerZeroExecutor11111111111111111111";
+const relayer = "TRelayer1111111111111111111111111111";
+const usdtOftContract = "TUsdtOftContract111111111111111111";
 
 function edge(input: {
   id: string;
@@ -85,7 +102,174 @@ function boundary(category: ServiceClassification["category"]): ServiceClassific
   };
 }
 
+function retainedApprovalProfile(
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: victim,
+    approvalTxHash: "tx-approval",
+    drainTxHash: "tx-drain",
+    spenderAddress: spender,
+    firstReceiverAddress: subject,
+    subjectAddress: subject,
+    hopDepth: 0,
+    amountRaw: "1000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-05-09T20:50:00.000Z",
+    drainAt: "2026-05-09T21:00:00.000Z",
+    pathTxHashes: ["tx-drain"],
+    pathAddresses: [victim, subject],
+    score: 90,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
+  };
+}
+
 describe("approval-drain provenance", () => {
+  it("authorizes only a direct exact profile for the checked subject", () => {
+    const profile = {
+      victimAddress: victim,
+      approvalTxHash: "tx-approval",
+      drainTxHash: "tx-drain",
+      spenderAddress: spender,
+      firstReceiverAddress: subject,
+      subjectAddress: subject,
+      hopDepth: 0 as const,
+      amountRaw: "1000000",
+      amountPreservationRatio: 1,
+      approvalAt: "2026-05-09T20:50:00.000Z",
+      drainAt: "2026-05-09T21:00:00.000Z",
+      pathTxHashes: ["tx-drain"],
+      pathAddresses: [victim, subject],
+      score: 90,
+      evidenceStrength: "exact_approval_and_transfer_from" as const,
+      subjectTokenState: null,
+      victimTokenState: null,
+      features: []
+    };
+
+    expect(isAuthoritativeDirectApprovalDrainProfile(profile, subject)).toBe(true);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, hopDepth: 1 }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, evidenceStrength: "route_linked" }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile({ ...profile, firstReceiverAddress: firstReceiver }, subject)).toBe(false);
+    expect(isAuthoritativeDirectApprovalDrainProfile(profile, firstReceiver)).toBe(false);
+  });
+
+  it("emits exact critical observation copy for a valid direct profile", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile(),
+      rawEvidenceId: "raw-direct"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_approval_drain_provenance",
+      message: "Funds are connected to an exact approval-drain flow within 2 hops.",
+      scoreImpact: 90,
+      confidence: "high",
+      severity: "critical"
+    });
+  });
+
+  it("emits review-only observation copy for a route-linked profile", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile({
+        firstReceiverAddress: firstReceiver,
+        hopDepth: 1,
+        evidenceStrength: "route_linked",
+        pathTxHashes: ["tx-drain", "tx-hop"],
+        pathAddresses: [victim, firstReceiver, subject],
+        score: 90
+      }),
+      rawEvidenceId: "raw-route"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_route_linked_approval_pattern",
+      message: "Route-linked approval-drain context found without exact approval-drain proof.",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high"
+    });
+  });
+
+  it("downgrades a forged exact-strength hop-one profile to review-only observation copy", () => {
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile: retainedApprovalProfile({
+        firstReceiverAddress: firstReceiver,
+        hopDepth: 1,
+        pathTxHashes: ["tx-drain", "tx-hop"],
+        pathAddresses: [victim, firstReceiver, subject]
+      }),
+      rawEvidenceId: "raw-forged-hop"
+    });
+
+    expect(observation).toMatchObject({
+      code: "forensic_route_linked_approval_pattern",
+      message: "Route-linked approval-drain context found without exact approval-drain proof.",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high"
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["malformed arrays", {
+      ...retainedApprovalProfile(),
+      pathTxHashes: null,
+      pathAddresses: "not-an-array"
+    }]
+  ])("fails closed for %s embedded historical approval profile data", (_label, embeddedProfile) => {
+    const profile = retainedApprovalProfile();
+    const raw = rawEvidenceForApprovalDrainProvenance({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      profile
+    });
+    const malformedRaw = {
+      ...raw,
+      evidenceJson: {
+        ...raw.evidenceJson,
+        approvalDrainProvenanceProfile: embeddedProfile
+      }
+    };
+    const observation = observationForApprovalDrainProvenance({
+      subjectAddress: subject,
+      profile,
+      rawEvidenceId: raw.id
+    });
+    const bindingInput = {
+      checkedSubjectAddress: subject,
+      profile,
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    };
+
+    expect(() => authoritativeApprovalDrainEvidenceBinding(bindingInput)).not.toThrow();
+    expect(authoritativeApprovalDrainEvidenceBinding(bindingInput)).toBeNull();
+    expect(() => isApprovalDrainEvidenceRefBoundToDirectProfile({
+      checkedSubjectAddress: subject,
+      evidenceRef: raw.id,
+      profiles: [profile],
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    })).not.toThrow();
+    expect(isApprovalDrainEvidenceRefBoundToDirectProfile({
+      checkedSubjectAddress: subject,
+      evidenceRef: raw.id,
+      profiles: [profile],
+      rawEvidence: [malformedRaw],
+      observations: [observation]
+    })).toBe(false);
+  });
+
   it("scores direct first receiver as 90/100", async () => {
     const profile = await buildApprovalDrainProvenanceProfile({
       subjectAddress: firstReceiver,
@@ -114,6 +298,326 @@ describe("approval-drain provenance", () => {
       drainTxHash: "tx-drain",
       evidenceStrength: "exact_approval_and_transfer_from"
     });
+  });
+
+  it("resolves TFagr-style wrapper contracts as the approved spender, not the operator", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async () => ({
+        ownerAddress: operator,
+        contractData: {
+          contract_address: wrapperContract,
+          function_selector: "Verify20(address,address,uint256)"
+        },
+        contract_map: { [victim]: true },
+        trigger_info: {
+          methodName: "Verify20"
+        },
+        contractInfo: [
+          {
+            address: layerZeroExecutor,
+            name: "LayerZero: Executor",
+            tag: "Executor",
+            isContract: true
+          }
+        ],
+        trc20TransferInfo: [
+          {
+            from_address: "TNoise111111111111111111111111111111",
+            to_address: victim,
+            quant: "1",
+            contract_address: markerToken,
+            tokenInfo: { tokenAbbr: "BTTOLD", tokenId: markerToken, tokenType: "trc20" }
+          },
+          {
+            from_address: victim,
+            to_address: subject,
+            quant: "2576000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }
+        ]
+      })),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "5000000000",
+          timestamp: new Date("2026-05-09T10:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn(async (address: string) => ({
+        subjectAddress: address,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        tokenSymbol: "USDT" as const,
+        tokenStandard: "TRC20" as const,
+        decimals: 6,
+        isBlacklisted: false,
+        balanceRaw: "0",
+        checkedAt: "2026-05-09T21:00:00.000Z",
+        evidenceStrength: "exact_contract_state" as const,
+        blacklistEventTxHash: null,
+        blacklistEventTimestamp: null,
+        blacklistEventBlock: null,
+        methods: {
+          blacklist: "isBlackListed(address)" as const,
+          balance: "balanceOf(address)" as const
+        }
+      }))
+    };
+
+    const profiles = await buildApprovalDrainProvenanceProfiles({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-wrapper-drain",
+          from: victim,
+          to: subject,
+          amountRaw: "2576000000",
+          at: "2026-05-09T21:00:00.000Z",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      classifications: new Map([[victim, {
+        category: "service",
+        identity: "GasFree Account",
+        confidence: "high",
+        evidence: ["test:gasfree_account"],
+        isBoundary: false
+      }]])
+    });
+
+    expect(lookup.listTrc20ApprovalChanges).toHaveBeenCalledWith(expect.objectContaining({
+      ownerAddress: victim,
+      spenderAddress: wrapperContract
+    }));
+    expect(profiles[0]).toMatchObject({
+      victimAddress: victim,
+      spenderAddress: wrapperContract,
+      operatorAddress: operator,
+      spenderResolution: "wrapper_contract",
+      score: 90,
+      falsePositiveGuards: []
+    });
+    expect(profiles[0]?.evidenceStrength).toBe("exact_approval_and_transfer_from");
+    expect(profiles[0]?.supportingFingerprints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "misleading_wrapper_method" }),
+      expect.objectContaining({ code: "nearby_non_usdt_token_transfer", value: "BTTOLD" })
+    ]));
+  });
+
+  it("defaults candidate selection to amount descending", async () => {
+    const lookup = deps();
+
+    await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-large-plain",
+          from: victim,
+          to: subject,
+          amountRaw: "90000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          method: "transfer"
+        }),
+        edge({
+          id: "tx-small-wrapper",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-large-plain");
+  });
+
+  it("ranks smaller suspicious wrapper drains ahead of larger plain transfers when opted in", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async (txHash: string) => {
+        if (txHash === "tx-small-wrapper") {
+          return {
+            ownerAddress: operator,
+            contractData: {
+              contract_address: wrapperContract,
+              function_selector: "Verify20(address,address,uint256)"
+            },
+            trigger_info: { methodName: "Verify20" },
+            trc20TransferInfo: [{
+              from_address: victim,
+              to_address: subject,
+              quant: "2000000000",
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+            }]
+          };
+        }
+        return {
+          ownerAddress: victim,
+          contractData: {
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            function_selector: "transfer(address _to,uint256 _value)"
+          },
+          trigger_info: { methodName: "transfer" },
+          trc20TransferInfo: [{
+            from_address: victim,
+            to_address: subject,
+            quant: "90000000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }]
+        };
+      }),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "3000000000",
+          timestamp: new Date("2026-05-09T10:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn(async (address: string) => ({
+        subjectAddress: address,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        tokenSymbol: "USDT" as const,
+        tokenStandard: "TRC20" as const,
+        decimals: 6,
+        isBlacklisted: false,
+        balanceRaw: "0",
+        checkedAt: "2026-05-09T21:00:00.000Z",
+        evidenceStrength: "exact_contract_state" as const,
+        blacklistEventTxHash: null,
+        blacklistEventTimestamp: null,
+        blacklistEventBlock: null,
+        methods: {
+          blacklist: "isBlackListed(address)" as const,
+          balance: "balanceOf(address)" as const
+        }
+      }))
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-large-plain",
+          from: victim,
+          to: subject,
+          amountRaw: "90000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          method: "transfer"
+        }),
+        edge({
+          id: "tx-small-wrapper",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1,
+      candidateRankingMode: "suspicion_aware"
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-small-wrapper");
+    expect(analysis.profiles).toHaveLength(1);
+    expect(analysis.profiles[0]).toMatchObject({
+      drainTxHash: "tx-small-wrapper",
+      victimAddress: victim,
+      amountRaw: "2000000000"
+    });
+  });
+
+  it("uses tx hash as a stable tie-breaker for suspicion-aware candidate caps", async () => {
+    const lookup = deps();
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-same-rank-b",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        }),
+        edge({
+          id: "tx-same-rank-a",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1,
+      candidateRankingMode: "suspicion_aware"
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-same-rank-a");
+    expect(analysis.profiles[0]?.drainTxHash).toBe("tx-same-rank-a");
+  });
+
+  it("returns multiple direct approval-drain profiles for separate victim branches", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async (txHash: string) => ({
+        ownerAddress: txHash === "tx-drain-1" ? spender : secondSpender
+      })),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          txHash: `approval-${input.ownerAddress}`,
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "500000000000",
+          timestamp: new Date("2026-05-09T10:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn(async (address: string) => ({
+        subjectAddress: address,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        tokenSymbol: "USDT" as const,
+        tokenStandard: "TRC20" as const,
+        decimals: 6,
+        isBlacklisted: false,
+        balanceRaw: "0",
+        checkedAt: "2026-05-09T21:00:00.000Z",
+        evidenceStrength: "exact_contract_state" as const,
+        blacklistEventTxHash: null,
+        blacklistEventTimestamp: null,
+        blacklistEventBlock: null,
+        methods: {
+          blacklist: "isBlackListed(address)" as const,
+          balance: "balanceOf(address)" as const
+        }
+      }))
+    };
+
+    const profiles = await buildApprovalDrainProvenanceProfiles({
+      subjectAddress: subject,
+      edges: [
+        edge({ id: "tx-drain-1", from: victim, to: subject, amountRaw: "311851000000", at: "2026-05-09T21:00:00.000Z", edgeType: "transfer_from" }),
+        edge({ id: "tx-drain-2", from: secondVictim, to: subject, amountRaw: "2576000000", at: "2026-05-09T21:01:00.000Z", edgeType: "transfer_from" })
+      ],
+      deps: lookup,
+      maxCandidates: 5
+    });
+
+    expect(profiles).toHaveLength(2);
+    expect(profiles.map((profile) => profile.victimAddress)).toEqual([victim, secondVictim]);
+    expect(profiles.map((profile) => profile.spenderAddress)).toEqual([spender, secondSpender]);
+    expect(profiles.every((profile) => profile.score === 90 && profile.hopDepth === 0)).toBe(true);
   });
 
   it("scores one-hop route-linked subject as 80/100", async () => {
@@ -198,6 +702,190 @@ describe("approval-drain provenance", () => {
       classifications: new Map([[firstReceiver, boundary("cex")]]),
       deps: deps()
     })).resolves.toBeNull();
+  });
+
+  it("keeps verified router approval with paired economic output out of exact drain proof", async () => {
+    const routerReceiver = "TRouterPool11111111111111111111111111";
+    const outputToken = "TOutput111111111111111111111111111111";
+    const lookup = {
+      getTransaction: vi.fn(async () => ({
+        ownerAddress: spender,
+        contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+        trigger_info: {
+          methodName: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
+        },
+        trc20TransferInfo: [
+          {
+            from_address: victim,
+            to_address: routerReceiver,
+            quant: "100000000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          },
+          {
+            from_address: routerReceiver,
+            to_address: victim,
+            quant: "250000000000000000",
+            contract_address: outputToken,
+            tokenInfo: { tokenAbbr: "SUN", tokenId: outputToken, tokenType: "trc20" }
+          }
+        ]
+      })),
+      listTrc20ApprovalChanges: vi.fn(async () => [
+        approval({
+          spenderAddress: spender,
+          amountRaw: "100000000000",
+          timestamp: new Date("2026-05-09T20:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn()
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: routerReceiver,
+      edges: [
+        edge({
+          id: "tx-router-swap",
+          from: victim,
+          to: routerReceiver,
+          amountRaw: "100000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          edgeType: "transfer_from"
+        })
+      ],
+      classifications: new Map([
+        [spender, {
+          category: "router",
+          identity: "SunSwap Router",
+          confidence: "high",
+          evidence: ["tag:router", "verified_contract"],
+          isBoundary: true
+        }]
+      ]),
+      contractProfiles: new Map([[spender, {
+        isVerified: true,
+        serviceTag: "SunSwap Router",
+        topMethods: [{ methodId: "0x", signature: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)", count: 1, ratio: 1 }]
+      }]]),
+      deps: lookup
+    });
+
+    expect(analysis.profiles).toEqual([]);
+    expect(analysis.reviewFindings).toEqual([
+      expect.objectContaining({
+        reason: "service_boundary_guard",
+        spenderAddress: spender,
+        falsePositiveGuards: expect.arrayContaining([
+          expect.objectContaining({
+            code: "service_boundary_route",
+            address: spender,
+            category: "router",
+            identity: "SunSwap Router"
+          })
+        ])
+      })
+    ]);
+  });
+
+  it("emits service-boundary review finding instead of proven drain for service-route transactions", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async () => ({
+        ownerAddress: relayer,
+        contractData: {
+          contract_address: layerZeroExecutor
+        },
+        trigger_info: {
+          contract_address: layerZeroExecutor,
+          methodName: "lzReceive"
+        },
+        contractInfo: [
+          {
+            address: layerZeroExecutor,
+            name: "LayerZero: Executor",
+            tag: "Executor"
+          },
+          {
+            address: usdtOftContract,
+            name: "UsdtOFT",
+            tag: "OFT"
+          }
+        ],
+        contract_map: {
+          [layerZeroExecutor]: true,
+          [usdtOftContract]: true,
+          [subject]: false
+        },
+        trc20TransferInfo: [
+          {
+            from_address: usdtOftContract,
+            to_address: subject,
+            amount_str: "89473150000",
+            symbol: "USDT",
+            tokenInfo: {
+              tokenAbbr: "USDT",
+              tokenId: TRON_USDT_CONTRACT_ADDRESS,
+              tokenType: "trc20"
+            }
+          }
+        ]
+      })),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "89473150000",
+          timestamp: new Date("2026-05-09T20:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn()
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "service-route-tx",
+          from: usdtOftContract,
+          to: subject,
+          amountRaw: "89473150000",
+          at: "2026-05-09T21:00:00.000Z",
+          edgeType: "transfer_from",
+          method: "lzReceive"
+        })
+      ],
+      classifications: new Map([
+        [layerZeroExecutor, {
+          category: "bridge",
+          identity: "LayerZero/OFT",
+          confidence: "high",
+          evidence: ["service_route:cross_chain_bridge"],
+          isBoundary: true
+        }]
+      ]),
+      deps: lookup
+    });
+
+    expect(analysis.profiles).toHaveLength(0);
+    expect(analysis.reviewFindings).toEqual([
+      expect.objectContaining({
+        reason: "service_boundary_guard",
+        drainTxHash: "service-route-tx",
+        spenderAddress: layerZeroExecutor,
+        operatorAddress: relayer,
+        firstReceiverAddress: subject,
+        falsePositiveGuards: expect.arrayContaining([
+          expect.objectContaining({
+            code: "spender_service_boundary",
+            address: layerZeroExecutor,
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          })
+        ]),
+        supportingFingerprints: expect.arrayContaining([
+          expect.objectContaining({ code: "misleading_wrapper_method", value: "lzReceive" })
+        ])
+      })
+    ]);
   });
 
   it("does not let an unrelated large second hop fake two-hop amount preservation", async () => {

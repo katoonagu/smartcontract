@@ -17,7 +17,6 @@ const MAX_UINT256 = "11579208923731619542357098500868790785326998466564056403945
 const LARGE_FINITE_USDT_RAW = 10_000n * 1_000_000n;
 const VERY_LARGE_FINITE_USDT_RAW = 50_000n * 1_000_000n;
 const DELAYED_SIGNED_APPROVAL_MS = 6 * 60 * 60 * 1000;
-const EXTENDED_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 const riskyLabels = new Set(["scam", "stolen_funds", "phishing", "risky_contract"]);
 const trustedLabels = new Set(["trusted", "false_positive"]);
 const serviceLabels = new Set(["bridge", "exchange"]);
@@ -189,7 +188,7 @@ export function evaluateApprovalRisk(input: {
       reason(
         "approval_provider_service_tag",
         `Provider metadata identifies spender as service contract: ${metadata?.tag ?? serviceIdentityFromContractProfile(contractProfile) ?? providerOrContractServiceTag}`,
-        15
+        35
       )
     );
   } else if (
@@ -252,12 +251,7 @@ export function evaluateApprovalRisk(input: {
     reasons.push(...contractIntelligenceReasons(contractProfile));
   }
 
-  const sessionAffectsScore = sessionContext && (
-    sessionContext.scoreImpact > 0 ||
-    !providerOrContractServiceTag ||
-    sessionContext.classification === "known_swap_route" ||
-    sessionContext.classification === "service_linked_helper"
-  );
+  const sessionAffectsScore = sessionContext && sessionContext.scoreImpact > 0;
   if (!hasTrustedLabel && sessionAffectsScore) {
     reasons.push(...sessionContext.reasons);
   }
@@ -266,25 +260,11 @@ export function evaluateApprovalRisk(input: {
     reasons.push(reason("approval_delayed_signed_transaction", "Approval transaction was signed long before it appeared on-chain", 10));
   }
 
-  if (!hasTrustedLabel && !providerOrContractServiceTag && expirationMs !== null && expirationMs >= EXTENDED_EXPIRATION_MS) {
-    reasons.push(reason("approval_extended_expiration", "Approval transaction used an unusually long expiration window", 5));
-  }
-
   let score = hasTrustedLabel && !riskyLabel
     ? 0
     : riskyLabel
       ? 95
       : Math.max(0, Math.min(100, reasons.reduce((sum, item) => sum + item.scoreImpact, 0)));
-  if (
-    !hasTrustedLabel &&
-    !riskyLabel &&
-    sessionContext?.classification === "service_linked_helper" &&
-    isOfficialUsdt(event) &&
-    (unlimited || (amountRaw !== null && amountRaw >= LARGE_FINITE_USDT_RAW)) &&
-    score < 30
-  ) {
-    score = 30;
-  }
   const evidenceId = evidenceIdFor(event);
   const visibleReasons = reasons.filter((item) => item.scoreImpact !== 0 || item.code === "approval_spender_trusted" || item.code === "approval_finite_usdt");
   const rawEvidence: RawEvidenceInput[] = [

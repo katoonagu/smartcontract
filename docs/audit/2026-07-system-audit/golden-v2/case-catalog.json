@@ -1,0 +1,262 @@
+{
+  "version": "golden-case-catalog-v2",
+  "groups": [
+    {
+      "kind": "blind_review",
+      "caseIds": [
+        "blind-wallet-scope",
+        "blind-selected-amount-scope",
+        "blind-incoming-deposit-scope",
+        "blind-route-scope",
+        "blind-history-scope"
+      ]
+    },
+    {
+      "kind": "regression",
+      "caseIds": [
+        "regression-tbl7",
+        "regression-tqr"
+      ]
+    },
+    {
+      "kind": "synthetic_property_performance",
+      "caseIds": [
+        "synthetic-empty-wallet",
+        "synthetic-new-no-usdt",
+        "synthetic-one-legitimate-transfer",
+        "synthetic-unknown-no-pattern",
+        "synthetic-direct-blacklist-1pct",
+        "synthetic-bybit-plus-hard-evidence",
+        "synthetic-dangerous-approval-no-debit",
+        "synthetic-victim-debit",
+        "synthetic-operational-wallet",
+        "synthetic-dust-spam",
+        "synthetic-dense-wallet",
+        "synthetic-500-pages",
+        "synthetic-duplicates",
+        "synthetic-reorder",
+        "synthetic-restart",
+        "synthetic-key-exhaustion",
+        "synthetic-ambiguous-delivery"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "blind-wallet-scope",
+      "group": "blind_review",
+      "subjectAddress": "TYXN5ZiJLuzUyAY2dxdzdNjbwnUkSGB1it",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-wallet-scope.json",
+      "requiredProperties": [
+        "scope_wallet"
+      ]
+    },
+    {
+      "caseId": "blind-selected-amount-scope",
+      "group": "blind_review",
+      "subjectAddress": "TV6bBsrCXz2sDSBMZhvc7vHqDwjc65ALZX",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-selected-amount-scope.json",
+      "requiredProperties": [
+        "scope_selected_amount"
+      ]
+    },
+    {
+      "caseId": "blind-incoming-deposit-scope",
+      "group": "blind_review",
+      "subjectAddress": "TSv32fr41xwv3dh99PmtdxkhWguMEEuoVh",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-incoming-deposit-scope.json",
+      "requiredProperties": [
+        "scope_incoming_deposit"
+      ]
+    },
+    {
+      "caseId": "blind-route-scope",
+      "group": "blind_review",
+      "subjectAddress": "TRddZMs7MJmbpQFuBpFxK4BDt5tA4LLPDu",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-route-scope.json",
+      "requiredProperties": [
+        "scope_route"
+      ]
+    },
+    {
+      "caseId": "blind-history-scope",
+      "group": "blind_review",
+      "subjectAddress": "TEognYE7Sy6jiKxkDt2EbFgkUYUfsp9U2j",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-history-scope.json",
+      "requiredProperties": [
+        "scope_history"
+      ]
+    },
+    {
+      "caseId": "regression-tbl7",
+      "group": "regression",
+      "subjectAddress": "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/regression-tbl7.json",
+      "requiredProperties": [
+        "scope_wallet"
+      ]
+    },
+    {
+      "caseId": "regression-tqr",
+      "group": "regression",
+      "subjectAddress": "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      "sourceArtifact": "artifacts/golden-v2-2026-07/source/regression-tqr.json",
+      "requiredProperties": [
+        "scope_wallet"
+      ]
+    },
+    {
+      "caseId": "synthetic-empty-wallet",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "empty_wallet"
+      ]
+    },
+    {
+      "caseId": "synthetic-new-no-usdt",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "new_wallet_no_usdt"
+      ]
+    },
+    {
+      "caseId": "synthetic-one-legitimate-transfer",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "one_legitimate_transfer"
+      ]
+    },
+    {
+      "caseId": "synthetic-unknown-no-pattern",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "unknown_sources_without_pattern"
+      ]
+    },
+    {
+      "caseId": "synthetic-direct-blacklist-1pct",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "direct_blacklist_exposure_1pct"
+      ]
+    },
+    {
+      "caseId": "synthetic-bybit-plus-hard-evidence",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "bybit_99pct_plus_hard_evidence"
+      ]
+    },
+    {
+      "caseId": "synthetic-dangerous-approval-no-debit",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "dangerous_approval_without_debit"
+      ]
+    },
+    {
+      "caseId": "synthetic-victim-debit",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL9GFcbh",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "confirmed_victim_debit"
+      ]
+    },
+    {
+      "caseId": "synthetic-operational-wallet",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "old_active_operational_wallet"
+      ]
+    },
+    {
+      "caseId": "synthetic-dust-spam",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "dust_spam"
+      ]
+    },
+    {
+      "caseId": "synthetic-dense-wallet",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "dense_fan_in_fan_out"
+      ]
+    },
+    {
+      "caseId": "synthetic-500-pages",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "direct_history_500_pages"
+      ]
+    },
+    {
+      "caseId": "synthetic-duplicates",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "duplicate_evidence_idempotent"
+      ]
+    },
+    {
+      "caseId": "synthetic-reorder",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "reordered_evidence_idempotent"
+      ]
+    },
+    {
+      "caseId": "synthetic-restart",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "restart_deterministic"
+      ]
+    },
+    {
+      "caseId": "synthetic-key-exhaustion",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL9GFcbh",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "provider_key_exhaustion"
+      ]
+    },
+    {
+      "caseId": "synthetic-ambiguous-delivery",
+      "group": "synthetic_property_performance",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "sourceArtifact": "tests/fixtures/golden-v2/synthetic-cases.json",
+      "requiredProperties": [
+        "ambiguous_delivery"
+      ]
+    }
+  ]
+}

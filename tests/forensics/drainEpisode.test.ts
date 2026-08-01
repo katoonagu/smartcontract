@@ -1,0 +1,215 @@
+import { describe, expect, it } from "vitest";
+import { detectDrainEpisode } from "../../src/forensics/drainEpisode";
+import type { ForensicRouteEdge } from "../../src/types";
+
+function edge(txHash: string, fromAddress: string, toAddress: string, amountRaw: string, timestamp: string): ForensicRouteEdge {
+  return {
+    id: txHash,
+    txHash,
+    fromAddress,
+    toAddress,
+    amountRaw,
+    timestamp: new Date(timestamp),
+    method: "transfer",
+    edgeType: "normal_transfer"
+  };
+}
+
+describe("drain episode detection", () => {
+  it("detects bridge/adapter drain episode after a large inbound", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("out-200k-a", "TLhV", "TPwez", "199994920000", "2026-05-05T13:57:27.000Z"),
+        edge("out-200k-b", "TLhV", "TPwez", "199994920000", "2026-05-05T13:58:45.000Z"),
+        edge("out-200k-c", "TLhV", "TUrnbc", "200007090000", "2026-05-05T14:23:18.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez", "turnbc"])
+    });
+
+    expect(episode).toMatchObject({
+      anchorTxHash: "anchor-135k",
+      fundingTxHash: "in-1885k",
+      fundingAmountRaw: "1885262475832",
+      fundingTimestamp: "2026-05-05T13:31:30.000Z",
+      startTimestamp: "2026-05-05T13:57:27.000Z",
+      episodeOutgoingRaw: "735296930000",
+      episodeSelectedRaw: "135300000000",
+      bridgeOutgoingRaw: "735296930000",
+      bridgeOutgoingShare: 1
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["out-200k-a", "out-200k-b", "out-200k-c", "anchor-135k"]);
+  });
+
+  it("returns null when the anchor is the only outgoing transfer in scope", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-only",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("anchor-only", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toBeNull();
+  });
+
+  it("ignores outgoing transfers outside the drain window", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("outside-window", "TLhV", "TPwez", "500000000000", "2026-05-04T14:00:00.000Z"),
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("inside-window", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["inside-window", "anchor-135k"]);
+  });
+
+  it("matches subject and service addresses case-insensitively", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "tlhv",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("out-200k", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "tLHv", "tPWEZ", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000",
+      bridgeOutgoingShare: 1
+    });
+  });
+
+  it("ignores zero and non-numeric outgoing amounts", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("zero", "TLhV", "TPwez", "0", "2026-05-05T13:00:00.000Z"),
+        edge("non-numeric", "TLhV", "TPwez", "bad", "2026-05-05T13:30:00.000Z"),
+        edge("valid", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["valid", "anchor-135k"]);
+  });
+
+  it("returns null without a preceding inbound funding transfer", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("out-200k", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toBeNull();
+  });
+
+  it("excludes outgoing transfers before the selected inbound funding transfer", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "0",
+      selectedFundingTxHashes: ["selected-inbound"],
+      edges: [
+        edge("pre-funding-out", "TLhV", "TPwez", "500000000000", "2026-05-05T13:00:00.000Z"),
+        edge("first-inbound", "TUU1", "TLhV", "1000000000000", "2026-05-05T13:15:00.000Z"),
+        edge("post-first-out", "TLhV", "TPwez", "250000000000", "2026-05-05T13:30:00.000Z"),
+        edge("selected-inbound", "TUU2", "TLhV", "800000000000", "2026-05-05T13:45:00.000Z"),
+        edge("post-selected-out", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      fundingTxHash: "selected-inbound",
+      fundingAmountRaw: "800000000000",
+      fundingTimestamp: "2026-05-05T13:45:00.000Z",
+      startTimestamp: "2026-05-05T14:00:00.000Z",
+      episodeOutgoingRaw: "335300000000",
+      episodeSelectedRaw: "0",
+      episodeCoverageRatio: 0,
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["post-selected-out", "anchor-135k"]);
+  });
+
+  it("uses amount-aware fallback instead of late dust inbound", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      edges: [
+        edge("large-funding", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
+        edge("out-200k-a", "TLhV", "TPwez", "199994920000", "2026-05-05T13:57:27.000Z"),
+        edge("out-200k-b", "TLhV", "TPwez", "199994920000", "2026-05-05T13:58:45.000Z"),
+        edge("late-dust-in", "TDust", "TLhV", "1000000", "2026-05-05T14:50:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      fundingTxHash: "large-funding",
+      episodeOutgoingRaw: "535289840000",
+      bridgeOutgoingRaw: "535289840000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["out-200k-a", "out-200k-b", "anchor-135k"]);
+  });
+
+  it("prefers selected funding hash over later larger unrelated inbound", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
+      selectedFundingTxHashes: ["selected-funding"],
+      edges: [
+        edge("selected-funding", "TUU1", "TLhV", "800000000000", "2026-05-05T13:31:30.000Z"),
+        edge("out-200k-a", "TLhV", "TPwez", "199994920000", "2026-05-05T13:57:27.000Z"),
+        edge("unrelated-later-large-in", "TUU2", "TLhV", "2000000000000", "2026-05-05T14:40:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      fundingTxHash: "selected-funding",
+      episodeOutgoingRaw: "335294920000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["out-200k-a", "anchor-135k"]);
+  });
+});

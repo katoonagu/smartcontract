@@ -5,9 +5,30 @@ import type {
   ServiceClassification,
   ServiceExposureProfile
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export const ADDRESS_BEHAVIOR_DEFAULT_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
+
+export const ADDRESS_BEHAVIOR_REASON_CODES = [
+  "address_behavior_deposit_then_drain",
+  "address_behavior_large_inflow_preserved_outflow",
+  "address_behavior_fast_post_deposit_exit",
+  "address_behavior_drain_to_service_infrastructure",
+  "address_behavior_high_volume_transit",
+  "address_behavior_fan_in_fan_out",
+  "address_behavior_large_outgoing_concentration",
+  "address_behavior_top_counterparty_concentration",
+  "address_behavior_collector_like_wallet"
+] as const;
+
+export type AddressBehaviorReasonCode = typeof ADDRESS_BEHAVIOR_REASON_CODES[number];
+
+const addressBehaviorReasonCodes = new Set<string>(ADDRESS_BEHAVIOR_REASON_CODES);
+
+export function isAddressBehaviorReasonCode(code: string): code is AddressBehaviorReasonCode {
+  return addressBehaviorReasonCodes.has(code);
+}
 
 export type AddressBehaviorMetadata = {
   name?: string | null;
@@ -50,7 +71,11 @@ function scaledAmount(amount: bigint, ratio: number): bigint {
   return amount * BigInt(Math.round(ratio * 10_000)) / 10_000n;
 }
 
-function feature(code: string, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
+function feature(code: AddressBehaviorReasonCode, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
+  return { code, label, scoreImpact, value };
+}
+
+function dampenerFeature(code: string, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
   return { code, label, scoreImpact, value };
 }
 
@@ -242,7 +267,7 @@ function scoreDampeners(input: {
     (classification && isServiceBoundary(classification) && classification.category !== "unknown_contract") ||
     /treasury|merchant|payment|payroll|operation|operational/.test(text)
   ) {
-    features.push(feature("known_service_or_treasury_dampener", "Known service or treasury-like subject can legitimately show transit behavior", -25, classification?.category ?? text));
+    features.push(dampenerFeature("known_service_or_treasury_dampener", "Known service or treasury-like subject can legitimately show transit behavior", -25, classification?.category ?? text));
   }
 
   const createdAt = walletCreatedAt(input.metadata);
@@ -250,7 +275,7 @@ function scoreDampeners(input: {
   if (createdAt && txCount !== null) {
     const ageDays = Math.floor((Date.now() - createdAt.getTime()) / 86_400_000);
     if (ageDays >= 180 && txCount >= 1_000) {
-      features.push(feature("long_lived_high_activity_wallet_dampener", "Long-lived high-activity wallet can match legitimate operational behavior", -20, txCount));
+      features.push(dampenerFeature("long_lived_high_activity_wallet_dampener", "Long-lived high-activity wallet can match legitimate operational behavior", -20, txCount));
     }
   }
 
@@ -262,12 +287,15 @@ function scoreDampeners(input: {
     input.uniqueOutgoingCounterparties >= 5 &&
     largestIncomingRatio < 0.4
   ) {
-    features.push(feature("regular_activity_dampener", "Distributed regular activity reduces single-incident interpretation", -15, largestIncomingRatio));
+    features.push(dampenerFeature("regular_activity_dampener", "Distributed regular activity reduces single-incident interpretation", -15, largestIncomingRatio));
   }
 
-  const providerFailures = input.missingChecks.filter((item) => !item.startsWith("Expansion stopped at service boundary"));
+  const providerFailures = input.missingChecks.filter((item) =>
+    !item.startsWith("Expansion stopped at service boundary") &&
+    !item.toLowerCase().includes("sparse-wallet context")
+  );
   if (providerFailures.length > 0) {
-    features.push(feature("low_context_dampener", "Partial provider context reduces behavior confidence", -15, providerFailures.length));
+    features.push(dampenerFeature("low_context_dampener", "Partial provider context reduces behavior confidence", -15, providerFailures.length));
   }
 
   return features;
@@ -275,12 +303,16 @@ function scoreDampeners(input: {
 
 export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileInput): AddressBehaviorProfile {
   const lookaheadMs = input.lookaheadMs ?? ADDRESS_BEHAVIOR_DEFAULT_LOOKAHEAD_MS;
-  const incoming = input.edges
+  const grossIncoming = input.edges
     .filter((edge) => edge.toAddress === input.subjectAddress && parseAmount(edge.amountRaw) !== null)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const outgoing = input.edges
+  const grossOutgoing = input.edges
     .filter((edge) => edge.fromAddress === input.subjectAddress && parseAmount(edge.amountRaw) !== null)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  const incoming = grossIncoming.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const outgoing = grossOutgoing.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const grossIncomingVolumeRaw = volumeOf(grossIncoming);
+  const grossOutgoingVolumeRaw = volumeOf(grossOutgoing);
   const incomingVolumeRaw = volumeOf(incoming);
   const outgoingVolumeRaw = volumeOf(outgoing);
   const largestIncoming = largestAmount(incoming);
@@ -297,7 +329,7 @@ export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileIn
     ? timeToFirstOutgoingMs + input.serviceExposureProfile.fastestServiceExitMs
     : null;
   const inflowToOutflowRatio = incomingVolumeRaw > 0n ? preservationRatio(outgoingVolumeRaw, incomingVolumeRaw) : null;
-  const serviceOutgoingRaw = scaledAmount(outgoingVolumeRaw, input.serviceExposureProfile?.combinedServiceVolumeRatio ?? 0);
+  const serviceOutgoingRaw = scaledAmount(grossOutgoingVolumeRaw, input.serviceExposureProfile?.combinedServiceVolumeRatio ?? 0);
   const drainToServiceRatio = incomingVolumeRaw > 0n ? preservationRatio(serviceOutgoingRaw, incomingVolumeRaw) : 0;
 
   const base = {
@@ -338,10 +370,10 @@ export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileIn
 
   return {
     subjectAddress: input.subjectAddress,
-    incomingVolumeRaw: incomingVolumeRaw.toString(),
-    outgoingVolumeRaw: outgoingVolumeRaw.toString(),
-    incomingTxCount: incoming.length,
-    outgoingTxCount: outgoing.length,
+    incomingVolumeRaw: grossIncomingVolumeRaw.toString(),
+    outgoingVolumeRaw: grossOutgoingVolumeRaw.toString(),
+    incomingTxCount: grossIncoming.length,
+    outgoingTxCount: grossOutgoing.length,
     uniqueIncomingCounterparties: base.uniqueIncomingCounterparties,
     uniqueOutgoingCounterparties: base.uniqueOutgoingCounterparties,
     largestIncomingRaw: largestIncoming?.toString() ?? null,

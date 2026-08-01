@@ -27,7 +27,7 @@ alter table observed_transactions
 alter table observed_transactions drop constraint if exists observed_transactions_user_alert_status_check;
 alter table observed_transactions
   add constraint observed_transactions_user_alert_status_check
-  check (user_alert_status in ('pending', 'sending', 'sent', 'failed', 'skipped'));
+  check (user_alert_status in ('pending', 'sending', 'analyzing', 'sent', 'failed', 'skipped'));
 
 alter table observed_transactions drop constraint if exists observed_transactions_risk_level_check;
 alter table observed_transactions

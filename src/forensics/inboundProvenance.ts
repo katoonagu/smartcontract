@@ -1,4 +1,5 @@
 import type { AddressLabel, ForensicRouteEdge, InboundProvenancePath, InboundProvenanceProfile, RouteScoreFeature, ServiceClassification } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type BuildInboundProvenanceProfileInput = {
   subjectAddress: string;
@@ -15,6 +16,7 @@ const criticalLabels = new Set<AddressLabel["label"]>([
   "phishing",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange"
 ]);
 
@@ -41,6 +43,10 @@ function isDarknetExchange(label: AddressLabel | null): boolean {
   return label?.label === "darknet_exchange";
 }
 
+function isBoundaryAllowedHighRiskLabel(label: AddressLabel | null): boolean {
+  return label?.label === "darknet_exchange" || label?.label === "whitebit";
+}
+
 function isBoundary(classification: ServiceClassification | null | undefined): boolean {
   return Boolean(classification && classification.category !== "none" && classification.isBoundary);
 }
@@ -52,10 +58,13 @@ function addFeature(features: RouteScoreFeature[], code: string, label: string, 
 
 export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfileInput): InboundProvenanceProfile {
   const minPreservation = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
-  const incoming = input.edges
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges
     .filter((edge) => edge.toAddress === input.subjectAddress)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const incomingVolume = incoming.reduce((sum, edge) => sum + edgeAmount(edge), 0n);
+  const incomingVolume = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + edgeAmount(edge), 0n);
   const paths: InboundProvenancePath[] = [];
   const features: RouteScoreFeature[] = [];
   const boundaryNotes: string[] = [];
@@ -63,12 +72,14 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
   let twoHopFound = false;
   let darknetDirectFound = false;
   let darknetTwoHopFound = false;
+  let whitebitDirectFound = false;
+  let whitebitTwoHopFound = false;
   let matchedInboundVolume = 0n;
 
   for (const directEdge of incoming) {
     const directLabel = criticalLabel(input.labelsByAddress.get(directEdge.fromAddress));
     const directClassification = input.classifications?.get(directEdge.fromAddress) ?? null;
-    if (isBoundary(directClassification) && !isDarknetExchange(directLabel)) {
+    if (isBoundary(directClassification) && !isBoundaryAllowedHighRiskLabel(directLabel)) {
       const note = `Funds reached service/CEX/bridge boundary ${directEdge.fromAddress} (${directClassification?.category}); public-chain continuity should not be assumed.`;
       if (!boundaryNotes.includes(note)) boundaryNotes.push(note);
       addFeature(features, "inbound_provenance_service_boundary", "Inbound source is a service/CEX/bridge boundary; public-chain continuity should not be assumed.", 0);
@@ -78,6 +89,8 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
     if (directLabel) {
       if (isDarknetExchange(directLabel)) {
         darknetDirectFound = true;
+      } else if (directLabel.label === "whitebit") {
+        whitebitDirectFound = true;
       } else {
         directFound = true;
       }
@@ -95,25 +108,29 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
       });
       if (isDarknetExchange(directLabel)) {
         addFeature(features, "inbound_provenance_darknet_exchange_direct", "Confirmed on-chain exposure to known darknet exchange seed within 2 hops.", 50);
+      } else if (directLabel.label === "whitebit") {
+        addFeature(features, "inbound_provenance_whitebit_direct", "Inbound provenance candidate from WhiteBIT high-risk source; manual review required.", 50);
       } else {
         addFeature(features, "inbound_provenance_direct_labeled_source", "Inbound provenance candidate from directly labeled source; manual review required.", 40);
       }
       continue;
     }
 
-    const upstreamEdges = input.edges
+    const upstreamEdges = riskEligibleEdges
       .filter((edge) => edge.toAddress === directEdge.fromAddress && edge.timestamp.getTime() <= directEdge.timestamp.getTime())
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
     for (const upstreamEdge of upstreamEdges) {
       const upstreamLabel = criticalLabel(input.labelsByAddress.get(upstreamEdge.fromAddress));
       const upstreamClassification = input.classifications?.get(upstreamEdge.fromAddress) ?? null;
-      if (isBoundary(upstreamClassification) && !isDarknetExchange(upstreamLabel)) continue;
+      if (isBoundary(upstreamClassification) && !isBoundaryAllowedHighRiskLabel(upstreamLabel)) continue;
       if (!upstreamLabel) continue;
       const amountPreservationRatio = preservationRatio(edgeAmount(upstreamEdge), edgeAmount(directEdge));
       if (amountPreservationRatio < minPreservation) continue;
 
       if (isDarknetExchange(upstreamLabel)) {
         darknetTwoHopFound = true;
+      } else if (upstreamLabel.label === "whitebit") {
+        whitebitTwoHopFound = true;
       } else {
         twoHopFound = true;
       }
@@ -131,6 +148,8 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
       });
       if (isDarknetExchange(upstreamLabel)) {
         addFeature(features, "inbound_provenance_darknet_exchange_two_hop", "Confirmed on-chain exposure to known darknet exchange seed within 2 hops.", 45);
+      } else if (upstreamLabel.label === "whitebit") {
+        addFeature(features, "inbound_provenance_whitebit_two_hop", "Inbound provenance candidate from WhiteBIT high-risk source within two hops; manual review required.", 45);
       } else {
         addFeature(features, "inbound_provenance_two_hop_labeled_source", "Inbound provenance candidate from labeled source within two hops; manual review required.", 30);
       }
@@ -156,7 +175,7 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
     matchedInboundVolumeRaw: matchedInboundVolume.toString(),
     paths,
     boundaryNotes,
-    score: darknetDirectFound ? 50 : darknetTwoHopFound ? 45 : directFound ? 40 : twoHopFound ? 30 : 0,
+    score: darknetDirectFound || whitebitDirectFound ? 50 : darknetTwoHopFound || whitebitTwoHopFound ? 45 : directFound ? 40 : twoHopFound ? 30 : 0,
     features
   };
 }

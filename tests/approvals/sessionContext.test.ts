@@ -26,6 +26,76 @@ function approval(overrides: Partial<ApprovalGuardEvent> = {}): ApprovalGuardEve
 }
 
 describe("buildApprovalSessionContext", () => {
+  function bridgersContext(decodedAmountRaw: string) {
+    const bridgers = "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s";
+    const approvalEvent = approval({ spenderAddress: bridgers });
+    const actionTxHash = "bridgers-action-tx";
+    return buildApprovalSessionContext({
+      watchedWalletId: "wallet-1",
+      approval: approvalEvent,
+      relatedTransfers: [{
+        transaction_id: actionTxHash,
+        from_address: wallet,
+        to_address: bridgers,
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        quant: "100000000",
+        confirmed: true,
+        contractRet: "SUCCESS",
+        finalResult: "SUCCESS",
+        status: 0,
+        tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20", tokenAbbr: "USDT", tokenDecimal: 6 },
+        block_ts: approvalEvent.timestamp.getTime() + 6_000
+      }],
+      transactionDetails: new Map([[actionTxHash, {
+        ownerAddress: wallet,
+        receipt: { success: true },
+        trigger_info: { methodName: "swap", parameter: { amount: decodedAmountRaw } },
+        contractData: { owner_address: wallet, amount: decodedAmountRaw }
+      }]]),
+      addressMetadata: new Map(),
+      approvalChanges: [{
+        txHash: approvalEvent.txHash,
+        ownerAddress: wallet,
+        spenderAddress: bridgers,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        amountRaw: approvalEvent.amountRaw,
+        isUnlimited: true,
+        timestamp: approvalEvent.timestamp,
+        confirmed: true,
+        contractRet: "SUCCESS"
+      }],
+      approvalChangeWindowComplete: true,
+      now: new Date("2026-05-23T00:00:00.000Z")
+    });
+  }
+
+  it("uses an exact registry session as the route without provider metadata", () => {
+    const context = bridgersContext("100000000");
+
+    expect(context.knownServiceSession).toMatchObject({ authoritativeServiceId: "bridgers" });
+    expect(context).toMatchObject({
+      classification: "known_swap_route",
+      linkedRouteTxHash: "bridgers-action-tx",
+      routeServiceTags: ["bridgers"],
+      scoreImpact: -20
+    });
+    expect(context.reasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "approval_temporally_linked_to_known_swap", scoreImpact: -20 })
+    ]));
+  });
+
+  it("does not infer a registry route from metadata-free inexact activity", () => {
+    const context = bridgersContext("99999999");
+
+    expect(context.knownServiceSession).toBeNull();
+    expect(context).toMatchObject({
+      classification: "no_route_found",
+      linkedRouteTxHash: null,
+      routeServiceTags: [],
+      scoreImpact: 0
+    });
+  });
+
   it("classifies unverified helper approvals as service-linked when a nearby swap route is present", () => {
     const context = buildApprovalSessionContext({
       watchedWalletId: "wallet-1",

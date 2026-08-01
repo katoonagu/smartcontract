@@ -1,0 +1,764 @@
+import type { ForensicJobProgressPatch } from "./forensicJobProgress";
+import type {
+  ForensicScoreBlockedReason,
+  ForensicTechnicalStatus,
+  TronAddressUsdtCoverageMode,
+  TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexRequestKind,
+  TronAddressUsdtIndexState,
+  WhereCandidateWindowRequest
+} from "../types";
+
+export type TargetedHistoryRequiredFor = "where_hop" | "incoming_hop";
+
+const TARGETED_HISTORY_MIN_MAX_ATTEMPTS = 8;
+const TARGETED_HISTORY_RETRY_MIN_BUDGET_PAGES = 200;
+const TARGETED_HISTORY_RETRY_ESCALATION_FACTOR = 2;
+
+export class TargetedHistoryWaitingForIndex extends Error {
+  constructor() {
+    super("targeted_history_waiting_for_index");
+  }
+}
+
+export class TargetedHistoryTerminalError extends Error {
+  readonly scoreBlockedReason: ForensicScoreBlockedReason;
+  readonly technicalStatus: ForensicTechnicalStatus;
+
+  constructor(input: {
+    message: string;
+    scoreBlockedReason: ForensicScoreBlockedReason;
+    technicalStatus: ForensicTechnicalStatus;
+  }) {
+    super(input.message);
+    this.scoreBlockedReason = input.scoreBlockedReason;
+    this.technicalStatus = input.technicalStatus;
+  }
+}
+
+export type TargetedHistoryWaiterDeps = {
+  getAddressUsdtIndexState(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    candidateTxHash?: string | null;
+  }): Promise<TronAddressUsdtIndexState | null>;
+  getCoveringAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp: Date;
+  }): Promise<TronAddressUsdtIndexState | null>;
+  queueAddressUsdtHistory(input: {
+    claimStartedAt: Date;
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
+    requestedByJobId?: string | null;
+    queuedReason: string;
+    budgetPages?: number | null;
+    maxAttempts?: number | null;
+  }): Promise<TronAddressUsdtIndexState>;
+  releaseForensicCheckJobToWaiting(input: {
+    id: string;
+    claimStartedAt: Date;
+    progressJson: Record<string, unknown>;
+    lastError?: string | null;
+  }): Promise<boolean>;
+  upsertForensicJobWait?(input: {
+    jobId: string;
+    claimStartedAt: Date;
+    address: string;
+    targetTimestamp: Date;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
+    requiredFor: TargetedHistoryRequiredFor;
+    statusReason?: TronAddressUsdtCoverageStatusReason | null;
+    lastError?: string | null;
+  }): Promise<boolean | void>;
+  markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
+    address: string;
+    targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
+    indexStatus: TronAddressUsdtIndexState["status"];
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }): Promise<number | boolean>;
+};
+
+export type TargetedHistoryWaitInput = {
+  jobId: string;
+  claimStartedAt: Date;
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: string;
+  requiredFor: TargetedHistoryRequiredFor;
+  maxRetryBudgetPages?: number | null;
+  progressJson: Record<string, unknown>;
+  deps: TargetedHistoryWaiterDeps;
+  persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+  afterWaitingPatch?: ForensicJobProgressPatch;
+};
+
+export type TargetedHistoryBatchRequest = {
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: string;
+  requiredFor: TargetedHistoryRequiredFor;
+  reason?: string;
+};
+
+export type TargetedHistoryBatchWaitInput = {
+  jobId: string;
+  claimStartedAt: Date;
+  requests: TargetedHistoryBatchRequest[];
+  maxRetryBudgetPages?: number | null;
+  progressJson: Record<string, unknown>;
+  deps: TargetedHistoryWaiterDeps;
+  persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+  afterWaitingPatch?: ForensicJobProgressPatch;
+  onTerminalTarget?(input: {
+    request: TargetedHistoryBatchRequest;
+    state: TronAddressUsdtIndexState;
+    error: TargetedHistoryTerminalError;
+  }): Promise<void>;
+};
+
+export type CandidateWindowWaitInput = {
+  jobId: string;
+  claimStartedAt: Date;
+  requests: WhereCandidateWindowRequest[];
+  queuedReason?: string;
+  requiredFor?: TargetedHistoryRequiredFor;
+  progressJson: Record<string, unknown>;
+  deps: TargetedHistoryWaiterDeps;
+  persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+};
+
+export function targetedHistoryWaitingProgressPatch(input: {
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: string;
+  requiredFor: TargetedHistoryRequiredFor;
+  state?: TronAddressUsdtIndexState | null;
+}): ForensicJobProgressPatch {
+  return {
+    jobPhase: "waiting_for_targeted_index",
+    targetedIndex: {
+      phase: "waiting_for_targeted_index",
+      scoreValid: false,
+      waitingFor: {
+        address: input.address,
+        coverageMode: "targeted",
+        targetTimestamp: input.targetTimestamp.toISOString(),
+        queuedReason: input.queuedReason,
+        requiredFor: input.requiredFor
+      },
+      lastIndexStatus: input.state?.status ?? null,
+      statusReason: input.state?.statusReason ?? null,
+      targetTimestamp: input.state?.targetTimestamp?.toISOString() ?? input.targetTimestamp.toISOString(),
+      ...targetedIndexStateProgress(input.state)
+    }
+  };
+}
+
+export function targetedHistoryReadyProgressPatch(input: {
+  address: string;
+  targetTimestamp: Date | null;
+  indexStatus: TronAddressUsdtIndexState["status"];
+  statusReason: TronAddressUsdtCoverageStatusReason | null;
+  lastError: string | null;
+  state?: TronAddressUsdtIndexState | null;
+}): ForensicJobProgressPatch {
+  const terminal = input.indexStatus !== "complete";
+  const mapped = terminal ? targetedHistoryTerminalStatus(input.statusReason, input.lastError) : null;
+  return {
+    jobPhase: terminal ? "provider_limited" : "reading_local_index",
+    targetedIndex: {
+      phase: terminal ? "provider_limited" : "reading_local_index",
+      scoreValid: terminal ? false : null,
+      scoreBlockedReason: mapped?.scoreBlockedReason ?? null,
+      technicalStatus: mapped?.technicalStatus ?? "completed",
+      waitingFor: null,
+      lastIndexedAddress: input.address,
+      lastIndexedTargetTimestamp: input.targetTimestamp?.toISOString() ?? null,
+      lastIndexStatus: input.indexStatus,
+      statusReason: input.statusReason,
+      lastError: input.lastError,
+      ...targetedIndexStateProgress(input.state, input.lastError)
+    }
+  };
+}
+
+function targetedHistoryBatchKey(request: TargetedHistoryBatchRequest): string {
+  return [
+    request.address.toLowerCase(),
+    request.targetTimestamp.getTime().toString(),
+    request.reason ?? ""
+  ].join(":");
+}
+
+function dedupeTargetedHistoryBatchRequests(
+  requests: TargetedHistoryBatchRequest[]
+): TargetedHistoryBatchRequest[] {
+  const byKey = new Map<string, TargetedHistoryBatchRequest>();
+  for (const request of requests) {
+    byKey.set(targetedHistoryBatchKey(request), request);
+  }
+  return [...byKey.values()];
+}
+
+function terminalErrorForState(state: TronAddressUsdtIndexState): TargetedHistoryTerminalError {
+  const mapped = targetedHistoryTerminalStatus(state.statusReason, state.lastError);
+  return new TargetedHistoryTerminalError({
+    message: `targeted_history_terminal:${state.status}:${state.statusReason ?? "unknown"}`,
+    ...mapped
+  });
+}
+
+export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInput): Promise<true> {
+  const existing = await input.deps.getAddressUsdtIndexState({
+    address: input.address,
+    coverageMode: "targeted",
+    targetTimestamp: input.targetTimestamp
+  });
+  if (isTargetedHistoryCovered(existing)) return true;
+  const covering = (await input.deps.getCoveringAddressUsdtIndexState?.({
+    address: input.address,
+    coverageMode: "targeted",
+    targetTimestamp: input.targetTimestamp
+  }) ?? null);
+  if (isTargetedHistoryCovered(covering)) return true;
+  throwIfTerminal(covering, input.maxRetryBudgetPages);
+  throwIfTerminal(existing, input.maxRetryBudgetPages);
+
+  const retryablePartial = existing && isRetryablePartialState(existing, input.maxRetryBudgetPages)
+    ? existing
+    : covering && isRetryablePartialState(covering, input.maxRetryBudgetPages)
+      ? covering
+      : null;
+  const queueTargetTimestamp = covering?.targetTimestamp ?? input.targetTimestamp;
+  const queued = isTargetedHistoryAlreadyInFlight(existing)
+    ? existing!
+    : isTargetedHistoryAlreadyInFlight(covering)
+      ? covering!
+      : await input.deps.queueAddressUsdtHistory({
+          claimStartedAt: input.claimStartedAt,
+          address: input.address,
+          coverageMode: "targeted",
+          targetTimestamp: queueTargetTimestamp,
+          requestedByJobId: input.jobId,
+          queuedReason: input.queuedReason,
+          budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial, input.maxRetryBudgetPages) : undefined,
+          maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
+        });
+  if (isTargetedHistoryCovered(queued)) return true;
+  throwIfTerminal(queued, input.maxRetryBudgetPages);
+
+  const waitSaved = await input.deps.upsertForensicJobWait?.({
+    jobId: input.jobId,
+    claimStartedAt: input.claimStartedAt,
+    address: input.address,
+    targetTimestamp: input.targetTimestamp,
+    requiredFor: input.requiredFor,
+    statusReason: queued.statusReason,
+    lastError: queued.lastError
+  });
+  if (waitSaved === false) throw new Error("lost_forensic_job_claim");
+
+  const patch = {
+    ...targetedHistoryWaitingProgressPatch({
+      address: input.address,
+      targetTimestamp: queueTargetTimestamp,
+      queuedReason: input.queuedReason,
+      requiredFor: input.requiredFor,
+      state: queued
+    }),
+    ...(input.afterWaitingPatch ?? {})
+  };
+  const persisted = await input.persistProgress(patch);
+  const progressJson = persisted ?? input.progressJson;
+  const released = await input.deps.releaseForensicCheckJobToWaiting({
+    id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
+    progressJson,
+    lastError: null
+  });
+  if (!released) throw new Error("lost_forensic_job_claim");
+
+  const afterRelease = (await input.deps.getAddressUsdtIndexState({
+    address: input.address,
+    coverageMode: "targeted",
+    targetTimestamp: queueTargetTimestamp
+  })) ?? (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: input.address,
+      coverageMode: "targeted",
+      targetTimestamp: input.targetTimestamp
+    }) ?? null);
+  if (afterRelease && isTargetedHistoryFinished(afterRelease)) {
+    await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+      address: afterRelease.address,
+      targetTimestamp: afterRelease.targetTimestamp,
+      indexStatus: afterRelease.status,
+      statusReason: afterRelease.statusReason,
+      lastError: afterRelease.lastError,
+      state: afterRelease
+    });
+  }
+
+  throw new TargetedHistoryWaitingForIndex();
+}
+
+type PendingTargetedHistoryWait = {
+  request: TargetedHistoryBatchRequest;
+  state: TronAddressUsdtIndexState;
+  queueTargetTimestamp: Date;
+};
+
+function targetedHistoryBatchWaitingProgressPatch(input: {
+  total: number;
+  pending: PendingTargetedHistoryWait[];
+}): ForensicJobProgressPatch {
+  const first = input.pending[0];
+  const base = targetedHistoryWaitingProgressPatch({
+    address: first.request.address,
+    targetTimestamp: first.queueTargetTimestamp,
+    queuedReason: first.request.queuedReason,
+    requiredFor: first.request.requiredFor,
+    state: first.state
+  });
+  return {
+    ...base,
+    targetedIndex: {
+      ...(base.targetedIndex ?? {}),
+      broadFallback: "queued",
+      broadFallbackBatch: {
+        total: input.total,
+        waiting: input.pending.length
+      },
+      broadFallbackTargets: input.pending.map((item) => ({
+        address: item.request.address,
+        targetTimestamp: item.request.targetTimestamp.toISOString(),
+        queuedReason: item.request.queuedReason,
+        reason: item.request.reason ?? null,
+        lastIndexStatus: item.state.status,
+        statusReason: item.state.statusReason
+      }))
+    }
+  };
+}
+
+export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchWaitInput): Promise<true> {
+  const requests = dedupeTargetedHistoryBatchRequests(input.requests);
+  if (requests.length === 0) return true;
+
+  const pending: PendingTargetedHistoryWait[] = [];
+  for (const request of requests) {
+    const existing = await input.deps.getAddressUsdtIndexState({
+      address: request.address,
+      coverageMode: "targeted",
+      targetTimestamp: request.targetTimestamp,
+      requestKind: "broad_targeted"
+    });
+    if (isTargetedHistoryCovered(existing)) continue;
+    const covering = (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: request.address,
+      coverageMode: "targeted",
+      targetTimestamp: request.targetTimestamp
+    }) ?? null);
+    if (isTargetedHistoryCovered(covering)) continue;
+
+    const terminal = [covering, existing].find((state): state is TronAddressUsdtIndexState =>
+      Boolean(state && (state.status === "failed_terminal" || isTerminalPartialState(state, input.maxRetryBudgetPages)))
+    );
+    if (terminal) {
+      const error = terminalErrorForState(terminal);
+      if (!input.onTerminalTarget) throw error;
+      await input.onTerminalTarget({
+        request,
+        state: terminal,
+        error
+      });
+      continue;
+    }
+
+    const retryablePartial = existing && isRetryablePartialState(existing, input.maxRetryBudgetPages)
+      ? existing
+      : covering && isRetryablePartialState(covering, input.maxRetryBudgetPages)
+        ? covering
+        : null;
+    const queueTargetTimestamp = covering?.targetTimestamp ?? request.targetTimestamp;
+    const queued = isTargetedHistoryAlreadyInFlight(existing)
+      ? existing!
+      : isTargetedHistoryAlreadyInFlight(covering)
+        ? covering!
+        : await input.deps.queueAddressUsdtHistory({
+            claimStartedAt: input.claimStartedAt,
+            address: request.address,
+            coverageMode: "targeted",
+            targetTimestamp: queueTargetTimestamp,
+            requestKind: "broad_targeted",
+            requestedByJobId: input.jobId,
+            queuedReason: request.queuedReason,
+            budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial, input.maxRetryBudgetPages) : undefined,
+            maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
+          });
+    if (isTargetedHistoryCovered(queued)) continue;
+    if (queued.status === "failed_terminal" || isTerminalPartialState(queued, input.maxRetryBudgetPages)) {
+      const error = terminalErrorForState(queued);
+      if (!input.onTerminalTarget) throw error;
+      await input.onTerminalTarget({
+        request,
+        state: queued,
+        error
+      });
+      continue;
+    }
+
+    const waitSaved = await input.deps.upsertForensicJobWait?.({
+      jobId: input.jobId,
+      claimStartedAt: input.claimStartedAt,
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      requestKind: "broad_targeted",
+      requiredFor: request.requiredFor,
+      statusReason: queued.statusReason,
+      lastError: queued.lastError
+    });
+    if (waitSaved === false) throw new Error("lost_forensic_job_claim");
+    pending.push({ request, state: queued, queueTargetTimestamp });
+  }
+
+  if (pending.length === 0) return true;
+  const persisted = await input.persistProgress({
+    ...targetedHistoryBatchWaitingProgressPatch({
+      total: requests.length,
+      pending
+    }),
+    ...(input.afterWaitingPatch ?? {})
+  });
+  const released = await input.deps.releaseForensicCheckJobToWaiting({
+    id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
+    progressJson: persisted ?? input.progressJson,
+    lastError: null
+  });
+  if (!released) throw new Error("lost_forensic_job_claim");
+
+  const afterReleaseStates = await Promise.all(pending.map(async (item) =>
+    (await input.deps.getAddressUsdtIndexState({
+      address: item.request.address,
+      coverageMode: "targeted",
+      targetTimestamp: item.queueTargetTimestamp,
+      requestKind: "broad_targeted"
+    })) ?? (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: item.request.address,
+      coverageMode: "targeted",
+      targetTimestamp: item.request.targetTimestamp
+    }) ?? null)
+  ));
+  for (const state of afterReleaseStates) {
+    if (state && isTargetedHistoryFinished(state)) {
+      await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+        address: state.address,
+        targetTimestamp: state.targetTimestamp,
+        requestKind: "broad_targeted",
+        indexStatus: state.status,
+        statusReason: state.statusReason,
+        lastError: state.lastError,
+        state
+      });
+    }
+  }
+
+  throw new TargetedHistoryWaitingForIndex();
+}
+
+export function candidateWindowWaitingProgressPatch(input: {
+  requests: readonly WhereCandidateWindowRequest[];
+  states: readonly TronAddressUsdtIndexState[];
+}): ForensicJobProgressPatch {
+  const complete = input.states.filter((state) => state.status === "complete").length;
+  const terminal = input.states.filter((state) => state.status === "partial" || state.status === "failed_terminal").length;
+  return {
+    jobPhase: "waiting_for_targeted_index",
+    targetedIndex: {
+      phase: "checking_candidate_windows",
+      scoreValid: false,
+      candidateWindows: {
+        total: input.requests.length,
+        queued: input.states.filter((state) => state.status === "queued").length,
+        running: input.states.filter((state) => state.status === "running").length,
+        complete,
+        terminal,
+        pending: Math.max(0, input.requests.length - complete - terminal)
+      },
+      broadFallback: "not_queued",
+      windows: input.requests.map((request) => ({
+        address: request.address,
+        targetTimestamp: request.targetTimestamp.toISOString(),
+        windowStartTimestamp: request.windowStartTimestamp.toISOString(),
+        windowEndTimestamp: request.windowEndTimestamp.toISOString(),
+        relatedHopTxHash: request.relatedHopTxHash,
+        candidateTxHash: request.candidateTxHash,
+        coverageShare: request.coverageShare
+      }))
+    }
+  };
+}
+
+export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInput): Promise<true> {
+  if (input.requests.length === 0) return true;
+  const queuedReason = input.queuedReason ?? "where_candidate_window";
+  const requiredFor = input.requiredFor ?? "where_hop";
+  const states: TronAddressUsdtIndexState[] = [];
+  for (const request of input.requests) {
+    const existing = await input.deps.getAddressUsdtIndexState({
+      address: request.address,
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash
+    });
+    const state = existing && isTargetedHistoryFinished(existing)
+      ? existing
+      : await input.deps.queueAddressUsdtHistory({
+          claimStartedAt: input.claimStartedAt,
+          address: request.address,
+          coverageMode: "targeted",
+          requestKind: "candidate_window",
+          targetTimestamp: request.targetTimestamp,
+          windowStartTimestamp: request.windowStartTimestamp,
+          windowEndTimestamp: request.windowEndTimestamp,
+          relatedHopTxHash: request.relatedHopTxHash,
+          candidateTxHash: request.candidateTxHash,
+          requestedByJobId: input.jobId,
+          queuedReason,
+          budgetPages: 200,
+          maxAttempts: 3
+        });
+    states.push(state);
+    if (!isTargetedHistoryFinished(state)) {
+      const waitSaved = await input.deps.upsertForensicJobWait?.({
+        jobId: input.jobId,
+        claimStartedAt: input.claimStartedAt,
+        address: request.address,
+        targetTimestamp: request.targetTimestamp,
+        requestKind: "candidate_window",
+        windowStartTimestamp: request.windowStartTimestamp,
+        windowEndTimestamp: request.windowEndTimestamp,
+        relatedHopTxHash: request.relatedHopTxHash,
+        candidateTxHash: request.candidateTxHash,
+        requiredFor,
+        statusReason: state.statusReason,
+        lastError: state.lastError
+      });
+      if (waitSaved === false) throw new Error("lost_forensic_job_claim");
+    }
+  }
+  if (states.every(isTargetedHistoryFinished)) return true;
+  const persisted = await input.persistProgress(candidateWindowWaitingProgressPatch({
+    requests: input.requests,
+    states
+  }));
+  const released = await input.deps.releaseForensicCheckJobToWaiting({
+    id: input.jobId,
+    claimStartedAt: input.claimStartedAt,
+    progressJson: persisted ?? input.progressJson,
+    lastError: null
+  });
+  if (!released) throw new Error("lost_forensic_job_claim");
+  const afterReleaseStates = await Promise.all(input.requests.map((request) => input.deps.getAddressUsdtIndexState({
+    address: request.address,
+    coverageMode: "targeted",
+    requestKind: "candidate_window",
+    targetTimestamp: request.targetTimestamp,
+    windowStartTimestamp: request.windowStartTimestamp,
+    windowEndTimestamp: request.windowEndTimestamp,
+    candidateTxHash: request.candidateTxHash
+  })));
+  for (const state of afterReleaseStates) {
+    if (state && isTargetedHistoryFinished(state)) {
+      await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+        address: state.address,
+        targetTimestamp: state.targetTimestamp,
+        requestKind: "candidate_window",
+        windowStartTimestamp: state.windowStartTimestamp ?? null,
+        windowEndTimestamp: state.windowEndTimestamp ?? null,
+        relatedHopTxHash: state.relatedHopTxHash ?? null,
+        candidateTxHash: state.candidateTxHash ?? null,
+        indexStatus: state.status,
+        statusReason: state.statusReason,
+        lastError: state.lastError,
+        state
+      });
+    }
+  }
+  throw new TargetedHistoryWaitingForIndex();
+}
+
+function isTargetedHistoryAlreadyInFlight(state: TronAddressUsdtIndexState | null | undefined): boolean {
+  return state?.coverageMode === "targeted" &&
+    (state.status === "queued" || state.status === "running" || state.status === "failed_retryable");
+}
+
+export function targetedHistoryTerminalStatus(
+  statusReason: TronAddressUsdtCoverageStatusReason | null | undefined,
+  lastError?: string | null
+): { scoreBlockedReason: ForensicScoreBlockedReason; technicalStatus: ForensicTechnicalStatus } {
+  const errorText = (lastError ?? "").toLowerCase();
+  if (statusReason === "partial_rate_limited" || errorText.includes("429") || errorText.includes("rate")) {
+    return { scoreBlockedReason: "rate_limited_after_retries", technicalStatus: "provider_limited" };
+  }
+  if (statusReason === "partial_provider_inconsistent") {
+    return { scoreBlockedReason: "provider_inconsistent", technicalStatus: "provider_error" };
+  }
+  if (statusReason === "partial_provider_cap") {
+    return { scoreBlockedReason: "provider_cap_unresolved", technicalStatus: "provider_cap_unresolved" };
+  }
+  if (statusReason === "too_large_deferred") {
+    return { scoreBlockedReason: "hard_safety_limit_exceeded", technicalStatus: "hard_safety_limit_exceeded" };
+  }
+  if (statusReason === "partial_budget_exhausted") {
+    return { scoreBlockedReason: "partial_budget_exhausted", technicalStatus: "budget_limited" };
+  }
+  return { scoreBlockedReason: "provider_error", technicalStatus: "provider_error" };
+}
+
+function isTargetedHistoryCovered(state: TronAddressUsdtIndexState | null | undefined): boolean {
+  return state?.coverageMode === "targeted" &&
+    state.status === "complete" &&
+    state.statusReason === "complete_provider_windowed";
+}
+
+function isTargetedHistoryFinished(state: TronAddressUsdtIndexState): boolean {
+  return state.status === "complete" || state.status === "failed_terminal" || isTerminalPartialState(state);
+}
+
+function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined, maxRetryBudgetPages?: number | null): void {
+  if (!state) return;
+  if (state.status === "failed_terminal" || isTerminalPartialState(state, maxRetryBudgetPages)) {
+    const mapped = targetedHistoryTerminalStatus(state.statusReason, state.lastError);
+    throw new TargetedHistoryTerminalError({
+      message: `targeted_history_terminal:${state.status}:${state.statusReason ?? "unknown"}`,
+      ...mapped
+    });
+  }
+}
+
+function isTerminalPartialState(state: TronAddressUsdtIndexState, maxRetryBudgetPages?: number | null): boolean {
+  if (state.status !== "partial") return false;
+  if (isRetryablePartialState(state, maxRetryBudgetPages)) return false;
+  if (state.statusReason === "partial_provider_inconsistent" ||
+    state.statusReason === "too_large_deferred" ||
+    state.statusReason === "failed_terminal") {
+    return true;
+  }
+  if (state.statusReason === "partial_budget_exhausted" || state.statusReason === "partial_rate_limited") {
+    return true;
+  }
+  if (state.statusReason === "partial_provider_cap") {
+    return state.attemptCount >= Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
+  return false;
+}
+
+function isRetryablePartialState(
+  state: TronAddressUsdtIndexState | null | undefined,
+  maxRetryBudgetPages?: number | null
+): boolean {
+  if (state?.coverageMode !== "targeted" || state.status !== "partial") return false;
+  if (state.statusReason === "partial_rate_limited") {
+    return state.attemptCount < Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
+  if (state.statusReason === "partial_budget_exhausted") {
+    return retryBudgetCanGrow(state, maxRetryBudgetPages);
+  }
+  return state.statusReason === "partial_provider_cap" &&
+    state.budgetExhausted === true &&
+    retryBudgetCanGrow(state, maxRetryBudgetPages);
+}
+
+function nextRetryablePartialBudgetPages(
+  state: TronAddressUsdtIndexState,
+  maxRetryBudgetPages?: number | null
+): number {
+  const current = Math.max(
+    TARGETED_HISTORY_RETRY_MIN_BUDGET_PAGES,
+    state.budgetPages ?? 0,
+    state.fetchedPageCount ?? 0
+  );
+  if (state.statusReason === "partial_rate_limited") {
+    const max = normalizedRetryBudgetCeiling(maxRetryBudgetPages);
+    return max === null ? current : Math.min(max, current);
+  }
+  const next = current * TARGETED_HISTORY_RETRY_ESCALATION_FACTOR;
+  const max = normalizedRetryBudgetCeiling(maxRetryBudgetPages);
+  return max === null ? next : Math.min(max, next);
+}
+
+function nextRetryablePartialMaxAttempts(state: TronAddressUsdtIndexState): number {
+  if (state.statusReason === "partial_rate_limited") {
+    return Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
+  return Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS, state.attemptCount + 1);
+}
+
+function retryBudgetCanGrow(
+  state: TronAddressUsdtIndexState,
+  maxRetryBudgetPages?: number | null
+): boolean {
+  const current = Math.max(state.budgetPages ?? 0, state.fetchedPageCount ?? 0);
+  return nextRetryablePartialBudgetPages(state, maxRetryBudgetPages) > current;
+}
+
+function normalizedRetryBudgetCeiling(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(1, Math.floor(value));
+}
+
+function targetedIndexStateProgress(
+  state: TronAddressUsdtIndexState | null | undefined,
+  lastError = state?.lastError ?? null
+): Record<string, unknown> {
+  const errorText = (lastError ?? "").toLowerCase();
+  const rateLimited = state?.statusReason === "partial_rate_limited" ||
+    /\b(429|rate limit|too many requests)\b/i.test(errorText);
+  const forbidden = /\b(403|forbidden)\b/i.test(errorText);
+  const serverError = /\b5\d\d\b/i.test(errorText);
+  return {
+    pagesFetched: state?.fetchedPageCount ?? null,
+    transfersFetched: state?.fetchedTransferCount ?? null,
+    oldestFetchedTransferAt: state?.oldestTransferAt?.toISOString() ?? null,
+    newestFetchedTransferAt: state?.newestTransferAt?.toISOString() ?? null,
+    targetTimestamp: state?.targetTimestamp?.toISOString() ?? null,
+    budgetPages: state?.budgetPages ?? null,
+    attemptCount: state?.attemptCount ?? null,
+    maxAttempts: state?.maxAttempts ?? null,
+    retryCount: state?.retryCount ?? null,
+    providerCapHit: state?.providerCapHit ?? null,
+    budgetExhausted: state?.budgetExhausted ?? null,
+    providerInconsistent: state?.providerInconsistent ?? null,
+    requestCount: state?.fetchedPageCount ?? null,
+    rateLimitedCount: rateLimited ? 1 : 0,
+    forbiddenCount: forbidden ? 1 : 0,
+    serverErrorCount: serverError ? 1 : 0
+  };
+}

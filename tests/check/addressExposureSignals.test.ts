@@ -20,6 +20,88 @@ function transfer(txHash: string): RawTronscanTrc20Transfer {
 }
 
 describe("address exposure risk signal provider", () => {
+  it("uses a five-minute default timeout for fast service exposure", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = createAddressExposureRiskSignalProvider({
+        tronClient: {
+          listRelatedTrc20Transfers: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 400_000));
+            return [];
+          }
+        },
+        now: () => new Date("2026-05-24T00:00:00.000Z")
+      });
+
+      const signalsPromise = provider(sourceAddress);
+      await vi.advanceTimersByTimeAsync(300_000);
+      const signals = await signalsPromise;
+
+      expect(signals.missingChecks?.[0]).toContain("timed out after 300000ms");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses latest 100 historical transfers by default when the 90d window has fewer than 100 transfers", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-05-24T00:00:00.000Z");
+    const fortyFiveDaysAgo = Date.parse("2026-04-09T10:00:00.000Z");
+    const calls: Array<{ hasWindow: boolean; limit?: number; returnedCount: number }> = [];
+    const windowCandidateTransfers = Array.from({ length: 99 }, (_, index) => ({
+      ...transfer(`tx-window-${index}`),
+      block_ts: fortyFiveDaysAgo,
+      to_address: `TCounterparty${String(index).padStart(2, "0")}11111111111111111111`
+    }));
+    const latestTransfers = [
+      ...windowCandidateTransfers,
+      {
+        ...transfer("tx-old-service"),
+        block_ts: Date.parse("2025-11-01T10:00:00.000Z")
+      }
+    ];
+    try {
+      const provider = createAddressExposureRiskSignalProvider({
+        tronClient: {
+          listRelatedTrc20Transfers: async (address, options) => {
+            const hasWindow = options?.minTimestamp !== undefined;
+            const candidates = address === sourceAddress
+              ? hasWindow
+                ? windowCandidateTransfers.filter((candidate) =>
+                    candidate.block_ts >= (options.minTimestamp ?? 0) &&
+                    candidate.block_ts <= (options.endTimestamp ?? Number.POSITIVE_INFINITY)
+                  )
+                : latestTransfers
+              : [];
+            const start = options?.start ?? 0;
+            const limit = options?.limit ?? candidates.length;
+            const page = candidates.slice(start, start + limit);
+            calls.push({ hasWindow, limit: options?.limit, returnedCount: page.length });
+            if (hasWindow) {
+              await new Promise((resolve) => setTimeout(resolve, 20_000));
+            }
+            return page;
+          }
+        },
+        now: () => now
+      }, {
+        maxDepth: 1,
+        maxPagesPerAddress: 1
+      });
+
+      const signalsPromise = provider(sourceAddress);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await signalsPromise;
+
+      expect(calls).toEqual(expect.arrayContaining([
+        { hasWindow: true, limit: 100, returnedCount: 99 },
+        { hasWindow: false, limit: 100, returnedCount: 100 }
+      ]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("converts bounded service exposure into a capped graph signal with evidence", async () => {
     const provider = createAddressExposureRiskSignalProvider({
       tronClient: {
@@ -49,22 +131,42 @@ describe("address exposure risk signal provider", () => {
 
     const signals = await provider(sourceAddress);
 
-    expect(signals.graphSignals).toEqual([
+    expect(signals.graphSignals).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: "forensic_service_exposure",
         scoreImpact: 50,
         source: "forensic_route_search",
         evidenceRef: expect.any(String)
+      }),
+      expect.objectContaining({
+        code: "forensic_boundary_exposure_context",
+        scoreImpact: 15,
+        source: "forensic_route_search",
+        evidenceRef: expect.any(String)
       })
-    ]);
-    expect(signals.rawEvidence).toHaveLength(1);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_service_exposure" })
-    ]);
+    ]));
+    expect(signals.rawEvidence).toHaveLength(2);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_service_exposure" }),
+      expect.objectContaining({ code: "forensic_boundary_exposure_context" })
+    ]));
     expect(signals.serviceExposureProfiles?.[0]).toMatchObject({
       subjectAddress: sourceAddress,
       dominantCategory: "bridge_pool",
       exposureScore: 65
+    });
+    expect(signals.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      contextScore: 15
+    });
+    expect(signals.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: sourceAddress,
+      topOutgoingCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "outgoing", volumeRaw: "100000000" })
+      ],
+      topServiceCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "service", category: "bridge_pool" })
+      ]
     });
   });
 
@@ -223,7 +325,7 @@ describe("address exposure risk signal provider", () => {
     expect(signals.graphSignals.map((signal) => signal.code)).not.toContain("forensic_service_exposure");
     expect(signals.serviceExposureProfiles?.[0]).toMatchObject({
       exposureScore: 0,
-      dominantCategory: "unknown_contract"
+      dominantCategory: null
     });
   });
 
@@ -259,7 +361,7 @@ describe("address exposure risk signal provider", () => {
     nowMs += 1_000;
     await provider(sourceAddress);
 
-    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(1);
+    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(2);
   });
 
   it("returns a partial note instead of throwing when exposure lookup fails", async () => {
@@ -486,8 +588,13 @@ describe("address exposure risk signal provider", () => {
       })
     ]);
     expect(signals.addressBehaviorProfiles?.[0].transitScore).toBeGreaterThan(0);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_address_behavior" })
-    ]);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_address_behavior" }),
+      expect.objectContaining({ code: "forensic_wallet_role_context" })
+    ]));
+    expect(signals.walletRoleProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      primaryRole: "collector"
+    });
   });
 });

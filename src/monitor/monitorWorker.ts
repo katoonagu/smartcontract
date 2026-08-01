@@ -3,6 +3,8 @@ import { userIncomingAlertKeyboard } from "../alerts/keyboards";
 import type { InlineKeyboard } from "grammy";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import { parseTrc20IncomingTransfer } from "../parser/transactionParser";
+import { initialAddressPoisoningCheckStatus } from "./addressPoisoning";
+import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { evaluateAddressRisk, type RiskEvaluation } from "../risk/evaluation";
 import type { RiskSignal } from "../risk/riskEngine";
 import type {
@@ -59,16 +61,38 @@ export type PollingCycleDeps = {
   pageLimit: number;
   maxPagesPerWallet: number;
   backfillLookbackMs: number;
+  incomingDepositRealtimeMaxAgeMs?: number;
+  addressPoisoningSmallTransferMaxRaw: string;
   now?: () => Date;
   isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
   recordWalletPollSuccess?(input: WalletPollSuccessInput): Promise<void>;
   recordWalletPollFailure?(input: { watchedWalletId: string; error: string }): Promise<void>;
-  claimObservedTransactionForUserAlert(input: { watchedWalletId: string; event: TronTransferEvent }): Promise<boolean>;
+  claimObservedTransactionForUserAlert(input: {
+    watchedWalletId: string;
+    event: TronTransferEvent;
+    poisoningCheckStatus: "pending" | "skipped" | "skipped_backfill";
+    poisoningCheckReason: string | null;
+  }): Promise<boolean>;
   claimUserAlertsForRetry(input: { limit: number; staleSendingBefore: Date }): Promise<ObservedTransactionUserAlert[]>;
   claimDigestTransactions(input: { limit: number; now: Date }): Promise<ObservedTransactionDigestItem[]>;
   recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  queueIncomingDepositJob?(input: {
+    txHash: string;
+    watchedWalletId: string;
+    watchedWallet: string;
+    sender: string;
+    amount: string;
+    amountRaw: string;
+    timestamp: Date;
+    telegramUserId: string;
+    chatId: string;
+    requestedBy: string;
+    alertMode: WalletAlertMode;
+    locale?: string | null;
+  }): Promise<{ id: string }>;
+  markUserAlertAnalyzing?(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertSkipped(input: { txHash: string; watchedWalletId: string; reason: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
@@ -88,6 +112,9 @@ export type PollingCycleDeps = {
   userAlertRetryLimit?: number;
   digestClaimLimit?: number;
 };
+
+const DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS = 15 * 60_000;
+const BACKFILL_STALE_TRANSACTION_REASON = "backfill_stale_transaction";
 
 type CollectedWalletEvents = {
   events: TronTransferEvent[];
@@ -142,6 +169,10 @@ function parseUsdtToMicro(amount: string): bigint {
   return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
 }
 
+function parseUsdtDisplayToRaw(amount: string): string {
+  return parseUsdtToMicro(amount).toString();
+}
+
 function formatUsdtMicro(value: bigint): string {
   const whole = value / 1_000_000n;
   const fraction = value % 1_000_000n;
@@ -152,6 +183,50 @@ function formatUsdtMicro(value: bigint): string {
 
 function boundedPollError(error: string): string {
   return error.slice(0, 1024);
+}
+
+function incomingDepositRealtimeMaxAgeMs(deps: PollingCycleDeps): number {
+  const value = deps.incomingDepositRealtimeMaxAgeMs ?? DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
+  if (!Number.isFinite(value)) return DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizedEventAmountRaw(amount: string): string {
+  if (amount === "0") return "0";
+  return parseUsdtDecimalToRaw(amount) ?? "invalid";
+}
+
+async function skipStaleIncomingDepositBackfill(
+  event: TronTransferEvent,
+  wallet: WatchedWallet,
+  deps: PollingCycleDeps,
+  ageMs: number,
+  maxAgeMs: number
+): Promise<void> {
+  try {
+    await deps.markUserAlertSkipped({
+      txHash: event.txHash,
+      watchedWalletId: wallet.id,
+      reason: BACKFILL_STALE_TRANSACTION_REASON
+    });
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("incoming_deposit_backfill_skip_status_update_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: errorMessage(error)
+    });
+    return;
+  }
+
+  (deps.logger ?? defaultLogger).info("incoming_deposit_backfill_alert_skipped", {
+    wallet_id: wallet.id,
+    address: wallet.address,
+    tx_hash: event.txHash,
+    tx_timestamp: event.timestamp.toISOString(),
+    age_ms: ageMs,
+    max_age_ms: maxAgeMs
+  });
 }
 
 function buildDigestAlert(wallet: WatchedWallet, items: ObservedTransactionDigestItem[]) {
@@ -359,6 +434,45 @@ async function markUserAlertFailedSafely(
 }
 
 async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))();
+  const maxAgeMs = incomingDepositRealtimeMaxAgeMs(deps);
+  const ageMs = now.getTime() - event.timestamp.getTime();
+  if (ageMs > maxAgeMs) {
+    await skipStaleIncomingDepositBackfill(event, wallet, deps, ageMs, maxAgeMs);
+    return;
+  }
+
+  if (deps.queueIncomingDepositJob && deps.markUserAlertAnalyzing) {
+    try {
+      await deps.queueIncomingDepositJob({
+        txHash: event.txHash,
+        watchedWalletId: wallet.id,
+        watchedWallet: wallet.address,
+        sender: event.sender,
+        amount: event.amount,
+        amountRaw: parseUsdtDisplayToRaw(event.amount),
+        timestamp: event.timestamp,
+        telegramUserId: wallet.telegramUserId,
+        chatId: wallet.telegramUserId,
+        requestedBy: wallet.telegramUserId,
+        alertMode: wallet.alertMode,
+        locale: wallet.locale ?? null
+      });
+      await deps.markUserAlertAnalyzing({ txHash: event.txHash, watchedWalletId: wallet.id });
+      return;
+    } catch (error) {
+      const message = errorMessage(error);
+      await markUserAlertFailedSafely(event, wallet, message, deps);
+      (deps.logger ?? defaultLogger).error("incoming_deposit_job_queue_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        tx_hash: event.txHash,
+        error: message
+      });
+      return;
+    }
+  }
+
   let evaluation: RiskEvaluation;
 
   try {
@@ -636,7 +750,22 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
   let skippedCount = 0;
 
   for (const event of events) {
-    const claimed = await deps.claimObservedTransactionForUserAlert({ watchedWalletId: wallet.id, event });
+    const poisoning = initialAddressPoisoningCheckStatus({
+      amountRaw: normalizedEventAmountRaw(event.amount),
+      sender: event.sender,
+      receiver: event.receiver,
+      eventAt: event.timestamp,
+      now: (deps.now ?? (() => new Date()))(),
+      realtimeMaxAgeMs: incomingDepositRealtimeMaxAgeMs(deps),
+      maxAmountRaw: deps.addressPoisoningSmallTransferMaxRaw,
+      alertMode: wallet.alertMode
+    });
+    const claimed = await deps.claimObservedTransactionForUserAlert({
+      watchedWalletId: wallet.id,
+      event,
+      poisoningCheckStatus: poisoning.status,
+      poisoningCheckReason: poisoning.reason
+    });
     if (!claimed) {
       skippedCount += 1;
       continue;

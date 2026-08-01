@@ -1,11 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "../../src/approvals/approvalWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { CustomerAlertRecipient, PendingApprovalContextRow, WalletApprovalPollState } from "../../src/storage/repositories";
-import type { AddressLabel, RawEvidenceInput, RiskSignalObservationInput, WatchedWallet } from "../../src/types";
+import { TronscanClient } from "../../src/tron/tronClient";
+import type {
+  AddressLabel,
+  ApprovalAllowanceStateV2,
+  RawEvidenceInput,
+  RiskSignalObservationInput,
+  WatchedWallet
+} from "../../src/types";
 
-const ownerAddress = "TOwner1111111111111111111111111111111";
-const spenderAddress = "TSpender11111111111111111111111111111";
+const ownerAddress = "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ";
+const spenderAddress = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV";
+const bridgersAddress = "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s";
 const approvalTxHash = "aa4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
 
 const watchedWallet: WatchedWallet = {
@@ -108,6 +116,18 @@ function suspiciousContractProfile() {
   };
 }
 
+function verify20ContractProfile() {
+  return {
+    ...suspiciousContractProfile(),
+    methodMap: {
+      "5082dd12": "Verify20(address,address,address,uint256)",
+      "fc61dd23": "Verify10(address,uint256)",
+      "ea4418d9": "withdrawAllTrxTo(address)",
+      "f2fde38b": "transferOwnership(address)"
+    }
+  };
+}
+
 function pendingContextRow(overrides: Partial<PendingApprovalContextRow> = {}): PendingApprovalContextRow {
   return {
     approvalTxHash,
@@ -144,6 +164,13 @@ function pendingContextRow(overrides: Partial<PendingApprovalContextRow> = {}): 
   };
 }
 
+function directAllowanceDeps() {
+  return {
+    getUsdtAllowance: async () => currentApproval().amountRaw,
+    saveWalletApprovalAllowanceStateV2: async () => {}
+  };
+}
+
 function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollingCycle>[0]> = {}) {
   const claimed = new Set<string>();
   const currentApprovals: unknown[] = [];
@@ -160,6 +187,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
   const pollSuccesses: WalletApprovalPollState[] = [];
   const pollFailures: Array<{ watchedWalletId: string; error: string }> = [];
   const evidence: Array<{ rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }> = [];
+  const approvalRisks: unknown[] = [];
   const deps: Parameters<typeof runSingleApprovalPollingCycle>[0] = {
     wallets: [watchedWallet],
     tronClient: {
@@ -170,6 +198,8 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
         return [approvalChange()];
       }
     },
+    getUsdtAllowance: async () => currentApproval().amountRaw,
+    saveWalletApprovalAllowanceStateV2: async () => {},
     pageLimit: 20,
     maxPagesPerWallet: 1,
     now: () => new Date("2026-05-23T00:00:00.000Z"),
@@ -195,7 +225,10 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
       claimed.add(event.approvalTxHash);
       return true;
     },
-    recordApprovalRisk: async () => true,
+    recordApprovalRisk: async (input) => {
+      approvalRisks.push(input);
+      return true;
+    },
     claimObservedApprovalDrainEvent: async (observation) => {
       drainObservations.push(observation);
       return true;
@@ -250,11 +283,619 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
     drainObservations,
     pollSuccesses,
     pollFailures,
-    evidence
+    evidence,
+    approvalRisks
   };
 }
 
 describe("runSingleApprovalPollingCycle", () => {
+  it.each([
+    { label: "exact causal session on a short clean page", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-clean", expectedScore: 10, expectedLevel: "LOW" },
+    { label: "exact registry session without provider metadata", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-clean", metadataAvailable: false, expectedScore: 10, expectedLevel: "LOW" },
+    { label: "registry without exact session or provider metadata", decodedAmountRaw: "91103008", receipt: true, strictPageMode: "short-clean", metadataAvailable: false, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "short page with larger authoritative total", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-total-larger", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "short page ending at authoritative total", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-total-equal", expectedScore: 10, expectedLevel: "LOW" },
+    { label: "short page with contradictory total", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-total-contradictory", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "short page with invalid total", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-total-invalid", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "amount mismatch", decodedAmountRaw: "91103008", receipt: true, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "missing explicit receipt", decodedAmountRaw: "91103009", receipt: undefined, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "false explicit receipt", decodedAmountRaw: "91103009", receipt: false, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "intervening revoke", decodedAmountRaw: "91103009", receipt: true, interveningAmountRaw: "0", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "intervening reapproval", decodedAmountRaw: "91103009", receipt: true, interveningAmountRaw: "1000000", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "same-timestamp different approval", decodedAmountRaw: "91103009", receipt: true, interveningAmountRaw: "1000000", interveningOffsetMs: 0, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "incomplete approval-change page", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "short-clean", lookupLimit: 1, expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "full raw page with one malformed row", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "full-malformed", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "full clean page without total", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "full-no-total", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "total-proven clean final page", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "full-total", expectedScore: 10, expectedLevel: "LOW" },
+    { label: "strict page with missing metadata", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "missing-metadata", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "missing strict page API", decodedAmountRaw: "91103009", receipt: true, strictPageMode: "unavailable", expectedScore: 45, expectedLevel: "MEDIUM" }
+  ] as const)("uses authoritative Bridgers session only for $label", async ({ decodedAmountRaw, receipt, interveningAmountRaw, interveningOffsetMs, strictPageMode, metadataAvailable, lookupLimit, expectedScore, expectedLevel }) => {
+    const actionTxHash = "c16e27c144732bee70de72c88f5e3e501ac2bd5bbcdad66f6edac5b66cd31743";
+    const approvalAt = new Date("2026-05-06T19:06:15.000Z");
+    const approval = currentApproval({ spenderAddress: bridgersAddress, spenderIsContract: true });
+    const change = approvalChange({ spenderAddress: bridgersAddress, timestamp: approvalAt });
+    const intervening = interveningAmountRaw === undefined ? null : approvalChange({
+      txHash: "bb4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2",
+      spenderAddress: bridgersAddress,
+      amountRaw: interveningAmountRaw,
+      isUnlimited: false,
+      timestamp: new Date(approvalAt.getTime() + (interveningOffsetMs ?? 30_000))
+    });
+    const approvalChanges = intervening ? [intervening, change] : [change];
+    const strictApprovalPage = (limit: number) => {
+      if (strictPageMode === "missing-metadata") {
+        return { changes: approvalChanges, rawCount: undefined as unknown as number, malformedCount: 0, total: null };
+      }
+      if (["short-total-larger", "short-total-equal", "short-total-contradictory", "short-total-invalid"].includes(strictPageMode ?? "")) {
+        return {
+          changes: approvalChanges,
+          rawCount: approvalChanges.length,
+          malformedCount: 0,
+          total: strictPageMode === "short-total-larger"
+            ? 50
+            : strictPageMode === "short-total-contradictory"
+              ? 0
+              : strictPageMode === "short-total-invalid"
+                ? -1
+                : approvalChanges.length
+        };
+      }
+      if (strictPageMode !== "full-malformed" && strictPageMode !== "full-no-total" && strictPageMode !== "full-total") {
+        return { changes: approvalChanges, rawCount: approvalChanges.length, malformedCount: 0, total: null };
+      }
+      const parsedCount = strictPageMode === "full-malformed" ? limit - 1 : limit;
+      const older = Array.from({ length: Math.max(0, parsedCount - approvalChanges.length) }, (_, index) => approvalChange({
+        txHash: (index + 1).toString(16).padStart(64, "0"),
+        spenderAddress: bridgersAddress,
+        timestamp: new Date(approvalAt.getTime() - (index + 1) * 1_000)
+      }));
+      return {
+        changes: [...approvalChanges, ...older],
+        rawCount: limit,
+        malformedCount: strictPageMode === "full-malformed" ? 1 : 0,
+        total: strictPageMode === "full-total" ? limit : null
+      };
+    };
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [approval], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return approvalChanges;
+        },
+        ...(strictPageMode === "unavailable" ? {} : {
+          async listTrc20ApprovalChangePageStrict(input: { limit?: number }) {
+            return strictApprovalPage(input.limit ?? 20);
+          }
+        }),
+        async listRelatedTrc20Transfers() {
+          return [{
+            transaction_id: actionTxHash,
+            from_address: ownerAddress,
+            to_address: bridgersAddress,
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            quant: "91103009",
+            confirmed: true,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS",
+            status: 0,
+            tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+            block_ts: approvalAt.getTime() + 66_000
+          }];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS",
+            ...(receipt === undefined ? {} : { receipt: { success: receipt } }),
+            trigger_info: { methodName: "swap", parameter: { amount: decodedAmountRaw } },
+            contractData: { owner_address: ownerAddress, amount: decodedAmountRaw }
+          };
+        }
+      },
+      getUsdtAllowance: async () => approval.amountRaw,
+      approvalChangeLookupLimit: lookupLimit,
+      targetApprovalTxHash: intervening ? approvalTxHash : undefined,
+      getAddressMetadata: async (address) => metadataAvailable !== false && address === bridgersAddress
+        ? contractMetadata(bridgersAddress, "Bridgers:Cross-chain Bridge")
+        : null
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals.at(-1)).toMatchObject({
+      spenderAddress: bridgersAddress,
+      riskLevel: expectedLevel,
+      riskScore: expectedScore
+    });
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalSafetyAssessmentV2).toMatchObject({
+      level: expectedLevel,
+      score: expectedScore,
+      action: "REVOKE_IF_UNUSED",
+      amlScoreImpact: 0,
+      serviceSession: expectedScore === 10 ? expect.objectContaining({ actionTxHash, amountContinuity: "exact" }) : null
+    });
+    expect(ctx.sentOwnerMessages.at(-1)).toMatch(/Проверяемый кошел[её]к — кошел[её]к, который выдал доступ к USDT/);
+    expect(ctx.sentOwnerMessages.at(-1)).toContain("Контракт, получивший доступ к USDT");
+    expect(ctx.sentOwnerMessages.at(-1)).toMatch(/Разрешение на управление USDT сейчас: активное, безлимитное/);
+    expect(ctx.sentOwnerMessages.at(-1)).not.toMatch(/Истекает|Дедлайн контекста|expiration/i);
+    expect(JSON.stringify(ctx.sentOwnerOptions.at(-1)?.reply_markup)).not.toMatch(/callback_data|revoke|отозв/i);
+    if (metadataAvailable === false) {
+      const sessionEvidence = ctx.evidence.at(-1)?.rawEvidence.find((item) => item.source === "approval_session_context");
+      expect(sessionEvidence?.evidenceJson).toMatchObject({
+        classification: expectedScore === 10 ? "known_swap_route" : "no_route_found",
+        linkedRouteTxHash: expectedScore === 10 ? actionTxHash : null,
+        routeServiceTags: expectedScore === 10 ? ["bridgers"] : []
+      });
+    }
+  });
+
+  it("[REQ-18][AC-24][TASK7-WORKER-PRESENTATION] keeps a failed direct allowance check unconfirmed", async () => {
+    const approval = currentApproval({ spenderAddress: bridgersAddress, spenderIsContract: true });
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [approval], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange({ spenderAddress: bridgersAddress })];
+        }
+      },
+      getUsdtAllowance: async () => {
+        throw new Error("provider unavailable");
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.sentOwnerMessages).toHaveLength(1);
+    expect(ctx.sentOwnerMessages[0]).toMatch(/подтвердить не удалось|нельзя считать его активным или отозванным/i);
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/сейчас: активное|сейчас: 0 USDT|разрешение больше не активно/i);
+    expect(JSON.stringify(ctx.sentOwnerOptions[0]?.reply_markup)).not.toMatch(/callback_data|revoke|отозв/i);
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-NO-DEBIT] presents exact Verify20 without claiming a debit", async () => {
+    const presentations: unknown[] = [];
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalSafetyAssessmentV2).toMatchObject({
+      version: "approval-safety-v2",
+      exactVerify20: true,
+      exactDebit: false,
+      level: "CRITICAL",
+      score: 90,
+      amlScoreImpact: 0
+    });
+    expect(ctx.approvalRisks[0]).toMatchObject({
+      report: {
+        subjectAddress: ownerAddress,
+        level: "CRITICAL",
+        score: 90,
+        reasons: [expect.objectContaining({ source: "approval_wallet_safety", scoreImpact: 90 })]
+      }
+    });
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>90/100 — критический риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("точный Verify20-шаблон массовых списаний");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/деньги уже украдены|кража подтверждена/i);
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/баланс.*USDT|BTTOLD|кампан/i);
+    expect(presentations).toEqual([
+      expect.objectContaining({
+        assessment: expect.objectContaining({ exactVerify20: true, exactDebit: false, score: 90 }),
+        exactDebitProfile: null,
+        evaluatedAt: new Date("2026-05-23T00:00:00.000Z")
+      })
+    ]);
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-AUTHORITATIVE-FRESH] keeps one authoritative 90 assessment for a fresh exact Verify20 approval", async () => {
+    const pendingContexts: unknown[] = [];
+    const ctx = createDeps({
+      now: () => new Date("2026-05-05T13:43:00.000Z"),
+      markApprovalContextPending: async (input) => {
+        pendingContexts.push(input);
+        return true;
+      },
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange({ timestamp: new Date("2026-05-05T13:42:21.000Z") })];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(pendingContexts).toEqual([]);
+    expect(ctx.currentApprovals).toHaveLength(1);
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.evidence).toHaveLength(1);
+    expect(ctx.evidence[0]?.rawEvidence[0]?.evidenceJson.approvalSafetyAssessmentV2).toMatchObject({
+      exactVerify20: true,
+      exactDebit: false,
+      level: "CRITICAL",
+      score: 90,
+      amlScoreImpact: 0
+    });
+    expect(ctx.approvalRisks).toHaveLength(1);
+    expect(ctx.approvalRisks[0]).toMatchObject({
+      report: { subjectAddress: ownerAddress, level: "CRITICAL", score: 90 }
+    });
+    expect(ctx.sentOwnerMessages).toHaveLength(1);
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>90/100 — критический риск для кошелька</b>");
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-AUTHORITATIVE-NONMATCH] leaves a non-Verify20 approval on its existing path", async () => {
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => suspiciousContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Verify20/);
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE] shows a subject-bound official-USDT balance with the authoritative Verify20 risk", async () => {
+    const balanceRequests: Array<{ watchedWalletId: string; ownerAddress: string; signal: AbortSignal }> = [];
+    const presentations: Array<Parameters<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["onApprovalPresentation"]>>[0]> = [];
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        totalCallCount: "999",
+        totalCallerCount: "241",
+        uniqueCallerCount: "241",
+        topMethods: [{
+          methodId: "5082dd12",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 0.31
+        }]
+      }),
+      getApprovalPresentationBalance: async (request) => {
+        balanceRequests.push(request);
+        return {
+          subjectAddress: request.ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          balanceRaw: "4084665000",
+          checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+          source: "official_usdt_balanceOf"
+        };
+      },
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(balanceRequests).toEqual([
+      expect.objectContaining({ watchedWalletId: watchedWallet.id, ownerAddress, signal: expect.any(AbortSignal) })
+    ]);
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.sentOwnerMessages[0]).toContain("Контракту доступен текущий баланс: 4 084,665 USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("Контекст кампании: 309 Verify20-вызовов.");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("241 кошельков-источников");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("BTTOLD");
+    expect(presentations[0]?.campaignContext).toMatchObject({
+      ownerAddress,
+      spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      approvalTxHash,
+      verify20CallCount: 309,
+      sourceWalletCount: null,
+      bttoldEvidenceId: null
+    });
+    expect(JSON.stringify(ctx.evidence)).not.toContain("4084665000");
+    expect(JSON.stringify(ctx.evidence)).not.toContain("official_usdt_balanceOf");
+    expect(JSON.stringify(ctx.evidence)).not.toContain("campaignContext");
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-TIMEOUT] aborts one slow balance read without retrying or blocking the alert", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const ctx = createDeps({
+        getAddressMetadata: async () => contractMetadata(),
+        getContractIntelligenceProfile: async () => verify20ContractProfile(),
+        getApprovalPresentationBalance: ({ signal }) => new Promise((_resolve, reject) => {
+          calls += 1;
+          signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+        }),
+        tronClient: {
+          async listTrc20Approvals() {
+            return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+          },
+          async listTrc20ApprovalChanges() {
+            return [approvalChange()];
+          },
+          async listRelatedTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {};
+          }
+        }
+      });
+
+      const cycle = runSingleApprovalPollingCycle(ctx.deps);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await cycle;
+
+      expect(calls).toBe(1);
+      expect(ctx.sentOwnerMessages).toHaveLength(1);
+      expect(ctx.sentOwnerMessages[0]).not.toContain("доступен текущий баланс");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-BINDING] omits foreign or unavailable balance evidence", async () => {
+    const providers: Array<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["getApprovalPresentationBalance"]>> = [
+      async () => ({
+        subjectAddress: "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD",
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "4084665000",
+        checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => ({
+        subjectAddress: ownerAddress,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "4084665000",
+        checkedAt: new Date("2026-05-22T23:58:59.999Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => ({
+        subjectAddress: ownerAddress,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "not-a-uint",
+        checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => {
+        throw new Error("balance provider unavailable");
+      }
+    ];
+
+    for (const getApprovalPresentationBalance of providers) {
+      const ctx = createDeps({
+        getAddressMetadata: async () => contractMetadata(),
+        getContractIntelligenceProfile: async () => verify20ContractProfile(),
+        getApprovalPresentationBalance,
+        tronClient: {
+          async listTrc20Approvals() {
+            return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+          },
+          async listTrc20ApprovalChanges() {
+            return [approvalChange()];
+          },
+          async listRelatedTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {};
+          }
+        }
+      });
+
+      await runSingleApprovalPollingCycle(ctx.deps);
+
+      expect(ctx.sentOwnerMessages[0]).not.toMatch(/доступен текущий баланс/i);
+      expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    }
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-CAMPAIGN-BINDING] omits call counts from a foreign contract profile", async () => {
+    const foreignContract = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+    const getApprovalPresentationBalance = vi.fn();
+    const presentations: Array<Parameters<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["onApprovalPresentation"]>>[0]> = [];
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getApprovalPresentationBalance,
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        contractAddress: foreignContract,
+        address: foreignContract,
+        topMethods: [{
+          methodId: "5082dd12",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 1
+        }]
+      }),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(getApprovalPresentationBalance).not.toHaveBeenCalled();
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.approvalRisks[0]).toMatchObject({ report: { level: "HIGH", score: 70 } });
+    expect(presentations[0]?.assessment).toMatchObject({ exactVerify20: false, score: 35 });
+    expect(JSON.stringify(ctx.evidence)).not.toContain('"exactVerify20":true');
+    expect(ctx.sentOwnerMessages[0]).not.toContain("90/100");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Контекст кампании|BTTOLD/);
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-CAMPAIGN-SELECTOR] rejects a Verify20 label on the wrong selector", async () => {
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        topMethods: [{
+          methodId: "deadbeef",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 1
+        }]
+      }),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.sentOwnerMessages[0]).toContain("точный Verify20-шаблон");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Контекст кампании|BTTOLD/);
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-SCOPE] does not request a balance for a non-Verify20 approval", async () => {
+    const getApprovalPresentationBalance = vi.fn();
+    const ctx = createDeps({ getApprovalPresentationBalance });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(getApprovalPresentationBalance).not.toHaveBeenCalled();
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-EXACT-DEBIT] presents a subject-bound exact debit above the authoritative Verify20 risk", async () => {
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+    const drainTxHash = "b".repeat(64);
+    let relatedCalls = 0;
+    const ctx = createDeps({
+      getAddressMetadata: async (address) => address === spenderAddress
+        ? contractMetadata()
+        : { ...contractMetadata(address), name: null, tag: null, isContract: false, verified: null, accountType: 0 },
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          relatedCalls += 1;
+          if (relatedCalls === 1) return [];
+          return [{
+            transaction_id: drainTxHash,
+            from_address: ownerAddress,
+            to_address: receiverAddress,
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            quant: "13302000000",
+            confirmed: true,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS",
+            status: 0,
+            tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+            block_ts: Date.parse("2026-05-09T10:13:12.000Z")
+          }];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress: spenderAddress,
+            trigger_info: { methodName: "transferFrom", methodId: "23b872dd" },
+            contractData: { owner_address: spenderAddress }
+          };
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.drainObservations[0]).toMatchObject({ transferTxHash: drainTxHash, receiverAddress, amountRaw: "13302000000" });
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>95/100 — критический риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: подтверждено, 13 302 USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("точная Verify20-цепочка и списание USDT");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/деньги уже украдены|кража подтверждена/i);
+  });
+
   it("skips stale watched wallets that were removed after the cycle loaded", async () => {
     const warnings: string[] = [];
     let approvalCalls = 0;
@@ -300,10 +941,13 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 80
     });
     expect(ctx.evidence[0].observations.map((observation) => observation.signalGroup)).toEqual(["approval", "approval"]);
+    expect(ctx.evidence[0].rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("approval_only");
+    expect(ctx.evidence[0].observations[0]?.message).toContain("approval monitoring state: approval_only");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval Guard");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>High risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>80/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("завершился ошибкой");
     expect(ctx.sentOwnerOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.pollSuccesses.at(-1)).toMatchObject({
@@ -314,7 +958,7 @@ describe("runSingleApprovalPollingCycle", () => {
   });
 
   it("stores shadow approval-drain observations when spender called USDT transferFrom", async () => {
-    const receiverAddress = "TReceiver1111111111111111111111111111";
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
     const drainTxHash = "a944c454b019c6fdbb686f29609b08fbc378f1dee20ecd772a8417b1f7f6452b";
     const ctx = createDeps({
       tronClient: {
@@ -368,6 +1012,8 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_transferfrom_observed");
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("transfer_from_observed");
+    expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: transfer_from_observed");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
   });
 
@@ -444,7 +1090,7 @@ describe("runSingleApprovalPollingCycle", () => {
 
     await runSingleApprovalPollingCycle(ctx.deps);
 
-    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "LOW", riskScore: 15 });
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "MEDIUM", riskScore: 35 });
     expect(ctx.drainObservations[0]).toMatchObject({
       transferTxHash: drainTxHash,
       report: {
@@ -453,9 +1099,11 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_drain_service_spender");
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("service_route_guarded");
+    expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: service_route_guarded");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Low risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>15/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -502,17 +1150,16 @@ describe("runSingleApprovalPollingCycle", () => {
     });
     expect(ctx.currentApprovals[0]).not.toMatchObject({
       riskLevel: "LOW",
-      riskScore: 15
+      riskScore: 10
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Medium risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
   });
 
-  it("uses TronScan service metadata to dampen service contracts to LOW", async () => {
+  it("keeps TronScan service metadata at MEDIUM without an exact service session", async () => {
     const ctx = createDeps({
       tronClient: {
         async listTrc20Approvals() {
@@ -551,12 +1198,11 @@ describe("runSingleApprovalPollingCycle", () => {
 
     expect(ctx.currentApprovals[0]).toMatchObject({
       spenderType: "contract",
-      riskLevel: "LOW",
-      riskScore: 15
+      riskLevel: "MEDIUM",
+      riskScore: 35
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Low risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>15/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -609,12 +1255,12 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.sentCustomerMessages).toEqual([
       expect.objectContaining({
         telegramUserId: "777",
-        message: expect.stringContaining("<code>15/100</code>")
+        message: expect.stringContaining("35/100 — средний риск для кошелька")
       })
     ]);
   });
 
-  it("dampens tokenApprove-like approvals when nearby transfer is linked to service route", async () => {
+  it("does not dampen tokenApprove-like approvals from an inexact nearby route", async () => {
     const routeTxHash = "route-tx";
     const routeReceiver = "TUrnbc11111111111111111111111111111";
     const ctx = createDeps({
@@ -721,14 +1367,13 @@ describe("runSingleApprovalPollingCycle", () => {
 
     expect(ctx.currentApprovals[0]).toMatchObject({
       spenderType: "contract",
-      riskLevel: "MEDIUM",
-      riskScore: 35
+      riskLevel: "HIGH",
+      riskScore: 70
     });
     expect(ctx.evidence.flatMap((entry) => entry.observations.map((observation) => observation.code))).toContain(
       "approval_temporally_linked_to_known_swap"
     );
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Medium risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
   });
 
   it("sends initial pending context alert for a fresh unknown helper contract without resolving session immediately", async () => {
@@ -775,9 +1420,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskLevel: "HIGH",
       riskScore: 70
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("pending context");
-    expect(ctx.sentOwnerMessages[0]).toContain("Waiting up to 10 min");
-    expect(ctx.sentOwnerMessages[0]).toContain("This is not proof of theft yet");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Истекает|Дедлайн контекста|expiration/i);
   });
 
   it("does not pend direct service-tagged approvals", async () => {
@@ -808,8 +1453,8 @@ describe("runSingleApprovalPollingCycle", () => {
     await runSingleApprovalPollingCycle(ctx.deps);
 
     expect(pendingContexts).toEqual([]);
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval Guard");
-    expect(ctx.sentOwnerMessages[0]).not.toContain("pending context");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("ждём контекст операции");
   });
 
   it("escalates delayed signed unlimited EOA approvals to CRITICAL", async () => {
@@ -838,11 +1483,11 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.currentApprovals[0]).toMatchObject({
       spenderType: "eoa",
       riskLevel: "CRITICAL",
-      riskScore: 95
+      riskScore: 90
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Critical risk</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>95/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval transaction was signed long before it appeared on-chain");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Истекает|expiration|signed long before/i);
   });
 
   it("does not duplicate alerts when the approval event is already claimed", async () => {
@@ -980,8 +1625,8 @@ describe("runSingleApprovalPollingCycle", () => {
       "approval_spender_unknown_eoa"
     ]);
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>40/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Allowance</b>: <code>finite 10,000 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -1009,12 +1654,13 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 80
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Allowance</b>: <code>finite 111,111 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
     expect(ctx.sentServiceAdminMessages).toHaveLength(1);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
   });
 
-  it("finalizes pending context as MEDIUM when a linked swap route is found and sends one follow-up", async () => {
+  it("finalizes inexact linked-route context without lowering the approval score", async () => {
     const routeTxHash = "route-tx";
     const routeReceiver = "TUrnbc11111111111111111111111111111";
     let claimCalls = 0;
@@ -1023,6 +1669,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1084,15 +1731,132 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(resolved[0]).toMatchObject({
       result: "linked_swap_route",
       finalReport: {
-        level: "MEDIUM",
-        score: 35
+        level: "HIGH",
+        score: 70
       }
     });
     expect(sentOwnerMessages).toHaveLength(1);
-    expect(sentOwnerMessages[0]).toContain("Approval Guard result");
-    expect(sentOwnerMessages[0]).toContain("Initial status was");
-    expect(sentOwnerMessages[0]).toContain("linked to SunSwap Router");
+    expect(sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    expect(sentOwnerMessages[0]).not.toMatch(/Дедлайн контекста|Истекает/);
+    expect(resolved[0]).toMatchObject({
+      finalReport: {
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: route_linked") })
+        ])
+      }
+    });
     expect(finalAlerts).toHaveLength(1);
+  });
+
+  it.each([
+    { label: "complete exact approval window without provider metadata", historyMode: "exact", metadataAvailable: false, expectedScore: 10, expectedLevel: "LOW" },
+    { label: "inexact registry activity without provider metadata", historyMode: "exact", metadataAvailable: false, decodedAmountRaw: "91103008", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "incomplete approval window", historyMode: "incomplete", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "malformed approval window", historyMode: "malformed", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "approval window missing the original", historyMode: "missing-original", expectedScore: 45, expectedLevel: "MEDIUM" },
+    { label: "intervening reapproval", historyMode: "intervening", expectedScore: 45, expectedLevel: "MEDIUM" }
+  ] as const)("uses strict approval history when finalizing $label", async ({ historyMode, metadataAvailable, decodedAmountRaw, expectedScore, expectedLevel }) => {
+    const approvalAt = new Date("2026-05-05T13:42:21.000Z");
+    const actionTxHash = "c16e27c144732bee70de72c88f5e3e501ac2bd5bbcdad66f6edac5b66cd31743";
+    const row = pendingContextRow({
+      spenderAddress: bridgersAddress,
+      approvalAt,
+      contextDeadlineAt: new Date(approvalAt.getTime() + 10 * 60_000)
+    });
+    const original = approvalChange({ spenderAddress: bridgersAddress, timestamp: approvalAt });
+    const intervening = approvalChange({
+      txHash: "bb4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2",
+      spenderAddress: bridgersAddress,
+      amountRaw: "1000000",
+      isUnlimited: false,
+      timestamp: new Date(approvalAt.getTime() + 30_000)
+    });
+    const older = Array.from({ length: 49 }, (_, index) => approvalChange({
+      txHash: (index + 1).toString(16).padStart(64, "0"),
+      spenderAddress: bridgersAddress,
+      timestamp: new Date(approvalAt.getTime() - (index + 1) * 1_000)
+    }));
+    const strictPage = historyMode === "incomplete"
+      ? { changes: [original, ...older], rawCount: 50, malformedCount: 0, total: null }
+      : historyMode === "malformed"
+        ? { changes: [original], rawCount: 2, malformedCount: 1, total: null }
+        : historyMode === "missing-original"
+          ? { changes: [older[0]!], rawCount: 1, malformedCount: 0, total: null }
+          : historyMode === "intervening"
+            ? { changes: [intervening, original], rawCount: 2, malformedCount: 0, total: null }
+            : { changes: [original], rawCount: 1, malformedCount: 0, total: null };
+    const normalizedTransactionClient = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => new Response(JSON.stringify({
+        ownerAddress,
+        receipt: { result: "SUCCESS" },
+        contractRet: "FAILED",
+        trigger_info: { methodName: "swap", parameter: { amount: decodedAmountRaw ?? "91103009" } },
+        contractData: { owner_address: ownerAddress, amount: decodedAmountRaw ?? "91103009" }
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+    });
+    const finalReports: Array<{ score: number; level: string }> = [];
+    let claimCalls = 0;
+
+    await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
+      pageLimit: 20,
+      maxPagesPerWallet: 1,
+      now: () => new Date(approvalAt.getTime() + 11 * 60_000),
+      claimDueApprovalContexts: async () => claimCalls++ === 0 ? [row] : [],
+      markApprovalContextResolved: async (input) => {
+        finalReports.push(input.finalReport);
+        return true;
+      },
+      markApprovalContextExpired: async (input) => {
+        finalReports.push(input.finalReport);
+        return true;
+      },
+      markApprovalContextFinalAlertSent: async () => true,
+      releaseApprovalContextAfterFailure: async () => true,
+      upsertWalletApproval: async () => {},
+      recordApprovalRisk: async () => true,
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async (address) => metadataAvailable !== false && address === bridgersAddress
+        ? contractMetadata(bridgersAddress, "Bridgers:Cross-chain Bridge")
+        : null,
+      getContractIntelligenceProfile: async () => null,
+      recordRiskEvaluation: async () => {},
+      listCustomerAlertRecipients: async () => [],
+      sendUserAlert: async () => {},
+      sendAdminAlert: async () => {},
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [], total: 0 };
+        },
+        async listTrc20ApprovalChanges() {
+          return strictPage.changes;
+        },
+        async listTrc20ApprovalChangePageStrict() {
+          return strictPage;
+        },
+        async listRelatedTrc20Transfers() {
+          return [{
+            transaction_id: actionTxHash,
+            from_address: ownerAddress,
+            to_address: bridgersAddress,
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            quant: "91103009",
+            confirmed: true,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS",
+            status: 0,
+            tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+            block_ts: approvalAt.getTime() + 66_000
+          }];
+        },
+        getTransaction: (txHash) => normalizedTransactionClient.getTransaction(txHash)
+      }
+    });
+
+    expect(finalReports[0]).toMatchObject({ score: expectedScore, level: expectedLevel });
   });
 
   it("finalizes pending context as expired when no route is found", async () => {
@@ -1100,6 +1864,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1143,7 +1908,9 @@ describe("runSingleApprovalPollingCycle", () => {
         level: "HIGH"
       }
     });
-    expect(sentOwnerMessages[0]).toContain("no related swap/bridge route found within 10 min");
+    expect(sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Точную связанную операцию через этот контракт подтвердить не удалось");
   });
 
   it("releases pending context after TronScan failure without sending final alert", async () => {
@@ -1151,6 +1918,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1199,11 +1967,12 @@ describe("runSingleApprovalPollingCycle", () => {
   });
 
   it("stores collector-drain pending context as CRITICAL", async () => {
-    const receiverAddress = "TReceiver1111111111111111111111111111";
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
     const resolved: unknown[] = [];
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1264,9 +2033,217 @@ describe("runSingleApprovalPollingCycle", () => {
       result: "collector_drain",
       finalReport: {
         level: "CRITICAL",
-        score: 95
+        score: 95,
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: transfer_from_observed") })
+        ])
       }
     });
-    expect(sentOwnerMessages[0]).toContain("possible collector drain");
+    expect(resolved[0]).not.toMatchObject({
+      finalReport: {
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: approval_only") })
+        ])
+      }
+    });
+    expect(sentOwnerMessages[0]).toContain("🔴 <b>95/100 — критический риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: подтверждено, 320 000 USDT");
+    expect(sentOwnerMessages[0]).toContain("подтверждённое списание USDT через контракт");
+    expect(sentOwnerMessages[0]).not.toMatch(/approval|spender|allowance|transferFrom/i);
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] persists provider failure as UNKNOWN/null before releasing the target", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const events: string[] = [];
+    const saved: ApprovalAllowanceStateV2[] = [];
+
+    await runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async () => {
+        events.push("provider");
+        throw new Error("provider disconnected");
+      },
+      saveWalletApprovalAllowanceStateV2: async ({ allowance }) => {
+        events.push("save");
+        saved.push(allowance);
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => [{
+          watchedWalletId: watchedWallet.id,
+          ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          spenderAddress
+        }],
+        tryAcquireApprovalAllowanceRefreshLock: async () => ({
+          release: async () => { events.push("unlock"); }
+        })
+      }
+    });
+
+    expect(events).toEqual(["provider", "save", "unlock"]);
+    expect(saved[0]).toMatchObject({
+      state: "failed",
+      confirmedAllowanceRaw: null,
+      isUnlimited: null,
+      failureCode: "provider_unavailable",
+      observedApprovalTxHash: null
+    });
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] releases a causal-save rejection and continues with the next target", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const targets = [
+      { watchedWalletId: "wallet-1", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress },
+      { watchedWalletId: "wallet-2", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress: bridgersAddress }
+    ];
+    const events: string[] = [];
+    const savedWallets: string[] = [];
+
+    await expect(runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async ({ spenderAddress: currentSpender }) => {
+        events.push(`provider:${currentSpender}`);
+        return currentSpender === spenderAddress ? "1" : "2";
+      },
+      saveWalletApprovalAllowanceStateV2: async ({ watchedWalletId }) => {
+        events.push(`save:${watchedWalletId}`);
+        if (watchedWalletId === "wallet-1") throw new Error("allowance_state_stale_write");
+        savedWallets.push(watchedWalletId);
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => targets,
+        tryAcquireApprovalAllowanceRefreshLock: async (_db, target) => ({
+          release: async () => { events.push(`unlock:${target.watchedWalletId}`); }
+        })
+      }
+    })).resolves.toEqual({ selected: 2, locked: 2, attempted: 2, completed: 2 });
+
+    expect(events).toEqual([
+      `provider:${spenderAddress}`,
+      "save:wallet-1",
+      "unlock:wallet-1",
+      `provider:${bridgersAddress}`,
+      "save:wallet-2",
+      "unlock:wallet-2"
+    ]);
+    expect(savedWallets).toEqual(["wallet-2"]);
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] timestamps each sequential target at attempt and successful completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+      const cycleAt = new Date("2026-07-15T12:00:00.000Z");
+      let currentMs = cycleAt.getTime();
+      const firstAttemptAt = new Date(currentMs + 1_000);
+      const firstCompletedAt = new Date(currentMs + 6_000);
+      const secondAttemptAt = new Date(currentMs + 8_000);
+      const targets = [
+        { watchedWalletId: "wallet-1", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress },
+        { watchedWalletId: "wallet-2", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress: bridgersAddress }
+      ];
+      const lockAttempts: Date[] = [];
+      const saved = new Map<string, ApprovalAllowanceStateV2>();
+      const events: string[] = [];
+
+      const cycle = runSingleApprovalAllowanceRefreshCycle({
+        db: {},
+        now: () => new Date(currentMs),
+        getUsdtAllowance: async ({ spenderAddress: currentSpender, signal }) => {
+          events.push(`provider:${currentSpender}`);
+          if (currentSpender === spenderAddress) {
+            currentMs += 5_000;
+            return "1";
+          }
+          return await new Promise<string>((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              currentMs += 15_000;
+              reject(signal.reason);
+            }, { once: true });
+          });
+        },
+        saveWalletApprovalAllowanceStateV2: async ({ watchedWalletId, allowance }) => {
+          events.push(`save:${watchedWalletId}`);
+          saved.set(watchedWalletId, allowance);
+        },
+        repository: {
+          listDueApprovalAllowanceRefreshTargets: async (_db, input) => {
+            expect(input.now).toEqual(cycleAt);
+            currentMs += 1_000;
+            return targets;
+          },
+          tryAcquireApprovalAllowanceRefreshLock: async (_db, target) => {
+            events.push(`lock:${target.watchedWalletId}`);
+            lockAttempts.push(target.now);
+            return {
+              release: async () => {
+                events.push(`unlock:${target.watchedWalletId}`);
+                if (target.watchedWalletId === "wallet-1") currentMs += 2_000;
+              }
+            };
+          }
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events.at(-1)).toBe(`provider:${bridgersAddress}`);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await cycle;
+
+      expect(events).toEqual([
+        "lock:wallet-1",
+        `provider:${spenderAddress}`,
+        "save:wallet-1",
+        "unlock:wallet-1",
+        "lock:wallet-2",
+        `provider:${bridgersAddress}`,
+        "save:wallet-2",
+        "unlock:wallet-2"
+      ]);
+      expect(lockAttempts).toEqual([firstAttemptAt, secondAttemptAt]);
+      expect(saved.get("wallet-1")).toMatchObject({
+        state: "confirmed_active",
+        confirmedAt: firstCompletedAt.toISOString(),
+        lastAttemptAt: firstCompletedAt.toISOString(),
+        freshUntil: new Date(firstCompletedAt.getTime() + 15 * 60_000).toISOString()
+      });
+      expect(saved.get("wallet-2")).toMatchObject({
+        state: "failed",
+        lastAttemptAt: secondAttemptAt.toISOString(),
+        failureCode: "provider_timeout"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] releases the lock but propagates an unexpected save failure", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const events: string[] = [];
+
+    await expect(runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async () => "1",
+      saveWalletApprovalAllowanceStateV2: async () => {
+        events.push("save");
+        throw new TypeError("invalid worker configuration");
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => [{
+          watchedWalletId: watchedWallet.id,
+          ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          spenderAddress
+        }],
+        tryAcquireApprovalAllowanceRefreshLock: async () => ({
+          release: async () => { events.push("unlock"); }
+        })
+      }
+    })).rejects.toThrow("invalid worker configuration");
+
+    expect(events).toEqual(["save", "unlock"]);
   });
 });

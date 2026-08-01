@@ -1,0 +1,3105 @@
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
+import { describe, expect, it, vi } from "vitest";
+import {
+  classifyServiceBehavior100Plus100V2,
+  computeServiceWindowVectorV2,
+  evaluateServiceWindowPredicateV2,
+  type CompleteServiceWindowVectorV2,
+  type ServiceBehaviorRowV2,
+  type ServiceWindowVectorV2
+} from "../../src/forensics/serviceBehaviorResearch.js";
+import {
+  evaluateExactDrainerSceneV1,
+  replayOfflineForensicModelCorpusV1,
+  type ExactDrainerSceneInputV1,
+  type OfflineCorpusV1,
+  type OfflineReplayResultV1
+} from "../../src/forensics/offlineForensicModelReplay.js";
+import { detectVerify20Fingerprint } from "../../src/forensics/verify20Fingerprint.js";
+import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
+import * as directHardEvidence from "../../src/forensics/directHardEvidence.js";
+import { loadForensicModelOfflineCorpusV1 } from "../fixtures/forensics/loadForensicModelCorpus.js";
+
+type Case = {
+  readonly id: string;
+  readonly evidenceClass: string;
+  readonly rawEvidenceRef?: string;
+  readonly [key: string]: unknown;
+};
+
+type Corpus = {
+  readonly schemaVersion: string;
+  readonly ledgerCases: readonly Case[];
+  readonly serviceCases: readonly Case[];
+  readonly adverseCases: readonly Case[];
+};
+
+const fixtureUrl = new URL(
+  "../fixtures/forensics/forensic-model-offline-corpus-v1.json",
+  import.meta.url
+);
+const corpus = loadForensicModelOfflineCorpusV1() as Corpus;
+const cases = [
+  ...corpus.ledgerCases,
+  ...corpus.serviceCases,
+  ...corpus.adverseCases
+];
+
+const completeFingerprintMethods = {
+  "5082dd12": "Verify20(address,address,address,uint256)",
+  "fc61dd23": "Verify10(address,uint256)",
+  "ea4418d9": "withdrawAllTrxTo(address)",
+  "f2fde38b": "transferOwnership(address)"
+} as const;
+
+function collectAmountRawValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.flatMap(collectAmountRawValues);
+  if (value === null || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    /amountRaw$/iu.test(key)
+      ? [child, ...collectAmountRawValues(child)]
+      : collectAmountRawValues(child)
+  );
+}
+
+type FeatureVector = {
+  physicalRowCount: number;
+  canonicalEventCount: number;
+  featureEligibleEventCount: number;
+  incomingCount: number;
+  outgoingCount: number;
+  uniqueSenders: number;
+  uniqueRecipients: number;
+  uniqueCounterparties: number;
+  largestCounterparty: { count: number; shareDenominator: number };
+  dominantDirection: "incoming" | "outgoing";
+  dominantDirectionCount: number;
+  uniqueDominantCounterparties: number;
+  dominantShareDenominator: number;
+  medianDominantDirectionGapSeconds: { numerator: number; denominator: number };
+  maxDominantDirectionEventsPerHour: number;
+  activeUtcHourOfDayCount: number;
+  dominantExactAmount: { amountRaw: string; count: number; shareDenominator: number };
+  observedStartTimestamp: string;
+  observedEndTimestamp: string;
+  observedWindowDurationSeconds: number;
+  recordedPredicate: Record<"C" | "B" | "G" | "H" | "R" | "X" | "P", boolean>;
+};
+
+function recomputePredicate(vector: FeatureVector): FeatureVector["recordedPredicate"] {
+  const medianAtMost = (seconds: number) =>
+    vector.medianDominantDirectionGapSeconds.numerator <=
+      seconds * vector.medianDominantDirectionGapSeconds.denominator;
+  const C = vector.dominantDirectionCount >= 20 && (
+    medianAtMost(120) || vector.maxDominantDirectionEventsPerHour >= 15
+  );
+  const B = vector.uniqueCounterparties >= 25 &&
+    vector.uniqueCounterparties * 5 >= vector.featureEligibleEventCount &&
+    vector.largestCounterparty.count * 2 <= vector.largestCounterparty.shareDenominator;
+  const G = (
+    vector.dominantDirectionCount * 10 >= vector.dominantShareDenominator * 7 &&
+    vector.uniqueDominantCounterparties >= 20
+  ) || (vector.uniqueSenders >= 10 && vector.uniqueRecipients >= 10);
+  const H = vector.activeUtcHourOfDayCount >= 12;
+  const R = vector.dominantExactAmount.count >= 10 &&
+    vector.dominantExactAmount.count * 10 >= vector.dominantExactAmount.shareDenominator;
+  const X = vector.dominantDirectionCount >= 80 &&
+    vector.dominantDirectionCount * 10 >= vector.dominantShareDenominator * 8 &&
+    vector.uniqueDominantCounterparties >= 80 && (
+      medianAtMost(15) || vector.maxDominantDirectionEventsPerHour >= 80
+    );
+  return { C, B, G, H, R, X, P: C && B && G && (H || R || X) };
+}
+
+function expectReplayableFeatureVector(vector: FeatureVector): void {
+  expect(vector.physicalRowCount).toBeGreaterThanOrEqual(vector.canonicalEventCount);
+  expect(vector.canonicalEventCount).toBeGreaterThanOrEqual(vector.featureEligibleEventCount);
+  expect(vector.incomingCount + vector.outgoingCount).toBe(vector.featureEligibleEventCount);
+  expect(vector.uniqueCounterparties).toBeLessThanOrEqual(
+    vector.uniqueSenders + vector.uniqueRecipients
+  );
+  expect(vector.largestCounterparty.shareDenominator).toBe(vector.featureEligibleEventCount);
+  expect(vector.largestCounterparty.count).toBeLessThanOrEqual(vector.featureEligibleEventCount);
+  expect(vector.dominantDirectionCount).toBe(Math.max(vector.incomingCount, vector.outgoingCount));
+  expect(vector.uniqueDominantCounterparties).toBe(
+    vector.dominantDirection === "incoming" ? vector.uniqueSenders : vector.uniqueRecipients
+  );
+  expect(vector.dominantShareDenominator).toBe(vector.featureEligibleEventCount);
+  expect([1, 2]).toContain(vector.medianDominantDirectionGapSeconds.denominator);
+  expect(vector.dominantExactAmount.amountRaw).toMatch(/^(0|[1-9]\d*)$/u);
+  expect(vector.dominantExactAmount.shareDenominator).toBe(vector.dominantDirectionCount);
+  expect(vector.dominantExactAmount.count).toBeLessThanOrEqual(vector.dominantDirectionCount);
+  expect(Date.parse(vector.observedEndTimestamp) - Date.parse(vector.observedStartTimestamp))
+    .toBe(vector.observedWindowDurationSeconds * 1_000);
+  expect(vector.recordedPredicate).toEqual(recomputePredicate(vector));
+}
+
+describe("forensic model offline corpus v1", () => {
+  it("has the frozen schema and honest evidence classes", () => {
+    expect(corpus.schemaVersion).toBe("forensic-model-offline-corpus-v1");
+    expect(corpus.ledgerCases.length).toBeGreaterThan(0);
+    expect(corpus.serviceCases.length).toBeGreaterThan(0);
+    expect(corpus.adverseCases.length).toBeGreaterThan(0);
+
+    expect(new Set(cases.map(({ id }) => id)).size).toBe(cases.length);
+    for (const item of cases) {
+      expect([
+        "exact_frozen_rows",
+        "recorded_calibration_vector",
+        "synthetic_edge_case"
+      ]).toContain(item.evidenceClass);
+      if (item.evidenceClass === "exact_frozen_rows") {
+        expect(item.rawEvidenceRef).toEqual(expect.any(String));
+        expect(item.rawEvidenceRef).not.toHaveLength(0);
+      }
+    }
+  });
+
+  it("stores every raw amount as a canonical unsigned decimal string", () => {
+    const amounts = collectAmountRawValues(corpus);
+    expect(amounts.length).toBeGreaterThan(0);
+    for (const amount of amounts) {
+      expect(typeof amount).toBe("string");
+      expect(amount).toMatch(/^(0|[1-9]\d*)$/u);
+    }
+  });
+
+  it("binds exact service labels to the locked normalized evidence bundle", () => {
+    const evidenceRef =
+      "docs/audit/2026-07-system-audit/golden-v2/locked/cases/regression-tqr/neutral-bundle.json";
+    const normalizedFields = [
+      "address",
+      "authority",
+      "category",
+      "label",
+      "validFrom",
+      "validTo"
+    ].sort();
+    const exactLabels = [
+      { id: "exact-binance-label", address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh" },
+      { id: "exact-htx-label", address: "TFTWNgDBkQ5wQoP8RXpRznnHvAVV8x5jLu" }
+    ].map((binding) => ({
+      binding,
+      exactLabel: corpus.adverseCases.find((candidate) =>
+        candidate.id === binding.id
+      ) as unknown as {
+        id: string;
+        rawEvidenceRef: string;
+        rawEvidenceArtifactSha256: string;
+        labelDatasetSha256: string;
+        frozenRowSha256: string;
+        frozenRowHashConvention: string;
+        frozenRow: {
+          address: string;
+          label: string;
+          authority: string;
+          category: string;
+          validFrom: string | null;
+          validTo: string | null;
+        };
+      }
+    }));
+
+    expect(exactLabels.every(({ exactLabel }) => Boolean(exactLabel))).toBe(true);
+    expect(new Set(exactLabels.map(({ exactLabel }) => exactLabel.rawEvidenceRef))).toEqual(
+      new Set([evidenceRef])
+    );
+    const repositoryRootUrl = new URL("../../../", fixtureUrl);
+    for (const { binding, exactLabel } of exactLabels) {
+      expect(exactLabel.id).toBe(binding.id);
+      expect(exactLabel.frozenRow.address).toBe(binding.address);
+      expect(exactLabel.rawEvidenceRef).toBe(evidenceRef);
+      expect(exactLabel.frozenRowHashConvention).toBe(
+        "sha256(canonicalizeArtifactJson(frozenRow))"
+      );
+      expect(Object.keys(exactLabel.frozenRow).sort()).toEqual(normalizedFields);
+
+      const artifactBytes = readFileSync(new URL(exactLabel.rawEvidenceRef, repositoryRootUrl));
+      const artifactSha256 = createHash("sha256").update(artifactBytes).digest("hex");
+      expect(exactLabel.rawEvidenceArtifactSha256).toBe(artifactSha256);
+
+      const bundle = JSON.parse(artifactBytes.toString("utf8")) as {
+        version: string;
+        snapshot: { labelDatasetSha256: string };
+        labels: readonly {
+          address: string;
+          label: string;
+          authority: string;
+          category: string;
+          validFrom: string | null;
+          validTo: string | null;
+          evidenceRefs: readonly string[];
+        }[];
+      };
+      expect(bundle.version).toBe("neutral-evidence-bundle-v2");
+      expect(exactLabel.labelDatasetSha256).toBe(bundle.snapshot.labelDatasetSha256);
+      const sourceRow = bundle.labels.find(({ address }) =>
+        address === exactLabel.frozenRow.address
+      );
+      expect(sourceRow).toBeDefined();
+      const normalizedRow = {
+        address: sourceRow!.address,
+        label: sourceRow!.label,
+        authority: sourceRow!.authority,
+        category: sourceRow!.category,
+        validFrom: sourceRow!.validFrom,
+        validTo: sourceRow!.validTo
+      };
+      expect(exactLabel.frozenRow).toEqual(normalizedRow);
+      expect(exactLabel.frozenRowSha256).toBe(
+        fingerprintCanonicalArtifact(normalizedRow)
+      );
+    }
+    expect(new Set(exactLabels.map(({ exactLabel }) =>
+      exactLabel.rawEvidenceArtifactSha256
+    )).size).toBe(1);
+  });
+
+  it("keeps real observations distinct from authoritative replay", () => {
+    const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration");
+    expect(w8srl?.evidenceClass).toBe("recorded_calibration_vector");
+    expect(w8srl).toMatchObject({
+      authoritativeWouldAction: null,
+      windows: [
+        { kind: "recent", physicalRowCount: 100, incomingCount: 12, outgoingCount: 88 },
+        { kind: "historical", physicalRowCount: 100, incomingCount: 20, outgoingCount: 80 }
+      ]
+    });
+
+    const pacgy = corpus.ledgerCases.find(({ id }) => id === "pacgy-recorded-chronology");
+    expect(pacgy).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      historyCompleteness: {
+        providerExhaustionProven: false,
+        zeroOpeningWitnessProven: false
+      },
+      expectedAuthoritativeState: "history_incomplete",
+      currentBalanceObservation: {
+        amountRaw: "82700000",
+        authority: "diagnostic_non_pinned",
+        expectedState: "unresolved"
+      },
+      duplicateReceiptBinding: {
+        providerAliasCount: 2,
+        providerEventIndexIsCanonical: false,
+        canonicalIdentity: {
+          txHash: "676a97390c99f997e3c9af9a57e8c684c7b6253710e8b009950f73b8b25fe7ca",
+          officialUsdtLogOrdinal: 0,
+          officialUsdtLogCount: 1,
+          authority: "full_node_receipt"
+        }
+      }
+    });
+    const receiptBinding = pacgy?.duplicateReceiptBinding as {
+      canonicalIdentity: unknown;
+      providerAliases: readonly {
+        provider: string;
+        transferId: string;
+        eventIndex: number;
+        boundCanonicalIdentity: unknown;
+      }[];
+    };
+    expect(receiptBinding.providerAliases).toHaveLength(2);
+    expect(new Set(receiptBinding.providerAliases.map((alias) =>
+      `${alias.provider}:${alias.transferId}:${alias.eventIndex}`
+    )).size).toBe(2);
+    for (const alias of receiptBinding.providerAliases) {
+      expect(alias.provider).not.toHaveLength(0);
+      expect(alias.transferId).not.toHaveLength(0);
+      expect(Number.isSafeInteger(alias.eventIndex)).toBe(true);
+      expect(alias.boundCanonicalIdentity).toEqual(receiptBinding.canonicalIdentity);
+    }
+    expect(corpus.ledgerCases).toContainEqual(expect.objectContaining({
+      id: "pacgy-synthetic-zero-opening-control",
+      evidenceClass: "synthetic_edge_case",
+      openingBalanceRaw: "0"
+    }));
+  });
+
+  it("embeds 21 unique CSV controls as non-runtime calibration vectors", () => {
+    const controls = corpus.serviceCases.filter(({ calibrationSet }) =>
+      calibrationSet === "csv-addresses-2026-07-26"
+    );
+    expect(controls).toHaveLength(21);
+    expect(new Set(controls.map(({ address }) => address)).size).toBe(21);
+    for (const control of controls) {
+      expect(control).toMatchObject({
+        evidenceClass: "recorded_calibration_vector",
+        source: {
+          kind: "tronscan_csv_export",
+          capturedDate: "2026-07-26",
+          runtimeInput: false
+        }
+      });
+      expect((control.source as { fileName: string }).fileName).toMatch(/^Transfers_20260726.*\.csv$/u);
+      expect((control.source as { sha256: string }).sha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(control.source).toMatchObject({
+        classification: "whole_export_x_calibration_non_authoritative"
+      });
+      expectReplayableFeatureVector(control.observedVector as FeatureVector);
+    }
+  });
+
+  it("includes the named TQr and TXc service controls without promoting sparse records", () => {
+    expect(corpus.serviceCases).toHaveLength(24);
+    expect(corpus.serviceCases.slice(0, 22).map(({ id }) => id)).toEqual([
+      "w8srl-two-window-calibration",
+      "csv-SqPaM9",
+      "csv-hQBSuW",
+      "csv-owfnme",
+      "csv-cKQz2J",
+      "csv-eXDwoq",
+      "csv-m7MWZv",
+      "csv-JJpBXh",
+      "csv-H14eaf",
+      "csv-EMCMLc",
+      "csv-DbNGMf",
+      "csv-Yw8Pet",
+      "csv-A94s8d",
+      "csv-Fa5pk8",
+      "csv-aEGqTr",
+      "csv-Riiwed",
+      "csv-q98cdn",
+      "csv-k1Hjbo",
+      "csv-r7RZVx",
+      "csv-axRTDo",
+      "csv-oqZ4dZ",
+      "csv-ujBwhV"
+    ]);
+
+    const tqr = corpus.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control");
+    expect(tqr).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      address: "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+      rawProviderPagesFrozen: false,
+      authoritativeWouldAction: null,
+      behaviorClassification: "non_service_profile",
+      estimatedWouldAction: "continue_full",
+      recordedPartialVector: {
+        cadencePredicate: false,
+        checkedSubject: true,
+        currentHtxTaggedCounterpartiesObserved: true,
+        eventTimeLabelAuthorityProven: false
+      },
+      source: {
+        kind: "manual_corpus_replay_summary",
+        capturedDate: "2026-07-29",
+        runtimeInput: false
+      }
+    });
+
+    const txc = corpus.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control");
+    expect(txc).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      address: "TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd",
+      rawProviderPagesFrozen: false,
+      authoritativeWouldAction: null,
+      behaviorClassification: "insufficient_data",
+      estimatedWouldAction: "continue_full",
+      recordedPartialVector: {
+        recentObservedRowCount: 73,
+        historicalBaselineState: "empty"
+      },
+      source: {
+        kind: "manual_corpus_replay_summary",
+        capturedDate: "2026-07-29",
+        runtimeInput: false
+      }
+    });
+
+    for (const control of [tqr, txc]) {
+      expect(control?.sourceRef).toBe(
+        "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md#результат-ручного-replay-2026-07-29"
+      );
+      expect(control?.researchAction).toBeUndefined();
+      expect(control?.rawEvidenceRef).toBeUndefined();
+      expect(control?.limitations).toEqual(expect.arrayContaining([
+        "raw_provider_rows_not_persisted",
+        "full_feature_vector_not_recorded"
+      ]));
+      for (const forbiddenField of [
+        "windows",
+        "observedVector",
+        "rawFeaturesRecent",
+        "rawFeaturesHistorical",
+        "rawRows",
+        "frozenRow",
+        "frozenRows"
+      ]) {
+        expect(control).not.toHaveProperty(forbiddenField);
+      }
+      expect(control?.source).toMatchObject({
+        refs: [
+          {
+            file: "docs/superpowers/verification/2026-07-29-forensic-model-manual-corpus-replay.md",
+            line: expect.any(Number)
+          },
+          {
+            file: "docs/superpowers/specs/2026-07-29-service-boundary-sampling-amendment-design.md",
+            line: expect.any(Number)
+          }
+        ]
+      });
+    }
+  });
+
+  it("freezes replayable W8SRL window feature inputs", () => {
+    const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration") as unknown as {
+      windows: readonly (FeatureVector & { kind: "recent" | "historical"; source: unknown })[];
+    };
+    expect(w8srl.windows).toHaveLength(2);
+    for (const window of w8srl.windows) {
+      expect(window.source).toMatchObject({
+        classification: "recovered_fixed_cutoff_provider_vector",
+        rawPagesPersisted: false
+      });
+      expectReplayableFeatureVector(window);
+    }
+    const recent = w8srl.windows.find(({ kind }) => kind === "recent") as FeatureVector;
+    const historical = w8srl.windows.find(({ kind }) => kind === "historical") as FeatureVector;
+    const separationMilliseconds = Date.parse(recent.observedStartTimestamp) -
+      Date.parse(historical.observedEndTimestamp);
+    expect(separationMilliseconds).toBeGreaterThan(0);
+    expect(separationMilliseconds).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 * 1_000);
+  });
+
+  it("freezes the required arithmetic and adverse controls", () => {
+    expect(corpus.ledgerCases.map(({ id }) => id)).toEqual(expect.arrayContaining([
+      "integer-remainder-control",
+      "exact-self-transfer-control",
+      "identity-collision-control",
+      "missing-order-control",
+      "debit-over-inventory-control"
+    ]));
+
+    expect(corpus.adverseCases.map(({ id }) => id)).toEqual(expect.arrayContaining([
+      "exact-binance-label",
+      "exact-htx-label",
+      "event-time-blacklist-partitions",
+      "gasfree-principal-fee-classification",
+      "drainer-method-only",
+      "drainer-complete-evidence"
+    ]));
+    expect(corpus.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification"))
+      .toMatchObject({ ledgerExecutionCase: false });
+
+    const collision = corpus.ledgerCases.find(({ id }) => id === "identity-collision-control") as unknown as {
+      expectedState: string;
+      events: readonly {
+        canonicalIdentity: unknown;
+        amountRaw: string;
+      }[];
+    };
+    expect(collision.expectedState).toBe("identity_collision");
+    expect(collision.events).toHaveLength(2);
+    expect(collision.events[0]?.canonicalIdentity).toEqual(collision.events[1]?.canonicalIdentity);
+    expect(collision.events[0]?.amountRaw).not.toBe(collision.events[1]?.amountRaw);
+  });
+
+  it("freezes internally consistent adverse replay scenes", () => {
+    const blacklist = corpus.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions") as unknown as {
+      subjectAddress: string;
+      tokenContract: string;
+      listedAddress: string;
+      timelineEvidence: {
+        verificationStatus: string;
+        historyComplete: boolean;
+        canonicalOrderVerified: boolean;
+        coverageStartTimestamp: string;
+        coverageEndTimestamp: string;
+      };
+      principalTransfers: readonly {
+        txHash: string;
+        logIndex: number;
+        amountRaw: string;
+        expectedTemporalClass: string;
+        occurredAt: string | null;
+        tokenContract: string;
+        fromAddress: string;
+        toAddress: string;
+        confirmed: boolean;
+        successful: boolean;
+      }[];
+      timelineEvents: readonly {
+        txHash: string;
+        logIndex: number;
+        occurredAt: string;
+        eventKind: "added" | "removed";
+        subjectAddress: string;
+        tokenContract: string;
+        confirmed: boolean;
+        successful: boolean;
+      }[];
+      partitions: Record<string, string>;
+    };
+    const hasExactSubjectSide = (transfers: typeof blacklist.principalTransfers) =>
+      transfers.every((transfer) =>
+        Number(transfer.fromAddress === blacklist.subjectAddress) +
+          Number(transfer.toAddress === blacklist.subjectAddress) === 1
+      );
+    expect(blacklist.subjectAddress).toBe("synthetic-subject");
+    expect(blacklist.subjectAddress).not.toBe(blacklist.listedAddress);
+    expect(hasExactSubjectSide(blacklist.principalTransfers)).toBe(true);
+    expect(hasExactSubjectSide([...blacklist.principalTransfers].reverse())).toBe(true);
+    expect(blacklist.principalTransfers).toHaveLength(3);
+    const blacklistEvidenceRows = [
+      ...blacklist.principalTransfers,
+      ...blacklist.timelineEvents
+    ];
+    expect(blacklistEvidenceRows).toHaveLength(5);
+    for (const row of blacklistEvidenceRows) {
+      expect(row.txHash).toMatch(/^[0-9a-f]{64}$/u);
+      expect(row.logIndex).toBe(0);
+    }
+    expect(new Set(blacklistEvidenceRows.map(({ txHash, logIndex }) => `${txHash}:${logIndex}`)).size)
+      .toBe(5);
+    expect(blacklist.principalTransfers.map(({
+      occurredAt,
+      tokenContract,
+      fromAddress,
+      toAddress,
+      amountRaw,
+      confirmed,
+      successful,
+      expectedTemporalClass
+    }) => ({
+      occurredAt,
+      tokenContract,
+      fromAddress,
+      toAddress,
+      amountRaw,
+      confirmed,
+      successful,
+      expectedTemporalClass
+    }))).toEqual([
+      {
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "900000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "before_activation"
+      },
+      {
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "100000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "active_at_event"
+      },
+      {
+        occurredAt: null,
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        fromAddress: "synthetic-subject",
+        toAddress: "synthetic-listed-counterparty",
+        amountRaw: "50000",
+        confirmed: true,
+        successful: true,
+        expectedTemporalClass: "unknown_time"
+      }
+    ]);
+    expect(blacklist.timelineEvents.map(({
+      occurredAt,
+      tokenContract,
+      subjectAddress,
+      eventKind,
+      confirmed,
+      successful
+    }) => ({
+      occurredAt,
+      tokenContract,
+      subjectAddress,
+      eventKind,
+      confirmed,
+      successful
+    }))).toEqual([
+      {
+        occurredAt: "2026-01-02T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        subjectAddress: "synthetic-listed-counterparty",
+        eventKind: "added",
+        confirmed: true,
+        successful: true
+      },
+      {
+        occurredAt: "2026-01-04T00:00:00.000Z",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        subjectAddress: "synthetic-listed-counterparty",
+        eventKind: "removed",
+        confirmed: true,
+        successful: true
+      }
+    ]);
+    expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
+      eventKind: "added", confirmed: true, successful: true
+    }));
+    expect(blacklist.timelineEvents).toContainEqual(expect.objectContaining({
+      eventKind: "removed", confirmed: true, successful: true
+    }));
+    expect(blacklist.timelineEvidence).toMatchObject({
+      verificationStatus: "verified",
+      historyComplete: true,
+      canonicalOrderVerified: true
+    });
+    const coverageStart = Date.parse(blacklist.timelineEvidence.coverageStartTimestamp);
+    const coverageEnd = Date.parse(blacklist.timelineEvidence.coverageEndTimestamp);
+    const timeline = [...blacklist.timelineEvents]
+      .filter((event) =>
+        event.confirmed &&
+        event.successful &&
+        event.subjectAddress === blacklist.listedAddress &&
+        event.tokenContract === blacklist.tokenContract
+      )
+      .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+    const deriveTemporalClass = (transfer: typeof blacklist.principalTransfers[number]) => {
+      if (
+        transfer.occurredAt === null ||
+        blacklist.timelineEvidence.verificationStatus !== "verified" ||
+        !blacklist.timelineEvidence.historyComplete ||
+        !blacklist.timelineEvidence.canonicalOrderVerified
+      ) return "unknown_time";
+      const occurredAt = Date.parse(transfer.occurredAt);
+      if (occurredAt < coverageStart || occurredAt > coverageEnd) return "unknown_time";
+      let active = false;
+      for (const event of timeline) {
+        if (Date.parse(event.occurredAt) > occurredAt) break;
+        active = event.eventKind === "added";
+      }
+      return active ? "active_at_event" : "before_activation";
+    };
+    const classified = blacklist.principalTransfers.map((transfer) => ({
+      ...transfer,
+      derivedTemporalClass: deriveTemporalClass(transfer)
+    }));
+    expect(classified.map(({ derivedTemporalClass }) => derivedTemporalClass)).toEqual(
+      blacklist.principalTransfers.map(({ expectedTemporalClass }) => expectedTemporalClass)
+    );
+    expect(classified.every((row) =>
+      row.confirmed &&
+      row.successful &&
+      row.tokenContract === blacklist.tokenContract &&
+      row.toAddress === blacklist.listedAddress
+    )).toBe(true);
+    const partitionSum = (temporalClass: string) => classified
+      .filter((row) => row.derivedTemporalClass === temporalClass)
+      .reduce((sum, row) => sum + BigInt(row.amountRaw), 0n).toString();
+    expect(partitionSum("before_activation")).toBe(blacklist.partitions.beforeActivationAmountRaw);
+    expect(partitionSum("active_at_event")).toBe(blacklist.partitions.activeAtEventAmountRaw);
+    expect(partitionSum("unknown_time")).toBe(blacklist.partitions.unknownTimeAmountRaw);
+    expect(blacklist.principalTransfers.find(({ expectedTemporalClass }) => expectedTemporalClass === "unknown_time")?.occurredAt)
+      .toBeNull();
+
+    const gasFree = corpus.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification") as unknown as {
+      ledgerExecutionCase: boolean;
+      transactionInfo: {
+        confirmed: boolean;
+        contractRet: string;
+        revert: boolean;
+        status: number;
+        contractData: { contract_address: string; data: string };
+        trc20TransferInfo: readonly {
+          from_address: string;
+          to_address: string;
+          amount_str: string;
+          contract_address: string;
+          status: number;
+          tokenInfo: { tokenId: string; tokenAbbr: string; tokenType: string };
+        }[];
+      };
+      settlement: { principalAmountRaw: string; feeAmountRaw: string };
+      replayEdges: readonly {
+        fromAddress: string;
+        toAddress: string;
+        amountRaw: string;
+        economicRole: "principal" | "service_fee";
+        economicProtocol: "tron_gasfree";
+      }[];
+    };
+    expect(gasFree.ledgerExecutionCase).toBe(false);
+    expect(gasFree.transactionInfo).toMatchObject({
+      confirmed: true,
+      contractRet: "SUCCESS",
+      revert: false,
+      status: 0
+    });
+    expect(gasFree.transactionInfo.contractData.data).toMatch(/^6f21b898[0-9a-f]+$/u);
+    expect(gasFree.transactionInfo.contractData.data).toHaveLength(840);
+    expect(gasFree.transactionInfo.trc20TransferInfo).toHaveLength(2);
+    expect(gasFree.replayEdges.map(({ economicRole }) => economicRole)).toEqual([
+      "principal",
+      "service_fee"
+    ]);
+    expect(gasFree.replayEdges.every(({ economicProtocol }) => economicProtocol === "tron_gasfree"))
+      .toBe(true);
+    expect(gasFree.transactionInfo.trc20TransferInfo.map((row) => ({
+      fromAddress: row.from_address,
+      toAddress: row.to_address,
+      amountRaw: row.amount_str
+    }))).toEqual(gasFree.replayEdges.map(({ economicProtocol: _protocol, economicRole: _role, ...edge }) => edge));
+    expect(gasFree.transactionInfo.trc20TransferInfo.every((row) =>
+      row.status === 0 &&
+      row.contract_address === row.tokenInfo.tokenId &&
+      row.tokenInfo.tokenAbbr === "USDT" &&
+      row.tokenInfo.tokenType === "trc20"
+    )).toBe(true);
+    expect(gasFree.replayEdges[0]?.amountRaw).toBe(gasFree.settlement.principalAmountRaw);
+    expect(gasFree.replayEdges[1]?.amountRaw).toBe(gasFree.settlement.feeAmountRaw);
+
+    const methodOnly = corpus.adverseCases.find(({ id }) => id === "drainer-method-only") as unknown as {
+      observed: { methodId: string };
+      expectedExactDrainerAuthority: boolean;
+      methodEvidence: {
+        contractAddress: string;
+        bytecodeFingerprint: string;
+        methodMap: readonly { selector: string; signature: string }[];
+      };
+      approvalCall: null;
+      transferFromCall: null;
+      movement: null;
+    };
+    expect(methodOnly.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:sha256:[0-9a-f]{64}$/u);
+    expect(methodOnly.methodEvidence.methodMap).toEqual([{
+      selector: methodOnly.observed.methodId,
+      signature: "transferFrom(address,address,uint256)"
+    }]);
+    expect(detectVerify20Fingerprint({
+      methodMap: Object.fromEntries(methodOnly.methodEvidence.methodMap.map(({ selector, signature }) =>
+        [selector, signature]
+      )),
+      topMethods: []
+    })).toMatchObject({
+      matched: false,
+      selectors: [],
+      missingSelectors: Object.keys(completeFingerprintMethods)
+    });
+    expect(methodOnly.expectedExactDrainerAuthority).toBe(false);
+    expect(methodOnly.approvalCall).toBeNull();
+    expect(methodOnly.transferFromCall).toBeNull();
+    expect(methodOnly.movement).toBeNull();
+
+    const complete = corpus.adverseCases.find(({ id }) => id === "drainer-complete-evidence") as unknown as {
+      methodEvidence: {
+        contractAddress: string;
+        bytecodeFingerprint: string;
+        methodMap: readonly { selector: string; signature: string }[];
+      };
+      approvalCall: { txHash: string; tokenContract: string; ownerAddress: string; spenderAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+      transferFromCall: { txHash: string; contractAddress: string; selector: string; tokenContract: string; fromAddress: string; toAddress: string; receiverAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+      movement: { txHash: string; tokenContract: string; fromAddress: string; toAddress: string; amountRaw: string; confirmed: boolean; successful: boolean };
+    };
+    expect(complete.methodEvidence.bytecodeFingerprint).toMatch(/^synthetic:sha256:[0-9a-f]{64}$/u);
+    expect(complete.methodEvidence.methodMap).toEqual(
+      Object.entries(completeFingerprintMethods).map(([selector, signature]) => ({ selector, signature }))
+    );
+    expect(detectVerify20Fingerprint({
+      methodMap: Object.fromEntries(complete.methodEvidence.methodMap.map(({ selector, signature }) =>
+        [selector, signature]
+      )),
+      topMethods: []
+    })).toEqual({
+      matched: true,
+      selectors: Object.keys(completeFingerprintMethods),
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    });
+    expect(complete.transferFromCall.selector).toBe("5082dd12");
+    expect(complete.approvalCall).toMatchObject({ confirmed: true, successful: true });
+    expect(complete.transferFromCall).toMatchObject({ confirmed: true, successful: true });
+    expect(complete.approvalCall.spenderAddress).toBe(complete.methodEvidence.contractAddress);
+    expect(complete.transferFromCall.contractAddress).toBe(complete.methodEvidence.contractAddress);
+    expect(complete.transferFromCall.receiverAddress).toBe(complete.movement.toAddress);
+    expect(complete.movement).toEqual(expect.objectContaining({
+      txHash: complete.transferFromCall.txHash,
+      tokenContract: complete.transferFromCall.tokenContract,
+      fromAddress: complete.transferFromCall.fromAddress,
+      toAddress: complete.transferFromCall.toAddress,
+      amountRaw: complete.transferFromCall.amountRaw,
+      confirmed: true,
+      successful: true
+    }));
+    expect(complete.approvalCall.tokenContract).toBe(complete.transferFromCall.tokenContract);
+    expect(complete.approvalCall.ownerAddress).toBe(complete.transferFromCall.fromAddress);
+    expect(BigInt(complete.approvalCall.amountRaw)).toBeGreaterThanOrEqual(BigInt(complete.transferFromCall.amountRaw));
+  });
+});
+
+const sevenDaysSeconds = 7 * 24 * 60 * 60;
+
+function serviceVector(
+  overrides: Partial<CompleteServiceWindowVectorV2> = {}
+): CompleteServiceWindowVectorV2 {
+  return {
+    kind: "complete",
+    physicalRowCount: 100,
+    canonicalEventCount: 100,
+    featureEligibleEventCount: 100,
+    invalidPhysicalRowCount: 0,
+    collisionPhysicalRowCount: 0,
+    duplicatePhysicalRowCount: 0,
+    poisoningOnlyEventCount: 0,
+    gasFreeFeeEventCount: 0,
+    gasFreePrincipalEventCount: 0,
+    incomingCount: 20,
+    outgoingCount: 80,
+    uniqueSenders: 20,
+    uniqueRecipients: 80,
+    uniqueCounterparties: 100,
+    largestCounterpartyCount: 1,
+    largestCounterpartyShareDenominator: 100,
+    dominantDirection: "outgoing",
+    dominantDirectionCount: 80,
+    uniqueDominantCounterparties: 80,
+    dominantShareDenominator: 100,
+    medianDominantDirectionGapSeconds: { numerator: 15, denominator: 1 },
+    maxDominantDirectionEventsPerHour: 80,
+    activeUtcHourOfDayCount: 12,
+    dominantExactAmountRaw: 1_000n,
+    dominantExactAmountCount: 10,
+    dominantExactAmountShareDenominator: 80,
+    observedStartSeconds: 10 * sevenDaysSeconds,
+    observedEndSeconds: 10 * sevenDaysSeconds + 86_400,
+    observedWindowDurationSeconds: 86_400,
+    orderAuthoritative: true,
+    ...overrides
+  };
+}
+
+function serviceRow(
+  index: number,
+  startSeconds: number,
+  overrides: Partial<ServiceBehaviorRowV2> = {}
+): ServiceBehaviorRowV2 {
+  const outgoing = index < 80;
+  return {
+    canonicalEventId: `event-${index}`,
+    blockNumber: index + 1,
+    transactionIndex: 0,
+    eventIndex: 0,
+    occurredAtSeconds: outgoing
+      ? startSeconds + index
+      : startSeconds + (index - 79) * 3_600,
+    direction: outgoing ? "outgoing" : "incoming",
+    counterpartyAddress: `counterparty-${index}`,
+    amountRaw: outgoing ? 1_000n : BigInt(index + 1),
+    valid: true,
+    featureRole: "ordinary",
+    ...overrides
+  };
+}
+
+function serviceRows(startSeconds: number): ServiceBehaviorRowV2[] {
+  return Array.from({ length: 100 }, (_, index) => serviceRow(index, startSeconds));
+}
+
+function recordedServiceVector(
+  vector: FeatureVector,
+  orderAuthoritative = false
+): CompleteServiceWindowVectorV2 {
+  return serviceVector({
+    physicalRowCount: vector.physicalRowCount,
+    canonicalEventCount: vector.canonicalEventCount,
+    featureEligibleEventCount: vector.featureEligibleEventCount,
+    duplicatePhysicalRowCount: vector.physicalRowCount - vector.canonicalEventCount,
+    incomingCount: vector.incomingCount,
+    outgoingCount: vector.outgoingCount,
+    uniqueSenders: vector.uniqueSenders,
+    uniqueRecipients: vector.uniqueRecipients,
+    uniqueCounterparties: vector.uniqueCounterparties,
+    largestCounterpartyCount: vector.largestCounterparty.count,
+    largestCounterpartyShareDenominator: vector.largestCounterparty.shareDenominator,
+    dominantDirection: vector.dominantDirection,
+    dominantDirectionCount: vector.dominantDirectionCount,
+    uniqueDominantCounterparties: vector.uniqueDominantCounterparties,
+    dominantShareDenominator: vector.dominantShareDenominator,
+    medianDominantDirectionGapSeconds: {
+      numerator: vector.medianDominantDirectionGapSeconds.numerator,
+      denominator: vector.medianDominantDirectionGapSeconds.denominator === 2 ? 2 : 1
+    },
+    maxDominantDirectionEventsPerHour: vector.maxDominantDirectionEventsPerHour,
+    activeUtcHourOfDayCount: vector.activeUtcHourOfDayCount,
+    dominantExactAmountRaw: BigInt(vector.dominantExactAmount.amountRaw),
+    dominantExactAmountCount: vector.dominantExactAmount.count,
+    dominantExactAmountShareDenominator: vector.dominantExactAmount.shareDenominator,
+    observedStartSeconds: Date.parse(vector.observedStartTimestamp) / 1_000,
+    observedEndSeconds: Date.parse(vector.observedEndTimestamp) / 1_000,
+    observedWindowDurationSeconds: vector.observedWindowDurationSeconds,
+    orderAuthoritative
+  });
+}
+
+function passesServicePredicate(vector: ServiceWindowVectorV2): boolean {
+  const predicate = evaluateServiceWindowPredicateV2(vector);
+  return predicate.C && predicate.B && predicate.G && (predicate.H || predicate.R || predicate.X);
+}
+
+describe("service behavior research v2 predicates", () => {
+  it("applies the inclusive C threshold and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 120, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 19,
+      medianDominantDirectionGapSeconds: { numerator: 120, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(false);
+  });
+
+  it("applies every inclusive B boundary and rejects one unit beyond it", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 24,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 126,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 62,
+      largestCounterpartyShareDenominator: 126
+    })).B).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      featureEligibleEventCount: 125,
+      uniqueCounterparties: 25,
+      largestCounterpartyCount: 63,
+      largestCounterpartyShareDenominator: 125
+    })).B).toBe(false);
+  });
+
+  it("applies both inclusive G branches and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 70,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 20,
+      uniqueSenders: 9,
+      uniqueRecipients: 9
+    })).G).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 69,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 20,
+      uniqueSenders: 9,
+      uniqueRecipients: 9
+    })).G).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 50,
+      uniqueDominantCounterparties: 19,
+      uniqueSenders: 10,
+      uniqueRecipients: 10
+    })).G).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 50,
+      uniqueDominantCounterparties: 19,
+      uniqueSenders: 9,
+      uniqueRecipients: 10
+    })).G).toBe(false);
+  });
+
+  it("applies the inclusive H threshold and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({ activeUtcHourOfDayCount: 12 })).H)
+      .toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({ activeUtcHourOfDayCount: 11 })).H)
+      .toBe(false);
+  });
+
+  it("applies both inclusive R boundaries and rejects one unit below", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 100,
+      dominantExactAmountCount: 10,
+      dominantExactAmountShareDenominator: 100
+    })).R).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 100,
+      dominantExactAmountCount: 9,
+      dominantExactAmountShareDenominator: 100
+    })).R).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 101,
+      dominantExactAmountCount: 10,
+      dominantExactAmountShareDenominator: 101
+    })).R).toBe(false);
+  });
+
+  it("applies every inclusive X boundary and rejects one unit below", () => {
+    const threshold = serviceVector({
+      dominantDirectionCount: 80,
+      dominantShareDenominator: 100,
+      uniqueDominantCounterparties: 80,
+      medianDominantDirectionGapSeconds: { numerator: 15, denominator: 1 },
+      maxDominantDirectionEventsPerHour: 79
+    });
+    expect(evaluateServiceWindowPredicateV2(threshold).X).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      dominantDirectionCount: 79
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      featureEligibleEventCount: 101
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      uniqueDominantCounterparties: 79
+    })).X).toBe(false);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      ...threshold,
+      medianDominantDirectionGapSeconds: { numerator: 16, denominator: 1 }
+    })).X).toBe(false);
+  });
+
+  it("compares an even median using the exact central-gap sum", () => {
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 240, denominator: 2 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(true);
+    expect(evaluateServiceWindowPredicateV2(serviceVector({
+      dominantDirectionCount: 20,
+      medianDominantDirectionGapSeconds: { numerator: 241, denominator: 2 },
+      maxDominantDirectionEventsPerHour: 14
+    })).C).toBe(false);
+  });
+
+  it("makes C, R, and X false for an incoming/outgoing tie", () => {
+    const rows = Array.from({ length: 100 }, (_, index) => serviceRow(index, 0, {
+      direction: index < 50 ? "outgoing" : "incoming",
+      occurredAtSeconds: index,
+      amountRaw: 1_000n
+    }));
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      incomingCount: 50,
+      outgoingCount: 50,
+      dominantDirection: null,
+      dominantDirectionCount: 0,
+      medianDominantDirectionGapSeconds: null,
+      dominantExactAmountCount: 0
+    });
+    expect(evaluateServiceWindowPredicateV2(vector)).toMatchObject({
+      C: false,
+      R: false,
+      X: false
+    });
+  });
+
+  it("uses every eligible event as the largest-counterparty denominator", () => {
+    const rows = Array.from({ length: 100 }, (_, index) => serviceRow(index, 0, {
+      direction: index < 51 ? "outgoing" : "incoming",
+      counterpartyAddress: index < 51 ? `recipient-${index}` : "repeat-sender"
+    }));
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      featureEligibleEventCount: 100,
+      largestCounterpartyCount: 49,
+      largestCounterpartyShareDenominator: 100
+    });
+    expect(evaluateServiceWindowPredicateV2(vector).B).toBe(true);
+  });
+});
+
+describe("service behavior research v2 windows", () => {
+  it("consumes at most 100 physical rows and is invariant to authoritative permutation", () => {
+    const rows = [...serviceRows(0), serviceRow(100, 0)];
+    const forward = computeServiceWindowVectorV2(rows);
+    const reversed = computeServiceWindowVectorV2([...rows].reverse());
+
+    expect(forward).toEqual(reversed);
+    expect(forward).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      featureEligibleEventCount: 100,
+      observedWindowDurationSeconds: 72_000,
+      orderAuthoritative: true
+    });
+  });
+
+  it("does not let an unauthoritative 101st row weaken the retained window", () => {
+    const rows = [
+      ...serviceRows(0),
+      serviceRow(100, 0, { transactionIndex: null })
+    ];
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      orderAuthoritative: true
+    });
+  });
+
+  it("marks missing or conflicting canonical order as unauthoritative", () => {
+    const missing = serviceRows(0);
+    missing[0] = { ...missing[0]!, transactionIndex: null };
+    expect(computeServiceWindowVectorV2(missing).orderAuthoritative).toBe(false);
+
+    const conflicting = serviceRows(0);
+    conflicting[1] = {
+      ...conflicting[1]!,
+      blockNumber: conflicting[0]!.blockNumber,
+      transactionIndex: conflicting[0]!.transactionIndex,
+      eventIndex: conflicting[0]!.eventIndex
+    };
+    expect(computeServiceWindowVectorV2(conflicting).orderAuthoritative).toBe(false);
+  });
+
+  it("does not top up a duplicate after the fixed 100 physical rows", () => {
+    const unique = serviceRows(0).slice(0, 99);
+    const vector = computeServiceWindowVectorV2([...unique, { ...unique[0]! }]);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 99,
+      duplicatePhysicalRowCount: 1
+    });
+  });
+
+  it("preserves invalid and collision inventory without positive features", () => {
+    const invalidRows = serviceRows(0);
+    invalidRows[99] = { ...invalidRows[99]!, valid: false };
+    expect(computeServiceWindowVectorV2(invalidRows)).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 99,
+      featureEligibleEventCount: 99,
+      invalidPhysicalRowCount: 1
+    });
+
+    const collisionRows = serviceRows(0).slice(0, 98);
+    const first = serviceRow(98, 0, { canonicalEventId: "collision" });
+    const second = { ...first, amountRaw: first.amountRaw + 1n };
+    expect(computeServiceWindowVectorV2([...collisionRows, first, second])).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 98,
+      featureEligibleEventCount: 98,
+      collisionPhysicalRowCount: 2
+    });
+  });
+
+  it("excludes poisoning and GasFree fees but includes GasFree principal", () => {
+    const rows = serviceRows(0);
+    rows[0] = { ...rows[0]!, featureRole: "poisoning_only" };
+    rows[1] = { ...rows[1]!, featureRole: "gasfree_fee" };
+    rows[2] = { ...rows[2]!, featureRole: "gasfree_principal" };
+    const vector = computeServiceWindowVectorV2(rows);
+
+    expect(vector).toMatchObject({
+      physicalRowCount: 100,
+      canonicalEventCount: 100,
+      featureEligibleEventCount: 98,
+      poisoningOnlyEventCount: 1,
+      gasFreeFeeEventCount: 1,
+      gasFreePrincipalEventCount: 1,
+      outgoingCount: 78
+    });
+  });
+});
+
+describe("service behavior 100 plus 100 research classification v2", () => {
+  const historical = serviceVector({
+    observedStartSeconds: 0,
+    observedEndSeconds: 86_400
+  });
+  const recent = serviceVector({
+    observedStartSeconds: 86_400 + sevenDaysSeconds,
+    observedEndSeconds: 86_400 + sevenDaysSeconds + 86_400
+  });
+
+  it("requires both independent windows to pass the predicate", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent,
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("high_inferred_service");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, activeUtcHourOfDayCount: 11, dominantExactAmountCount: 9,
+        dominantDirectionCount: 79, uniqueDominantCounterparties: 79,
+        medianDominantDirectionGapSeconds: { numerator: 16, denominator: 1 },
+        maxDominantDirectionEventsPerHour: 14 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("non_service_profile");
+  });
+
+  it("returns insufficient data for fewer than 100 canonical events or missing order", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, canonicalEventCount: 99 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, orderAuthoritative: false }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, physicalRowCount: 101, canonicalEventCount: 101 }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+  });
+
+  it("returns insufficient data for overlap or less than seven-day separation", () => {
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({ ...recent, observedStartSeconds: historical.observedEndSeconds! }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({
+        ...recent,
+        observedStartSeconds: historical.observedEndSeconds! + sevenDaysSeconds - 1
+      }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("insufficient_data");
+    expect(classifyServiceBehavior100Plus100V2({
+      recent: serviceVector({
+        ...recent,
+        observedStartSeconds: historical.observedEndSeconds! + sevenDaysSeconds
+      }),
+      historical,
+      exactRoleConflict: false
+    }).status).toBe("high_inferred_service");
+  });
+
+  it("keeps the sparse TXc control honest while classifying it insufficient", () => {
+    const txc = corpus.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control")!;
+    const txcRecent: ServiceWindowVectorV2 = {
+      kind: "incomplete",
+      physicalRowCount: 73,
+      canonicalEventCount: 73,
+      orderAuthoritative: false,
+      observedStartSeconds: null,
+      observedEndSeconds: null
+    };
+    const txcHistorical: ServiceWindowVectorV2 = {
+      kind: "incomplete",
+      physicalRowCount: 0,
+      canonicalEventCount: 0,
+      orderAuthoritative: false,
+      observedStartSeconds: null,
+      observedEndSeconds: null
+    };
+    const result = classifyServiceBehavior100Plus100V2({
+      recent: txcRecent,
+      historical: txcHistorical,
+      exactRoleConflict: false
+    });
+
+    expect(txc).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      behaviorClassification: "insufficient_data",
+      recordedPartialVector: {
+        recentObservedRowCount: 73,
+        historicalBaselineState: "empty"
+      }
+    });
+    expect(result).toEqual({
+      status: "insufficient_data",
+      recentVector: txcRecent,
+      historicalVector: txcHistorical,
+      recentPredicates: { C: false, B: false, G: false, H: false, R: false, X: false },
+      historicalPredicates: { C: false, B: false, G: false, H: false, R: false, X: false }
+    });
+  });
+
+  it("does not promote sparse D7NzP evidence into the full classifier", () => {
+    const tqr = corpus.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control")!;
+    expect(tqr).toMatchObject({
+      evidenceClass: "recorded_calibration_vector",
+      behaviorClassification: "non_service_profile",
+      recordedPartialVector: { cadencePredicate: false }
+    });
+    expect(tqr.limitations).toEqual(expect.arrayContaining([
+      "full_feature_vector_not_recorded",
+      "checked_subject_cannot_be_inferred_boundary"
+    ]));
+  });
+
+  it("replays W8SRL as a recorded two-window high control", () => {
+    const w8srl = corpus.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration")!;
+    const windows = w8srl.windows as FeatureVector[];
+    const result = classifyServiceBehavior100Plus100V2({
+      recent: recordedServiceVector(windows[0]!, true),
+      historical: recordedServiceVector(windows[1]!, true),
+      exactRoleConflict: false
+    });
+
+    expect(w8srl.evidenceClass).toBe("recorded_calibration_vector");
+    expect(result.status).toBe("high_inferred_service");
+    const compatibilityBytes = JSON.parse(JSON.stringify(result, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    ));
+    expect(fingerprintCanonicalArtifact(compatibilityBytes)).toBe(
+      "903b8b930068c34d96addcd4fee667a21b8dace37fcb640393c1523a85d26c09"
+    );
+  });
+
+  it("returns role conflict for the exact Binance authority control", () => {
+    const binance = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    expect(binance).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      expectedClassification: "exact_service_label"
+    });
+    expect(classifyServiceBehavior100Plus100V2({
+      recent,
+      historical,
+      exactRoleConflict: true
+    }).status).toBe("role_conflict");
+  });
+
+  it("matches every complete recorded calibration predicate without upgrading evidence", () => {
+    const completeControls = corpus.serviceCases.filter(({ observedVector }) => observedVector);
+    expect(completeControls).toHaveLength(21);
+
+    for (const control of completeControls) {
+      const observed = control.observedVector as FeatureVector;
+      const actual = evaluateServiceWindowPredicateV2(recordedServiceVector(observed));
+      const { P, ...recorded } = observed.recordedPredicate;
+      expect(actual, control.address as string).toEqual(recorded);
+      expect(passesServicePredicate(recordedServiceVector(observed)), control.address as string)
+        .toBe(P);
+      expect(control.evidenceClass).toBe("recorded_calibration_vector");
+    }
+
+    const sh14eaf = completeControls.find(({ address }) =>
+      (address as string).endsWith("SH14eaf")
+    )!;
+    expect(passesServicePredicate(recordedServiceVector(sh14eaf.observedVector as FeatureVector)))
+      .toBe(false);
+
+    for (const suffix of ["q98cdn", "aEGqTr"]) {
+      const extreme = completeControls.find(({ address }) =>
+        (address as string).endsWith(suffix)
+      )!;
+      expect(evaluateServiceWindowPredicateV2(
+        recordedServiceVector(extreme.observedVector as FeatureVector)
+      )).toMatchObject({ X: true });
+    }
+  });
+});
+
+function exactDrainerScene(
+  overrides: Partial<ExactDrainerSceneInputV1> = {}
+): ExactDrainerSceneInputV1 {
+  const call = {
+    txHash: "scene-drain-tx",
+    contractAddress: "scene-spender",
+    selector: "5082dd12",
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    fromAddress: "scene-victim",
+    toAddress: "scene-receiver",
+    receiverAddress: "scene-receiver",
+    amountRaw: "669000000",
+    confirmed: true,
+    successful: true
+  };
+  return {
+    methodContractAddress: "scene-spender",
+    methodMap: completeFingerprintMethods,
+    topMethods: [],
+    serviceLabel: null,
+    relevantCall: call,
+    movement: {
+      txHash: call.txHash,
+      tokenContract: call.tokenContract,
+      fromAddress: call.fromAddress,
+      toAddress: call.toAddress,
+      amountRaw: call.amountRaw,
+      confirmed: true,
+      successful: true
+    },
+    ...overrides
+  };
+}
+
+const officialUsdt = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const canonicalHash = (hex: string) => hex.repeat(64);
+
+function blacklistEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    eventKind: "added",
+    occurredAt: "2026-01-02T00:00:00.000Z",
+    txHash: canonicalHash("a"),
+    tokenContract: officialUsdt,
+    subjectAddress: "listed",
+    logIndex: 0,
+    confirmed: true,
+    successful: true,
+    ...overrides
+  };
+}
+
+function blacklistTransfer(overrides: Record<string, unknown> = {}) {
+  return {
+    txHash: canonicalHash("b"),
+    logIndex: 0,
+    occurredAt: "2026-01-03T00:00:00.000Z",
+    tokenContract: officialUsdt,
+    fromAddress: "subject",
+    toAddress: "listed",
+    amountRaw: "1",
+    confirmed: true,
+    successful: true,
+    ...overrides
+  };
+}
+
+function minimalReplayCorpus(
+  overrides: Partial<OfflineCorpusV1> = {}
+): OfflineCorpusV1 {
+  return {
+    schemaVersion: "forensic-model-offline-corpus-v1",
+    ledgerCases: [],
+    serviceCases: [],
+    adverseCases: [],
+    ...overrides
+  };
+}
+
+describe("offline forensic model replay v1", () => {
+  it("requires the full unblocked fingerprint and one exact successful movement", () => {
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene())).toEqual({
+      classification: "exact_drainer_red",
+      red: true,
+      reason: "exact_call_and_movement_confirmed"
+    });
+
+    const methodOnly = exactDrainerScene({ relevantCall: null, movement: null });
+    expect(evaluateExactDrainerSceneV1(methodOnly)).toMatchObject({
+      classification: "context_only",
+      red: false,
+      reason: "exact_call_missing"
+    });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, successful: false }
+    }))).toMatchObject({ red: false, reason: "exact_call_not_successful" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, confirmed: false }
+    }))).toMatchObject({ red: false, reason: "exact_call_not_confirmed" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      movement: { ...exactDrainerScene().movement!, amountRaw: "669000001" }
+    }))).toMatchObject({ red: false, reason: "movement_mismatch" });
+    const otherToken = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj";
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, tokenContract: otherToken },
+      movement: { ...exactDrainerScene().movement!, tokenContract: otherToken }
+    }))).toMatchObject({ red: false, reason: "token_not_official_usdt" });
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      serviceLabel: "trusted exact service"
+    }))).toMatchObject({ red: false, reason: "trusted_service_guard" });
+
+    expect(JSON.stringify(evaluateExactDrainerSceneV1(exactDrainerScene())))
+      .not.toMatch(/Verify20|transferFrom/u);
+  });
+
+  it("validates raw amounts before fingerprint and trusted-service early returns", () => {
+    expect(() => evaluateExactDrainerSceneV1(exactDrainerScene({
+      methodMap: {},
+      relevantCall: { ...exactDrainerScene().relevantCall!, amountRaw: "01" }
+    }))).toThrow("offline_corpus_amount_raw_invalid");
+    expect(() => evaluateExactDrainerSceneV1(exactDrainerScene({
+      serviceLabel: "trusted exact service",
+      movement: { ...exactDrainerScene().movement!, amountRaw: "01" }
+    }))).toThrow("offline_corpus_amount_raw_invalid");
+  });
+
+  it("reuses event-time provider authority and keeps HTX role plus adverse semantics", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    const binance = result.adverseCases.find(({ id }) => id === "exact-binance-label");
+    const htx = result.adverseCases.find(({ id }) => id === "exact-htx-label");
+
+    expect(binance).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      kind: "service_label",
+      serviceRole: "cex:binance",
+      inferredClassifierBypassed: true,
+      adverse: false,
+      atValidityStart: "eligible",
+      beforeValidityStart: "label_not_valid_at_event"
+    });
+    expect(htx).toMatchObject({
+      evidenceClass: "exact_frozen_rows",
+      kind: "service_label",
+      serviceRole: "cex:htx-huobi",
+      inferredClassifierBypassed: true,
+      adverse: true,
+      atValidityStart: "eligible",
+      beforeValidityStart: "label_not_valid_at_event"
+    });
+  });
+
+  it("keeps blacklist time partitions and GasFree principal separate from its fee", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    const blacklist = result.adverseCases.find(({ id }) => id === "event-time-blacklist-partitions");
+    const gasFree = result.adverseCases.find(({ id }) => id === "gasfree-principal-fee-classification");
+
+    expect(blacklist).toMatchObject({
+      kind: "blacklist_timeline",
+      beforeEventAmountRaw: "900000",
+      beforeActivationAmountRaw: "900000",
+      activeAtEventAmountRaw: "100000",
+      unknownAmountRaw: "50000",
+      hardEvidenceAmountRaw: "100000",
+      partitions: {
+        before_event: "900000",
+        active_at_event: "100000",
+        unknown: "50000"
+      }
+    });
+    expect(gasFree).toMatchObject({
+      kind: "gasfree_settlement",
+      settlementDetected: true,
+      ledgerExecuted: false,
+      principalAmountRaw: "4691000000",
+      serviceFeeAmountRaw: "1500000",
+      principalRole: "aml_money_path",
+      serviceFeeRole: "accounting_only_consumption",
+      principalFeatureEligible: true,
+      serviceFeeFeatureEligible: false,
+      principalCounterparties: [{
+        address: "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq",
+        direction: "outbound",
+        amountRaw: "4691000000"
+      }]
+    });
+  });
+
+  it("partitions grouped same-transaction timestamp conflicts as unknown once", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [
+          {
+            ...blacklistTransfer(),
+            txHash: canonicalHash("1"),
+            logIndex: 0,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            amountRaw: "40"
+          },
+          {
+            ...blacklistTransfer(),
+            txHash: canonicalHash("1"),
+            logIndex: 1,
+            occurredAt: "2026-01-03T00:00:00.000Z",
+            amountRaw: "60"
+          }
+        ],
+        timelineEvents: [blacklistEvent()]
+      }]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "100",
+      partitions: { before_event: "0", active_at_event: "0", unknown: "100" }
+    });
+  });
+
+  it("restores grouped blacklist times by counterparty and direction identity", () => {
+    const activeAt = "2026-01-03T00:00:00.000Z";
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        principalTransfers: [
+          {
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
+            logIndex: 0,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            toAddress: "counterparty-b",
+            amountRaw: "10"
+          },
+          {
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
+            logIndex: 1,
+            occurredAt: activeAt,
+            toAddress: "counterparty-b",
+            amountRaw: "10"
+          },
+          ...[2, 3, 4].map((logIndex) => ({
+            ...blacklistTransfer(),
+            txHash: canonicalHash("2"),
+            logIndex,
+            occurredAt: activeAt,
+            fromAddress: "counterparty-a",
+            toAddress: "subject",
+            amountRaw: "10"
+          }))
+        ],
+        listedAddress: "counterparty-a",
+        timelineEvents: [blacklistEvent({ subjectAddress: "counterparty-a" })]
+      }]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "30",
+      unknownAmountRaw: "0",
+      unmatchedCounterpartyAmountRaw: "20",
+      partitions: { before_event: "0", active_at_event: "30", unknown: "0" }
+    });
+  });
+
+  it("drives blacklist replay from the canonical group helper output", () => {
+    const canonicalGroup = directHardEvidence.groupDirectPrincipalCounterparties;
+    const grouping = vi.spyOn(directHardEvidence, "groupDirectPrincipalCounterparties")
+      .mockImplementation((input) => canonicalGroup(input).map((group) => ({
+        ...group,
+        principalAmountRaw: 30n,
+        principalTransfers: group.principalTransfers.filter(({ amountRaw }) => amountRaw === 30n)
+      })));
+    try {
+      const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers: [
+            blacklistTransfer({ txHash: canonicalHash("1"), amountRaw: "30" }),
+            blacklistTransfer({ txHash: canonicalHash("2"), amountRaw: "20" })
+          ],
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+
+      expect(grouping).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ activeAtEventAmountRaw: "30", hardEvidenceAmountRaw: "30" });
+    } finally {
+      grouping.mockRestore();
+    }
+  });
+
+  it("binds mixed-direction blacklist replay to the explicit subject under permutation", () => {
+    const transfers = [
+      {
+        ...blacklistTransfer(),
+        txHash: canonicalHash("3"),
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "subject",
+        toAddress: "listed",
+        amountRaw: "30"
+      },
+      {
+        ...blacklistTransfer(),
+        txHash: canonicalHash("4"),
+        logIndex: 0,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        fromAddress: "listed",
+        toAddress: "subject",
+        amountRaw: "20"
+      }
+    ];
+    const replay = (principalTransfers: typeof transfers) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+
+    const expected = {
+      beforeEventAmountRaw: "20",
+      activeAtEventAmountRaw: "30",
+      unknownAmountRaw: "0",
+      partitions: { before_event: "20", active_at_event: "30", unknown: "0" }
+    };
+    expect(replay(transfers)).toMatchObject(expected);
+    expect(replay([...transfers].reverse())).toEqual(replay(transfers));
+  });
+
+  it.each([
+    ["missing subject", { subjectAddress: undefined }],
+    ["blank subject", { subjectAddress: "   " }],
+    ["subject equals listed", { subjectAddress: "listed" }],
+    ["case-mutated subject endpoint", {
+      principalTransfers: [{ ...blacklistTransfer(), fromAddress: "Subject" }]
+    }],
+    ["subject on neither endpoint", {
+      principalTransfers: [{
+        ...blacklistTransfer(),
+        txHash: canonicalHash("5"),
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "outside-a",
+        toAddress: "outside-b",
+        amountRaw: "1"
+      }]
+    }],
+    ["subject on both endpoints", {
+      principalTransfers: [{
+        ...blacklistTransfer(),
+        txHash: canonicalHash("6"),
+        logIndex: 0,
+        occurredAt: "2026-01-03T00:00:00.000Z",
+        fromAddress: "subject",
+        toAddress: "subject",
+        amountRaw: "1"
+      }]
+    }]
+  ] as const)("rejects %s blacklist subject binding", (_name, overrides) => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [{
+          ...blacklistTransfer()
+        }],
+        timelineEvents: [],
+        ...overrides
+      }]
+    }))).toThrow("offline_corpus_blacklist_subject_invalid");
+  });
+
+  it("represents every broad direct counterparty in both directions and retains second-hop red", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "broad-synthetic",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [
+          { id: "in-a", txHash: "in-a", direction: "inbound", counterpartyAddress: "a", amountRaw: "7", occurredAt: "2026-01-01T00:00:00.000Z" },
+          { id: "out-a", txHash: "out-a", direction: "outbound", counterpartyAddress: "a", amountRaw: "5", occurredAt: "2026-01-01T00:00:01.000Z" },
+          { id: "in-b", txHash: "in-b", direction: "inbound", counterpartyAddress: "b", amountRaw: "3", occurredAt: "2026-01-01T00:00:02.000Z" },
+          { id: "out-b", txHash: "out-b", direction: "outbound", counterpartyAddress: "b", amountRaw: "2", occurredAt: "2026-01-01T00:00:03.000Z" }
+        ],
+        secondHopRedBranches: [{
+          branchId: "red-b-c",
+          directCounterpartyAddress: "b",
+          secondHopAddress: "c",
+          evidenceId: "exact-red-c",
+          amountRaw: "1"
+        }]
+      }]
+    }));
+
+    expect(result.broadScopeCases).toEqual([{
+      id: "broad-synthetic",
+      evidenceClass: "synthetic_edge_case",
+      shallowProbe: [
+        { address: "a", directions: ["inbound", "outbound"], amountRaw: "12" },
+        { address: "b", directions: ["inbound", "outbound"], amountRaw: "5" }
+      ],
+      secondHopRedBranches: [{
+        branchId: "red-b-c",
+        directCounterpartyAddress: "b",
+        secondHopAddress: "c",
+        evidenceId: "exact-red-c",
+        amountRaw: "1"
+      }]
+    }]);
+  });
+
+  it("returns JSON-safe corpus facts without upgrading recorded evidence", () => {
+    const result = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1);
+    expect(result.schemaVersion).toBe("offline-forensic-model-replay-v1");
+    expect(result.ledgerCases).toHaveLength(corpus.ledgerCases.length);
+    expect(result.serviceCases).toHaveLength(corpus.serviceCases.length);
+    expect(result.adverseCases).toHaveLength(corpus.adverseCases.length);
+    expect(result.serviceCases.find(({ id }) => id === "w8srl-two-window-calibration"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", replayAuthority: "recorded_vector" });
+    expect(result.serviceCases.find(({ id }) => id === "tqr-d7nzp-recorded-control"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", state: "expectation_level" });
+    expect(result.serviceCases.find(({ id }) => id === "txc-vusxvhd-recorded-control"))
+      .toMatchObject({ evidenceClass: "recorded_calibration_vector", state: "insufficient_data" });
+    expect(result.adverseCases.find(({ id }) => id === "drainer-method-only"))
+      .toMatchObject({ kind: "drainer_scene", red: false, reason: "fingerprint_incomplete" });
+    expect(result.adverseCases.find(({ id }) => id === "drainer-complete-evidence"))
+      .toMatchObject({
+        kind: "drainer_scene",
+        classification: "exact_drainer_red",
+        red: true,
+        reason: "exact_call_and_movement_confirmed"
+      });
+    expect(result.dataGaps).toEqual(expect.arrayContaining([
+      { caseId: "pacgy-recorded-chronology", code: "history_incomplete" },
+      { caseId: "tqr-d7nzp-recorded-control", code: "recorded_partial_vector" },
+      { caseId: "txc-vusxvhd-recorded-control", code: "insufficient_service_windows" }
+    ]));
+    expect(result.dataGaps).not.toContainEqual({
+      caseId: "drainer-complete-evidence",
+      code: "verify20_fingerprint_incomplete"
+    });
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(JSON.stringify(result)).not.toMatch(/\d+n\b/u);
+  });
+
+  it.each([
+    ["non-canonical hash", { txHash: "not-a-hash" }],
+    ["wrong token", { tokenContract: "other-token" }],
+    ["wrong listed subject", { subjectAddress: "other-listed" }],
+    ["case-mutated listed subject", { subjectAddress: "Listed" }],
+    ["unconfirmed", { confirmed: false }],
+    ["unsuccessful", { successful: false }]
+  ])("fails closed on %s blacklist timeline evidence", (_name, eventOverrides) => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer()],
+        timelineEvents: [blacklistEvent(eventOverrides)]
+      }]
+    }))).toThrow("offline_corpus_blacklist_timeline_invalid");
+  });
+
+  it("preserves authoritative blacklist identity and applies it only to the listed group", () => {
+    const event = blacklistEvent({ blockNumber: 99, logIndex: 7 });
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [
+          blacklistTransfer({ amountRaw: "30" }),
+          blacklistTransfer({ txHash: canonicalHash("c"), toAddress: "unrelated", amountRaw: "20" })
+        ],
+        timelineEvents: [event]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      activeAtEventAmountRaw: "30",
+      unmatchedCounterpartyAmountRaw: "20",
+      timelineEvents: [{
+        txHash: canonicalHash("a"),
+        logIndex: 7,
+        blockNumber: 99,
+        tokenContract: officialUsdt,
+        occurredAt: "2026-01-02T00:00:00.000Z"
+      }]
+    });
+  });
+
+  it("keeps case-distinct blacklist counterparties separate under permutation", () => {
+    const exact = blacklistTransfer({ txHash: canonicalHash("1"), amountRaw: "30" });
+    const caseDistinct = blacklistTransfer({
+      txHash: canonicalHash("2"),
+      toAddress: "Listed",
+      amountRaw: "20"
+    });
+    const replay = (principalTransfers: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+    const expected = { activeAtEventAmountRaw: "30", unmatchedCounterpartyAmountRaw: "20" };
+
+    expect(replay([exact, caseDistinct])).toMatchObject(expected);
+    expect(replay([caseDistinct, exact])).toEqual(replay([exact, caseDistinct]));
+  });
+
+  it("deduplicates case-insensitive raw identities and keeps missing-time replay permutation-stable", () => {
+    const duplicate = blacklistTransfer({ txHash: canonicalHash("d"), amountRaw: "7" });
+    const missing = blacklistTransfer({ txHash: canonicalHash("e"), occurredAt: null, amountRaw: "5" });
+    const replay = (principalTransfers: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents: [blacklistEvent()]
+        }]
+      })).adverseCases[0];
+    const transfers = [duplicate, { ...duplicate, txHash: canonicalHash("D") }, missing];
+
+    expect(replay(transfers)).toMatchObject({ activeAtEventAmountRaw: "7", unknownAmountRaw: "5" });
+    expect(replay([...transfers].reverse())).toEqual(replay(transfers));
+  });
+
+  it("fails closed on conflicting transfer and timeline identities", () => {
+    const replay = (principalTransfers: readonly Record<string, unknown>[], timelineEvents: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        adverseCases: [{
+          id: "event-time-blacklist-partitions",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          listedAddress: "listed",
+          principalTransfers,
+          timelineEvents
+        }]
+      }));
+    const transfer = blacklistTransfer();
+    expect(() => replay([transfer, { ...transfer, amountRaw: "2" }], [blacklistEvent()]))
+      .toThrow("offline_corpus_blacklist_identity_invalid");
+    const event = blacklistEvent();
+    expect(() => replay([transfer], [event, { ...event, eventKind: "removed" }]))
+      .toThrow("offline_corpus_blacklist_timeline_invalid");
+  });
+
+  it("keeps wall-clock ties at blacklist addition and removal unresolved", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [
+          blacklistTransfer({
+            txHash: canonicalHash("1"),
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            amountRaw: "1"
+          }),
+          blacklistTransfer({
+            txHash: canonicalHash("2"),
+            occurredAt: "2026-01-02T00:00:00.000Z",
+            amountRaw: "2"
+          }),
+          blacklistTransfer({
+            txHash: canonicalHash("3"),
+            occurredAt: "2026-01-03T00:00:00.000Z",
+            amountRaw: "3"
+          })
+        ],
+        timelineEvents: [
+          blacklistEvent(),
+          blacklistEvent({
+            eventKind: "removed",
+            txHash: canonicalHash("f"),
+            occurredAt: "2026-01-03T00:00:00.000Z"
+          })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      beforeEventAmountRaw: "1",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "5",
+      hardEvidenceAmountRaw: "0"
+    });
+  });
+
+  it("fails repeated blacklist lifecycles closed without promoting transfers", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer({ amountRaw: "9" })],
+        timelineEvents: [
+          blacklistEvent(),
+          blacklistEvent({ txHash: canonicalHash("f"), occurredAt: "2026-01-02T01:00:00.000Z" })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({
+      beforeEventAmountRaw: "0",
+      activeAtEventAmountRaw: "0",
+      unknownAmountRaw: "9",
+      hardEvidenceAmountRaw: "0"
+    });
+  });
+
+  it("fails a canonically non-ordered blacklist lifecycle closed", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{
+        id: "event-time-blacklist-partitions",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        listedAddress: "listed",
+        principalTransfers: [blacklistTransfer({
+          occurredAt: "2026-01-02T12:00:00.000Z",
+          amountRaw: "9"
+        })],
+        timelineEvents: [
+          blacklistEvent({ blockNumber: 20 }),
+          blacklistEvent({
+            eventKind: "removed",
+            txHash: canonicalHash("f"),
+            blockNumber: 10,
+            occurredAt: "2026-01-03T00:00:00.000Z"
+          })
+        ]
+      }]
+    })).adverseCases[0];
+
+    expect(result).toMatchObject({ activeAtEventAmountRaw: "0", unknownAmountRaw: "9" });
+  });
+
+  it("binds GasFree replay edges by exact role and movement, independent of row order", () => {
+    const base = structuredClone(corpus) as unknown as OfflineCorpusV1;
+    const gasFree = (base.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    const replayEdges = gasFree.replayEdges as Record<string, unknown>[];
+    gasFree.replayEdges = [...replayEdges].reverse();
+    const permuted = replayOfflineForensicModelCorpusV1(base).adverseCases
+      .find(({ id }) => id === "gasfree-principal-fee-classification");
+    const canonical = replayOfflineForensicModelCorpusV1(corpus as OfflineCorpusV1).adverseCases
+      .find(({ id }) => id === "gasfree-principal-fee-classification");
+    expect(permuted).toEqual(canonical);
+
+    const tampered = structuredClone(base);
+    const tamperedCase = (tampered.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    (tamperedCase.replayEdges as Record<string, unknown>[])[0]!.amountRaw = "1";
+    expect(() => replayOfflineForensicModelCorpusV1(tampered))
+      .toThrow("offline_corpus_gasfree_edges_invalid");
+    const caseMutated = structuredClone(base);
+    const caseMutatedGasFree = (caseMutated.adverseCases as unknown as Record<string, unknown>[])
+      .find(({ id }) => id === "gasfree-principal-fee-classification")!;
+    const caseMutatedEdge = (caseMutatedGasFree.replayEdges as Record<string, unknown>[])[0]!;
+    caseMutatedEdge.fromAddress = `t${String(caseMutatedEdge.fromAddress).slice(1)}`;
+    expect(() => replayOfflineForensicModelCorpusV1(caseMutated))
+      .toThrow("offline_corpus_gasfree_edges_invalid");
+  });
+
+  it("requires the drainer call contract to match the fingerprinted contract", () => {
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      relevantCall: { ...exactDrainerScene().relevantCall!, contractAddress: "other-spender" }
+    }))).toMatchObject({ red: false, reason: "spender_contract_mismatch" });
+    const tronAddress = "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh";
+    expect(evaluateExactDrainerSceneV1(exactDrainerScene({
+      methodContractAddress: tronAddress,
+      relevantCall: {
+        ...exactDrainerScene().relevantCall!,
+        contractAddress: `t${tronAddress.slice(1)}`
+      }
+    }))).toMatchObject({ red: false, reason: "spender_contract_mismatch" });
+  });
+
+  it.each([
+    ["label created later", { observedVector: { observedEndTimestamp: "2026-07-19T00:00:00.000Z" } }],
+    ["missing anchor", {}]
+  ])("does not bypass service inference for %s", (_name, serviceFields) => {
+    const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "service-time-authority",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
+        ...serviceFields
+      }],
+      adverseCases: [exactLabel as OfflineCorpusV1["adverseCases"][number]]
+    })).serviceCases[0];
+
+    expect(result).not.toMatchObject({ state: "exact_service_role" });
+  });
+
+  it("does not retarget a manifest-bound exact role and ignores an unproved conflict flag", () => {
+    const binance = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!) as Record<string, unknown>;
+    const htx = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-htx-label")!) as Record<string, unknown>;
+    const address = ((binance.frozenRow as Record<string, unknown>).address as string);
+    (htx.frozenRow as Record<string, unknown>).address = address;
+    const service = {
+      id: "derived-role-conflict",
+      evidenceClass: "recorded_calibration_vector" as const,
+      address,
+      anchorTimestamp: "2026-07-26T00:00:00.000Z",
+      exactRoleConflict: false
+    };
+    const replay = (adverseCases: readonly Record<string, unknown>[]) =>
+      replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+        serviceCases: [service],
+        adverseCases: adverseCases as unknown as OfflineCorpusV1["adverseCases"]
+      }));
+    const forward = replay([binance, htx]);
+    const reverse = replay([htx, binance]);
+
+    expect(forward.adverseCases.find(({ id }) => id === "exact-htx-label"))
+      .toMatchObject({ authoritative: false });
+    expect(forward.serviceCases[0]).toMatchObject({
+      state: "exact_service_role",
+      serviceRole: "cex:binance",
+      inferredClassifierBypassed: true
+    });
+    expect(reverse.serviceCases).toEqual(forward.serviceCases);
+    expect(reverse.dataGaps).toEqual(forward.dataGaps);
+
+    const oneRole = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{ ...service, id: "unproved-role-conflict", exactRoleConflict: true }],
+      adverseCases: [binance as OfflineCorpusV1["adverseCases"][number]]
+    }));
+    expect(oneRole.serviceCases[0]).toMatchObject({ state: "exact_service_role" });
+  });
+
+  it.each([
+    ["synthetic evidence", (item: Record<string, unknown>) => { item.evidenceClass = "synthetic_edge_case"; }],
+    ["missing raw ref", (item: Record<string, unknown>) => { delete item.rawEvidenceRef; }],
+    ["mutated raw ref", (item: Record<string, unknown>) => { item.rawEvidenceRef = "other.json"; }],
+    ["mutated artifact hash", (item: Record<string, unknown>) => {
+      item.rawEvidenceArtifactSha256 = "0".repeat(64);
+    }],
+    ["mutated dataset hash", (item: Record<string, unknown>) => {
+      item.labelDatasetSha256 = "0".repeat(64);
+    }],
+    ["mutated row hash", (item: Record<string, unknown>) => {
+      item.frozenRowSha256 = "0".repeat(64);
+    }],
+    ["mutated row and ref", (item: Record<string, unknown>) => {
+      item.rawEvidenceRef = "other.json";
+      (item.frozenRow as Record<string, unknown>).label = "Binance-Hot 11";
+    }],
+    ["wrong authority", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).authority = "claimed";
+    }],
+    ["wrong category", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).category = "unknown";
+    }],
+    ["invalid validity", (item: Record<string, unknown>) => {
+      (item.frozenRow as Record<string, unknown>).validTo = "2026-07-20T08:05:34.930Z";
+    }]
+  ])("does not manufacture exact provider authority from %s", (_name, mutate) => {
+    const label = structuredClone(corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!) as Record<string, unknown>;
+    mutate(label);
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "provider-authority-consumer",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh",
+        anchorTimestamp: "2026-07-26T00:00:00.000Z"
+      }],
+      adverseCases: [label as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({ authoritative: false });
+    expect(result.serviceCases[0]).not.toMatchObject({ state: "exact_service_role" });
+    expect(result.dataGaps).toContainEqual({
+      caseId: "exact-binance-label",
+      code: "provider_label_authority_missing"
+    });
+  });
+
+  it("uses the locked normalized dataset hash without replaying raw provider bytes", () => {
+    const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [exactLabel as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.adverseCases[0]).toMatchObject({
+      authoritative: true,
+      providerAssertionReplay: "raw_provider_assertion_not_replayed",
+      frozenLabel: { sourcePayloadSha256: exactLabel.labelDatasetSha256 }
+    });
+    expect(result.dataGaps).not.toContainEqual({
+      caseId: "exact-binance-label",
+      code: "provider_label_authority_missing"
+    });
+  });
+
+  it.each([
+    ["lowercase", (address: string) => address.toLowerCase()],
+    ["whitespace-padded", (address: string) => ` ${address} `]
+  ])("does not resolve an exact provider label for a %s address mutation", (_name, mutate) => {
+    const address = "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh";
+    const label = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "case-sensitive-provider-address",
+        evidenceClass: "recorded_calibration_vector",
+        address: mutate(address),
+        anchorTimestamp: "2026-07-26T00:00:00.000Z"
+      }],
+      adverseCases: [label as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.serviceCases[0]).not.toMatchObject({ state: "exact_service_role" });
+  });
+
+  it("rejects conflicting normalized method selectors independent of row order", () => {
+    const scene = structuredClone(corpus.adverseCases
+      .find(({ id }) => id === "drainer-complete-evidence")!) as Record<string, unknown>;
+    const methods = (scene.methodEvidence as Record<string, unknown>).methodMap as Record<string, unknown>[];
+    methods.push({ selector: "0X5082DD12", signature: "evil(address)" });
+    const replay = () => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [scene as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(replay).toThrow("offline_corpus_drainer_method_map_conflict");
+    methods.reverse();
+    expect(replay).toThrow("offline_corpus_drainer_method_map_conflict");
+    methods[0] = { selector: "5082dd1", signature: "evil(address)" };
+    expect(replay).toThrow("offline_corpus_drainer_invalid");
+  });
+
+  it("rejects duplicate IDs, unknown adverse IDs, and unbound broad red branches", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [{ id: "duplicate", evidenceClass: "synthetic_edge_case" }],
+      serviceCases: [{ id: "duplicate", evidenceClass: "synthetic_edge_case" }]
+    }))).toThrow("offline_corpus_duplicate_case_id");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      adverseCases: [{ id: "gasfree-principle-fee-classification", evidenceClass: "synthetic_edge_case" }]
+    }))).toThrow("offline_corpus_adverse_case_unknown");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "unbound-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "missing",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1"
+        }]
+      }]
+    }))).toThrow("offline_corpus_broad_red_branch_unbound");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "case-distinct-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [{
+          id: "direct",
+          txHash: "direct",
+          direction: "outbound",
+          counterpartyAddress: "Listed",
+          amountRaw: "1",
+          occurredAt: "2026-01-01T00:00:00.000Z"
+        }],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "listed",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1"
+        }]
+      }]
+    }))).toThrow("offline_corpus_broad_red_branch_unbound");
+  });
+
+  it("keeps case-distinct broad-scope counterparties separate", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "case-distinct-counterparties",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [
+          {
+            id: "upper",
+            txHash: "upper",
+            direction: "outbound",
+            counterpartyAddress: "Listed",
+            amountRaw: "1",
+            occurredAt: "2026-01-01T00:00:00.000Z"
+          },
+          {
+            id: "lower",
+            txHash: "lower",
+            direction: "outbound",
+            counterpartyAddress: "listed",
+            amountRaw: "2",
+            occurredAt: "2026-01-01T00:00:00.000Z"
+          }
+        ],
+        secondHopRedBranches: []
+      }]
+    }));
+
+    expect(result.broadScopeCases[0]?.shallowProbe).toEqual([
+      { address: "Listed", directions: ["outbound"], amountRaw: "1" },
+      { address: "listed", directions: ["outbound"], amountRaw: "2" }
+    ]);
+  });
+
+  it("rejects internally inconsistent recorded service vectors", () => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const firstWindow = (serviceCase.windows as Record<string, unknown>[])[0]!;
+    const predicate = firstWindow.recordedPredicate as Record<string, boolean>;
+    predicate.C = !predicate.C;
+    predicate.P = predicate.C && predicate.B && predicate.G &&
+      (predicate.H || predicate.R || predicate.X);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+    const exactService = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "csv-JJpBXh")!) as Record<string, unknown>;
+    const exactPredicate = (exactService.observedVector as Record<string, unknown>)
+      .recordedPredicate as Record<string, boolean>;
+    exactPredicate.B = !exactPredicate.B;
+    exactPredicate.P = exactPredicate.C && exactPredicate.B && exactPredicate.G &&
+      (exactPredicate.H || exactPredicate.R || exactPredicate.X);
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [exactService as OfflineCorpusV1["serviceCases"][number]],
+      adverseCases: [corpus.adverseCases.find(({ id }) => id === "exact-binance-label") as
+        OfflineCorpusV1["adverseCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-window-only",
+        evidenceClass: "recorded_calibration_vector",
+        windows: [{}]
+      }]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it.each([
+    ["undersized counts", (window: Record<string, unknown>) => {
+      window.physicalRowCount = 1;
+      window.canonicalEventCount = 1;
+    }],
+    ["negative count", (window: Record<string, unknown>) => { window.incomingCount = -1; }],
+    ["impossible count relation", (window: Record<string, unknown>) => {
+      window.outgoingCount = 101;
+    }],
+    ["unsupported median denominator", (window: Record<string, unknown>) => {
+      (window.medianDominantDirectionGapSeconds as Record<string, unknown>).denominator = 3;
+    }],
+    ["incoherent timestamps", (window: Record<string, unknown>) => {
+      window.observedEndTimestamp = "2026-07-23T07:02:53.000Z";
+    }]
+  ])("fails closed on %s in a recorded service window", (_name, mutate) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    mutate((serviceCase.windows as Record<string, unknown>[])[0]!);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it.each([
+    ["largest counterparty", "recent", 0, "largestCounterparty"],
+    ["largest counterparty", "historical", 1, "largestCounterparty"],
+    ["dominant hourly bucket", "recent", 0, "maxDominantDirectionEventsPerHour"],
+    ["dominant hourly bucket", "historical", 1, "maxDominantDirectionEventsPerHour"],
+    ["active UTC hour", "recent", 0, "activeUtcHourOfDayCount"],
+    ["active UTC hour", "historical", 1, "activeUtcHourOfDayCount"],
+    ["unique sender", "recent", 0, "uniqueSenders"],
+    ["unique sender", "historical", 1, "uniqueSenders"],
+    ["unique recipient", "recent", 0, "uniqueRecipients"],
+    ["unique recipient", "historical", 1, "uniqueRecipients"],
+    ["unique counterparty", "recent", 0, "uniqueCounterparties"],
+    ["unique counterparty", "historical", 1, "uniqueCounterparties"],
+    ["unique dominant counterparty", "recent", 0, "uniqueDominantCounterparties"],
+    ["unique dominant counterparty", "historical", 1, "uniqueDominantCounterparties"],
+    ["dominant repeated amount", "recent", 0, "dominantExactAmount"],
+    ["dominant repeated amount", "historical", 1, "dominantExactAmount"]
+  ] as const)("rejects a zero %s count in the %s window", (_name, _kind, windowIndex, field) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as Record<string, unknown>[])[windowIndex]!;
+    if (field === "largestCounterparty") {
+      (window.largestCounterparty as Record<string, unknown>).count = 0;
+    } else if (field === "dominantExactAmount") {
+      (window.dominantExactAmount as Record<string, unknown>).count = 0;
+    } else {
+      window[field] = 0;
+    }
+    window.recordedPredicate = recomputePredicate(window as FeatureVector);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it.each([
+    ["incoming", "recent", 0],
+    ["incoming", "historical", 1],
+    ["outgoing", "recent", 0],
+    ["outgoing", "historical", 1]
+  ] as const)("rejects positive %s events without a unique address in the %s window", (
+    direction,
+    _kind,
+    windowIndex
+  ) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as FeatureVector[])[windowIndex]!;
+    if (direction === "incoming") {
+      window.uniqueSenders = 0;
+      window.uniqueCounterparties = window.uniqueRecipients;
+    } else {
+      window.uniqueRecipients = 0;
+      window.uniqueDominantCounterparties = 0;
+      window.uniqueCounterparties = window.uniqueSenders;
+    }
+    window.recordedPredicate = recomputePredicate(window);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it.each([
+    ["recent", 0],
+    ["historical", 1]
+  ] as const)("rejects a dominant median gap larger than the %s window", (_kind, windowIndex) => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const window = (serviceCase.windows as FeatureVector[])[windowIndex]!;
+    window.medianDominantDirectionGapSeconds.numerator =
+      (window.observedWindowDurationSeconds + 1) *
+      window.medianDominantDirectionGapSeconds.denominator;
+    window.recordedPredicate = recomputePredicate(window);
+
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  const oneEventRecordedVector = (median: unknown): Record<string, unknown> => ({
+    physicalRowCount: 1,
+    canonicalEventCount: 1,
+    featureEligibleEventCount: 1,
+    incomingCount: 1,
+    outgoingCount: 0,
+    uniqueSenders: 1,
+    uniqueRecipients: 0,
+    uniqueCounterparties: 1,
+    largestCounterparty: { count: 1, shareDenominator: 1 },
+    dominantDirection: "incoming",
+    dominantDirectionCount: 1,
+    uniqueDominantCounterparties: 1,
+    dominantShareDenominator: 1,
+    medianDominantDirectionGapSeconds: median,
+    maxDominantDirectionEventsPerHour: 1,
+    activeUtcHourOfDayCount: 1,
+    dominantExactAmount: { amountRaw: "1", count: 1, shareDenominator: 1 },
+    observedStartTimestamp: "2026-01-01T00:00:00.000Z",
+    observedEndTimestamp: "2026-01-01T00:00:00.000Z",
+    observedWindowDurationSeconds: 0,
+    recordedPredicate: { C: false, B: false, G: false, H: false, R: false, X: false, P: false }
+  });
+
+  it("accepts the honest null median for a one-event recorded vector", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-event-vector",
+        evidenceClass: "recorded_calibration_vector",
+        observedVector: oneEventRecordedVector(null)
+      }]
+    }))).not.toThrow();
+  });
+
+  it("rejects a median gap for a one-event recorded vector", () => {
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "one-event-vector",
+        evidenceClass: "recorded_calibration_vector",
+        observedVector: oneEventRecordedVector({ numerator: 0, denominator: 1 })
+      }]
+    }))).toThrow("offline_corpus_service_vector_invalid");
+  });
+
+  it("routes both recorded windows through the 100 plus 100 classifier", () => {
+    const serviceCase = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    const historical = (serviceCase.windows as Record<string, unknown>[])[1]!;
+    historical.observedStartTimestamp = "2026-07-16T08:35:51.000Z";
+    historical.observedEndTimestamp = "2026-07-16T22:04:54.000Z";
+
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [serviceCase as OfflineCorpusV1["serviceCases"][number]]
+    }));
+
+    expect(result.serviceCases[0]).toMatchObject({ state: "insufficient_data" });
+  });
+
+  it("reports a data gap when an exact service role lacks an event anchor", () => {
+    const exactLabel = corpus.adverseCases.find(({ id }) => id === "exact-binance-label")!;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      serviceCases: [{
+        id: "missing-service-anchor",
+        evidenceClass: "recorded_calibration_vector",
+        address: "TCLgK89AnXbC9rewvhNb9UgXCc2qJJpBXh"
+      }],
+      adverseCases: [exactLabel as OfflineCorpusV1["adverseCases"][number]]
+    }));
+
+    expect(result.dataGaps).toContainEqual({
+      caseId: "missing-service-anchor",
+      code: "exact_service_role_anchor_missing"
+    });
+  });
+
+  it("derives data gaps from replay evidence instead of case IDs", () => {
+    const completeLedger = {
+      id: "pacgy-recorded-chronology",
+      evidenceClass: "synthetic_edge_case" as const,
+      replayInput: {
+        subjectAddress: "subject",
+        snapshotBlockNumber: 1,
+        snapshotBlockHash: "snapshot",
+        snapshotEvidenceRef: "synthetic",
+        historyCompleteness: "genesis_complete",
+        openingBalanceRaw: "0",
+        events: []
+      },
+      query: {
+        purpose: "amount_only",
+        requestedAmountRaw: "0",
+        snapshotBalanceWitness: {
+          amountRaw: "0",
+          pinned: true,
+          independent: true,
+          subjectAddress: "subject",
+          snapshotBlockNumber: 1,
+          snapshotBlockHash: "snapshot",
+          evidenceRef: "synthetic-balance"
+        }
+      }
+    };
+    const completeService = structuredClone(corpus.serviceCases
+      .find(({ id }) => id === "w8srl-two-window-calibration")!) as Record<string, unknown>;
+    completeService.id = "tqr-d7nzp-recorded-control";
+    completeService.evidenceClass = "exact_frozen_rows";
+    completeService.rawProviderPagesFrozen = true;
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [completeLedger as OfflineCorpusV1["ledgerCases"][number]],
+      serviceCases: [completeService as OfflineCorpusV1["serviceCases"][number]]
+    }));
+
+    expect(result.ledgerCases[0]).toMatchObject({
+      state: "unresolved",
+      reason: "requested_amount_not_positive",
+      authoritative: false,
+      targetRaw: "0",
+      coveredRaw: "0",
+      allocations: []
+    });
+    expect(result.dataGaps).toEqual([]);
+  });
+
+  it("projects declared second-hop fields and remains JSON-safe with unknown bigint input", () => {
+    const result = replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      broadScopeCases: [{
+        id: "projected-red",
+        evidenceClass: "synthetic_edge_case",
+        subjectAddress: "subject",
+        directEdges: [{
+          id: "direct",
+          txHash: "direct",
+          direction: "outbound",
+          counterpartyAddress: "listed",
+          amountRaw: "1",
+          occurredAt: "2026-01-01T00:00:00.000Z"
+        }],
+        secondHopRedBranches: [{
+          branchId: "red",
+          directCounterpartyAddress: "listed",
+          secondHopAddress: "red-address",
+          evidenceId: "evidence",
+          amountRaw: "1",
+          extra: { unsafe: 1n }
+        } as never]
+      }]
+    }));
+
+    expect(result.broadScopeCases[0]?.secondHopRedBranches).toEqual([{
+      branchId: "red",
+      directCounterpartyAddress: "listed",
+      secondHopAddress: "red-address",
+      evidenceId: "evidence",
+      amountRaw: "1"
+    }]);
+    expect(() => JSON.stringify(result)).not.toThrow();
+  });
+
+  it("rejects an unknown schema and non-canonical raw amount at the replay boundary", () => {
+    expect(() => replayOfflineForensicModelCorpusV1({
+      ...minimalReplayCorpus(),
+      schemaVersion: "wrong"
+    } as OfflineCorpusV1)).toThrow("offline_corpus_schema_invalid");
+    expect(() => replayOfflineForensicModelCorpusV1(minimalReplayCorpus({
+      ledgerCases: [{
+        id: "bad-amount",
+        evidenceClass: "synthetic_edge_case",
+        amountRaw: "01"
+      }]
+    }))).toThrow("offline_corpus_amount_raw_invalid");
+  });
+});
+
+describe("read-only forensic corpus CLI", () => {
+  const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+  const cliPath = join(repositoryRoot, "scripts/replayForensicModelCorpus.ts");
+  const tsxImport = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const fixturePath = fileURLToPath(fixtureUrl);
+  const runCli = (args: readonly string[] = [], cwd = repositoryRoot) => spawnSync(
+    process.execPath,
+    ["--import", tsxImport, cliPath, ...args],
+    { cwd, encoding: "utf8" }
+  );
+  const runMutatedCorpus = async (
+    mutate: (value: Record<string, unknown>) => void
+  ) => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-expectation-"));
+    const path = join(directory, "corpus.json");
+    try {
+      const value = structuredClone(corpus) as unknown as Record<string, unknown>;
+      mutate(value);
+      await writeFile(path, JSON.stringify(value), "utf8");
+      return runCli(["--fixture", path]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+
+  it("prints one deterministic canonical report for the default and explicit fixture", () => {
+    const first = runCli();
+    const second = runCli(["--fixture", fixturePath]);
+
+    expect(first.status).toBe(1);
+    expect(first.stderr).toBe("");
+    expect(first.stdout.endsWith("\n")).toBe(true);
+    expect(first.stdout.endsWith("\n\n")).toBe(false);
+    expect(second).toMatchObject({ status: first.status, stdout: first.stdout, stderr: "" });
+
+    const report = JSON.parse(first.stdout) as {
+      schemaVersion: string;
+      matched: boolean;
+      result: OfflineReplayResultV1;
+      expectationMismatches: readonly { caseId: string; code: string }[];
+      limitations: readonly string[];
+    };
+    expect(report.schemaVersion).toBe("offline-forensic-model-corpus-run-v1");
+    expect(report.matched).toBe(false);
+    expect(report.expectationMismatches).not.toEqual(expect.arrayContaining([
+      { caseId: "pacgy-synthetic-zero-opening-control", code: expect.any(String) },
+      { caseId: "pacgy-recorded-chronology", code: expect.any(String) }
+    ]));
+    expect(report.expectationMismatches).toContainEqual({
+      caseId: "event-time-blacklist-partitions",
+      code: "frozen_expectation_not_replayed"
+    });
+    expect(report.expectationMismatches).toHaveLength(22);
+    expect(report.limitations).toContain("raw_provider_assertion_not_replayed");
+    expect(report.result.ledgerCases.map(({ id }) => id)).toEqual(
+      [...report.result.ledgerCases.map(({ id }) => id)].sort()
+    );
+    expect(report.result.serviceCases.map(({ id }) => id)).toEqual(
+      [...report.result.serviceCases.map(({ id }) => id)].sort()
+    );
+    expect(report.result.adverseCases.map(({ id }) => id)).toEqual(
+      [...report.result.adverseCases.map(({ id }) => id)].sort()
+    );
+    for (const item of [
+      ...report.result.ledgerCases,
+      ...report.result.serviceCases,
+      ...report.result.adverseCases,
+      ...report.result.broadScopeCases
+    ]) {
+      expect(item.evidenceClass).toMatch(/^(exact_frozen_rows|recorded_calibration_vector|synthetic_edge_case)$/u);
+    }
+    expect(JSON.stringify(report)).not.toMatch(/\d+n\b/u);
+  });
+
+  it.each([
+    ["missing fixture path", ["--fixture"]],
+    ["unknown flag", ["--unknown"]],
+    ["repeated fixture flag", ["--fixture", fixturePath, "--fixture", fixturePath]],
+    ["extra argument", ["--fixture", fixturePath, "extra"]]
+  ])("rejects %s without writing stdout", (_name, args) => {
+    const result = runCli(args);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(/^Error: /u);
+  });
+
+  it("rejects an unknown fixture schema on stderr only", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-schema-"));
+    const badFixture = join(directory, "bad-schema.json");
+    try {
+      await writeFile(badFixture, JSON.stringify({ schemaVersion: "future" }), "utf8");
+      const result = runCli(["--fixture", badFixture]);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("offline_corpus_schema_invalid");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("exits nonzero and reports an explicit ledger expectation mismatch", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-mismatch-"));
+    const mismatchFixture = join(directory, "mismatch.json");
+    try {
+      const mismatch = structuredClone(corpus) as unknown as {
+        ledgerCases: Array<Record<string, unknown>>;
+      };
+      (mismatch.ledgerCases[0]!.expectedActual as Record<string, unknown>).coveredRaw = "1";
+      await writeFile(mismatchFixture, JSON.stringify(mismatch), "utf8");
+
+      const result = runCli(["--fixture", mismatchFixture]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        matched: false,
+        expectationMismatches: expect.arrayContaining([{
+          caseId: "pacgy-recorded-chronology",
+          code: "ledger_expectation_mismatch"
+        }])
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass a replayed ledger case that has no exact expectation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-no-expectation-"));
+    const missingFixture = join(directory, "missing-expectation.json");
+    try {
+      const missing = structuredClone(corpus) as unknown as {
+        ledgerCases: Array<Record<string, unknown>>;
+      };
+      delete missing.ledgerCases[0]!.expectedActual;
+      await writeFile(missingFixture, JSON.stringify(missing), "utf8");
+
+      const result = runCli(["--fixture", missingFixture]);
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        expectationMismatches: expect.arrayContaining([{
+          caseId: "pacgy-recorded-chronology",
+          code: "ledger_expectation_invalid"
+        }])
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unknown value for a supported frozen expectation field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedClassification =
+        "unknown_future_classification";
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("rejects every unknown top-level expected field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedFoo = true;
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("rejects an invalid shape for a known frozen expectation field", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "gasfree-principal-fee-classification")!.expectedRoles = {
+        principal: "future_role",
+        fee: "accounting_only_consumption"
+      };
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "gasfree-principal-fee-classification",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("compares a supported expectation mutation against actual replay fields", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      cases.find(({ id }) => id === "exact-binance-label")!.expectedClassification =
+        "exact_service_label_not_backdated";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "exact-binance-label",
+        code: "frozen_expectation_mismatch"
+      }])
+    });
+  });
+
+  it("fails closed on an invalid exact ledger expectation", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.ledgerCases as Array<Record<string, unknown>>;
+      const item = cases.find(({ id }) => id === "pacgy-recorded-chronology")!;
+      (item.expectedActual as Record<string, unknown>).reason = "future_state";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "pacgy-recorded-chronology",
+        code: "ledger_expectation_invalid"
+      }])
+    });
+  });
+
+  it("fails closed on a nested transfer temporal expectation mutation", async () => {
+    const result = await runMutatedCorpus((value) => {
+      const cases = value.adverseCases as Array<Record<string, unknown>>;
+      const item = cases.find(({ id }) => id === "event-time-blacklist-partitions")!;
+      const transfers = item.principalTransfers as Array<Record<string, unknown>>;
+      transfers[0]!.expectedTemporalClass = "future_temporal_class";
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      expectationMismatches: expect.arrayContaining([{
+        caseId: "event-time-blacklist-partitions",
+        code: "unsupported_frozen_expectation"
+      }])
+    });
+  });
+
+  it("canonicalizes nested semantic branch arrays by their declared IDs", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-branch-order-"));
+    const firstPath = join(directory, "first.json");
+    const secondPath = join(directory, "second.json");
+    try {
+      const makeCorpus = (reverse: boolean) => {
+        const value = structuredClone(corpus) as unknown as Record<string, unknown>;
+        const branches = [
+          {
+            branchId: "branch-b",
+            directCounterpartyAddress: "counterparty-b",
+            secondHopAddress: "red-b",
+            evidenceId: "evidence-b",
+            amountRaw: "2"
+          },
+          {
+            branchId: "branch-a",
+            directCounterpartyAddress: "counterparty-a",
+            secondHopAddress: "red-a",
+            evidenceId: "evidence-a",
+            amountRaw: "1"
+          }
+        ];
+        value.broadScopeCases = [{
+          id: "branch-order-control",
+          evidenceClass: "synthetic_edge_case",
+          subjectAddress: "subject",
+          directEdges: [
+            {
+              id: "direct-a",
+              txHash: "direct-a",
+              direction: "outbound",
+              counterpartyAddress: "counterparty-a",
+              amountRaw: "1",
+              occurredAt: "2026-01-01T00:00:00.000Z"
+            },
+            {
+              id: "direct-b",
+              txHash: "direct-b",
+              direction: "outbound",
+              counterpartyAddress: "counterparty-b",
+              amountRaw: "2",
+              occurredAt: "2026-01-01T00:00:01.000Z"
+            }
+          ],
+          secondHopRedBranches: reverse ? [...branches].reverse() : branches
+        }];
+        return value;
+      };
+      await writeFile(firstPath, JSON.stringify(makeCorpus(false)), "utf8");
+      await writeFile(secondPath, JSON.stringify(makeCorpus(true)), "utf8");
+
+      const first = runCli(["--fixture", firstPath]);
+      const second = runCli(["--fixture", secondPath]);
+      expect(first.status).toBe(1);
+      expect(second.status).toBe(1);
+      expect(second.stdout).toBe(first.stdout);
+      const report = JSON.parse(first.stdout) as { result: OfflineReplayResultV1 };
+      expect(report.result.broadScopeCases[0]?.secondHopRedBranches).toEqual([
+        expect.objectContaining({ branchId: "branch-a" }),
+        expect.objectContaining({ branchId: "branch-b" })
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("is byte-identical across runs and writes nothing in its working directory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "forensic-corpus-read-only-"));
+    try {
+      const before = await readdir(directory);
+      const first = runCli([], directory);
+      const second = runCli([], directory);
+      expect(first.status).toBe(1);
+      expect(first.stderr).toBe("");
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        schemaVersion: "offline-forensic-model-corpus-run-v1",
+        matched: false
+      });
+      expect(first.stdout).toBe(second.stdout);
+      expect(second).toMatchObject({ status: 1, stderr: "" });
+      expect(await readdir(directory)).toEqual(before);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the complete runtime import graph outside production boundaries", async () => {
+    const visited = new Set<string>();
+    const runtimeSpecifiers = (path: string, source: string): readonly string[] => {
+      const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const specifiers: string[] = [];
+      const add = (node: ts.Expression | undefined) => {
+        if (node !== undefined && ts.isStringLiteralLike(node)) specifiers.push(node.text);
+      };
+      const walk = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node)) {
+          const clause = node.importClause;
+          const named = clause?.namedBindings;
+          const hasRuntimeBinding = clause === undefined || clause.name !== undefined ||
+            (named !== undefined && (
+              ts.isNamespaceImport(named) || named.elements.length === 0 ||
+              named.elements.some((element) => !element.isTypeOnly)
+            ));
+          if (clause?.isTypeOnly !== true && hasRuntimeBinding) add(node.moduleSpecifier);
+        } else if (ts.isExportDeclaration(node)) {
+          const clause = node.exportClause;
+          const hasRuntimeBinding = clause === undefined || ts.isNamespaceExport(clause) ||
+            clause.elements.length === 0 || clause.elements.some((element) => !element.isTypeOnly);
+          if (!node.isTypeOnly && hasRuntimeBinding) add(node.moduleSpecifier);
+        } else if (ts.isImportEqualsDeclaration(node)) {
+          if (!node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
+            add(node.moduleReference.expression);
+          }
+        } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+          const specifier = node.arguments[0];
+          if (specifier === undefined || !ts.isStringLiteralLike(specifier)) {
+            throw new Error(`nonliteral dynamic runtime import in ${path}`);
+          }
+          add(specifier);
+        }
+        ts.forEachChild(node, walk);
+      };
+      walk(file);
+      return specifiers;
+    };
+    expect.soft(runtimeSpecifiers("proof.ts", `
+      import type { A } from "./type-only";
+      import { type B, value } from "./mixed";
+      import { type C } from "./specifier-type-only";
+      import {} from "./empty-import";
+      import "./side-effect";
+      export type { D } from "./export-type-only";
+      export { type E, runtime } from "./re-export";
+      export {} from "./empty-export";
+      export * from "./export-star";
+      export * as namespace from "./namespace-export";
+      import equal = require("./import-equals");
+      void import("./dynamic");
+    `)).toEqual([
+      "./mixed",
+      "./empty-import",
+      "./side-effect",
+      "./re-export",
+      "./empty-export",
+      "./export-star",
+      "./namespace-export",
+      "./import-equals",
+      "./dynamic"
+    ]);
+    expect.soft(() => runtimeSpecifiers("nonliteral-proof.ts", `
+      const dependency = "./dynamic";
+      void import(dependency);
+    `)).toThrowError("nonliteral dynamic runtime import in nonliteral-proof.ts");
+    const candidates = (specifier: string, owner: string) => {
+      const base = resolve(dirname(owner), specifier);
+      return [base, `${base}.ts`, `${base}.js`, join(base, "index.ts"), join(base, "index.js")];
+    };
+    const visit = async (path: string): Promise<void> => {
+      const normalized = resolve(path);
+      if (visited.has(normalized)) return;
+      visited.add(normalized);
+      const source = await readFile(normalized, "utf8");
+      for (const specifier of runtimeSpecifiers(normalized, source)) {
+        if (!specifier.startsWith(".")) continue;
+        let dependency: string | null = null;
+        for (const candidate of candidates(specifier.replace(/\.js$/u, ""), normalized)) {
+          try {
+            await readFile(candidate, "utf8");
+            dependency = candidate;
+            break;
+          } catch {
+            // Try the next normal TypeScript resolution candidate.
+          }
+        }
+        expect(dependency, `unresolved runtime import ${specifier} from ${normalized}`).not.toBeNull();
+        await visit(dependency!);
+      }
+    };
+
+    await visit(cliPath);
+    const relativeGraph = [...visited].map((path) =>
+      path.slice(repositoryRoot.length).replaceAll("\\", "/")
+    );
+    expect(relativeGraph).toContain("scripts/replayForensicModelCorpus.ts");
+    expect(relativeGraph).toContain("src/forensics/offlineForensicModelReplay.ts");
+    expect(relativeGraph).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/(?:^|\/)config\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)tronClient\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)(?:repositories|.*Repository)\.ts$/iu),
+      expect.stringMatching(/(?:^|\/)(?:jobs?|bot|telegram|admin)(?:\/|\.)/iu),
+      expect.stringMatching(/contractDrivenEvidence|approvalDrainProvenance|route.*scor/iu),
+      expect.stringMatching(/src\/unifiedCheck\/(?:productionRuntime|productionTraversal|productionCompletion)\.ts$/iu)
+    ]));
+  });
+});

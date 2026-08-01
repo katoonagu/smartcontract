@@ -1,0 +1,1061 @@
+import {
+  evaluateFundingFirstSourceProvenance,
+  type FundingSourceExactWindowRepairResult
+} from "./fundingFirstSourceProvenance";
+import { selectCandidateWindowsForSourceProvenance } from "./candidateWindowTargeting";
+import type {
+  AddressLabel,
+  BalanceFormingTransfer,
+  ForensicEconomicProtocol,
+  ForensicEconomicRole,
+  ForensicRouteEdge,
+  MoneyOriginFundingBundle,
+  MoneyOriginFundingSourceProvenance,
+  MoneyOriginPath,
+  MoneyOriginPathStep,
+  MoneyOriginRejectedCandidate,
+  MoneyOriginTraceHistoryCoverage,
+  ServiceClassification,
+  WhereCandidateWindowRequest
+} from "../types";
+import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
+import { classifyMoneyOriginStop, type MoneyOriginStopClassification } from "./moneyOriginPolicy";
+import {
+  DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
+  DEFAULT_MAX_BUNDLE_FUNDERS
+} from "./provenanceTracingConfig";
+
+export type TraceMoneyOriginPathInput = {
+  subjectAddress: string;
+  balanceTransfer: BalanceFormingTransfer;
+  maxDepth: number;
+  beamWidth: number;
+  maxAddressFetches: number;
+  maxEdgesPerAddress: number;
+  minAmountPreservationRatio?: number;
+  maxTimeDeltaMs?: number;
+  bundleCoverageThreshold?: number;
+  maxBundleFunders?: number;
+  fetchEdgesForAddress(address: string, options?: {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+    targetEdge?: ForensicRouteEdge | null;
+    expectedAmountRaw?: string | null;
+  }): Promise<ForensicRouteEdge[]>;
+  getHistoryCoverageForAddress?(
+    address: string,
+    options: {
+      latestTimestamp?: Date;
+      deferBroadTargetedHistory?: boolean;
+      targetEdge?: ForensicRouteEdge | null;
+      expectedAmountRaw?: string | null;
+    }
+  ): Promise<MoneyOriginTraceHistoryCoverage>;
+  repairSourceProvenanceWindow?(input: {
+    address: string;
+    target: ForensicRouteEdge;
+    sourceProvenance: MoneyOriginFundingSourceProvenance;
+    windowStart: Date;
+    windowEnd: Date;
+    downstreamAmountRaw?: string | null;
+    minCoverageRatio: number;
+    maxFunders: number;
+  }): Promise<FundingSourceExactWindowRepairResult | null>;
+  requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
+  ensureBroadTargetedHistory?(input: {
+    address: string;
+    targetTimestamp: Date;
+    queuedReason: "where_is_money_hop";
+    reason: "material_unresolved_after_candidate_windows";
+  }): Promise<true>;
+  resolveEconomicContext?(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+};
+
+type TraceState = {
+  currentAddress: string;
+  expectedAmountRaw: bigint;
+  latestTimestamp: Date;
+  addressesFromSubject: string[];
+  txHashesFromSubject: string[];
+  stepsFromSubject: MoneyOriginPathStep[];
+  timestampsFromSubject: Date[];
+  fundingBundles: MoneyOriginFundingBundle[];
+  sourceProvenance: MoneyOriginFundingSourceProvenance[];
+  historyCoverage: MoneyOriginTraceHistoryCoverage[];
+  minPreservation: number;
+  balanceShare: number;
+  attributionBasis: "initial_transfer" | "funding_bundle" | "single_candidate";
+  incomingEconomicRole: ForensicEconomicRole | null;
+  incomingEconomicProtocol: ForensicEconomicProtocol | null;
+  depth: number;
+  score: number;
+};
+
+const DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO = 0.7;
+const DEFAULT_MAX_TIME_DELTA_MS = 365 * 24 * 60 * 60 * 1000;
+const EXACT_GASFREE_SERVICE_FEE_REASON = "Exact GasFree service-fee movement; not payer provenance.";
+
+export function isExactGasFreeServiceFeePath(
+  path: Pick<MoneyOriginPath, "stoppedReason" | "riskScoreContribution" | "reasons">
+): boolean {
+  return path.stoppedReason === "service_boundary" &&
+    path.riskScoreContribution === 0 &&
+    path.reasons.includes(EXACT_GASFREE_SERVICE_FEE_REASON);
+}
+
+function parseAmount(value: string): bigint {
+  return /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function ratio(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n) return 0;
+  return Number(numerator * 10_000n / denominator) / 10_000;
+}
+
+function preservationRatio(left: bigint, right: bigint): number {
+  if (left <= 0n || right <= 0n) return 0;
+  const min = left < right ? left : right;
+  const max = left > right ? left : right;
+  return ratio(min, max);
+}
+
+function fundingCoverageRatio(incomingAmount: bigint, expectedAmount: bigint): number {
+  if (incomingAmount <= 0n || expectedAmount <= 0n) return 0;
+  if (incomingAmount >= expectedAmount) return 1;
+  return ratio(incomingAmount, expectedAmount);
+}
+
+function clampShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function amountUsageCoverageShare(usage: BalanceFormingTransfer["amountUsage"] | undefined | null): number {
+  const share = usage?.coverageShare;
+  return Number.isFinite(share) && share && share > 0 ? clampShare(share) : 1;
+}
+
+function timeDeltaMs(previous: Date, next: Date): number {
+  return next.getTime() - previous.getTime();
+}
+
+function compareCandidateEdges(input: {
+  expectedAmountRaw: bigint;
+  latestTimestamp: Date;
+  left: ForensicRouteEdge;
+  right: ForensicRouteEdge;
+}): number {
+  const leftPreservation = fundingCoverageRatio(parseAmount(input.left.amountRaw), input.expectedAmountRaw);
+  const rightPreservation = fundingCoverageRatio(parseAmount(input.right.amountRaw), input.expectedAmountRaw);
+  if (leftPreservation !== rightPreservation) return rightPreservation - leftPreservation;
+  const leftDelta = timeDeltaMs(input.left.timestamp, input.latestTimestamp);
+  const rightDelta = timeDeltaMs(input.right.timestamp, input.latestTimestamp);
+  if (leftDelta !== rightDelta) return leftDelta - rightDelta;
+  return input.left.txHash.localeCompare(input.right.txHash);
+}
+
+function candidateIncomingEdges(input: {
+  currentAddress: string;
+  expectedAmountRaw: bigint;
+  latestTimestamp: Date;
+  edges: ForensicRouteEdge[];
+  minPreservation: number;
+  maxTimeDeltaMs: number;
+  maxEdges: number;
+}): ForensicRouteEdge[] {
+  return input.edges
+    .filter((edge) => edge.toAddress === input.currentAddress)
+    .filter((edge) => edge.timestamp <= input.latestTimestamp)
+    .filter((edge) => parseAmount(edge.amountRaw) > 0n)
+    .filter((edge) => fundingCoverageRatio(parseAmount(edge.amountRaw), input.expectedAmountRaw) >= input.minPreservation)
+    .filter((edge) => timeDeltaMs(edge.timestamp, input.latestTimestamp) <= input.maxTimeDeltaMs)
+    .sort((left, right) => compareCandidateEdges({
+      expectedAmountRaw: input.expectedAmountRaw,
+      latestTimestamp: input.latestTimestamp,
+      left,
+      right
+    }))
+    .slice(0, input.maxEdges);
+}
+
+function rejectedIncomingCandidates(input: {
+  currentAddress: string;
+  expectedAmountRaw: bigint;
+  latestTimestamp: Date;
+  edges: ForensicRouteEdge[];
+  minPreservation: number;
+  maxTimeDeltaMs: number;
+  maxCandidates: number;
+}): MoneyOriginRejectedCandidate[] {
+  return input.edges
+    .filter((edge) => edge.toAddress === input.currentAddress)
+    .map((edge) => {
+      const amount = parseAmount(edge.amountRaw);
+      const coverage = fundingCoverageRatio(amount, input.expectedAmountRaw);
+      const delta = timeDeltaMs(edge.timestamp, input.latestTimestamp);
+      const reasons: string[] = [];
+      if (edge.timestamp > input.latestTimestamp) reasons.push("after_target_timestamp");
+      if (amount <= 0n) reasons.push("zero_amount");
+      if (coverage < input.minPreservation) reasons.push("amount_continuity_below_threshold");
+      if (delta > input.maxTimeDeltaMs) reasons.push("time_gap_too_large");
+      return {
+        txHash: edge.txHash,
+        fromAddress: edge.fromAddress,
+        toAddress: edge.toAddress,
+        amountRaw: edge.amountRaw,
+        timestamp: edge.timestamp.toISOString(),
+        coverageRatio: coverage,
+        timeDeltaMs: delta,
+        reasons
+      };
+    })
+    .filter((candidate) => candidate.reasons.length > 0)
+    .sort((left, right) =>
+      right.coverageRatio - left.coverageRatio ||
+      left.timeDeltaMs - right.timeDeltaMs ||
+      left.txHash.localeCompare(right.txHash)
+    )
+    .slice(0, input.maxCandidates);
+}
+
+function timeSpanMs(state: TraceState): number {
+  const timestamps = state.timestampsFromSubject.map((timestamp) => timestamp.getTime());
+  return timestamps.length > 1 ? Math.max(...timestamps) - Math.min(...timestamps) : 0;
+}
+
+function oldestFetchedTransferAt(edges: ForensicRouteEdge[]): string | null {
+  const timestamps = edges
+    .map((edge) => edge.timestamp.getTime())
+    .filter((timestamp) => Number.isFinite(timestamp));
+  if (timestamps.length === 0) return null;
+  return new Date(Math.min(...timestamps)).toISOString();
+}
+
+function fallbackHistoryCoverage(input: {
+  address: string;
+  latestTimestamp: Date;
+  edges: ForensicRouteEdge[];
+}): MoneyOriginTraceHistoryCoverage {
+  return {
+    address: input.address,
+    targetTimestamp: input.latestTimestamp.toISOString(),
+    fetchedTransferCount: input.edges.length,
+    fetchedPageCount: null,
+    oldestFetchedTransferAt: oldestFetchedTransferAt(input.edges),
+    reachedTargetHop: true,
+    source: "unknown"
+  };
+}
+
+function targetEdgeFromState(state: TraceState): ForensicRouteEdge | null {
+  const lastStep = state.stepsFromSubject[state.stepsFromSubject.length - 1];
+  if (!lastStep) return null;
+  return {
+    id: lastStep.txHash,
+    txHash: lastStep.txHash,
+    fromAddress: state.currentAddress,
+    toAddress: lastStep.toAddress,
+    amountRaw: state.expectedAmountRaw.toString(),
+    timestamp: state.latestTimestamp,
+    method: "transfer",
+    edgeType: "normal_transfer",
+    economicRole: state.incomingEconomicRole ?? undefined,
+    economicProtocol: state.incomingEconomicProtocol ?? undefined
+  };
+}
+
+async function withEconomicContext(
+  input: TraceMoneyOriginPathInput,
+  edge: ForensicRouteEdge
+): Promise<ForensicRouteEdge> {
+  return input.resolveEconomicContext ? input.resolveEconomicContext(edge) : edge;
+}
+
+function traceEdgeKey(edge: ForensicRouteEdge): string {
+  return [
+    edge.id,
+    edge.txHash,
+    edge.fromAddress,
+    edge.toAddress,
+    edge.amountRaw,
+    edge.timestamp.getTime()
+  ].join(":");
+}
+
+async function buildResolvedFundingBundle(input: {
+  traceInput: TraceMoneyOriginPathInput;
+  target: ForensicRouteEdge;
+  edges: ForensicRouteEdge[];
+  minCoverageRatio: number;
+  maxFunders: number;
+}): Promise<{
+  bundle: NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>;
+  edges: ForensicRouteEdge[];
+} | null> {
+  let edges = input.edges;
+  const resolvedKeys = new Set<string>();
+  while (true) {
+    const bundle = buildFundingBundleForTraceHop({
+      target: input.target,
+      edges,
+      minCoverageRatio: input.minCoverageRatio,
+      maxFunders: input.maxFunders
+    });
+    if (!bundle) return null;
+    const unresolvedMembers = bundle.members.filter((member) => !resolvedKeys.has(traceEdgeKey(member.edge)));
+    if (unresolvedMembers.length === 0) return { bundle, edges };
+
+    const resolvedMembers: Array<{ key: string; edge: ForensicRouteEdge }> = [];
+    for (const member of unresolvedMembers) {
+      resolvedMembers.push({
+        key: traceEdgeKey(member.edge),
+        edge: await withEconomicContext(input.traceInput, member.edge)
+      });
+    }
+    const replacements = new Map(resolvedMembers.map((member) => [member.key, member.edge]));
+    for (const member of resolvedMembers) resolvedKeys.add(member.key);
+    edges = edges.map((edge) => replacements.get(traceEdgeKey(edge)) ?? edge);
+  }
+}
+
+async function resolveFundingBundleMembers(
+  input: TraceMoneyOriginPathInput,
+  bundle: NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>,
+  minCoverageRatio: number,
+  maxFunders: number
+): Promise<NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>> {
+  const resolvedMembers: typeof bundle.members = [];
+  for (const member of bundle.members) {
+    resolvedMembers.push({
+      ...member,
+      edge: await withEconomicContext(input, member.edge)
+    });
+  }
+  const targetAmount = parseAmount(bundle.expectedAmountRaw);
+  let coveredAmount = 0n;
+  const members: typeof resolvedMembers = [];
+  for (const member of resolvedMembers) {
+    if (isGasFreeServiceFeeEdge(member.edge)) continue;
+    const originalAmount = parseAmount(member.edge.amountRaw);
+    const spentBeforeHop = parseAmount(member.spentBeforeHopRaw);
+    const usableAmount = originalAmount > spentBeforeHop ? originalAmount - spentBeforeHop : 0n;
+    const remaining = targetAmount > coveredAmount ? targetAmount - coveredAmount : 0n;
+    const usedAmount = usableAmount > remaining ? remaining : usableAmount;
+    if (usedAmount <= 0n) continue;
+    members.push({
+      ...member,
+      usedAmountRaw: usedAmount.toString(),
+      coverageRatio: fundingCoverageRatio(usedAmount, targetAmount)
+    });
+    coveredAmount += usedAmount;
+    if (coveredAmount >= targetAmount || fundingCoverageRatio(coveredAmount, targetAmount) >= minCoverageRatio) break;
+  }
+  const coverageRatio = fundingCoverageRatio(coveredAmount, parseAmount(bundle.expectedAmountRaw));
+  const funders = new Map<string, { amountRaw: bigint; txHashes: string[] }>();
+  for (const member of members) {
+    const funder = funders.get(member.edge.fromAddress) ?? { amountRaw: 0n, txHashes: [] };
+    funder.amountRaw += parseAmount(member.usedAmountRaw);
+    funder.txHashes.push(member.edge.txHash);
+    funders.set(member.edge.fromAddress, funder);
+  }
+  return {
+    ...bundle,
+    coveredAmountRaw: coveredAmount.toString(),
+    coverageRatio,
+    meetsThreshold: coverageRatio >= minCoverageRatio,
+    members,
+    funders: [...funders.entries()]
+      .map(([address, funder]) => ({
+        address,
+        amountRaw: funder.amountRaw.toString(),
+        txHashes: funder.txHashes
+      }))
+      .sort((left, right) => {
+        const leftAmount = parseAmount(left.amountRaw);
+        const rightAmount = parseAmount(right.amountRaw);
+        if (leftAmount !== rightAmount) return rightAmount > leftAmount ? 1 : -1;
+        return left.address.localeCompare(right.address);
+      })
+      .slice(0, maxFunders)
+  };
+}
+
+async function repairProbableSourceProvenance(input: {
+  repair: TraceMoneyOriginPathInput["repairSourceProvenanceWindow"];
+  address: string;
+  target: ForensicRouteEdge;
+  sourceProvenance: MoneyOriginFundingSourceProvenance;
+  downstreamAmountRaw: string;
+  minCoverageRatio: number;
+  maxFunders: number;
+}): Promise<FundingSourceExactWindowRepairResult | null> {
+  if (!input.repair || input.sourceProvenance.proofClass !== "probable") return null;
+  const startTimestamp = input.sourceProvenance.coverageWindow.startTimestamp;
+  if (!startTimestamp) return null;
+  const windowStart = new Date(startTimestamp);
+  if (!Number.isFinite(windowStart.getTime())) return null;
+  return input.repair({
+    address: input.address,
+    target: input.target,
+    sourceProvenance: input.sourceProvenance,
+    windowStart,
+    windowEnd: input.target.timestamp,
+    downstreamAmountRaw: input.downstreamAmountRaw,
+    minCoverageRatio: input.minCoverageRatio,
+    maxFunders: input.maxFunders
+  });
+}
+
+function toMoneyOriginFundingBundle(input: ReturnType<typeof buildFundingBundleForTraceHop>): MoneyOriginFundingBundle | null {
+  if (!input) return null;
+  return {
+    hopTxHash: input.targetTxHash,
+    hopAddress: input.targetAddress,
+    expectedAmountRaw: input.expectedAmountRaw,
+    coveredAmountRaw: input.coveredAmountRaw,
+    coverageRatio: input.coverageRatio,
+    members: input.members.map((member) => ({
+      txHash: member.edge.txHash,
+      fromAddress: member.edge.fromAddress,
+      toAddress: member.edge.toAddress,
+      originalAmountRaw: member.edge.amountRaw,
+      usedAmountRaw: member.usedAmountRaw,
+      spentBeforeHopRaw: member.spentBeforeHopRaw,
+      timestamp: member.edge.timestamp.toISOString(),
+      coverageShare: member.coverageRatio
+    }))
+  };
+}
+
+function pathFromState(input: {
+  state: TraceState;
+  balanceTransferTxHash: string;
+  balanceShare: number;
+  amountUsage?: MoneyOriginPath["amountUsage"];
+  rootSourceType: MoneyOriginPath["rootSourceType"];
+  stoppedReason: MoneyOriginPath["stoppedReason"];
+  verdict: MoneyOriginPath["verdict"];
+  riskScoreContribution: number;
+  exposureSourceKey?: string;
+  exposureSourceLabel?: string;
+  sourceExposureKind?: MoneyOriginPath["sourceExposureKind"];
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
+  reasons: string[];
+}): MoneyOriginPath {
+  return {
+    balanceTransferTxHash: input.balanceTransferTxHash,
+    rootSourceAddress: input.state.currentAddress,
+    rootSourceType: input.rootSourceType,
+    balanceShare: input.balanceShare,
+    amountUsage: input.amountUsage ?? null,
+    exposureSourceKey: input.exposureSourceKey ?? null,
+    exposureSourceLabel: input.exposureSourceLabel ?? null,
+    sourceExposureKind: input.sourceExposureKind ?? null,
+    pathAddresses: [...input.state.addressesFromSubject].reverse(),
+    txHashes: [...input.state.txHashesFromSubject].reverse(),
+    steps: [...input.state.stepsFromSubject].reverse(),
+    fundingBundles: input.state.fundingBundles,
+    sourceProvenance: input.state.sourceProvenance,
+    historyCoverage: input.state.historyCoverage,
+    rejectedCandidates: input.rejectedCandidates,
+    amountPreservationRatio: input.state.minPreservation,
+    timeSpanMs: timeSpanMs(input.state),
+    stoppedReason: input.stoppedReason,
+    verdict: input.verdict,
+    riskScoreContribution: input.riskScoreContribution,
+    reasons: input.reasons
+  };
+}
+
+function appendStopPath(input: {
+  terminals: MoneyOriginPath[];
+  traceInput: TraceMoneyOriginPathInput;
+  state: TraceState;
+  stop: MoneyOriginStopClassification;
+}): void {
+  input.terminals.push(pathFromState({
+    state: input.state,
+    balanceTransferTxHash: input.traceInput.balanceTransfer.txHash,
+    balanceShare: input.state.balanceShare,
+    amountUsage: input.traceInput.balanceTransfer.amountUsage ?? null,
+    rootSourceType: input.stop.rootSourceType,
+    stoppedReason: input.stop.stoppedReason,
+    verdict: input.stop.verdict,
+    riskScoreContribution: input.stop.riskScoreContribution,
+    exposureSourceKey: input.stop.exposureSourceKey,
+    exposureSourceLabel: input.stop.exposureSourceLabel,
+    sourceExposureKind: input.stop.sourceExposureKind,
+    reasons: input.stop.reasons
+  }));
+}
+
+function incompletePath(input: {
+  state: TraceState;
+  balanceTransferTxHash: string;
+  balanceShare: number;
+  amountUsage?: MoneyOriginPath["amountUsage"];
+  stoppedReason: MoneyOriginPath["stoppedReason"];
+  message: string;
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
+}): MoneyOriginPath {
+  return pathFromState({
+    state: input.state,
+    balanceTransferTxHash: input.balanceTransferTxHash,
+    balanceShare: input.balanceShare,
+    amountUsage: input.amountUsage,
+    rootSourceType: "incomplete",
+    stoppedReason: input.stoppedReason,
+    verdict: "REVIEW",
+    riskScoreContribution: input.stoppedReason === "data_budget_exhausted" ||
+      input.stoppedReason === "incoming_history_not_fetched"
+      ? 45
+      : input.stoppedReason === "no_incoming_transfers_seen" ||
+        input.stoppedReason === "no_previous_transfer"
+        ? 35
+        : input.stoppedReason === "incoming_seen_but_below_continuity"
+          ? 30
+        : 30,
+    rejectedCandidates: input.rejectedCandidates,
+    reasons: [input.message]
+  });
+}
+
+function terminalRank(path: MoneyOriginPath): number {
+  if (path.rootSourceType === "risky_label") return 5_000 + path.riskScoreContribution;
+
+  if (path.rootSourceType === "decline_boundary") {
+    if (path.verdict === "DECLINE") return 4_000 + path.riskScoreContribution;
+    return 2_000 + path.riskScoreContribution;
+  }
+
+  if (path.rootSourceType === "allowlist_cex") return 3_000 - path.txHashes.length;
+  return 1_000 + path.riskScoreContribution;
+}
+
+function candidateWindowRequestsForSourceProvenance(
+  sourceProvenance: MoneyOriginFundingSourceProvenance,
+  maxWindowsPerHop = 5
+): WhereCandidateWindowRequest[] {
+  return selectCandidateWindowsForSourceProvenance({
+    sourceProvenance,
+    maxWindowsPerHop
+  });
+}
+
+function effectiveTraceStateShare(input: {
+  state: TraceState;
+  balanceTransfer: BalanceFormingTransfer;
+}): number {
+  return clampShare(input.state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage));
+}
+
+async function requestMaterialBroadWhereFallback(_input: {
+  traceInput: TraceMoneyOriginPathInput;
+  address: string;
+  targetTimestamp: Date;
+  balanceShare: number;
+  unresolvedAmountRaw: bigint;
+}): Promise<void> {
+  return;
+}
+
+async function requestCandidateWindowsForSourceProvenance(input: {
+  traceInput: TraceMoneyOriginPathInput;
+  sourceProvenance: MoneyOriginFundingSourceProvenance;
+}): Promise<void> {
+  const requests = candidateWindowRequestsForSourceProvenance(input.sourceProvenance);
+  if (requests.length > 0 && input.traceInput.requestCandidateWindows) {
+    await input.traceInput.requestCandidateWindows(requests);
+  }
+}
+
+export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Promise<MoneyOriginPath> {
+  const minPreservation = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
+  const maxTimeDeltaMs = input.maxTimeDeltaMs ?? DEFAULT_MAX_TIME_DELTA_MS;
+  const bundleCoverageThreshold = input.bundleCoverageThreshold ?? DEFAULT_BUNDLE_COVERAGE_THRESHOLD;
+  const maxBundleFunders = input.maxBundleFunders ?? DEFAULT_MAX_BUNDLE_FUNDERS;
+  const resolvedSeed = await withEconomicContext(input, {
+    id: input.balanceTransfer.txHash,
+    txHash: input.balanceTransfer.txHash,
+    fromAddress: input.balanceTransfer.fromAddress,
+    toAddress: input.balanceTransfer.toAddress,
+    amountRaw: input.balanceTransfer.amountRaw,
+    timestamp: new Date(input.balanceTransfer.timestamp),
+    method: input.balanceTransfer.method ?? "transfer",
+    edgeType: input.balanceTransfer.edgeType ?? "normal_transfer",
+    economicRole: input.balanceTransfer.economicRole,
+    economicProtocol: input.balanceTransfer.economicProtocol
+  });
+  const initialTimestamp = resolvedSeed.timestamp;
+  const initialState: TraceState = {
+    currentAddress: resolvedSeed.fromAddress,
+    expectedAmountRaw: parseAmount(resolvedSeed.amountRaw),
+    latestTimestamp: initialTimestamp,
+    addressesFromSubject: [input.subjectAddress, resolvedSeed.fromAddress],
+    txHashesFromSubject: [resolvedSeed.txHash],
+    stepsFromSubject: [{
+      txHash: resolvedSeed.txHash,
+      fromAddress: resolvedSeed.fromAddress,
+      toAddress: input.subjectAddress,
+      amountRaw: resolvedSeed.amountRaw,
+      timestamp: resolvedSeed.timestamp.toISOString()
+    }],
+    timestampsFromSubject: [initialTimestamp],
+    fundingBundles: [],
+    sourceProvenance: [],
+    historyCoverage: [],
+    minPreservation: 1,
+    balanceShare: 1,
+    attributionBasis: "initial_transfer",
+    incomingEconomicRole: resolvedSeed.economicRole ?? null,
+    incomingEconomicProtocol: resolvedSeed.economicProtocol ?? null,
+    depth: 0,
+    score: 0
+  };
+
+  const fetchedAddresses = new Set<string>();
+  const terminals: MoneyOriginPath[] = [];
+  let frontier: TraceState[] = [initialState];
+
+  while (frontier.length > 0) {
+    const nextFrontier: TraceState[] = [];
+    for (const state of frontier) {
+      const labels = await input.getLabelsForAddress(state.currentAddress);
+      const classification = await input.getClassificationForAddress(state.currentAddress);
+      const stop = classifyMoneyOriginStop({
+        address: state.currentAddress,
+        labels,
+        classification,
+        balanceShare: clampShare(state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage)),
+        eventTimestamp: state.latestTimestamp
+      });
+      const hardStop = stop && (
+        stop.rootSourceType === "risky_label" || stop.sourceExposureKind === "sanctioned_service"
+      ) ? stop : null;
+      if (hardStop) {
+        appendStopPath({ terminals, traceInput: input, state, stop: hardStop });
+        continue;
+      }
+      if (
+        state.incomingEconomicRole === "service_fee" &&
+        state.incomingEconomicProtocol === "tron_gasfree"
+      ) {
+        appendStopPath({
+          terminals,
+          traceInput: input,
+          state,
+          stop: {
+            verdict: "REVIEW",
+            rootSourceType: "unknown",
+            stoppedReason: "service_boundary",
+            riskScoreContribution: 0,
+            reasons: [EXACT_GASFREE_SERVICE_FEE_REASON]
+          }
+        });
+        continue;
+      }
+      if (stop) {
+        appendStopPath({ terminals, traceInput: input, state, stop });
+        continue;
+      }
+
+      if (state.depth >= input.maxDepth) {
+        terminals.push(incompletePath({
+          state,
+          balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: state.balanceShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
+          stoppedReason: "data_budget_exhausted",
+          message: `Clean EOA chain reached maxDepth=${input.maxDepth} before a known good or decline source was found; source remains unproven.`
+        }));
+        continue;
+      }
+
+      if (!fetchedAddresses.has(state.currentAddress) && fetchedAddresses.size >= input.maxAddressFetches) {
+        terminals.push(incompletePath({
+          state,
+          balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: state.balanceShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
+          stoppedReason: "data_budget_exhausted",
+          message: `Trace reached maxAddressFetches=${input.maxAddressFetches} before a known good or decline source was found; source remains unproven.`
+        }));
+        continue;
+      }
+
+      fetchedAddresses.add(state.currentAddress);
+      const targetEdge = targetEdgeFromState(state);
+      const hopFetchOptions = {
+        latestTimestamp: state.latestTimestamp,
+        deferBroadTargetedHistory: Boolean(input.requestCandidateWindows && input.ensureBroadTargetedHistory),
+        targetEdge,
+        expectedAmountRaw: state.expectedAmountRaw.toString()
+      };
+      const edges = await input.fetchEdgesForAddress(state.currentAddress, hopFetchOptions);
+      const resolvedBundle = targetEdge
+        ? await buildResolvedFundingBundle({
+          traceInput: input,
+          target: targetEdge,
+          edges,
+          minCoverageRatio: bundleCoverageThreshold,
+          maxFunders: maxBundleFunders
+        })
+        : null;
+      const traceEdges = resolvedBundle?.edges ?? edges;
+      const bundle = resolvedBundle?.bundle ?? null;
+      const moneyOriginBundle = bundle?.meetsThreshold ? toMoneyOriginFundingBundle(bundle) : null;
+      const bundleHasOnlyNormalTransfers = bundle?.members.every((member) =>
+        member.edge.edgeType === "normal_transfer"
+      ) ?? false;
+      if (targetEdge && bundle?.meetsThreshold && bundleHasOnlyNormalTransfers && moneyOriginBundle && bundle.funders.length > 0) {
+        const historyCoverage = input.getHistoryCoverageForAddress
+          ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
+          : fallbackHistoryCoverage({
+            address: state.currentAddress,
+            latestTimestamp: state.latestTimestamp,
+            edges: traceEdges
+          });
+        const stateWithHistory: TraceState = {
+          ...state,
+          historyCoverage: [...state.historyCoverage, historyCoverage]
+        };
+        const sourceProvenance = evaluateFundingFirstSourceProvenance({
+          target: targetEdge,
+          edges: traceEdges,
+          historyCoverage,
+          downstreamAmountRaw: input.balanceTransfer.amountRaw,
+          minCoverageRatio: bundleCoverageThreshold,
+          maxFunders: maxBundleFunders
+        });
+        const candidateWindowRequests = candidateWindowRequestsForSourceProvenance(sourceProvenance);
+        let candidateWindowsChecked = false;
+        if (candidateWindowRequests.length > 0 && input.requestCandidateWindows) {
+          await input.requestCandidateWindows(candidateWindowRequests);
+          candidateWindowsChecked = true;
+        }
+        const repaired = await repairProbableSourceProvenance({
+          repair: input.repairSourceProvenanceWindow,
+          address: state.currentAddress,
+          target: targetEdge,
+          sourceProvenance,
+          downstreamAmountRaw: input.balanceTransfer.amountRaw,
+          minCoverageRatio: bundleCoverageThreshold,
+          maxFunders: maxBundleFunders
+        });
+        const effectiveTraceBundle = repaired?.traceBundle
+          ? await resolveFundingBundleMembers(
+              input,
+              repaired.traceBundle,
+              bundleCoverageThreshold,
+              maxBundleFunders
+            )
+          : bundle;
+        const effectiveMoneyOriginBundle = effectiveTraceBundle?.meetsThreshold
+          ? toMoneyOriginFundingBundle(effectiveTraceBundle)
+          : null;
+        const repairedSourceProvenance = repaired
+          ? {
+              ...repaired.provenance,
+              proofClass: effectiveTraceBundle?.meetsThreshold ? repaired.provenance.proofClass : "unresolved" as const,
+              coveredAmountRaw: effectiveTraceBundle?.coveredAmountRaw ?? "0",
+              coverageRatio: effectiveTraceBundle?.coverageRatio ?? 0,
+              stopReason: effectiveTraceBundle?.meetsThreshold
+                ? repaired.provenance.stopReason
+                : "funding_first_unresolved" as const,
+              fundingBundle: effectiveMoneyOriginBundle,
+              reasons: effectiveTraceBundle?.meetsThreshold
+                ? repaired.provenance.reasons
+                : [...new Set([...repaired.provenance.reasons, "gasfree_service_fee_excluded"])]
+            }
+          : null;
+        const effectiveSourceProvenance = repairedSourceProvenance ?? sourceProvenance;
+        const effectiveBundleHasOnlyNormalTransfers = effectiveTraceBundle?.members.every((member) =>
+          member.edge.edgeType === "normal_transfer"
+        ) ?? false;
+        const stateWithProvenance: TraceState = {
+          ...stateWithHistory,
+          sourceProvenance: [...stateWithHistory.sourceProvenance, effectiveSourceProvenance]
+        };
+
+        if (
+          effectiveSourceProvenance.proofClass !== "exact" ||
+          !effectiveTraceBundle?.meetsThreshold ||
+          !effectiveMoneyOriginBundle ||
+          !effectiveBundleHasOnlyNormalTransfers
+        ) {
+          if (!candidateWindowsChecked) {
+            await requestCandidateWindowsForSourceProvenance({
+              traceInput: input,
+              sourceProvenance: effectiveSourceProvenance
+            });
+          }
+          terminals.push(incompletePath({
+            state: stateWithProvenance,
+            balanceTransferTxHash: input.balanceTransfer.txHash,
+            balanceShare: stateWithProvenance.balanceShare,
+            amountUsage: input.balanceTransfer.amountUsage ?? null,
+            stoppedReason: effectiveSourceProvenance.stopReason ?? "funding_first_unresolved",
+            message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+          }));
+          continue;
+        }
+
+        const stateWithBundle: TraceState = {
+          ...stateWithProvenance,
+          fundingBundles: [...stateWithProvenance.fundingBundles, effectiveMoneyOriginBundle]
+        };
+        for (const funder of effectiveTraceBundle.funders) {
+          const funderMembers = effectiveTraceBundle.members.filter((member) => member.edge.fromAddress === funder.address);
+          if (funderMembers.length === 0) continue;
+          const economicRoles = [...new Set(funderMembers.map((member) => member.edge.economicRole).filter(Boolean))];
+          const economicProtocols = [...new Set(funderMembers.map((member) => member.edge.economicProtocol).filter(Boolean))];
+          const oldestTimestamp = new Date(Math.min(...funderMembers.map((member) => member.edge.timestamp.getTime())));
+          const funderCoverageShare = fundingCoverageRatio(parseAmount(funder.amountRaw), state.expectedAmountRaw);
+          nextFrontier.push({
+            currentAddress: funder.address,
+            expectedAmountRaw: parseAmount(funder.amountRaw),
+            latestTimestamp: oldestTimestamp,
+            addressesFromSubject: [...stateWithBundle.addressesFromSubject, funder.address],
+            txHashesFromSubject: [
+              ...stateWithBundle.txHashesFromSubject,
+              ...funderMembers.map((member) => member.edge.txHash)
+            ],
+            stepsFromSubject: [
+              ...stateWithBundle.stepsFromSubject,
+              ...funderMembers.map((member) => ({
+                txHash: member.edge.txHash,
+                fromAddress: member.edge.fromAddress,
+                toAddress: member.edge.toAddress,
+                amountRaw: member.usedAmountRaw,
+                timestamp: member.edge.timestamp.toISOString()
+              }))
+            ],
+            timestampsFromSubject: [
+              ...stateWithBundle.timestampsFromSubject,
+              ...funderMembers.map((member) => member.edge.timestamp)
+            ],
+            fundingBundles: stateWithBundle.fundingBundles,
+            sourceProvenance: stateWithBundle.sourceProvenance,
+            historyCoverage: stateWithBundle.historyCoverage,
+            minPreservation: Math.min(stateWithBundle.minPreservation, effectiveTraceBundle.coverageRatio),
+            balanceShare: clampShare(stateWithBundle.balanceShare * funderCoverageShare),
+            attributionBasis: "funding_bundle",
+            incomingEconomicRole: economicRoles.length === 1 ? economicRoles[0] ?? null : null,
+            incomingEconomicProtocol: economicProtocols.length === 1 ? economicProtocols[0] ?? null : null,
+            depth: stateWithBundle.depth + 1,
+            score: stateWithBundle.score + funderCoverageShare * 100
+          });
+        }
+        continue;
+      }
+
+      const candidateEdges = candidateIncomingEdges({
+        currentAddress: state.currentAddress,
+        expectedAmountRaw: state.expectedAmountRaw,
+        latestTimestamp: state.latestTimestamp,
+        edges: traceEdges,
+        minPreservation,
+        maxTimeDeltaMs,
+        maxEdges: input.maxEdgesPerAddress
+      });
+      const candidates: ForensicRouteEdge[] = [];
+      for (const edge of candidateEdges) {
+        candidates.push(await withEconomicContext(input, edge));
+      }
+
+      if (candidates.length === 0) {
+        const rejectedCandidates = rejectedIncomingCandidates({
+          currentAddress: state.currentAddress,
+          expectedAmountRaw: state.expectedAmountRaw,
+          latestTimestamp: state.latestTimestamp,
+          edges: traceEdges,
+          minPreservation,
+          maxTimeDeltaMs,
+          maxCandidates: 5
+        });
+        const historyCoverage = input.getHistoryCoverageForAddress
+          ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
+          : fallbackHistoryCoverage({
+            address: state.currentAddress,
+            latestTimestamp: state.latestTimestamp,
+            edges: traceEdges
+          });
+        const stateWithHistory: TraceState = {
+          ...state,
+          historyCoverage: [...state.historyCoverage, historyCoverage]
+        };
+        const sourceProvenance = targetEdge
+          ? evaluateFundingFirstSourceProvenance({
+              target: targetEdge,
+              edges: traceEdges,
+              historyCoverage,
+              downstreamAmountRaw: input.balanceTransfer.amountRaw,
+              minCoverageRatio: bundleCoverageThreshold,
+              maxFunders: maxBundleFunders
+            })
+          : null;
+        const stateWithProvenance: TraceState = sourceProvenance
+          ? {
+              ...stateWithHistory,
+              sourceProvenance: [...stateWithHistory.sourceProvenance, sourceProvenance]
+            }
+          : stateWithHistory;
+
+        if (!historyCoverage.reachedTargetHop) {
+          if (sourceProvenance) {
+            await requestCandidateWindowsForSourceProvenance({
+              traceInput: input,
+              sourceProvenance
+            });
+          } else {
+            await requestMaterialBroadWhereFallback({
+              traceInput: input,
+              address: state.currentAddress,
+              targetTimestamp: state.latestTimestamp,
+              balanceShare: effectiveTraceStateShare({
+                state: stateWithProvenance,
+                balanceTransfer: input.balanceTransfer
+              }),
+              unresolvedAmountRaw: stateWithProvenance.expectedAmountRaw
+            });
+          }
+          terminals.push(incompletePath({
+            state: stateWithProvenance,
+            balanceTransferTxHash: input.balanceTransfer.txHash,
+            balanceShare: stateWithProvenance.balanceShare,
+            amountUsage: input.balanceTransfer.amountUsage ?? null,
+            stoppedReason: "incoming_history_not_fetched",
+            rejectedCandidates,
+            message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+          }));
+          continue;
+        }
+
+        if (sourceProvenance?.proofClass === "pre_existing_balance_possible") {
+          terminals.push(incompletePath({
+            state: stateWithProvenance,
+            balanceTransferTxHash: input.balanceTransfer.txHash,
+            balanceShare: stateWithProvenance.balanceShare,
+            amountUsage: input.balanceTransfer.amountUsage ?? null,
+            stoppedReason: "pre_existing_balance_possible",
+            rejectedCandidates,
+            message: "Reached incoming history for this hop but found no usable funding candidate; sender may have had pre-existing balance."
+          }));
+          continue;
+        }
+
+        const hasAnyPreviousIncoming = traceEdges.some((edge) =>
+          edge.toAddress === state.currentAddress &&
+          edge.timestamp <= state.latestTimestamp &&
+          parseAmount(edge.amountRaw) > 0n
+        );
+        const stoppedReason = input.getHistoryCoverageForAddress
+          ? hasAnyPreviousIncoming
+            ? "incoming_seen_but_below_continuity"
+            : "no_incoming_transfers_seen"
+          : hasAnyPreviousIncoming
+            ? "weak_amount_or_time_continuity"
+            : "no_previous_transfer";
+        terminals.push(incompletePath({
+          state: stateWithProvenance,
+          balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: stateWithProvenance.balanceShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
+          stoppedReason,
+          rejectedCandidates,
+          message: hasAnyPreviousIncoming
+            ? "Previous incoming transfers exist, but clean CEX origin is not fully proven; this lowers provenance confidence and is not direct high-risk evidence."
+            : "No previous inbound USDT transfer found before this clean EOA hop; source remains unproven."
+        }));
+        continue;
+      }
+
+      const candidateHistoryCoverage = input.getHistoryCoverageForAddress
+        ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
+        : null;
+      if (candidateHistoryCoverage && !candidateHistoryCoverage.reachedTargetHop) {
+        const stateWithHistory: TraceState = {
+          ...state,
+          historyCoverage: [...state.historyCoverage, candidateHistoryCoverage]
+        };
+        await requestMaterialBroadWhereFallback({
+          traceInput: input,
+          address: state.currentAddress,
+          targetTimestamp: state.latestTimestamp,
+          balanceShare: effectiveTraceStateShare({
+            state: stateWithHistory,
+            balanceTransfer: input.balanceTransfer
+          }),
+          unresolvedAmountRaw: stateWithHistory.expectedAmountRaw
+        });
+        terminals.push(incompletePath({
+          state: stateWithHistory,
+          balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: stateWithHistory.balanceShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
+          stoppedReason: "incoming_history_not_fetched",
+          message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+        }));
+        continue;
+      }
+
+      for (const edge of candidates) {
+        const preservation = fundingCoverageRatio(parseAmount(edge.amountRaw), state.expectedAmountRaw);
+        nextFrontier.push({
+          currentAddress: edge.fromAddress,
+          expectedAmountRaw: parseAmount(edge.amountRaw),
+          latestTimestamp: edge.timestamp,
+          addressesFromSubject: [...state.addressesFromSubject, edge.fromAddress],
+          txHashesFromSubject: [...state.txHashesFromSubject, edge.txHash],
+          stepsFromSubject: [
+            ...state.stepsFromSubject,
+            {
+              txHash: edge.txHash,
+              fromAddress: edge.fromAddress,
+              toAddress: edge.toAddress,
+              amountRaw: edge.amountRaw,
+              timestamp: edge.timestamp.toISOString()
+            }
+          ],
+          timestampsFromSubject: [...state.timestampsFromSubject, edge.timestamp],
+          fundingBundles: state.fundingBundles,
+          sourceProvenance: state.sourceProvenance,
+          historyCoverage: state.historyCoverage,
+          minPreservation: Math.min(state.minPreservation, preservation),
+          balanceShare: state.balanceShare,
+          attributionBasis: "single_candidate",
+          incomingEconomicRole: edge.economicRole ?? null,
+          incomingEconomicProtocol: edge.economicProtocol ?? null,
+          depth: state.depth + 1,
+          score: state.score + preservation * 100
+        });
+      }
+    }
+
+    frontier = nextFrontier
+      .sort((left, right) => right.score - left.score || left.currentAddress.localeCompare(right.currentAddress))
+      .slice(0, input.beamWidth);
+  }
+
+  if (terminals.length === 0) {
+    const path = incompletePath({
+      state: initialState,
+      balanceTransferTxHash: input.balanceTransfer.txHash,
+      balanceShare: initialState.balanceShare,
+      amountUsage: input.balanceTransfer.amountUsage ?? null,
+      stoppedReason: "data_budget_exhausted",
+      message: "Trace ended without terminal candidates; source remains unproven."
+    });
+    return input.balanceTransfer.evidenceId
+      ? { ...path, balanceTransferEvidenceId: input.balanceTransfer.evidenceId }
+      : path;
+  }
+
+  const path = terminals.sort((left, right) => terminalRank(right) - terminalRank(left))[0]!;
+  return input.balanceTransfer.evidenceId
+    ? { ...path, balanceTransferEvidenceId: input.balanceTransfer.evidenceId }
+    : path;
+}

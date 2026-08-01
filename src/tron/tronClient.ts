@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { TronWeb } from "tronweb";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
@@ -8,9 +9,27 @@ import {
   inspectRawContractJson,
   type ContractIntelligenceProfile
 } from "../approvals/contractIntelligence";
-import type { StablecoinRestrictionProfile } from "../types";
+import type {
+  TimelineBearingStablecoinRestrictionProfile,
+  UsdtBlacklistTimeline,
+  UsdtBlacklistTimelineEvent
+} from "../types";
 import type { TronContractEvent, TronContractEventPage } from "../forensics/tronUsdtEventIndexer";
-import { createTronscanScheduler, type TronscanRequestPriority, type TronscanScheduler } from "./tronscanScheduler";
+import {
+  createTronscanScheduler,
+  type TronscanApiKeyGroup,
+  type TronscanEndpointBucket,
+  type TronscanRequestPriority,
+  type TronscanScheduler
+} from "./tronscanScheduler";
+import {
+  BlacklistTimelineValidationError,
+  parseBlacklistRows,
+  reconstructedBlacklistState,
+  sortBlacklistTimelineEvents,
+  verifyBlacklistEventForRow,
+  verifyBlacklistTransaction
+} from "./usdtBlacklistTimeline";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -22,11 +41,22 @@ export type TronClient = {
 
 export type TronDashboardClient = TronClient & {
   getAccount(address: string): Promise<TronscanAccount>;
-  getUsdtRestrictionStatus?(address: string, options?: GetUsdtRestrictionStatusOptions): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus?(
+    address: string,
+    options?: GetUsdtRestrictionStatusOptions
+  ): Promise<TimelineBearingStablecoinRestrictionProfile>;
   listRelatedTrc20Transfers(
     address: string,
     options?: ListRelatedTrc20TransfersOptions
   ): Promise<RawTronscanTrc20Transfer[]>;
+  listRelatedTrc20TransferPage?(
+    address: string,
+    options?: ListRelatedTrc20TransfersOptions
+  ): Promise<TronscanTrc20TransferPage>;
+  listRelatedTrc20TransferPagePinned?(
+    address: string,
+    options?: ListRelatedTrc20TransfersOptions
+  ): Promise<PinnedTronscanTransferPage>;
   listTransactions(address: string, options?: ListTransactionsOptions): Promise<unknown[]>;
 };
 
@@ -34,14 +64,36 @@ export type GetUsdtRestrictionStatusOptions = {
   includeEventTimeline?: boolean;
 };
 
+export type GetUsdtBlacklistTimelineOptions = {
+  limit?: number;
+  currentState?: boolean;
+};
+
 export type TronApprovalClient = {
   listTrc20Approvals(address: string, options?: ListTrc20ApprovalsOptions): Promise<TronscanApprovalListResult>;
   listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
+  listTrc20ApprovalChangePageStrict?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChangePage>;
+  getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
+  getUsdtBalance?(address: string, options?: OfficialUsdtBalanceReadOptions): Promise<OfficialUsdtBalanceRead>;
   listRelatedTrc20Transfers?(address: string, options?: ListRelatedTrc20TransfersOptions): Promise<RawTronscanTrc20Transfer[]>;
   getTransaction?(txHash: string): Promise<unknown>;
   getAddressMetadata?(address: string): Promise<TronscanAddressMetadata>;
   getContractIntelligenceProfile?(address: string, options?: GetContractIntelligenceProfileOptions): Promise<ContractIntelligenceProfile>;
   getTransactionSigningMetadata?(txHash: string): Promise<TronTransactionSigningMetadata | null>;
+};
+
+export type OfficialUsdtBalanceRead = {
+  subjectAddress: string;
+  tokenContract: typeof TRON_USDT_CONTRACT_ADDRESS;
+  balanceRaw: string;
+  checkedAt: Date;
+  source: "official_usdt_balanceOf";
+};
+
+export type OfficialUsdtBalanceReadOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  retryAttempts?: number;
 };
 
 export type TronContractProfileClient = {
@@ -62,6 +114,40 @@ export type TronContractEventClient = {
 };
 
 type FetchLike = typeof fetch;
+type TronGridTransferDirection = "incoming" | "related";
+type FetchJsonOptions = {
+  schedulerCacheKey?: string;
+  logFinalError?: (error: unknown) => boolean;
+  shouldRetry?: (error: unknown) => boolean;
+  timeoutMs?: number;
+  retryAttempts?: number;
+  observationScope?: "unified";
+  observationRunId?: string;
+  observationTaskId?: string;
+  observationCanonicalSequence?: number;
+  observationAttempt?: number;
+  observationSlotId?: number;
+  observationSlotEpoch?: number;
+};
+
+const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
+const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
+const TRONSCAN_TRANSFER_PAGE_LIMIT = 50;
+const TRONSCAN_RANGE_TOTAL_CAP = 10_000;
+const TRONSCAN_BLACKLIST_MIN_PAGE_LIMIT = 20;
+const TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT = 100;
+
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
+}
+
+function normalizeApiKeys(value: string | readonly string[] | undefined): string[] {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return [...new Set(values
+    .flatMap((item) => item.split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0))];
+}
 
 export type TronscanAccount = {
   balance?: unknown;
@@ -76,6 +162,7 @@ export type TronscanAccount = {
 export type ListIncomingTrc20TransfersOptions = {
   start?: number;
   limit?: number;
+  startTimestamp?: number;
   minTimestamp?: number;
   endTimestamp?: number;
 };
@@ -83,9 +170,117 @@ export type ListIncomingTrc20TransfersOptions = {
 export type ListRelatedTrc20TransfersOptions = {
   start?: number;
   limit?: number;
+  startTimestamp?: number;
   minTimestamp?: number;
   endTimestamp?: number;
+  observationScope?: "unified";
+  observationRunId?: string;
+  observationTaskId?: string;
+  observationCanonicalSequence?: number;
+  observationAttempt?: number;
+  observationSlotId?: number;
+  observationSlotEpoch?: number;
 };
+
+export type TronscanTrc20TransferPage = {
+  provider: "tronscan" | "trongrid_fallback";
+  transfers: RawTronscanTrc20Transfer[];
+  total: number | null;
+  rangeTotal: number | null;
+  rawResponseHash: string | null;
+  canonicalTransferHash: string | null;
+};
+
+export type PinnedTronscanTransferPage = {
+  provider: "tronscan" | "trongrid_fallback";
+  transfers: RawTronscanTrc20Transfer[];
+  rawProviderRowIds: string[];
+  start: number;
+  requestedLimit: number;
+  nextOffset: number;
+  total: number | null;
+  rangeTotal: number | null;
+  // ponytail: optional only for legacy pinned-page adapters; remove `?` after
+  // those callers adopt completion reasons. Unified rejects an omission.
+  completionReason?: "more" | "range_exhausted" | "provider_range_capped";
+  complete: boolean;
+  metadataConsistent: boolean;
+  rawResponseHashes: string[];
+  canonicalTransferHashes: string[];
+};
+
+type CompletedPinnedTronscanTransferPage = PinnedTronscanTransferPage & {
+  completionReason: NonNullable<PinnedTronscanTransferPage["completionReason"]>;
+};
+
+export function rawProviderTxRowPaginationId(
+  provider: TronscanTrc20TransferPage["provider"],
+  transfer: RawTronscanTrc20Transfer
+): string | null {
+  const row = transfer as Record<string, unknown>;
+  const txValue = row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash;
+  const txHash = typeof txValue === "string" && txValue.trim().length > 0
+    ? txValue.trim().toLowerCase()
+    : typeof txValue === "number" && Number.isSafeInteger(txValue) ? String(txValue) : null;
+  if (!txHash) return null;
+  const eventIndex = [row.event_index, row.eventIndex, row.log_index, row.logIndex]
+    .map((value) => {
+      if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+      if (typeof value === "string" && /^\d+$/.test(value)) {
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+      }
+      return null;
+    })
+    .find((value) => value !== null) ?? null;
+  return eventIndex === null
+    ? `${provider}:tx:${txHash}:row:${sha256Json(canonicalTronscanTransferRow(transfer))}`
+    : `${provider}:tx:${txHash}:event:${eventIndex}`;
+}
+
+function canonicalTronscanTransferRow(
+  transfer: RawTronscanTrc20Transfer
+): Record<string, string | number | null> {
+  const row = transfer as Record<string, unknown>;
+  const tokenInfoValue = row.tokenInfo ?? row.token_info;
+  const tokenInfo = tokenInfoValue !== null && typeof tokenInfoValue === "object" && !Array.isArray(tokenInfoValue)
+    ? tokenInfoValue as Record<string, unknown>
+    : null;
+  const stringValue = (value: unknown): string | null => {
+    if (typeof value === "string" && value.trim().length > 0) return value;
+    if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+    return null;
+  };
+  const safeInteger = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) {
+      const parsed = Number(value);
+      return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
+  };
+  return {
+    tx: stringValue(row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash),
+    block: safeInteger(row.block ?? row.block_number ?? row.blockNumber ?? row.block_num),
+    event_index: safeInteger(row.event_index ?? row.eventIndex),
+    log_index: safeInteger(row.log_index ?? row.logIndex),
+    event_type: stringValue(row.event_type ?? row.eventType ?? row.event_name ?? row.eventName),
+    from: stringValue(row.from_address ?? row.fromAddress ?? row.from),
+    to: stringValue(row.to_address ?? row.toAddress ?? row.to),
+    contract: stringValue(row.contract_address ?? row.contractAddress ?? tokenInfo?.tokenId ?? tokenInfo?.address),
+    amount: stringValue(row.quant ?? row.amount ?? row.amount_str ?? row.value),
+    ts: safeInteger(row.block_ts ?? row.block_timestamp ?? row.timestamp ?? row.time)
+  };
+}
+
+export function rawProviderRowPaginationId(
+  provider: TronscanTrc20TransferPage["provider"],
+  transfer: RawTronscanTrc20Transfer
+): string {
+  const txIdentity = rawProviderTxRowPaginationId(provider, transfer);
+  if (txIdentity) return txIdentity;
+  return `${provider}:raw:${sha256Json(canonicalTronscanTransferRow(transfer))}`;
+}
 
 export type ListTransactionsOptions = {
   start?: number;
@@ -110,6 +305,11 @@ export type ListTrc20ApprovalChangesInput = {
 export type GetContractIntelligenceProfileOptions = {
   now?: Date;
   ttlMs?: number;
+  requireComplete?: boolean;
+};
+
+export type GetAddressMetadataOptions = {
+  requireComplete?: boolean;
 };
 
 export type ListContractsOptions = {
@@ -208,6 +408,13 @@ export type TronscanApprovalChange = {
   contractRet: string | null;
 };
 
+export type TronscanApprovalChangePage = {
+  changes: TronscanApprovalChange[];
+  rawCount: number;
+  malformedCount: number;
+  total: number | null;
+};
+
 export type TronscanAddressMetadata = {
   address: string;
   source: "tronscan";
@@ -230,14 +437,18 @@ export type TronTransactionSigningMetadata = {
 export type TronscanClientOptions = {
   baseUrl: string | URL;
   fullNodeBaseUrl?: string | URL;
-  apiKey?: string;
+  apiKey?: string | string[];
   fullNodeApiKey?: string;
   timeoutMs?: number;
   retryAttempts?: number;
   retryBaseDelayMs?: number;
   requestMinIntervalMs?: number;
   rateLimitCooldownMs?: number;
+  apiKeyGroups?: readonly TronscanApiKeyGroup[];
+  accountGroupRequestMinIntervalMs?: number;
   scheduler?: TronscanScheduler;
+  schedulerDedupeNamespace?: string;
+  transferSchedulingPriority?: TronscanRequestPriority;
   fetchFn?: FetchLike;
   logger?: Logger;
 };
@@ -254,19 +465,16 @@ class TronscanHttpError extends Error {
 export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient, TronContractEventClient {
   private readonly baseUrl: URL;
   private readonly fullNodeBaseUrl: URL | null;
-  private readonly apiKey: string | undefined;
   private readonly fullNodeApiKey: string | undefined;
   private readonly timeoutMs: number;
   private readonly retryAttempts: number;
   private readonly retryBaseDelayMs: number;
-  private readonly requestMinIntervalMs: number;
   private readonly rateLimitCooldownMs: number;
   private readonly fetchFn: FetchLike;
   private readonly logger: Logger;
   private readonly scheduler: TronscanScheduler;
-  private requestQueue: Promise<void> = Promise.resolve();
-  private nextRequestAtMs = 0;
-  private rateLimitCooldownUntilMs = 0;
+  private readonly schedulerDedupeNamespace: string;
+  private readonly transferSchedulingPriority: TronscanRequestPriority;
 
   constructor(options: TronscanClientOptions | string | URL) {
     const normalizedOptions = options instanceof URL || typeof options === "string" ? { baseUrl: options } : options;
@@ -280,19 +488,23 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (this.fullNodeBaseUrl.protocol !== "https:") {
       throw new Error("TronscanClient fullNodeBaseUrl must use https");
     }
-    this.apiKey = normalizedOptions.apiKey;
+    const apiKeys = normalizeApiKeys(normalizedOptions.apiKey);
     this.fullNodeApiKey = normalizedOptions.fullNodeApiKey;
     this.timeoutMs = normalizedOptions.timeoutMs ?? 10_000;
     this.retryAttempts = normalizedOptions.retryAttempts ?? 0;
     this.retryBaseDelayMs = normalizedOptions.retryBaseDelayMs ?? 250;
-    this.requestMinIntervalMs = Math.max(0, normalizedOptions.requestMinIntervalMs ?? 0);
+    const requestMinIntervalMs = Math.max(0, normalizedOptions.requestMinIntervalMs ?? 0);
     this.rateLimitCooldownMs = Math.max(0, normalizedOptions.rateLimitCooldownMs ?? 0);
     this.fetchFn = normalizedOptions.fetchFn ?? fetch;
     this.logger = normalizedOptions.logger ?? defaultLogger;
+    this.schedulerDedupeNamespace = normalizedOptions.schedulerDedupeNamespace?.trim() || "default";
+    this.transferSchedulingPriority = normalizedOptions.transferSchedulingPriority ?? "deep_transfer";
     this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
-      requestMinIntervalMs: this.requestMinIntervalMs,
+      requestMinIntervalMs,
       rateLimitCooldownMs: this.rateLimitCooldownMs,
-      apiKeyConfigured: Boolean(this.apiKey)
+      apiKeys,
+      apiKeyGroups: normalizedOptions.apiKeyGroups,
+      accountGroupRequestMinIntervalMs: normalizedOptions.accountGroupRequestMinIntervalMs
     });
   }
 
@@ -300,21 +512,41 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListIncomingTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
+    return this.fetchTransferArrayWithProviderLimit({
+      address,
+      direction: "incoming",
+      options
+    });
+  }
+
+  private buildTronscanTransferHistoryUrl(
+    address: string,
+    direction: TronGridTransferDirection,
+    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions,
+    tokenContractAddress: string | null = TRON_USDT_CONTRACT_ADDRESS
+  ): URL {
     const url = new URL("/api/token_trc20/transfers", this.baseUrl);
-    url.searchParams.set("toAddress", address);
-    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
+    if (direction === "incoming") {
+      url.searchParams.set("toAddress", address);
+    } else {
+      url.searchParams.set("relatedAddress", address);
+    }
+    if (tokenContractAddress) {
+      url.searchParams.set("contract_address", tokenContractAddress);
+    }
     url.searchParams.set("confirm", "0");
     url.searchParams.set("limit", String(options.limit ?? 50));
     url.searchParams.set("start", String(options.start ?? 0));
-    if (options.minTimestamp !== undefined) {
-      url.searchParams.set("start_timestamp", String(options.minTimestamp));
+    const startTimestamp = options.startTimestamp ?? options.minTimestamp;
+    if (startTimestamp !== undefined) {
+      url.searchParams.set("start_timestamp", String(startTimestamp));
     }
     if (options.endTimestamp !== undefined) {
       url.searchParams.set("end_timestamp", String(options.endTimestamp));
     }
     url.searchParams.set("sort", "-timestamp");
 
-    return this.fetchTransferArray(url);
+    return url;
   }
 
   async getAccount(address: string): Promise<TronscanAccount> {
@@ -328,10 +560,24 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return json as TronscanAccount;
   }
 
+  async getUsdtBalance(
+    address: string,
+    options: OfficialUsdtBalanceReadOptions = {}
+  ): Promise<OfficialUsdtBalanceRead> {
+    const balanceRaw = await this.callUsdtUint("balanceOf(address)", address, options);
+    return {
+      subjectAddress: address,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      balanceRaw,
+      checkedAt: new Date(),
+      source: "official_usdt_balanceOf"
+    };
+  }
+
   async getUsdtRestrictionStatus(
     address: string,
     options: GetUsdtRestrictionStatusOptions = {}
-  ): Promise<StablecoinRestrictionProfile> {
+  ): Promise<TimelineBearingStablecoinRestrictionProfile> {
     const checkedAt = new Date().toISOString();
     const blacklist = await this.callUsdtBoolean("isBlackListed(address)", address)
       .then((isBlacklisted) => ({ isBlacklisted, method: "isBlackListed(address)" as const }))
@@ -346,15 +592,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       });
       return null;
     });
-    const event = blacklist.isBlacklisted && options.includeEventTimeline === true
-      ? await this.findUsdtBlacklistEvent(address).catch((error) => {
-        this.logger.warn("stablecoin_blacklist_event_lookup_failed", {
-          address,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        return null;
-      })
+    const blacklistTimeline = blacklist.isBlacklisted && options.includeEventTimeline === true
+      ? await this.getUsdtBlacklistTimeline(address, { currentState: blacklist.isBlacklisted })
       : null;
+    const event = [...(blacklistTimeline?.events ?? [])].reverse().find((item) => item.eventKind === "added") ?? null;
 
     return {
       subjectAddress: address,
@@ -367,8 +608,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       checkedAt,
       evidenceStrength: "exact_contract_state",
       blacklistEventTxHash: event?.txHash ?? null,
-      blacklistEventTimestamp: event?.timestamp ?? null,
-      blacklistEventBlock: event?.block ?? null,
+      blacklistEventTimestamp: event?.occurredAt ?? null,
+      blacklistEventBlock: event?.blockNumber ?? null,
+      blacklistTimeline,
       methods: {
         blacklist: blacklist.method,
         balance: balanceRaw === null ? null : "balanceOf(address)"
@@ -376,7 +618,116 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
   }
 
-  async getAddressMetadata(address: string): Promise<TronscanAddressMetadata> {
+  async getUsdtBlacklistTimeline(
+    address: string,
+    options: GetUsdtBlacklistTimelineOptions = {}
+  ): Promise<UsdtBlacklistTimeline> {
+    const requestedLimit = Number.isSafeInteger(options.limit) ? options.limit! : TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT;
+    const pageLimit = Math.min(
+      TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT,
+      Math.max(TRONSCAN_BLACKLIST_MIN_PAGE_LIMIT, requestedLimit)
+    );
+    const events: UsdtBlacklistTimelineEvent[] = [];
+    const seenRows = new Map<string, string>();
+    let start = 0;
+    let declaredTotal: number | null = null;
+
+    const partial = (
+      failureReason: Exclude<UsdtBlacklistTimeline["failureReason"], null>
+    ): UsdtBlacklistTimeline => ({
+      events: sortBlacklistTimelineEvents(events) ?? [...events],
+      pagination: "partial",
+      failureReason
+    });
+
+    try {
+      while (declaredTotal === null || start < declaredTotal) {
+        const url = new URL("/api/stableCoin/blackList", this.baseUrl);
+        url.searchParams.set("blackAddress", address);
+        url.searchParams.set("tokenAddress", TRON_USDT_CONTRACT_ADDRESS);
+        url.searchParams.set("sort", "2");
+        url.searchParams.set("direction", "2");
+        url.searchParams.set("start", String(start));
+        url.searchParams.set("limit", String(pageLimit));
+
+        const json = await this.fetchJson(url, "stablecoin_blacklist_timeline");
+        if (!this.isObjectRecord(json) || !Array.isArray(json.data)) return partial("provider_failed");
+        const total = this.safeIntegerField(json.total);
+        if (
+          total === null ||
+          total < 0 ||
+          (declaredTotal !== null && total !== declaredTotal) ||
+          json.data.length > pageLimit ||
+          start + json.data.length > total
+        ) {
+          return partial("provider_failed");
+        }
+        declaredTotal ??= total;
+        if (json.data.length === 0) {
+          if (start < total) return partial("provider_failed");
+          break;
+        }
+
+        let rows;
+        try {
+          rows = parseBlacklistRows(json.data, address);
+        } catch (error) {
+          return partial(error instanceof BlacklistTimelineValidationError ? error.failureReason : "provider_failed");
+        }
+
+        const uniqueRowsBeforePage = seenRows.size;
+        for (const row of rows) {
+          const serialized = JSON.stringify(row);
+          const previous = seenRows.get(row.transHash);
+          if (previous !== undefined) {
+            if (previous !== serialized) return partial("provider_failed");
+            continue;
+          }
+          seenRows.set(row.transHash, serialized);
+
+          const transaction = verifyBlacklistTransaction(await this.getTransaction(row.transHash), row);
+          if (!transaction) return partial("transaction_unconfirmed");
+          if (!this.fullNodeBaseUrl) return partial("provider_failed");
+          const eventUrl = new URL(`/v1/transactions/${row.transHash}/events`, this.fullNodeBaseUrl);
+          const eventJson = await this.fetchJson(
+            eventUrl,
+            "stablecoin_blacklist_event",
+            {},
+            this.fullNodeApiKey ?? null
+          );
+          if (!this.isObjectRecord(eventJson) || !Array.isArray(eventJson.data)) {
+            return partial("provider_failed");
+          }
+          const event = verifyBlacklistEventForRow(eventJson.data, address, row, transaction);
+          if (!event) return partial("event_log_unverified");
+          events.push(event);
+        }
+        if (seenRows.size === uniqueRowsBeforePage) return partial("provider_failed");
+
+        start += json.data.length;
+        if (start < total && json.data.length < pageLimit) return partial("provider_failed");
+      }
+    } catch {
+      return partial("provider_failed");
+    }
+
+    if (declaredTotal === null || seenRows.size !== declaredTotal) return partial("provider_failed");
+    const sortedEvents = sortBlacklistTimelineEvents(events);
+    if (!sortedEvents) return partial("event_log_unverified");
+    if (
+      options.currentState !== undefined &&
+      reconstructedBlacklistState(sortedEvents) !== options.currentState
+    ) {
+      return {
+        events: sortedEvents,
+        pagination: "partial",
+        failureReason: "state_timeline_inconsistent"
+      };
+    }
+    return { events: sortedEvents, pagination: "complete", failureReason: null };
+  }
+
+  async getAddressMetadata(address: string, options: GetAddressMetadataOptions = {}): Promise<TronscanAddressMetadata> {
     const json = await this.getAccount(address);
     const contractMap = this.isObjectRecord((json as Record<string, unknown>).contractMap)
       ? ((json as Record<string, unknown>).contractMap as Record<string, unknown>)
@@ -391,7 +742,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         : accountType === 0
           ? false
           : null;
-    const contractSearch = isContract === true ? await this.getContractSearchMetadata(address) : null;
+    const contractSearch = isContract === true
+      ? await this.getContractSearchMetadata(address, { requireComplete: options.requireComplete })
+      : null;
     const verifiedField = contractSearch?.verifyStatus ?? contractInfo?.verified ?? contractInfo?.verify_status ?? contractInfo?.isVerified;
     const verified = typeof verifiedField === "boolean" ? verifiedField : null;
     const name = this.stringField((json as Record<string, unknown>).name ?? (json as Record<string, unknown>).accountName ?? contractSearch?.name ?? contractInfo?.name ?? contractInfo?.contractName);
@@ -432,6 +785,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return {};
     });
     const detailRows = this.isObjectRecord(detailJson) && Array.isArray(detailJson.data) ? detailJson.data : [];
@@ -441,6 +795,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return {};
     });
     const topCall = this.isObjectRecord(topCallJson) ? topCallJson : {};
@@ -513,24 +868,15 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
   async getTransactionSigningMetadata(txHash: string): Promise<TronTransactionSigningMetadata | null> {
     if (!this.fullNodeBaseUrl) return null;
-    const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl);
-    const json = await this.fetchJson(
-      url,
-      "raw_transaction",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: txHash })
-      },
-      this.fullNodeApiKey ?? null
-    );
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
+    const json = await this.getRawTransaction(normalizedTxHash);
     if (!this.isObjectRecord(json)) {
       throw new Error("TRON raw transaction response must be an object");
     }
     const rawData = this.objectField(json.raw_data);
     if (!rawData) return null;
     return {
-      txHash: this.stringField(json.txID) ?? txHash,
+      txHash: this.stringField(json.txID) ?? normalizedTxHash,
       signedAt: this.dateFromTimestamp(rawData.timestamp),
       expirationAt: this.dateFromTimestamp(rawData.expiration),
       refBlockBytes: this.stringField(rawData.ref_block_bytes),
@@ -538,25 +884,161 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
   }
 
+  async getRawTransaction(txHash: string): Promise<unknown> {
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
+    const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl ?? this.baseUrl);
+    return this.fetchJson(
+      url,
+      "raw_transaction",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: normalizedTxHash })
+      },
+      this.fullNodeApiKey ?? null,
+      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:raw_transaction:v1:${normalizedTxHash}` }
+    );
+  }
+
   async listRelatedTrc20Transfers(
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
-    const url = new URL("/api/token_trc20/transfers", this.baseUrl);
-    url.searchParams.set("relatedAddress", address);
-    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
-    url.searchParams.set("confirm", "0");
-    url.searchParams.set("limit", String(options.limit ?? 50));
-    url.searchParams.set("start", String(options.start ?? 0));
-    if (options.minTimestamp !== undefined) {
-      url.searchParams.set("start_timestamp", String(options.minTimestamp));
-    }
-    if (options.endTimestamp !== undefined) {
-      url.searchParams.set("end_timestamp", String(options.endTimestamp));
-    }
-    url.searchParams.set("sort", "-timestamp");
+    return this.fetchTransferArrayWithProviderLimit({
+      address,
+      direction: "related",
+      options
+    });
+  }
 
-    return this.fetchTransferArray(url);
+  async listRelatedTrc20TransferPage(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<TronscanTrc20TransferPage> {
+    const url = this.buildTronscanTransferHistoryUrl(address, "related", options);
+
+    return this.fetchTransferPageWithFallback(url, {
+      address,
+      direction: "related",
+      options
+    });
+  }
+
+  async listRelatedTrc20TransferPagePinned(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<CompletedPinnedTronscanTransferPage> {
+    const start = Math.max(0, Math.floor(options.start ?? 0));
+    const requestedLimit = Math.max(0, Math.floor(options.limit ?? TRONSCAN_TRANSFER_PAGE_LIMIT));
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    const rawResponseHashes: string[] = [];
+    const canonicalTransferHashes: string[] = [];
+    const rawProviderRowIds: string[] = [];
+    const seenTransferIdentities = new Set<string>();
+    const maxSubrequests = Math.ceil(requestedLimit / TRONSCAN_TRANSFER_PAGE_LIMIT);
+    let total: number | null | undefined;
+    let rangeTotal: number | null | undefined;
+    let metadataConsistent = true;
+    let cappedWindowComplete = false;
+
+    for (
+      let subrequest = 0;
+      subrequest < maxSubrequests && transfers.length < requestedLimit;
+      subrequest += 1
+    ) {
+      const pageStart = start + transfers.length;
+      const remaining = requestedLimit - transfers.length;
+      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, remaining);
+      const pageOptions = { ...options, start: pageStart, limit: pageLimit };
+      const url = this.buildTronscanTransferHistoryUrl(address, "related", pageOptions);
+      // Poisoning evidence must remain pinned to one provider; this intentionally bypasses fallback.
+      const page = await this.fetchTronscanTransferPage(
+        url,
+        options.observationScope,
+        options.observationRunId,
+        options.observationTaskId,
+        options.observationCanonicalSequence,
+        options.observationAttempt,
+        options.observationSlotId,
+        options.observationSlotEpoch
+      );
+      const consumedTransfers = page.transfers.slice(0, pageLimit);
+      if (total === undefined) total = page.total;
+      else if (total !== page.total) metadataConsistent = false;
+      if (rangeTotal === undefined) rangeTotal = page.rangeTotal;
+      else if (rangeTotal !== page.rangeTotal) metadataConsistent = false;
+      if (page.total !== null && page.rangeTotal !== null && page.rangeTotal > page.total) {
+        metadataConsistent = false;
+      }
+      if (page.rawResponseHash) rawResponseHashes.push(page.rawResponseHash);
+      if (page.canonicalTransferHash) canonicalTransferHashes.push(page.canonicalTransferHash);
+      if (page.transfers.length > pageLimit) metadataConsistent = false;
+      for (const transfer of consumedTransfers) {
+        const identity = this.rawProviderRowPaginationId(page.provider, transfer);
+        if (identity.startsWith(`${page.provider}:raw:`)) metadataConsistent = false;
+        if (seenTransferIdentities.has(identity)) metadataConsistent = false;
+        seenTransferIdentities.add(identity);
+        rawProviderRowIds.push(identity);
+      }
+      transfers.push(...consumedTransfers);
+
+      const nextOffset = start + transfers.length;
+      cappedWindowComplete =
+        (page.rangeTotal ?? 0) >= TRONSCAN_RANGE_TOTAL_CAP &&
+        consumedTransfers.length < pageLimit;
+      if (rangeTotal !== null && rangeTotal !== undefined && nextOffset > rangeTotal) {
+        metadataConsistent = false;
+      }
+      if (
+        consumedTransfers.length < pageLimit
+        && !cappedWindowComplete
+        && (rangeTotal === null || rangeTotal === undefined || nextOffset < rangeTotal)
+      ) {
+        metadataConsistent = false;
+      }
+      if (cappedWindowComplete) break;
+      if (consumedTransfers.length === 0) break;
+      if (rangeTotal !== null && rangeTotal !== undefined && nextOffset >= rangeTotal) break;
+    }
+
+    const nextOffset = start + transfers.length;
+    const authoritativeRangeTotal = rangeTotal ?? null;
+    const completionReason = !metadataConsistent
+      ? "more"
+      : authoritativeRangeTotal !== null
+        && authoritativeRangeTotal >= TRONSCAN_RANGE_TOTAL_CAP
+        && (cappedWindowComplete || nextOffset >= authoritativeRangeTotal)
+        ? "provider_range_capped"
+        : authoritativeRangeTotal !== null && nextOffset >= authoritativeRangeTotal
+          ? "range_exhausted"
+          : "more";
+    return {
+      provider: "tronscan",
+      transfers,
+      rawProviderRowIds,
+      start,
+      requestedLimit,
+      nextOffset,
+      total: total ?? null,
+      rangeTotal: authoritativeRangeTotal,
+      completionReason,
+      complete: completionReason !== "more",
+      metadataConsistent,
+      rawResponseHashes,
+      canonicalTransferHashes
+    };
+  }
+
+  async listRelatedTrc20TransfersAllTokens(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    return this.fetchTransferArrayWithProviderLimit({
+      address,
+      direction: "related",
+      options,
+      tokenContractAddress: null
+    });
   }
 
   async listTransactions(address: string, options: ListTransactionsOptions = {}): Promise<unknown[]> {
@@ -684,6 +1166,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   async listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]> {
+    return (await this.listTrc20ApprovalChangePageStrict(input)).changes;
+  }
+
+  async listTrc20ApprovalChangePageStrict(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChangePage> {
     const url = new URL("/api/account/approve/change", this.baseUrl);
     url.searchParams.set("from_address", input.ownerAddress);
     url.searchParams.set("to_address", input.spenderAddress);
@@ -705,9 +1191,17 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("Tronscan approval change response data must be an array");
     }
 
-    return data
-      .map((item) => this.parseApprovalChange(item))
-      .filter((item): item is TronscanApprovalChange => item !== null);
+    const parsed = data.map((item) => this.parseApprovalChange(item));
+    const changes = parsed.filter((item): item is TronscanApprovalChange => item !== null);
+    const total = typeof json.total === "number" && Number.isSafeInteger(json.total) && json.total >= 0
+      ? json.total
+      : null;
+    return {
+      changes,
+      rawCount: data.length,
+      malformedCount: parsed.length - changes.length,
+      total
+    };
   }
 
   async listContractEvents(input: {
@@ -745,17 +1239,93 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   async getTransaction(txHash: string): Promise<unknown> {
+    const normalizedTxHash = this.normalizeTransactionHash(txHash);
     const url = new URL("/api/transaction-info", this.baseUrl);
-    url.searchParams.set("hash", txHash);
+    url.searchParams.set("hash", normalizedTxHash);
 
-    return this.fetchJson(url, "transaction");
+    const transaction = await this.fetchJson(
+      url,
+      "tronscan_transaction_info",
+      {},
+      undefined,
+      { schedulerCacheKey: `${this.schedulerDedupeNamespace}:tron:transaction_info:v1:${normalizedTxHash}` }
+    );
+    if (!this.isObjectRecord(transaction)) return transaction;
+    const receipt = this.objectField(transaction.receipt);
+    if (!receipt || typeof receipt.success === "boolean" || typeof receipt.result !== "string") return transaction;
+    return {
+      ...transaction,
+      receipt: {
+        ...receipt,
+        success: receipt.result === "SUCCESS"
+      }
+    };
   }
 
   private encodeAddressParameter(address: string): string {
     return TronWeb.address.toHex(address).replace(/^41/i, "").padStart(64, "0");
   }
 
-  private async triggerUsdtConstant(functionSelector: string, address: string): Promise<string> {
+  private tronAddressWord(address: string): string {
+    let hex: string;
+    try {
+      if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address) || !TronWeb.isAddress(address)) {
+        throw new Error("invalid_tron_address");
+      }
+      hex = TronWeb.address.toHex(address);
+    } catch {
+      throw Object.assign(new Error("invalid_tron_address"), { code: "INVALID_TRON_ADDRESS" });
+    }
+    if (!/^41[0-9a-fA-F]{40}$/.test(hex)) {
+      throw Object.assign(new Error("invalid_tron_address"), { code: "INVALID_TRON_ADDRESS" });
+    }
+    return hex.slice(2).toLowerCase().padStart(64, "0");
+  }
+
+  async getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string> {
+    if (!this.fullNodeBaseUrl) {
+      throw Object.assign(new Error("provider_unavailable"), { code: "PROVIDER_UNAVAILABLE" });
+    }
+    const ownerWord = this.tronAddressWord(input.ownerAddress);
+    const spenderWord = this.tronAddressWord(input.spenderAddress);
+    const url = new URL("/wallet/triggerconstantcontract", this.fullNodeBaseUrl);
+    const json = await this.fetchJson(
+      url,
+      "stablecoin_contract_state",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          owner_address: TronWeb.address.toHex(input.ownerAddress).toLowerCase(),
+          contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS).toLowerCase(),
+          function_selector: "allowance(address,address)",
+          parameter: `${ownerWord}${spenderWord}`
+        })
+      },
+      this.fullNodeApiKey ?? null
+    );
+    if (!this.isObjectRecord(json)) {
+      throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+    }
+    const result = this.objectField(json.result);
+    if (result?.result !== true) {
+      throw Object.assign(new Error("contract_call_reverted"), {
+        code: "CONTRACT_REVERTED",
+        response: json
+      });
+    }
+    const words = json.constant_result;
+    if (!Array.isArray(words) || words.length !== 1 || typeof words[0] !== "string" || !/^[0-9a-fA-F]{64}$/.test(words[0])) {
+      throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+    }
+    return BigInt(`0x${words[0]}`).toString();
+  }
+
+  private async triggerUsdtConstant(
+    functionSelector: string,
+    address: string,
+    options: { canonicalUint?: boolean; request?: OfficialUsdtBalanceReadOptions } = {}
+  ): Promise<string> {
     if (!this.fullNodeBaseUrl) {
       throw new Error("TRON full node base URL is not configured");
     }
@@ -766,6 +1336,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: options.request?.signal,
         body: JSON.stringify({
           owner_address: TronWeb.address.toHex(address),
           contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
@@ -773,12 +1344,32 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           parameter: this.encodeAddressParameter(address)
         })
       },
-      this.fullNodeApiKey ?? null
+      this.fullNodeApiKey ?? null,
+      {
+        ...(options.request?.timeoutMs === undefined ? {} : { timeoutMs: options.request.timeoutMs }),
+        ...(options.request?.retryAttempts === undefined ? {} : { retryAttempts: options.request.retryAttempts })
+      }
     );
     if (!this.isObjectRecord(json)) {
+      if (options.canonicalUint) {
+        throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+      }
       throw new Error("TRON full node contract response must be an object");
     }
     const result = this.objectField(json.result);
+    if (options.canonicalUint) {
+      if (result?.result !== true) {
+        throw Object.assign(new Error("contract_call_reverted"), {
+          code: "CONTRACT_REVERTED",
+          response: json
+        });
+      }
+      const words = json.constant_result;
+      if (!Array.isArray(words) || words.length !== 1 || typeof words[0] !== "string" || !/^[0-9a-fA-F]{64}$/.test(words[0])) {
+        throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+      }
+      return words[0];
+    }
     if (result && result.result !== true) {
       throw new Error(`TRON full node contract call failed: ${functionSelector}`);
     }
@@ -795,39 +1386,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return BigInt(`0x${raw}`) !== 0n;
   }
 
-  private async callUsdtUint(functionSelector: "balanceOf(address)", address: string): Promise<string> {
-    const raw = await this.triggerUsdtConstant(functionSelector, address);
+  private async callUsdtUint(
+    functionSelector: "balanceOf(address)",
+    address: string,
+    request: OfficialUsdtBalanceReadOptions = {}
+  ): Promise<string> {
+    const raw = await this.triggerUsdtConstant(functionSelector, address, { canonicalUint: true, request });
     return BigInt(`0x${raw}`).toString();
-  }
-
-  private async findUsdtBlacklistEvent(address: string): Promise<{ txHash: string; timestamp: string; block: number } | null> {
-    if (!this.fullNodeBaseUrl) return null;
-    const target = `0x${TronWeb.address.toHex(address).replace(/^41/i, "").toLowerCase()}`;
-    const url = new URL(`/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`, this.fullNodeBaseUrl);
-    url.searchParams.set("event_name", "AddedBlackList");
-    url.searchParams.set("only_confirmed", "true");
-    url.searchParams.set("limit", "50");
-    url.searchParams.set("order_by", "block_timestamp,desc");
-
-    const json = await this.fetchJson(url, "stablecoin_blacklist_event", {}, this.fullNodeApiKey ?? null);
-    if (!this.isObjectRecord(json)) return null;
-    const rows = Array.isArray(json.data) ? json.data : [];
-    for (const row of rows) {
-      if (!this.isObjectRecord(row)) continue;
-      const result = this.objectField(row.result);
-      const user = this.stringField(result?._user ?? result?.["0"]);
-      if (user?.toLowerCase() !== target) continue;
-      const txHash = this.stringField(row.transaction_id);
-      const timestampMs = this.safeIntegerField(row.block_timestamp);
-      const block = this.safeIntegerField(row.block_number);
-      if (!txHash || timestampMs === null || block === null) return null;
-      return {
-        txHash,
-        timestamp: new Date(timestampMs).toISOString(),
-        block
-      };
-    }
-    return null;
   }
 
   private parseContractEventRow(row: unknown, contractAddress: string, eventName: string): TronContractEvent | null {
@@ -859,19 +1424,310 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
   }
 
-  private async fetchTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
-    const json = await this.fetchJson(url, "transfer");
-    const transfers = (json as { token_transfers?: unknown }).token_transfers;
+  private async fetchTransferArrayWithFallback(
+    url: URL,
+    fallback: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    }
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    return (await this.fetchTransferPageWithFallback(url, fallback)).transfers;
+  }
+
+  private async fetchTransferArrayWithProviderLimit(
+    input: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    }
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    const requestedLimit = input.options.limit ?? TRONSCAN_TRANSFER_PAGE_LIMIT;
+    if (requestedLimit <= TRONSCAN_TRANSFER_PAGE_LIMIT) {
+      const url = this.buildTronscanTransferHistoryUrl(
+        input.address,
+        input.direction,
+        input.options,
+        input.tokenContractAddress === undefined ? TRON_USDT_CONTRACT_ADDRESS : input.tokenContractAddress
+      );
+      return this.fetchTransferArrayWithFallback(url, input);
+    }
+
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    const initialStart = input.options.start ?? 0;
+    while (transfers.length < requestedLimit) {
+      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, requestedLimit - transfers.length);
+      const pageOptions = {
+        ...input.options,
+        start: initialStart + transfers.length,
+        limit: pageLimit
+      };
+      const url = this.buildTronscanTransferHistoryUrl(
+        input.address,
+        input.direction,
+        pageOptions,
+        input.tokenContractAddress === undefined ? TRON_USDT_CONTRACT_ADDRESS : input.tokenContractAddress
+      );
+      const pageTransfers = await this.fetchTransferArrayWithFallback(url, {
+        ...input,
+        options: pageOptions
+      });
+      transfers.push(...pageTransfers);
+      if (pageTransfers.length < pageLimit) break;
+    }
+    return transfers;
+  }
+
+  private async fetchTransferPageWithFallback(
+    url: URL,
+    fallback: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    }
+  ): Promise<TronscanTrc20TransferPage> {
+    try {
+      return await this.fetchTronscanTransferPage(url);
+    } catch (error) {
+      if (!this.shouldFallbackToTronGridTransferHistory(error)) throw error;
+      this.logger.warn("trongrid_transfer_history_fallback", {
+        direction: fallback.direction,
+        path: url.pathname,
+        start: fallback.options.start ?? 0,
+        limit: fallback.options.limit ?? 50,
+        min_timestamp: fallback.options.startTimestamp ?? fallback.options.minTimestamp ?? null,
+        end_timestamp: fallback.options.endTimestamp ?? null,
+        token_contract_address: fallback.tokenContractAddress === undefined
+          ? TRON_USDT_CONTRACT_ADDRESS
+          : fallback.tokenContractAddress,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return {
+        provider: "trongrid_fallback",
+        transfers: await this.fetchTronGridTransferArray(fallback),
+        total: null,
+        rangeTotal: null,
+        rawResponseHash: null,
+        canonicalTransferHash: null
+      };
+    }
+  }
+
+  private async fetchTronscanTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
+    return (await this.fetchTronscanTransferPage(url)).transfers;
+  }
+
+  private async fetchTronscanTransferPage(
+    url: URL,
+    observationScope?: "unified",
+    observationRunId?: string,
+    observationTaskId?: string,
+    observationCanonicalSequence?: number,
+    observationAttempt?: number,
+    observationSlotId?: number,
+    observationSlotEpoch?: number
+  ): Promise<TronscanTrc20TransferPage> {
+    const json = await this.fetchJson(url, "transfer", {}, undefined, {
+      logFinalError: (error) => !this.shouldFallbackToTronGridTransferHistory(error),
+      shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error),
+      observationScope,
+      observationRunId,
+      observationTaskId,
+      observationCanonicalSequence,
+      observationAttempt,
+      observationSlotId,
+      observationSlotEpoch
+    });
+    return this.parseTronscanTransferPage(json);
+  }
+
+  private parseTronscanTransferPage(json: unknown): TronscanTrc20TransferPage {
+    const body = this.isObjectRecord(json) ? json : {};
+    const transfers = body.token_transfers;
     if (transfers === undefined) {
       throw new Error("Tronscan transfer response token_transfers field is missing");
     }
     if (!Array.isArray(transfers)) {
       throw new Error("Tronscan transfer response token_transfers must be an array");
     }
-    return transfers as RawTronscanTrc20Transfer[];
+    const rawTransfers = transfers as RawTronscanTrc20Transfer[];
+    const total = this.safeIntegerField(body.total);
+    const rangeTotal = this.safeIntegerField(body.rangeTotal ?? body.range_total);
+    return {
+      provider: "tronscan",
+      transfers: rawTransfers,
+      total,
+      rangeTotal,
+      rawResponseHash: sha256Json(json),
+      canonicalTransferHash: this.hashCanonicalTronscanTransferPage(total, rangeTotal, rawTransfers)
+    };
   }
 
-  private async getContractSearchMetadata(address: string): Promise<Record<string, unknown> | null> {
+  private hashCanonicalTronscanTransferPage(
+    total: number | null,
+    rangeTotal: number | null,
+    transfers: RawTronscanTrc20Transfer[]
+  ): string {
+    const rows = transfers
+      .map((transfer) => this.canonicalTronscanTransferRow(transfer))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    return sha256Json({ total, rangeTotal, transfers: rows });
+  }
+
+  private canonicalTronscanTransferRow(transfer: RawTronscanTrc20Transfer): Record<string, string | number | null> {
+    return canonicalTronscanTransferRow(transfer);
+  }
+
+  private rawProviderRowPaginationId(
+    provider: TronscanTrc20TransferPage["provider"],
+    transfer: RawTronscanTrc20Transfer
+  ): string {
+    return rawProviderRowPaginationId(provider, transfer);
+  }
+
+  private async fetchTronGridTransferArray(input: {
+    address: string;
+    direction: TronGridTransferDirection;
+    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+    tokenContractAddress?: string | null;
+  }): Promise<RawTronscanTrc20Transfer[]> {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+
+    const start = Math.max(0, input.options.start ?? 0);
+    const limit = Math.max(0, input.options.limit ?? 50);
+    if (limit === 0) return [];
+
+    const targetCount = start + limit;
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    let fingerprint: string | null = null;
+
+    for (let page = 0; page < TRONGRID_TRANSFER_FALLBACK_MAX_PAGES && transfers.length < targetCount; page += 1) {
+      const pageLimit = Math.min(TRONGRID_TRANSFER_PAGE_LIMIT, targetCount - transfers.length);
+      const url = this.buildTronGridTransferHistoryUrl(input, pageLimit, fingerprint);
+      const json = await this.fetchJson(url, "trongrid_transfer_history", {}, this.fullNodeApiKey ?? null);
+      if (!this.isObjectRecord(json)) {
+        throw new Error("TronGrid transfer response must be an object");
+      }
+      const data = json.data;
+      if (data === undefined) {
+        throw new Error("TronGrid transfer response data field is missing");
+      }
+      if (!Array.isArray(data)) {
+        throw new Error("TronGrid transfer response data must be an array");
+      }
+      transfers.push(
+        ...data
+          .map((item) => this.parseTronGridTrc20Transfer(item, input.tokenContractAddress))
+          .filter((item): item is RawTronscanTrc20Transfer => item !== null)
+      );
+
+      const meta = this.objectField(json.meta);
+      fingerprint = this.stringField(meta?.fingerprint);
+      if (data.length === 0 || !fingerprint) break;
+    }
+
+    return transfers.slice(start, start + limit);
+  }
+
+  private buildTronGridTransferHistoryUrl(
+    input: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    },
+    limit: number,
+    fingerprint: string | null
+  ): URL {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+    const url = new URL(`/v1/accounts/${input.address}/transactions/trc20`, this.fullNodeBaseUrl);
+    const tokenContractAddress = input.tokenContractAddress === undefined
+      ? TRON_USDT_CONTRACT_ADDRESS
+      : input.tokenContractAddress;
+    if (tokenContractAddress) {
+      url.searchParams.set("contract_address", tokenContractAddress);
+    }
+    url.searchParams.set("only_confirmed", "true");
+    url.searchParams.set("order_by", "block_timestamp,desc");
+    url.searchParams.set("limit", String(limit));
+    if (input.direction === "incoming") {
+      url.searchParams.set("only_to", "true");
+    }
+    const startTimestamp = input.options.startTimestamp ?? input.options.minTimestamp;
+    if (startTimestamp !== undefined) {
+      url.searchParams.set("min_timestamp", String(startTimestamp));
+    }
+    if (input.options.endTimestamp !== undefined) {
+      url.searchParams.set("max_timestamp", String(input.options.endTimestamp));
+    }
+    if (fingerprint) {
+      url.searchParams.set("fingerprint", fingerprint);
+    }
+    return url;
+  }
+
+  private parseTronGridTrc20Transfer(
+    row: unknown,
+    tokenContractAddress?: string | null
+  ): RawTronscanTrc20Transfer | null {
+    if (!this.isObjectRecord(row)) return null;
+    const tokenInfo = this.objectField(row.token_info ?? row.tokenInfo);
+    const transactionId = this.stringField(row.transaction_id ?? row.transactionId ?? row.txID);
+    const fromAddress = this.normalizeTronGridAddress(this.stringField(row.from ?? row.from_address));
+    const toAddress = this.normalizeTronGridAddress(this.stringField(row.to ?? row.to_address));
+    const amountRaw = this.stringField(row.value ?? row.quant ?? row.amount);
+    const timestamp = this.safeIntegerField(row.block_timestamp ?? row.block_ts);
+    if (!transactionId || !fromAddress || !toAddress || !amountRaw || timestamp === null) return null;
+    const canDefaultToUsdt = tokenContractAddress === undefined || tokenContractAddress === TRON_USDT_CONTRACT_ADDRESS;
+    const tokenAddress = this.stringField(tokenInfo?.address ?? row.contract_address ?? row.contractAddress)
+      ?? (canDefaultToUsdt ? TRON_USDT_CONTRACT_ADDRESS : null);
+    const tokenDecimals = this.safeIntegerField(tokenInfo?.decimals ?? tokenInfo?.tokenDecimal)
+      ?? (canDefaultToUsdt ? 6 : null);
+    const tokenSymbol = this.stringField(tokenInfo?.symbol ?? tokenInfo?.tokenAbbr)
+      ?? (canDefaultToUsdt ? "USDT" : null);
+    const transfer: RawTronscanTrc20Transfer = {
+      transaction_id: transactionId,
+      from_address: fromAddress,
+      to_address: toAddress,
+      quant: amountRaw,
+      confirmed: true,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      status: "SUCCESS",
+      block_ts: timestamp
+    };
+    if (tokenAddress) {
+      transfer.contract_address = tokenAddress;
+    }
+    if (tokenAddress || tokenDecimals !== null || tokenSymbol) {
+      transfer.tokenInfo = {
+        ...(tokenSymbol ? { tokenAbbr: tokenSymbol } : {}),
+        ...(tokenDecimals !== null ? { tokenDecimal: tokenDecimals } : {}),
+        ...(tokenAddress ? { tokenId: tokenAddress } : {}),
+        tokenType: "trc20"
+      };
+    }
+    return transfer;
+  }
+
+  private normalizeTronGridAddress(address: string | null): string | null {
+    if (!address) return null;
+    if (/^41[0-9a-fA-F]{40}$/.test(address)) return TronWeb.address.fromHex(address);
+    if (/^0x[0-9a-fA-F]{40}$/.test(address)) return TronWeb.address.fromHex(`41${address.slice(2)}`);
+    return address;
+  }
+
+  private async getContractSearchMetadata(
+    address: string,
+    options: { requireComplete?: boolean } = {}
+  ): Promise<Record<string, unknown> | null> {
     try {
       const json = await this.fetchContractSearch(address);
       const data = this.isObjectRecord(json) ? json.data : undefined;
@@ -895,6 +1751,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return null;
     }
   }
@@ -988,38 +1845,53 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey: string | null | undefined = this.apiKey
+    apiKey?: string | null,
+    options: FetchJsonOptions = {}
   ): Promise<unknown> {
-    for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
-      this.logger.info("tronscan_request_attempt", {
-        request_name: requestName,
-        attempt,
-        path: url.pathname
-      });
-
+    const logPath = this.safeRequestLogPath(requestName, url);
+    const retryAttempts = options.retryAttempts ?? this.retryAttempts;
+    for (let attempt = 0; attempt <= retryAttempts; attempt++) {
       try {
-        const json = await this.fetchJsonOnce(url, requestName, init, apiKey);
+        const json = await this.fetchJsonOnce(
+          url,
+          requestName,
+          init,
+          apiKey,
+          attempt,
+          options.timeoutMs,
+          options.observationScope,
+          options.observationRunId,
+          options.observationTaskId,
+          options.observationCanonicalSequence,
+          options.observationAttempt,
+          options.observationSlotId,
+          options.observationSlotEpoch,
+          options.schedulerCacheKey
+        );
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
           attempt,
-          path: url.pathname
+          path: logPath
         });
         return json;
       } catch (error) {
-        if (attempt >= this.retryAttempts || !this.isTransientError(error)) {
-          this.logger.error("tronscan_request_failed", {
-            request_name: requestName,
-            attempt,
-            path: url.pathname,
-            error: error instanceof Error ? error.message : String(error)
-          });
+        const shouldRetry = options.shouldRetry?.(error) ?? this.isTransientError(error);
+        if (attempt >= retryAttempts || !shouldRetry) {
+          if (options.logFinalError?.(error) ?? true) {
+            this.logger.error("tronscan_request_failed", {
+              request_name: requestName,
+              attempt,
+              path: logPath,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
           throw error;
         }
         this.logger.warn("tronscan_request_retry", {
           request_name: requestName,
           attempt,
           next_attempt: attempt + 1,
-          path: url.pathname,
+          path: logPath,
           error: error instanceof Error ? error.message : String(error)
         });
         await this.delay(this.retryBaseDelayMs * 2 ** attempt);
@@ -1033,47 +1905,128 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey: string | null | undefined = this.apiKey
+    apiKey?: string | null,
+    attempt = 0,
+    timeoutMs = this.timeoutMs,
+    observationScope?: "unified",
+    observationRunId?: string,
+    observationTaskId?: string,
+    observationCanonicalSequence?: number,
+    observationAttempt?: number,
+    observationSlotId?: number,
+    observationSlotEpoch?: number,
+    schedulerCacheKey?: string
   ): Promise<unknown> {
-    const work = async () => {
+    const endpointBucket = this.endpointBucketForRequest(requestName);
+    const logPath = this.safeRequestLogPath(requestName, url);
+    const work = async (context: { apiKey: string | null; apiKeyIndex: number | null }) => {
+      const actualApiKeyIndex = apiKey === undefined ? context.apiKeyIndex : null;
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      const externalSignal = init.signal;
+      const abortFromExternal = () => controller.abort(externalSignal?.reason);
+      if (externalSignal?.aborted) abortFromExternal();
+      else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
+        this.logger.info("tronscan_request_attempt", {
+          request_name: requestName,
+          attempt,
+          path: logPath,
+          api_key_index: actualApiKeyIndex,
+          endpoint_bucket: endpointBucket
+        });
         const headers = new Headers(init.headers);
-        if (apiKey) headers.set("TRON-PRO-API-KEY", apiKey);
+        const selectedApiKey = apiKey === undefined ? context.apiKey : apiKey;
+        if (selectedApiKey) headers.set("TRON-PRO-API-KEY", selectedApiKey);
         const response = await this.fetchFn(url, { ...init, headers, signal: controller.signal });
         if (!response.ok) {
           if (response.status === 429) {
-            this.startRateLimitCooldown(url, requestName);
+            this.logRateLimitResponse({
+              url,
+              requestName,
+              endpointBucket,
+              apiKeyIndex: actualApiKeyIndex
+            });
           }
           throw new TronscanHttpError(`Tronscan ${requestName} request failed: ${response.status}`, response.status);
         }
         return response.json();
       } finally {
         clearTimeout(timeout);
+        externalSignal?.removeEventListener("abort", abortFromExternal);
       }
     };
-
-    if (requestName === "stablecoin_contract_state") {
-      return work();
-    }
 
     return this.scheduler.schedule(
       {
         requestName,
-        path: url.pathname,
+        path: logPath,
         priority: this.priorityForRequest(requestName),
-        cacheKey: requestName === "transfer" ? url.toString() : undefined
+        cacheKey: schedulerCacheKey ?? (requestName === "transfer"
+          ? `${this.schedulerDedupeNamespace}:${url.toString()}`
+          : undefined),
+        slotScope: apiKey === undefined ? "pool" : "single",
+        endpointBucket,
+        observationScope,
+        observationRunId,
+        observationTaskId,
+        observationCanonicalSequence,
+        observationAttempt,
+        observationSlotId,
+        observationSlotEpoch
       },
       work
     );
   }
 
+  private endpointBucketForRequest(requestName: string): TronscanEndpointBucket {
+    if (requestName === "transfer" || requestName === "transaction_history") return "transfer";
+    if (requestName === "approval_list" || requestName === "approval_change") return "approval";
+    if (requestName === "trongrid_transfer_history") return "trongrid";
+    if (
+      requestName === "transaction" ||
+      requestName === "raw_transaction" ||
+      requestName === "stablecoin_contract_state" ||
+      requestName === "stablecoin_blacklist_event"
+    ) {
+      return "fullnode";
+    }
+    if (
+      requestName === "contract_list" ||
+      requestName === "tronscan_transaction_info" ||
+      requestName === "contract_detail" ||
+      requestName === "contract_top_call" ||
+      requestName === "contract_search" ||
+      requestName === "contract_events" ||
+      requestName.startsWith("contract")
+    ) {
+      return "contract";
+    }
+    return "default";
+  }
+
+  private safeRequestLogPath(requestName: string, url: URL): string {
+    return requestName === "trongrid_transfer_history"
+      ? "/v1/accounts/:address/transactions/trc20"
+      : url.pathname;
+  }
+
   private priorityForRequest(requestName: string): TronscanRequestPriority {
-    if (requestName === "transfer" || requestName === "transaction_history") return "deep_transfer";
+    if (requestName === "trongrid_transfer_history") return "interactive_fast";
+    if (requestName === "transfer" || requestName === "transaction_history") return this.transferSchedulingPriority;
     if (requestName === "account") return "metadata";
-    if (requestName.startsWith("contract")) return "contract_profile";
+    if (
+      requestName === "transaction" ||
+      requestName === "tronscan_transaction_info" ||
+      requestName === "approval_list" ||
+      requestName === "approval_change" ||
+      requestName === "stablecoin_contract_state" ||
+      requestName === "stablecoin_blacklist_event" ||
+      requestName.startsWith("contract")
+    ) {
+      return "contract_profile";
+    }
     return "interactive_fast";
   }
 
@@ -1085,6 +2038,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       return true;
     }
     return error instanceof TypeError;
+  }
+
+  private shouldFallbackToTronGridTransferHistory(error: unknown): boolean {
+    if (!(error instanceof TronscanHttpError)) return false;
+    return error.status === 400 || error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 599);
   }
 
   private isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -1237,6 +2195,15 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return null;
   }
 
+  private normalizeTransactionHash(txHash: string): string {
+    const normalized = txHash.trim();
+    if (normalized.length === 0 || normalized.length > 128 || !/^[a-z0-9_-]+$/i.test(normalized)) {
+      throw new Error("TRON transaction hash is invalid");
+    }
+    // ponytail: symbolic legacy fixture IDs stay compatible; chain hashes still get one canonical scheduler identity.
+    return /^[0-9a-f]{64}$/i.test(normalized) ? normalized.toLowerCase() : normalized;
+  }
+
   private safeIntegerField(value: unknown): number | null {
     if (typeof value === "number" && Number.isSafeInteger(value)) return value;
     if (typeof value === "string" && /^\d+$/.test(value)) {
@@ -1275,31 +2242,18 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  private async waitForRequestSlot(url: URL, requestName: string): Promise<void> {
-    const run = this.requestQueue.then(async () => {
-      const waitUntilMs = Math.max(this.nextRequestAtMs, this.rateLimitCooldownUntilMs);
-      const waitMs = Math.max(0, waitUntilMs - Date.now());
-      if (waitMs > 0) {
-        this.logger.warn("tronscan_request_limited", {
-          request_name: requestName,
-          path: url.pathname,
-          wait_ms: waitMs
-        });
-        await this.delay(waitMs);
-      }
-      this.nextRequestAtMs = Date.now() + this.requestMinIntervalMs;
-    });
-    this.requestQueue = run.catch(() => undefined);
-    await run;
-  }
-
-  private startRateLimitCooldown(url: URL, requestName: string): void {
+  private logRateLimitResponse(input: {
+    url: URL;
+    requestName: string;
+    endpointBucket: TronscanEndpointBucket;
+    apiKeyIndex: number | null;
+  }): void {
     if (this.rateLimitCooldownMs <= 0) return;
-    const cooldownUntil = Date.now() + this.rateLimitCooldownMs;
-    this.rateLimitCooldownUntilMs = Math.max(this.rateLimitCooldownUntilMs, cooldownUntil);
     this.logger.warn("tronscan_rate_limit_cooldown", {
-      request_name: requestName,
-      path: url.pathname,
+      request_name: input.requestName,
+      path: this.safeRequestLogPath(input.requestName, input.url),
+      endpoint_bucket: input.endpointBucket,
+      api_key_index: input.apiKeyIndex,
       cooldown_ms: this.rateLimitCooldownMs
     });
   }

@@ -83,7 +83,7 @@ describe("evaluateAddressRisk", () => {
 
     expect(evaluation.report).toMatchObject({
       level: "HIGH",
-      score: 80
+      score: 60
     });
     expect(evaluation.report.reasons[0]).toMatchObject({
       code: "internal_label_darknet_exchange_proximity",
@@ -92,14 +92,14 @@ describe("evaluateAddressRisk", () => {
     });
     expect(evaluation.observations[0]).toMatchObject({
       code: "internal_label_darknet_exchange_proximity",
-      scoreImpact: 80,
+      scoreImpact: 60,
       confidence: "high",
       severity: "high",
       source: "system"
     });
   });
 
-  it("stores system-derived approval-drain proximity as high-confidence high-severity label evidence", () => {
+  it("stores system-derived approval-drain proximity as high review context", () => {
     const evaluation = evaluateAddressRisk({
       context: { subjectAddress },
       labels: [
@@ -118,7 +118,8 @@ describe("evaluateAddressRisk", () => {
     expect(evaluation.report.reasons[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
       confidence: "high",
-      severity: "high"
+      severity: "high",
+      scoreImpact: 80
     });
     expect(evaluation.observations[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
@@ -127,6 +128,66 @@ describe("evaluateAddressRisk", () => {
       severity: "high",
       source: "system"
     });
+  });
+
+  it("stores manual WhiteBIT labels as critical exact internal evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [
+        label({
+          label: "whitebit",
+          source: "service_admin",
+          createdByTelegramId: "9001"
+        })
+      ]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "CRITICAL",
+      score: 90
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_whitebit",
+      confidence: "high",
+      severity: "critical"
+    });
+    expect(evaluation.observations[0]).toMatchObject({
+      code: "internal_label_whitebit",
+      scoreImpact: 90,
+      confidence: "high",
+      severity: "critical",
+      source: "service_admin"
+    });
+  });
+
+  it("treats legacy reported_scam labels as critical scam evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [label({ label: "reported_scam" })]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "CRITICAL",
+      score: 90
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_reported_scam",
+      severity: "critical"
+    });
+  });
+
+  it("keeps legacy victim labels as context-only evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [label({ label: "victim" })]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "LOW",
+      score: 0
+    });
+    expect(evaluation.report.reasons).toEqual([]);
+    expect(evaluation.rawEvidence[0].evidenceJson).toMatchObject({ label: "victim" });
   });
 
   it("represents behavior signal metadata as a behavior observation", () => {

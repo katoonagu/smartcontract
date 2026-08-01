@@ -67,7 +67,7 @@ describe("evaluateApprovalRisk", () => {
     ]);
   });
 
-  it("escalates delayed unlimited approvals to unknown EOA as CRITICAL", () => {
+  it("does not treat transaction expiration as approval risk", () => {
     const evaluation = evaluateApprovalRisk({
       event: event({
         signedAt: new Date("2026-05-04T15:06:28.559Z"),
@@ -80,13 +80,12 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report).toMatchObject({
       level: "CRITICAL",
-      score: 95
+      score: 90
     });
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual([
       "approval_unlimited_usdt",
       "approval_spender_unknown_eoa",
-      "approval_delayed_signed_transaction",
-      "approval_extended_expiration"
+      "approval_delayed_signed_transaction"
     ]);
   });
 
@@ -119,7 +118,7 @@ describe("evaluateApprovalRisk", () => {
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_spender_service_label"]);
   });
 
-  it("dampens provider service-tag unlimited approvals to LOW", () => {
+  it("keeps provider service tags as MEDIUM context without an exact session", () => {
     const evaluation = evaluateApprovalRisk({
       event: event({ spenderType: "contract" }),
       spenderLabels: [],
@@ -134,8 +133,8 @@ describe("evaluateApprovalRisk", () => {
       }
     });
 
-    expect(evaluation.report.level).toBe("LOW");
-    expect(evaluation.report.score).toBe(15);
+    expect(evaluation.report.level).toBe("MEDIUM");
+    expect(evaluation.report.score).toBe(35);
     expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_service_tag"]);
   });
@@ -204,7 +203,7 @@ describe("evaluateApprovalRisk", () => {
     ]);
   });
 
-  it("dampens unknown drainer contract review to MEDIUM when linked to a known swap route", () => {
+  it("does not dampen unknown contract risk from an inexact swap-route heuristic", () => {
     const sessionContext: ApprovalSessionContext = {
       classification: "service_linked_helper",
       linkedRouteTxHash: "route-tx",
@@ -256,12 +255,12 @@ describe("evaluateApprovalRisk", () => {
       sessionContext
     });
 
-    expect(evaluation.report.level).toBe("MEDIUM");
-    expect(evaluation.report.score).toBe(35);
-    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_temporally_linked_to_known_swap");
+    expect(evaluation.report.level).toBe("HIGH");
+    expect(evaluation.report.score).toBe(70);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).not.toContain("approval_temporally_linked_to_known_swap");
   });
 
-  it("keeps service-linked helper approvals at MEDIUM even without drainer-like contract profile", () => {
+  it("does not use an inexact service-linked helper as a score dampener", () => {
     const sessionContext: ApprovalSessionContext = {
       classification: "service_linked_helper",
       linkedRouteTxHash: "route-tx",
@@ -297,8 +296,8 @@ describe("evaluateApprovalRisk", () => {
     });
 
     expect(evaluation.report.level).toBe("MEDIUM");
-    expect(evaluation.report.score).toBe(30);
-    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_temporally_linked_to_known_swap");
+    expect(evaluation.report.score).toBe(35);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).not.toContain("approval_temporally_linked_to_known_swap");
   });
 
   it("keeps possible collector session context as HIGH/CRITICAL evidence", () => {
@@ -375,8 +374,8 @@ describe("evaluateApprovalRisk", () => {
       sessionContext
     });
 
-    expect(evaluation.report.level).toBe("MEDIUM");
-    expect(evaluation.report.score).toBe(50);
+    expect(evaluation.report.level).toBe("HIGH");
+    expect(evaluation.report.score).toBe(70);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_session_possible_collector_drain");
   });
 

@@ -1,4 +1,28 @@
 import "dotenv/config";
+import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
+import type { UnifiedTraversalPolicyVersion } from "./unifiedCheck/contracts";
+import type { ServiceRoleShadowMode } from "./unifiedCheck/serviceRoleShadow";
+
+export type CrossChainStage2Config = {
+  crossChainStage2Enabled: boolean;
+  crossChainStage2MaxProviderCalls: number;
+  crossChainStage2CacheTtlMs: number;
+  rangeApiKey: string | undefined;
+  rangeBaseUrl: URL;
+  rangeTimeoutMs: number;
+  rangeMaxCallsPerCheck: number;
+  evmExplorerApiKey: string | undefined;
+  evmExplorerBaseUrl: URL;
+  evmExplorerTimeoutMs: number;
+  evmExplorerMaxCallsPerCheck: number;
+  alchemyApiKey: string | undefined;
+  alchemyTimeoutMs: number;
+};
+
+export type TronscanApiKeyGroupConfig = {
+  groupId: string;
+  apiKeys: string[];
+};
 
 export type AppConfig = {
   botToken: string;
@@ -6,21 +30,109 @@ export type AppConfig = {
   tronscanBaseUrl: URL;
   tronFullNodeBaseUrl: URL;
   tronscanApiKey: string | undefined;
+  tronscanApiKeys: string[];
+  tronscanApiKeyGroups: TronscanApiKeyGroupConfig[];
   tronFullNodeApiKey: string | undefined;
   tronscanPageLimit: number;
+  tronscanMaxInFlight?: number;
+  tronscanGroupMaxInFlight?: number;
   tronscanMaxPagesPerWallet: number;
   tronscanTimeoutMs: number;
   tronscanRetryAttempts: number;
   tronscanRetryBaseDelayMs: number;
   tronscanBackfillLookbackMs: number;
   tronscanRequestMinIntervalMs: number;
+  tronscanGlobalRequestMinIntervalMs: number;
+  tronscanTransferRequestMinIntervalMs: number;
+  tronscanApprovalRequestMinIntervalMs: number;
+  tronscanContractRequestMinIntervalMs: number;
+  tronscanFullNodeRequestMinIntervalMs: number;
+  tronscanAccountGroupRequestMinIntervalMs: number;
+  tronGridRequestMinIntervalMs: number;
   tronscanRateLimitCooldownMs: number;
+  unifiedProviderConcurrencyLimit: number;
+  unifiedProviderIncreaseStep: number;
+  unifiedProviderIncreaseIntervalMs: number;
+  unifiedProviderWorkerLimit: number;
+  unifiedAnalysisConcurrencyLimit: number;
+  unifiedFinalizationConcurrencyLimit: number;
+  unifiedLookaheadFactor: number;
+  unifiedPerRunLookaheadMaximum: number;
+  unifiedReadyBufferMaxEntries: number;
+  unifiedReadyBufferMaxBytes: number;
+  unifiedReservedBufferMaxBytes: number;
+  unifiedManifestHardLimitBytes: number;
+  unifiedChunkMaxPages: number;
+  unifiedChunkMaxWallMs: number;
+  unifiedChunkMaxResponseBytes: number;
+  unifiedChunkMaxCheckpointBytes: number;
+  unifiedRepairShare: number;
+  unifiedRepairMaxSlots: number;
+  unifiedRepairMaxWaitChunks: number;
+  unifiedReconciliationIntervalMs: number;
+  unifiedRollingRolloutStage:
+    | "global_barrier"
+    | "isolated_rolling"
+    | "bounded_user_check"
+    | "rolling_default";
+  unifiedTraversalPolicyVersion: UnifiedTraversalPolicyVersion;
+  unifiedRollingUserCheckBasisPoints: number;
+  unifiedProviderCapacityCeiling: number;
+  unifiedIsolatedWorkerOnly: boolean;
+  unifiedServiceRoleShadowPolicy: ServiceRoleShadowMode;
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
   tronscanDashboardForceRefreshCooldownMs: number;
+  forensicWherePollIntervalMs: number;
+  forensicWhereWorkerConcurrency: number;
+  /** @deprecated Where no longer uses this; retained for the Incoming fallback. */
+  forensicWhereJobsPerPoll: number;
+  forensicIncomingPollIntervalMs: number;
+  forensicIncomingJobsPerPoll: number;
+  forensicDeepPollIntervalMs: number;
+  forensicJobStaleAfterMs: number;
+  forensicJobMaxRetries: number;
+  tronAddressIndexSecondLayerMaxActiveWalletsPerJob?: number;
+  adminSecondLayerMaxActiveWallets?: number;
+  tronAddressIndexClaimLimit?: number;
+  tronAddressIndexLockMs?: number;
+  tronAddressIndexPollIntervalMs?: number;
+  tronAddressIndexPageBatchSize?: number;
+  directHardEvidenceLiveLimit?: number;
+  directHardEvidenceConcurrency?: number;
+  botBetaRiskDiagnosticsEnabled: boolean;
+  llmContractAnalysisEnabled: boolean;
+  llmApiKey: string | undefined;
+  llmBaseUrl: URL;
+  llmModel: string;
+  llmThinkingEnabled: boolean;
+  llmReasoningEffort: "low" | "medium" | "high" | "max" | undefined;
+  llmModelCacheKey: string;
+  llmProviderLabel: string;
+  llmTimeoutMs: number;
+  llmMaxRetries: number;
+  llmCacheTtlMs: number;
+  llmEnrichmentMaxAttempts: number;
+  llmEnrichmentRetryDelayMs: number;
   pollIntervalMs: number;
+  pollStartDelayMs: number;
+  incomingDepositRealtimeMaxAgeMs: number;
+  addressPoisoningSmallTransferMaxUsdt: string;
+  forensicWhereStartDelayMs: number;
+  forensicIncomingStartDelayMs: number;
+  forensicDeepStartDelayMs: number;
   serviceAdminTelegramIds: Set<string>;
-};
+  runtimeGitSha: string | undefined;
+  runtimeInstanceLabel: string | undefined;
+  theftReportDepositAddress: string | null;
+  theftReportDepositAmountUsdt: "1000";
+  theftReportGuideUrl: URL | undefined;
+  theftReportAdminContact: string | undefined;
+  adminDashboardEnabled: boolean;
+  adminDashboardHost: string;
+  adminDashboardPort: number;
+  adminDashboardToken: string | null;
+} & CrossChainStage2Config;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -38,12 +150,88 @@ function parsePositiveInteger(name: string, rawValue: string, minimum: number): 
   return value;
 }
 
+function parseNonNegativeUsdtDecimal(name: string, rawValue: string): string {
+  const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(rawValue);
+  if (!match) {
+    throw new Error(`${name} must be a non-negative decimal with at most 78 integer digits and 6 fractional digits`);
+  }
+  const whole = match[1].replace(/^0+/, "") || "0";
+  if (whole.length > 78) {
+    throw new Error(`${name} must be a non-negative decimal with at most 78 integer digits and 6 fractional digits`);
+  }
+  const fraction = match[2];
+  if (whole === "0" && (!fraction || /^0+$/.test(fraction))) return "0";
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+export function addressPoisoningSmallTransferMaxRaw(value: string): string {
+  if (value === "0") return "0";
+  const raw = parseUsdtDecimalToRaw(value);
+  if (raw === null) {
+    throw new Error("ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT could not be converted to raw USDT units");
+  }
+  return raw;
+}
+
 function parseIntegerInRange(name: string, rawValue: string, minimum: number, maximum: number): number {
   const value = Number(rawValue);
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw new Error(`${name} must be a safe integer between ${minimum} and ${maximum}`);
   }
   return value;
+}
+
+function parseNumberInRange(name: string, rawValue: string, minimum: number, maximum: number): number {
+  if (rawValue.trim() === "") {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
+  }
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function parseUnifiedRollingRolloutStage(
+  rawValue: string
+): AppConfig["unifiedRollingRolloutStage"] {
+  if (
+    [
+      "global_barrier",
+      "isolated_rolling",
+      "bounded_user_check",
+      "rolling_default"
+    ].includes(rawValue)
+  ) {
+    return rawValue as AppConfig["unifiedRollingRolloutStage"];
+  }
+  throw new Error(
+    "UNIFIED_ROLLING_ROLLOUT_STAGE must be global_barrier, " +
+    "isolated_rolling, bounded_user_check, or rolling_default"
+  );
+}
+
+function parseUnifiedTraversalPolicyVersion(
+  rawValue: string
+): UnifiedTraversalPolicyVersion {
+  if (
+    rawValue === "snapshot-closure-v1" ||
+    rawValue === "snapshot-closure-v2"
+  ) return rawValue;
+  throw new Error(
+    "UNIFIED_TRAVERSAL_POLICY_VERSION must be snapshot-closure-v1 or snapshot-closure-v2"
+  );
+}
+
+function parseUnifiedServiceRoleShadowPolicy(
+  value: string | undefined
+): ServiceRoleShadowMode {
+  if (value === undefined || value === "disabled") return "disabled";
+  if (value === "service-role-shadow-100-plus-100-v1") return value;
+  throw new Error(
+    "UNIFIED_SERVICE_ROLE_SHADOW_POLICY must be disabled or " +
+    "service-role-shadow-100-plus-100-v1"
+  );
 }
 
 function parseHttpsUrl(name: string, rawValue: string): URL {
@@ -61,6 +249,130 @@ function parseHttpsUrl(name: string, rawValue: string): URL {
   return url;
 }
 
+function parseOptionalHttpsUrl(name: string, rawValue: string | undefined): URL | undefined {
+  const value = rawValue?.trim();
+  return value ? parseHttpsUrl(name, value) : undefined;
+}
+
+function parseOptionalTronAddress(name: string, rawValue: string | undefined): string | null {
+  const value = rawValue?.trim();
+  if (!value) return null;
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value)) {
+    throw new Error(`${name} must be a base58 TRON address`);
+  }
+  return value;
+}
+
+function withTrailingSlash(url: URL): URL {
+  return url.href.endsWith("/") ? url : new URL(`${url.href}/`);
+}
+
+function parseCommaSeparatedValues(rawValue: string | undefined): string[] {
+  return [...new Set((rawValue ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0))];
+}
+
+const TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR = "TRONSCAN_API_KEY_GROUPS must use group:key1,key2 entries separated by semicolons";
+
+function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys: string[]): TronscanApiKeyGroupConfig[] {
+  const value = rawValue?.trim();
+  if (!value && tronscanApiKeys.length === 0) return [];
+  if (!value) return [{ groupId: "default", apiKeys: tronscanApiKeys }];
+
+  const groups: TronscanApiKeyGroupConfig[] = [];
+  const groupIds = new Set<string>();
+  const configuredKeys = new Set(tronscanApiKeys);
+  const assignedKeys = new Set<string>();
+
+  for (const rawGroup of value.split(";")) {
+    if (rawGroup.trim().length === 0) continue;
+
+    const separatorIndex = rawGroup.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === rawGroup.length - 1) {
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
+    }
+    const groupId = rawGroup.slice(0, separatorIndex).trim();
+
+    if (!groupId) {
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
+    }
+    if (groupIds.has(groupId)) {
+      throw new Error(`TRONSCAN_API_KEY_GROUPS contains duplicate group id "${groupId}"`);
+    }
+    groupIds.add(groupId);
+
+    const rawKeys = rawGroup.slice(separatorIndex + 1);
+    const apiKeys = [...new Set(rawKeys
+      .split(",")
+      .map((apiKey) => apiKey.trim())
+      .filter((apiKey) => apiKey.length > 0))];
+
+    if (apiKeys.length === 0) {
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
+    }
+
+    for (const apiKey of apiKeys) {
+      if (!configuredKeys.has(apiKey)) {
+        throw new Error("TRONSCAN_API_KEY_GROUPS contains a key not present in TRONSCAN_API_KEY");
+      }
+      if (assignedKeys.has(apiKey)) {
+        throw new Error("TRONSCAN_API_KEY_GROUPS assigns one API key to multiple groups");
+      }
+      assignedKeys.add(apiKey);
+    }
+
+    groups.push({ groupId, apiKeys });
+  }
+
+  const unassignedApiKeys = tronscanApiKeys.filter((apiKey) => !assignedKeys.has(apiKey));
+  if (unassignedApiKeys.length > 0) {
+    const defaultGroup = groups.find((group) => group.groupId === "default");
+    if (defaultGroup) {
+      defaultGroup.apiKeys.push(...unassignedApiKeys);
+    } else {
+      groups.push({ groupId: "default", apiKeys: unassignedApiKeys });
+    }
+  }
+
+  return groups;
+}
+
+function parseBooleanFlag(name: string, rawValue: string | undefined, defaultValue: boolean): boolean {
+  const value = (rawValue ?? "").trim().toLowerCase();
+  if (!value) return defaultValue;
+  if (value === "true" || value === "1" || value === "yes") return true;
+  if (value === "false" || value === "0" || value === "no") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function parseLlmReasoningEffort(rawValue: string | undefined): AppConfig["llmReasoningEffort"] {
+  const value = rawValue?.trim().toLowerCase();
+  if (!value) return undefined;
+  if (value === "low" || value === "medium" || value === "high" || value === "max") return value;
+  throw new Error("LLM_REASONING_EFFORT must be low, medium, high, or max");
+}
+
+function isDeepseekProvider(providerLabel: string): boolean {
+  return providerLabel.trim().toLowerCase() === "deepseek";
+}
+
+function buildLlmModelCacheKey(input: {
+  providerLabel: string;
+  model: string;
+  thinkingEnabled: boolean;
+  reasoningEffort: AppConfig["llmReasoningEffort"];
+}): string {
+  const provider = input.providerLabel.trim().toLowerCase() || "unknown";
+  const parts = [`provider=${provider}`, `model=${input.model}`];
+  if (provider === "deepseek") {
+    parts.push(`thinking=${input.thinkingEnabled ? "enabled" : "disabled"}`);
+    parts.push(`reasoning=${input.thinkingEnabled ? input.reasoningEffort ?? "none" : "none"}`);
+  }
+  return parts.join("|");
+}
+
 export function loadConfig(): AppConfig {
   const rawAdminIds = process.env.SERVICE_ADMIN_TG_IDS ?? "";
   const adminIds = rawAdminIds
@@ -68,14 +380,36 @@ export function loadConfig(): AppConfig {
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
 
+  const tronscanApiKeys = parseCommaSeparatedValues(process.env.TRONSCAN_API_KEY);
+  const llmApiKey = process.env.LLM_API_KEY?.trim() || undefined;
+  const llmFeatureEnabled = parseBooleanFlag("LLM_CONTRACT_ANALYSIS_ENABLED", process.env.LLM_CONTRACT_ANALYSIS_ENABLED, false);
+  const llmProviderLabel = process.env.LLM_PROVIDER_LABEL?.trim() || "deepseek";
+  const llmModel = process.env.LLM_MODEL?.trim() || "deepseek-v4-pro";
+  const llmThinkingEnabled = parseBooleanFlag(
+    "LLM_THINKING_ENABLED",
+    process.env.LLM_THINKING_ENABLED,
+    isDeepseekProvider(llmProviderLabel)
+  );
+  const llmReasoningEffort = parseLlmReasoningEffort(
+    process.env.LLM_REASONING_EFFORT ?? (isDeepseekProvider(llmProviderLabel) ? "max" : undefined)
+  );
+
   return {
     botToken: requireEnv("BOT_TOKEN"),
     databaseUrl: requireEnv("DATABASE_URL"),
     tronscanBaseUrl: parseHttpsUrl("TRONSCAN_BASE_URL", process.env.TRONSCAN_BASE_URL ?? "https://apilist.tronscanapi.com"),
     tronFullNodeBaseUrl: parseHttpsUrl("TRON_FULLNODE_BASE_URL", process.env.TRON_FULLNODE_BASE_URL ?? "https://api.trongrid.io"),
-    tronscanApiKey: process.env.TRONSCAN_API_KEY?.trim() || undefined,
+    tronscanApiKey: tronscanApiKeys[0],
+    tronscanApiKeys,
+    tronscanApiKeyGroups: parseTronscanApiKeyGroups(process.env.TRONSCAN_API_KEY_GROUPS, tronscanApiKeys),
     tronFullNodeApiKey: process.env.TRON_FULLNODE_API_KEY?.trim() || undefined,
     tronscanPageLimit: parseIntegerInRange("TRONSCAN_PAGE_LIMIT", process.env.TRONSCAN_PAGE_LIMIT ?? "50", 1, 50),
+    tronscanMaxInFlight: parsePositiveInteger("TRONSCAN_MAX_IN_FLIGHT", process.env.TRONSCAN_MAX_IN_FLIGHT ?? "20", 1),
+    tronscanGroupMaxInFlight: parsePositiveInteger(
+      "TRONSCAN_GROUP_MAX_IN_FLIGHT",
+      process.env.TRONSCAN_GROUP_MAX_IN_FLIGHT ?? "2",
+      1
+    ),
     tronscanMaxPagesPerWallet: parsePositiveInteger("TRONSCAN_MAX_PAGES_PER_WALLET", process.env.TRONSCAN_MAX_PAGES_PER_WALLET ?? "5", 1),
     tronscanTimeoutMs: parsePositiveInteger("TRONSCAN_TIMEOUT_MS", process.env.TRONSCAN_TIMEOUT_MS ?? "10000", 1),
     tronscanRetryAttempts: parsePositiveInteger("TRONSCAN_RETRY_ATTEMPTS", process.env.TRONSCAN_RETRY_ATTEMPTS ?? "3", 1),
@@ -83,13 +417,175 @@ export function loadConfig(): AppConfig {
     tronscanBackfillLookbackMs: parsePositiveInteger("TRONSCAN_BACKFILL_LOOKBACK_MS", process.env.TRONSCAN_BACKFILL_LOOKBACK_MS ?? "86400000", 1),
     tronscanRequestMinIntervalMs: parsePositiveInteger(
       "TRONSCAN_REQUEST_MIN_INTERVAL_MS",
-      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "250",
+      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "220",
+      0
+    ),
+    tronscanGlobalRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS ?? "280",
+      0
+    ),
+    tronscanTransferRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_TRANSFER_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_TRANSFER_REQUEST_MIN_INTERVAL_MS ?? "350",
+      0
+    ),
+    tronscanApprovalRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanContractRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanFullNodeRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanAccountGroupRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS ?? "400",
+      0
+    ),
+    tronGridRequestMinIntervalMs: parsePositiveInteger(
+      "TRONGRID_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONGRID_REQUEST_MIN_INTERVAL_MS ?? "250",
       0
     ),
     tronscanRateLimitCooldownMs: parsePositiveInteger(
       "TRONSCAN_RATE_LIMIT_COOLDOWN_MS",
       process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "30000",
       0
+    ),
+    unifiedProviderConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_PROVIDER_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_PROVIDER_CONCURRENCY_LIMIT ?? "100",
+      1
+    ),
+    unifiedProviderIncreaseStep: parsePositiveInteger(
+      "UNIFIED_PROVIDER_INCREASE_STEP",
+      process.env.UNIFIED_PROVIDER_INCREASE_STEP ?? "1",
+      1
+    ),
+    unifiedProviderIncreaseIntervalMs: parsePositiveInteger(
+      "UNIFIED_PROVIDER_INCREASE_INTERVAL_MS",
+      process.env.UNIFIED_PROVIDER_INCREASE_INTERVAL_MS ?? "1000",
+      1
+    ),
+    unifiedProviderWorkerLimit: parsePositiveInteger(
+      "UNIFIED_PROVIDER_WORKER_LIMIT",
+      process.env.UNIFIED_PROVIDER_WORKER_LIMIT ?? "100",
+      1
+    ),
+    unifiedAnalysisConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_ANALYSIS_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_ANALYSIS_CONCURRENCY_LIMIT ?? "2",
+      1
+    ),
+    unifiedFinalizationConcurrencyLimit: parsePositiveInteger(
+      "UNIFIED_FINALIZATION_CONCURRENCY_LIMIT",
+      process.env.UNIFIED_FINALIZATION_CONCURRENCY_LIMIT ?? "2",
+      1
+    ),
+    unifiedLookaheadFactor: parsePositiveInteger(
+      "UNIFIED_LOOKAHEAD_FACTOR",
+      process.env.UNIFIED_LOOKAHEAD_FACTOR ?? "2",
+      1
+    ),
+    unifiedPerRunLookaheadMaximum: parsePositiveInteger(
+      "UNIFIED_PER_RUN_LOOKAHEAD_MAXIMUM",
+      process.env.UNIFIED_PER_RUN_LOOKAHEAD_MAXIMUM ?? "100",
+      1
+    ),
+    unifiedReadyBufferMaxEntries: parsePositiveInteger(
+      "UNIFIED_READY_BUFFER_MAX_ENTRIES",
+      process.env.UNIFIED_READY_BUFFER_MAX_ENTRIES ?? "100",
+      1
+    ),
+    unifiedReadyBufferMaxBytes: parsePositiveInteger(
+      "UNIFIED_READY_BUFFER_MAX_BYTES",
+      process.env.UNIFIED_READY_BUFFER_MAX_BYTES ?? "67108864",
+      1
+    ),
+    unifiedReservedBufferMaxBytes: parsePositiveInteger(
+      "UNIFIED_RESERVED_BUFFER_MAX_BYTES",
+      process.env.UNIFIED_RESERVED_BUFFER_MAX_BYTES ?? "67108864",
+      1
+    ),
+    unifiedManifestHardLimitBytes: parsePositiveInteger(
+      "UNIFIED_MANIFEST_HARD_LIMIT_BYTES",
+      process.env.UNIFIED_MANIFEST_HARD_LIMIT_BYTES ?? "16777216",
+      1
+    ),
+    unifiedChunkMaxPages: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_PAGES",
+      process.env.UNIFIED_CHUNK_MAX_PAGES ?? "2",
+      1
+    ),
+    unifiedChunkMaxWallMs: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_WALL_MS",
+      process.env.UNIFIED_CHUNK_MAX_WALL_MS ?? "30000",
+      1
+    ),
+    unifiedChunkMaxResponseBytes: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_RESPONSE_BYTES",
+      process.env.UNIFIED_CHUNK_MAX_RESPONSE_BYTES ?? "8388608",
+      1
+    ),
+    unifiedChunkMaxCheckpointBytes: parsePositiveInteger(
+      "UNIFIED_CHUNK_MAX_CHECKPOINT_BYTES",
+      process.env.UNIFIED_CHUNK_MAX_CHECKPOINT_BYTES ?? "1048576",
+      1
+    ),
+    unifiedRepairShare: parseNumberInRange(
+      "UNIFIED_REPAIR_SHARE",
+      process.env.UNIFIED_REPAIR_SHARE ?? "0.1",
+      0,
+      1
+    ),
+    unifiedRepairMaxSlots: parsePositiveInteger(
+      "UNIFIED_REPAIR_MAX_SLOTS",
+      process.env.UNIFIED_REPAIR_MAX_SLOTS ?? "4",
+      1
+    ),
+    unifiedRepairMaxWaitChunks: parsePositiveInteger(
+      "UNIFIED_REPAIR_MAX_WAIT_CHUNKS",
+      process.env.UNIFIED_REPAIR_MAX_WAIT_CHUNKS ?? "8",
+      1
+    ),
+    unifiedReconciliationIntervalMs: parsePositiveInteger(
+      "UNIFIED_RECONCILIATION_INTERVAL_MS",
+      process.env.UNIFIED_RECONCILIATION_INTERVAL_MS ?? "30000",
+      1
+    ),
+    unifiedRollingRolloutStage: parseUnifiedRollingRolloutStage(
+      process.env.UNIFIED_ROLLING_ROLLOUT_STAGE ?? "global_barrier"
+    ),
+    unifiedTraversalPolicyVersion: parseUnifiedTraversalPolicyVersion(
+      process.env.UNIFIED_TRAVERSAL_POLICY_VERSION ?? "snapshot-closure-v1"
+    ),
+    unifiedRollingUserCheckBasisPoints: parseIntegerInRange(
+      "UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS",
+      process.env.UNIFIED_ROLLING_USER_CHECK_BASIS_POINTS ?? "0",
+      0,
+      10_000
+    ),
+    unifiedProviderCapacityCeiling: parseIntegerInRange(
+      "UNIFIED_PROVIDER_CAPACITY_CEILING",
+      process.env.UNIFIED_PROVIDER_CAPACITY_CEILING ?? "1",
+      1,
+      100
+    ),
+    unifiedIsolatedWorkerOnly: parseBooleanFlag(
+      "UNIFIED_ISOLATED_WORKER_ONLY",
+      process.env.UNIFIED_ISOLATED_WORKER_ONLY,
+      false
+    ),
+    unifiedServiceRoleShadowPolicy: parseUnifiedServiceRoleShadowPolicy(
+      process.env.UNIFIED_SERVICE_ROLE_SHADOW_POLICY
     ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(
       "TRONSCAN_DASHBOARD_CACHE_TTL_MS",
@@ -106,7 +602,181 @@ export function loadConfig(): AppConfig {
       process.env.TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS ?? "60000",
       0
     ),
+    forensicWherePollIntervalMs: parsePositiveInteger(
+      "FORENSIC_WHERE_POLL_INTERVAL_MS",
+      process.env.FORENSIC_WHERE_POLL_INTERVAL_MS ?? "2000",
+      1000
+    ),
+    forensicWhereWorkerConcurrency: parseIntegerInRange(
+      "FORENSIC_WHERE_WORKER_CONCURRENCY",
+      process.env.FORENSIC_WHERE_WORKER_CONCURRENCY ?? "1",
+      1,
+      2
+    ),
+    forensicWhereJobsPerPoll: parsePositiveInteger(
+      "FORENSIC_WHERE_JOBS_PER_POLL",
+      process.env.FORENSIC_WHERE_JOBS_PER_POLL ?? "3",
+      1
+    ),
+    forensicIncomingPollIntervalMs: parsePositiveInteger(
+      "FORENSIC_INCOMING_POLL_INTERVAL_MS",
+      process.env.FORENSIC_INCOMING_POLL_INTERVAL_MS ?? process.env.FORENSIC_WHERE_POLL_INTERVAL_MS ?? "2000",
+      1000
+    ),
+    forensicIncomingJobsPerPoll: parsePositiveInteger(
+      "FORENSIC_INCOMING_JOBS_PER_POLL",
+      process.env.FORENSIC_INCOMING_JOBS_PER_POLL ?? process.env.FORENSIC_WHERE_JOBS_PER_POLL ?? "3",
+      1
+    ),
+    forensicDeepPollIntervalMs: parsePositiveInteger(
+      "FORENSIC_DEEP_POLL_INTERVAL_MS",
+      process.env.FORENSIC_DEEP_POLL_INTERVAL_MS ?? "60000",
+      1000
+    ),
+    forensicJobStaleAfterMs: parsePositiveInteger(
+      "FORENSIC_JOB_STALE_AFTER_MS",
+      process.env.FORENSIC_JOB_STALE_AFTER_MS ?? "1800000",
+      1000
+    ),
+    forensicJobMaxRetries: parsePositiveInteger(
+      "FORENSIC_JOB_MAX_RETRIES",
+      process.env.FORENSIC_JOB_MAX_RETRIES ?? "2",
+      0
+    ),
+    tronAddressIndexSecondLayerMaxActiveWalletsPerJob: parseIntegerInRange(
+      "TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB",
+      process.env.TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB ?? "0",
+      0,
+      1000
+    ),
+    adminSecondLayerMaxActiveWallets: parseIntegerInRange(
+      "ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS",
+      process.env.ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS ?? "25",
+      0,
+      1000
+    ),
+    tronAddressIndexClaimLimit: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_CLAIM_LIMIT",
+      process.env.TRON_ADDRESS_INDEX_CLAIM_LIMIT ?? "3",
+      1
+    ),
+    tronAddressIndexLockMs: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_LOCK_MS",
+      process.env.TRON_ADDRESS_INDEX_LOCK_MS ?? "600000",
+      1
+    ),
+    tronAddressIndexPollIntervalMs: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_POLL_INTERVAL_MS",
+      process.env.TRON_ADDRESS_INDEX_POLL_INTERVAL_MS ?? "15000",
+      1
+    ),
+    tronAddressIndexPageBatchSize: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_PAGE_BATCH_SIZE",
+      process.env.TRON_ADDRESS_INDEX_PAGE_BATCH_SIZE ?? "2",
+      1
+    ),
+    directHardEvidenceLiveLimit: parseIntegerInRange(
+      "DIRECT_HARD_EVIDENCE_LIVE_LIMIT",
+      process.env.DIRECT_HARD_EVIDENCE_LIVE_LIMIT ?? "250",
+      0,
+      100000
+    ),
+    directHardEvidenceConcurrency: parsePositiveInteger(
+      "DIRECT_HARD_EVIDENCE_CONCURRENCY",
+      process.env.DIRECT_HARD_EVIDENCE_CONCURRENCY ?? "8",
+      1
+    ),
+    botBetaRiskDiagnosticsEnabled: parseBooleanFlag("BOT_BETA_RISK_DIAGNOSTICS", process.env.BOT_BETA_RISK_DIAGNOSTICS, false),
+    crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
+    crossChainStage2MaxProviderCalls: parsePositiveInteger(
+      "CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS",
+      process.env.CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS ?? "200",
+      1
+    ),
+    crossChainStage2CacheTtlMs: parsePositiveInteger(
+      "CROSS_CHAIN_STAGE2_CACHE_TTL_MS",
+      process.env.CROSS_CHAIN_STAGE2_CACHE_TTL_MS ?? "86400000",
+      1
+    ),
+    rangeApiKey: process.env.RANGE_API_KEY?.trim() || undefined,
+    rangeBaseUrl: parseHttpsUrl("RANGE_BASE_URL", process.env.RANGE_BASE_URL ?? "https://api.range.org"),
+    rangeTimeoutMs: parsePositiveInteger("RANGE_TIMEOUT_MS", process.env.RANGE_TIMEOUT_MS ?? "20000", 1),
+    rangeMaxCallsPerCheck: parsePositiveInteger("RANGE_MAX_CALLS_PER_CHECK", process.env.RANGE_MAX_CALLS_PER_CHECK ?? "20", 1),
+    evmExplorerApiKey: process.env.EVM_EXPLORER_API_KEY?.trim() || process.env.ETHERSCAN_API_KEY?.trim() || undefined,
+    evmExplorerBaseUrl: parseHttpsUrl(
+      "EVM_EXPLORER_BASE_URL",
+      process.env.EVM_EXPLORER_BASE_URL ?? "https://api.etherscan.io/v2/api"
+    ),
+    evmExplorerTimeoutMs: parsePositiveInteger("EVM_EXPLORER_TIMEOUT_MS", process.env.EVM_EXPLORER_TIMEOUT_MS ?? "20000", 1),
+    evmExplorerMaxCallsPerCheck: parsePositiveInteger(
+      "EVM_EXPLORER_MAX_CALLS_PER_CHECK",
+      process.env.EVM_EXPLORER_MAX_CALLS_PER_CHECK ?? "40",
+      1
+    ),
+    alchemyApiKey: process.env.ALCHEMY_API_KEY?.trim() || undefined,
+    alchemyTimeoutMs: parsePositiveInteger("ALCHEMY_TIMEOUT_MS", process.env.ALCHEMY_TIMEOUT_MS ?? "20000", 1),
+    llmContractAnalysisEnabled: llmFeatureEnabled && Boolean(llmApiKey),
+    llmApiKey,
+    llmBaseUrl: withTrailingSlash(parseHttpsUrl("LLM_BASE_URL", process.env.LLM_BASE_URL ?? "https://api.deepseek.com")),
+    llmModel,
+    llmThinkingEnabled,
+    llmReasoningEffort,
+    llmModelCacheKey: buildLlmModelCacheKey({
+      providerLabel: llmProviderLabel,
+      model: llmModel,
+      thinkingEnabled: llmThinkingEnabled,
+      reasoningEffort: llmReasoningEffort
+    }),
+    llmProviderLabel,
+    llmTimeoutMs: parsePositiveInteger("LLM_TIMEOUT_MS", process.env.LLM_TIMEOUT_MS ?? "60000", 1),
+    llmMaxRetries: parsePositiveInteger("LLM_MAX_RETRIES", process.env.LLM_MAX_RETRIES ?? "2", 0),
+    llmCacheTtlMs: parsePositiveInteger("LLM_CACHE_TTL_MS", process.env.LLM_CACHE_TTL_MS ?? "2592000000", 1),
+    llmEnrichmentMaxAttempts: parsePositiveInteger(
+      "LLM_ENRICHMENT_MAX_ATTEMPTS",
+      process.env.LLM_ENRICHMENT_MAX_ATTEMPTS ?? "4",
+      1
+    ),
+    llmEnrichmentRetryDelayMs: parsePositiveInteger(
+      "LLM_ENRICHMENT_RETRY_DELAY_MS",
+      process.env.LLM_ENRICHMENT_RETRY_DELAY_MS ?? "15000",
+      0
+    ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
-    serviceAdminTelegramIds: new Set(adminIds)
+    pollStartDelayMs: parsePositiveInteger("POLL_START_DELAY_MS", process.env.POLL_START_DELAY_MS ?? "5000", 0),
+    incomingDepositRealtimeMaxAgeMs: parsePositiveInteger(
+      "INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS",
+      process.env.INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS ?? "900000",
+      0
+    ),
+    addressPoisoningSmallTransferMaxUsdt: parseNonNegativeUsdtDecimal(
+      "ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT",
+      process.env.ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT ?? "100"
+    ),
+    forensicWhereStartDelayMs: parsePositiveInteger(
+      "FORENSIC_WHERE_START_DELAY_MS",
+      process.env.FORENSIC_WHERE_START_DELAY_MS ?? "3000",
+      0
+    ),
+    forensicIncomingStartDelayMs: parsePositiveInteger(
+      "FORENSIC_INCOMING_START_DELAY_MS",
+      process.env.FORENSIC_INCOMING_START_DELAY_MS ?? "6000",
+      0
+    ),
+    forensicDeepStartDelayMs: parsePositiveInteger(
+      "FORENSIC_DEEP_START_DELAY_MS",
+      process.env.FORENSIC_DEEP_START_DELAY_MS ?? "12000",
+      0
+    ),
+    adminDashboardEnabled: parseBooleanFlag("ADMIN_DASHBOARD_ENABLED", process.env.ADMIN_DASHBOARD_ENABLED, false),
+    adminDashboardHost: process.env.ADMIN_DASHBOARD_HOST?.trim() || "127.0.0.1",
+    adminDashboardPort: parseIntegerInRange("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1, 65535),
+    adminDashboardToken: process.env.ADMIN_DASHBOARD_TOKEN?.trim() || null,
+    serviceAdminTelegramIds: new Set(adminIds),
+    runtimeGitSha: process.env.RUNTIME_GIT_SHA?.trim() || undefined,
+    runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined,
+    theftReportDepositAddress: parseOptionalTronAddress("THEFT_REPORT_DEPOSIT_ADDRESS", process.env.THEFT_REPORT_DEPOSIT_ADDRESS),
+    theftReportDepositAmountUsdt: "1000",
+    theftReportGuideUrl: parseOptionalHttpsUrl("THEFT_REPORT_GUIDE_URL", process.env.THEFT_REPORT_GUIDE_URL),
+    theftReportAdminContact: process.env.THEFT_REPORT_ADMIN_CONTACT?.trim() || undefined
   };
 }

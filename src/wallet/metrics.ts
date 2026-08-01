@@ -74,6 +74,100 @@ export type CalculateWalletSafetyInput = {
   thirtyDayUsdtVolumeMicro: bigint | string | number;
 };
 
+export type WalletMetricConsistency =
+  | "snapshot_exact"
+  | "snapshot_reconstructed"
+  | "profile_only";
+
+export type WalletAmountAggregate = {
+  key: string;
+  amountRaw: string;
+  transferCount: number;
+  factIds: string[];
+};
+
+export type WalletMetrics = {
+  version: "unified-wallet-metrics-v1";
+  asOfBlock: string;
+  observedAt: string;
+  consistency: Exclude<WalletMetricConsistency, "profile_only">;
+  profile: {
+    createdAt: string | null;
+    firstUsdtActivityAt: string | null;
+    lastUsdtActivityAt: string | null;
+    incomingUsdtTransferCount: number;
+    outgoingUsdtTransferCount: number;
+    snapshotUsdtBalanceRaw: string;
+    snapshotTrxBalanceSun: string;
+    liveBalanceObservation: null | {
+      usdtBalanceRaw: string;
+      trxBalanceSun: string;
+      asOfBlock: string | null;
+      observedAt: string;
+      consistency: WalletMetricConsistency;
+    };
+  };
+  scoreDrivers: Array<{
+    code: string;
+    factIds: string[];
+    collapsedFactCount: number;
+  }>;
+  currentBalanceAttribution: {
+    scope: "current_balance_attribution";
+    denominatorRaw: string;
+    rows: WalletAmountAggregate[];
+  };
+  outgoingMovement: {
+    scope: "all_direct_outgoing_to_snapshot";
+    denominatorRaw: string;
+    rows: WalletAmountAggregate[];
+  };
+  serviceLinks: Array<{
+    service: string;
+    address: string;
+    direction: "incoming" | "outgoing";
+    directness: "direct" | "indirect";
+    amountRaw: string;
+    denominatorRaw: string;
+    transferCount: number;
+    factIds: string[];
+  }>;
+  contractsAndApprovals: Array<{
+    code: string;
+    counterparty: string | null;
+    amountRaw: string | null;
+    factIds: string[];
+  }>;
+  behaviorAndConnections: Array<{
+    code: string;
+    role: string;
+    factIds: string[];
+    collapsedFactCount: number;
+  }>;
+  coverage: Array<{
+    direction: "backward" | "forward";
+    selectionPpm: number;
+    tracePpm: number;
+    identifiedPpm: number;
+    unknownBoundaryPpm: number;
+    untracedPpm: number;
+  }>;
+  principalInboundEvents: Array<{
+    eventId: string;
+    txHash: string;
+    timestamp: string;
+    fromAddress: string;
+    amountRaw: string;
+    factIds: string[];
+  }>;
+  negativeFacts: Array<{
+    code: string;
+    scope: string;
+    scopeStatus: "COMPLETED" | "INCOMPLETE" | "NOT_APPLICABLE";
+    factIds: string[];
+  }>;
+};
+
 type TokenBalanceRecord = {
   tokenId?: unknown;
   token_id?: unknown;
@@ -370,4 +464,127 @@ export function calculateWalletSafetyReport(input: CalculateWalletSafetyInput): 
       { code: "case_forensics", label: "Case forensics", status: "planned" }
     ]
   };
+}
+
+function validIsoTimestamp(value: string | null): boolean {
+  if (value === null) return true;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function validRaw(value: string): boolean {
+  return /^(0|[1-9][0-9]*)$/u.test(value);
+}
+
+function validFactIds(values: string[]): boolean {
+  return values.length > 0 &&
+    values.every((value) => value.length > 0) &&
+    new Set(values).size === values.length;
+}
+
+function validCount(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validPpm(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
+}
+
+export function canonicalizeUnifiedWalletMetrics(
+  input: WalletMetrics
+): WalletMetrics {
+  if (
+    input.version !== "unified-wallet-metrics-v1" ||
+    !validRaw(input.asOfBlock) ||
+    !validIsoTimestamp(input.observedAt) ||
+    !validIsoTimestamp(input.profile.createdAt) ||
+    !validIsoTimestamp(input.profile.firstUsdtActivityAt) ||
+    !validIsoTimestamp(input.profile.lastUsdtActivityAt) ||
+    !validCount(input.profile.incomingUsdtTransferCount) ||
+    !validCount(input.profile.outgoingUsdtTransferCount) ||
+    !validRaw(input.profile.snapshotUsdtBalanceRaw) ||
+    !validRaw(input.profile.snapshotTrxBalanceSun)
+  ) {
+    throw new TypeError("unified_wallet_metrics_invalid");
+  }
+  const live = input.profile.liveBalanceObservation;
+  if (
+    live !== null &&
+    (
+      !validRaw(live.usdtBalanceRaw) ||
+      !validRaw(live.trxBalanceSun) ||
+      (live.asOfBlock !== null && !validRaw(live.asOfBlock)) ||
+      !validIsoTimestamp(live.observedAt) ||
+      (live.consistency === "profile_only" && live.asOfBlock !== null)
+    )
+  ) {
+    throw new TypeError("unified_wallet_metrics_live_balance_invalid");
+  }
+  const aggregates = [
+    ...input.currentBalanceAttribution.rows,
+    ...input.outgoingMovement.rows
+  ];
+  if (
+    input.currentBalanceAttribution.scope !== "current_balance_attribution" ||
+    input.outgoingMovement.scope !== "all_direct_outgoing_to_snapshot" ||
+    !validRaw(input.currentBalanceAttribution.denominatorRaw) ||
+    !validRaw(input.outgoingMovement.denominatorRaw) ||
+    aggregates.some((item) =>
+      item.key.length === 0 ||
+      !validRaw(item.amountRaw) ||
+      !validCount(item.transferCount) ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.scoreDrivers.some((item) =>
+      item.code.length === 0 ||
+      !validCount(item.collapsedFactCount) ||
+      item.collapsedFactCount === 0 ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.serviceLinks.some((item) =>
+      item.service.length === 0 ||
+      item.address.length === 0 ||
+      !validRaw(item.amountRaw) ||
+      !validRaw(item.denominatorRaw) ||
+      !validCount(item.transferCount) ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.contractsAndApprovals.some((item) =>
+      item.code.length === 0 ||
+      (item.amountRaw !== null && !validRaw(item.amountRaw)) ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.behaviorAndConnections.some((item) =>
+      item.code.length === 0 ||
+      item.role.length === 0 ||
+      !validCount(item.collapsedFactCount) ||
+      item.collapsedFactCount === 0 ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.coverage.some((item) =>
+      ![
+        item.selectionPpm,
+        item.tracePpm,
+        item.identifiedPpm,
+        item.unknownBoundaryPpm,
+        item.untracedPpm
+      ].every(validPpm)
+    ) ||
+    input.principalInboundEvents.some((item) =>
+      item.eventId.length === 0 ||
+      !/^[a-f0-9]{64}$/u.test(item.txHash) ||
+      !validIsoTimestamp(item.timestamp) ||
+      item.fromAddress.length === 0 ||
+      !validRaw(item.amountRaw) ||
+      !validFactIds(item.factIds)
+    ) ||
+    input.negativeFacts.some((item) =>
+      item.code.length === 0 ||
+      item.scope.length === 0 ||
+      !validFactIds(item.factIds)
+    )
+  ) {
+    throw new TypeError("unified_wallet_metrics_invalid");
+  }
+  return structuredClone(input);
 }
