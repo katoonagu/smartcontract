@@ -600,8 +600,17 @@ It authorizes no production routing, scoring, Stage D or rollout.
   creates zero run summaries. Only the transitive C1 root uses an 8,000,000-
   node canonical budget; nested artifacts retain the ordinary 2,000,000-node
   limit and the CLI file ceiling remains 512 MiB. Task 7-8 separately
-  prove summary behavior for genuinely completed runs. No real-history input,
-  identity, or acceptance file is generated or admitted until Task 10.
+  prove summary behavior for genuinely completed runs.
+- C1 Task 10 admits the three real-history artifacts generated from tested source
+  commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87` under
+  `docs/audit/2026-07-stage-c/c1/`: replay input SHA-256
+  `0c380cf3b2a84c37288f7995b10b2419714377bc3b3bb720372bf84f92cdad67`,
+  replay identity SHA-256
+  `dbf002ffc213b9f99d2dfc470a69f66980e96ed14a7548aa4a4572639c18d8ea`, and
+  acceptance root SHA-256
+  `1c594487366fbfef94f2c8513012f5ed6a999fdecda5ad9a8a2c510bf5b1fda1`.
+  Independent root verification and the retained `24/24 + 6/6` legacy corpus
+  gate pass. This completes C1 admission only.
 - Stage C is incomplete, Stage D remains design-only, and production stays on
   matrix-v4, `ScoreAnchorV3`, and report-only checked-subject role with no
   suppression or score effect.

@@ -169,7 +169,10 @@ and a hash-valid incomplete summary skips only an unchanged no-precommit
 publication. A durable precommit still reopens recovery; malformed summary
 bodies never suppress it. This keeps the same 700 ms internal/one-second public
 budget as the test schema accumulates terminal runs.
-Real-history admission remains pending Task 10.
+C1 Task 10 admits this real-history lifecycle proof at
+`docs/audit/2026-07-stage-c/c1/runtime-shadow-acceptance-v1.json` from tested
+source commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`. It closes C1 admission only;
+the traversal finalizer, report, and score remain unchanged.
 
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the

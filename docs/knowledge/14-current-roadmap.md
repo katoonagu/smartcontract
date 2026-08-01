@@ -44,7 +44,7 @@ implementation plans do not override the status recorded here.
    observation, reconciliation, startup recovery, and summary only behind the
    exact disabled-by-default flag.
 4. Continue the approved C0-C6 implementation plan suite. Do not advance C0a
-   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-9 are
+   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-10 are
    complete after their zero-skip PostgreSQL gates; Task 4 freezes one run-wide
    input set/fence and exact compound lookup; Task 5 adds the bounded optional
    group observer and strict precommit path; Task 6 adds runtime wiring and
@@ -53,9 +53,9 @@ implementation plans do not override the status recorded here.
    PostgreSQL non-interference; Task 9 implements the strict acceptance
    producer/parser and isolated one-group replay, including the exact
    predecessor's 888 inherited planned groups and one consequent group under a
-   capacity-one barrier. Continue with Task 10 to
-   generate and admit the three real-history evidence files from the clean
-   tested commit. Unavailable cashflow authority does not block that C1 slice.
+   capacity-one barrier. Task 10 admits the three real-history evidence files
+   from tested source commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`.
+   Unavailable cashflow authority does not block that completed C1 slice.
 5. In parallel, prove the missing authority sources, then build physical
    100 + 100 evidence, EOAAtAnchor and a complete adverse
    receipt, then validate a new non-overlapping blind 24 + 6 with two reviews
@@ -105,7 +105,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-9 are implemented. C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips plus `19/19` unit tests; Task 4 passes `7/7` real PostgreSQL tests with zero skips plus `24/24` unit tests, and the combined Task 3+4 PostgreSQL gate passes `25/25`. Task 5-7 relevant unit files pass `98/98`; Task 7 adds once-at-startup bounded recovery and an evolving current-closure summary, and its shadow-runtime plus ordered-commit PostgreSQL files pass `22/22 + 18/18` with zero skips. Task 8 proves full real-PostgreSQL authoritative-byte non-interference. Task 9 adds the tested deterministic one-group replay and self-contained acceptance parser, but generates no audit evidence. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b has not started. There is still no admitted C1 real-history root, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Generate and admit C1 Task 10 evidence; separately amend/review C0 source schemas and real producers before C0a/C2-C4; keep all Stage C work score-neutral |
+| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-10 are implemented; Task 10 admits the three real-history artifacts generated from tested source commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`. The retained legacy corpus gate passes `24/24 + 6/6`, and the isolated disabled/enabled replay preserves 889 planned rows, admits/reserves only the first, makes zero provider calls, and leaves authoritative projections equal. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b has not started. Physical-page/EOA/order/balance authority, the new blind set, and cashflow shadow remain absent | C1 admission is complete. Keep C2-C6 deferred to separately gated passes and all current Stage C work score-neutral |
 | Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -276,8 +276,9 @@ Task 7 adds the bounded recovery of durable crash-window precommits and the
 strict current-closure terminal summary without changing lifecycle or score.
 Task 8 proves disabled/enabled authoritative-byte non-interference on real
 PostgreSQL. Task 9 adds the strict source-to-replay producer, two-schema
-bounded two-cycle runtime proof and self-contained C6 root parser; Task 10 has not yet
-generated or admitted the real-history files.
+bounded two-cycle runtime proof and self-contained C6 root parser. Task 10
+admits the input, identity, and acceptance root generated from tested source
+commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`.
 
 ## Stage C C0-C6 Execution Plan — 2026-07-31
 
@@ -297,7 +298,7 @@ plan for each C0-C6 slice. Planning completion changes no runtime or score:
   later Stage D decision and may transport only separately accepted exact facts
   through the future v5/V2/V4 chain.
 
-Execution checkpoint after C1 Task 9 implementation:
+Execution checkpoint after C1 Task 10 admission:
 
 - C0 Tasks 1-2 landed in `009c5c60`, `65b6dc59`, `3ae832ba` and
   `472b59f9`; frozen V1 plus the additive V2 builder/cache/provenance pass the
@@ -379,8 +380,10 @@ Execution checkpoint after C1 Task 9 implementation:
   canonical budget; nested artifacts keep the ordinary 2,000,000-node limit.
   The acceptance root resolves
   planner, task, attempt, artifact, checkpoint and delta authority from their
-  real storage boundaries. Task 10 remains required to generate and admit the
-  real-history input, identity and root from the clean tested commit.
+  real storage boundaries. Task 10 admits the input, identity, and root from
+  tested source commit `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`; the root
+  SHA-256 is
+  `1c594487366fbfef94f2c8513012f5ed6a999fdecda5ad9a8a2c510bf5b1fda1`.
   Traversal finalizer, report and score remain unchanged.
 
 ## Correctness Gate

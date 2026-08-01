@@ -50,8 +50,11 @@ predecessor prefix exposes 888 inherited unresolved history groups; the target
 adds one consequent group, so both variants retain the same 889 planned
 `address_history` tasks under the capacity-one barrier without executing a
 provider worker. It expects seven profiles, one group precommit, one runtime
-receipt, and zero terminal summaries. Its producer/parser is implemented, but the
-real-history acceptance root is not admitted until C1 Task 10.
+receipt, and zero terminal summaries. C1 Task 10 admits the real-history root
+`runtime-shadow-acceptance-v1.json` at SHA-256
+`1c594487366fbfef94f2c8513012f5ed6a999fdecda5ad9a8a2c510bf5b1fda1`,
+generated from tested source commit
+`d480b7839c0c61020e9f8c3b4d2e79af5a496e87`.
 
 ## Unified Wallet Check
 

@@ -227,6 +227,12 @@ and the target's one consequent group but executes no provider worker. This is
 isolated proof tooling, not a new
 production indexing or provider path.
 
+C1 Task 10 admits that isolated replay from tested source commit
+`d480b7839c0c61020e9f8c3b4d2e79af5a496e87`: both variants preserve all 889
+planned address-history tasks, capacity one admits/reserves only the first, and
+provider calls remain zero. The admitted evidence adds no indexing or provider
+authority.
+
 Traversal now enumerates the complete distinct mandatory address-history set
 from the current canonical frontier, persists one capacity-independent planner
 batch, and uses head-only barrier admission. Accepted manifests may finish in

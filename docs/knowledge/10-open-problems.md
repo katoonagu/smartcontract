@@ -162,9 +162,11 @@ signal with tests.
   target's one consequent group remain planned, capacity-one admits only the
   first, and no provider worker runs. Its transitive root alone has a dedicated
   8,000,000-node canonical budget while nested artifacts retain 2,000,000.
-  Task 10 still must generate the three exact
-  real-history files from the clean tested commit and admit their acceptance
-  root; code/tests or Task 7-9 artifacts alone are not admission.
+  Task 10 now admits the three exact real-history files from tested source commit
+  `d480b7839c0c61020e9f8c3b4d2e79af5a496e87`; acceptance root SHA-256 is
+  `1c594487366fbfef94f2c8513012f5ed6a999fdecda5ad9a8a2c510bf5b1fda1`.
+  This closes the C1 admission gap only; C2-C6 authority and corpus work remain
+  open, and Stage D scoring is unchanged and inactive.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred
