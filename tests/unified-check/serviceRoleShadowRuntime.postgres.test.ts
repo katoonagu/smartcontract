@@ -147,7 +147,11 @@ async function waitForRuntimeLockWait(input: {
   queryFragment: string;
   lockKind: "advisory" | "run_row";
   afterQueryStartedAt?: string;
-}): Promise<{ observedAt: number; queryStartedAt: string }> {
+}): Promise<{
+  observedAt: number;
+  queryStartedAt: string;
+  transactionStartedAt: string;
+}> {
   const deadline = performance.now() + LOCK_STATE_BARRIER_DEADLINE_MS;
   while (performance.now() < deadline) {
     const row = (await input.harness.admin.query(
@@ -155,6 +159,7 @@ async function waitForRuntimeLockWait(input: {
               activity.wait_event_type,
               activity.query,
               activity.query_start::text as query_started_at,
+              activity.xact_start::text as transaction_started_at,
               coalesce(bool_or(
                 not held.granted and (
                   ($2 = 'advisory' and held.locktype = 'advisory') or
@@ -165,7 +170,8 @@ async function waitForRuntimeLockWait(input: {
          left join pg_locks held on held.pid = activity.pid
         where activity.pid = $1
         group by activity.pid, activity.state,
-                 activity.wait_event_type, activity.query, activity.query_start`,
+                 activity.wait_event_type, activity.query,
+                 activity.query_start, activity.xact_start`,
       [input.pid, input.lockKind]
     )).rows[0];
     if (
@@ -173,12 +179,14 @@ async function waitForRuntimeLockWait(input: {
       row.wait_event_type === "Lock" &&
       row.waiting_on_expected_lock === true &&
       typeof row.query_started_at === "string" &&
+      typeof row.transaction_started_at === "string" &&
       row.query_started_at !== input.afterQueryStartedAt &&
       String(row.query).toLowerCase().includes(input.queryFragment.toLowerCase())
     ) {
       return {
         observedAt: performance.now(),
-        queryStartedAt: row.query_started_at
+        queryStartedAt: row.query_started_at,
+        transactionStartedAt: row.transaction_started_at
       };
     }
     await delay(10);
@@ -315,23 +323,27 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     await holder.connect();
     await holder.query("begin");
     await holder.query("select id from unified_check_runs where id=$1 for update", [seeded.runId]);
-    const startedAt = performance.now();
     const fencePromise = runtime(harness.poolA).loadInputFence(seeded);
     try {
-      const wait = await waitForRuntimeLockWait({
+      const normalWait = await waitForRuntimeLockWait({
         harness,
         pid: runtimePid,
         queryFragment: "for update of run",
         lockKind: "run_row"
       });
-      await delay(1_200);
+      const publicationWait = await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "insert into unified_check_artifacts",
+        lockKind: "run_row",
+        afterQueryStartedAt: normalWait.queryStartedAt
+      });
       await holder.query("rollback");
-      const holderReleasedAt = performance.now();
       const fence = await fencePromise;
-      const elapsedMs = performance.now() - startedAt;
-      expect(holderReleasedAt - wait.observedAt).toBeGreaterThanOrEqual(1_000);
-      expect(elapsedMs).toBeGreaterThanOrEqual(1_000);
-      expect(elapsedMs).toBeLessThan(2_500);
+      expect(publicationWait.observedAt).toBeGreaterThan(normalWait.observedAt);
+      expect(publicationWait.queryStartedAt).not.toBe(normalWait.queryStartedAt);
+      expect(publicationWait.transactionStartedAt)
+        .not.toBe(normalWait.transactionStartedAt);
       expect(fence.artifact.outcome).toEqual({
         kind: "unavailable",
         reason: "preload_timeout",
