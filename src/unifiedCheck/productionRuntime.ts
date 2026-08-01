@@ -354,15 +354,16 @@ export function createUnifiedProductionRuntime(input: {
       "unified_production_service_role_shadow_policy_invalid"
     );
   }
+  const leaseMs = input.leaseMs ?? 60_000;
   const serviceRoleShadowRuntime = serviceRoleShadowPolicy === "disabled"
     ? null
     : createServiceRoleShadowRuntimeV1({
         db: input.db,
-        runtimeCommit: input.runtimeCommit
+        runtimeCommit: input.runtimeCommit,
+        pendingGroupRetentionMs: leaseMs * 2
       });
   const now = input.now ?? (() => new Date());
   const createId = input.createId ?? randomUUID;
-  const leaseMs = input.leaseMs ?? 60_000;
   const manifestMaxBytes = input.manifestMaxBytes ??
     DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES;
   const commitMaxEntries = input.commitMaxEntries ?? 32;

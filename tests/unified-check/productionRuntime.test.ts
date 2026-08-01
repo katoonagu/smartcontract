@@ -50,7 +50,8 @@ describe("Unified production runtime configuration", () => {
       expect(create).toHaveBeenCalledTimes(1);
       expect(create).toHaveBeenCalledWith({
         db: enabledInput.db,
-        runtimeCommit: "candidate"
+        runtimeCommit: "candidate",
+        pendingGroupRetentionMs: 120_000
       });
     } finally {
       create.mockRestore();

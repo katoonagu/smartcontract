@@ -44,8 +44,11 @@
   only transaction-validated committed identities; one group requires exactly
   one manifest-hash match while unrelated entries in the same valid prefix are
   retained in the receipt. Candidate delta ancestry is independently proven
-  from the committed head. Focused unit tests pass `81/81`; ordered-commit
-  PostgreSQL passes `18/18` with zero skips.
+  from the committed head. Pending attempt state is lease-expiring, capped and
+  consumed on every post-durable outcome; each reconciliation transaction has
+  500 ms local lock/statement deadlines. Relevant unit tests pass `95/95`;
+  shadow-runtime and ordered-commit PostgreSQL pass `8/8 + 18/18` with zero
+  skips.
 - Tasks 7-10 have not started. Completion carries `checkpointCommit:null` but
   intentionally has no summary stub; Task 7 owns terminal summary and bounded
   recovery. There is no finalizer/report/score effect or C1 acceptance evidence.
@@ -381,6 +384,21 @@ Modify:
   git add src/unifiedCheck/repository.ts src/unifiedCheck/worker.ts src/unifiedCheck/productionWorker.ts src/unifiedCheck/productionRuntime.ts src/unifiedCheck/serviceRoleShadowRuntime.ts src/index.ts tests/unified-check/orderedCommit.test.ts tests/unified-check/orderedCommit.postgres.test.ts tests/unified-check/worker.test.ts tests/unified-check/productionWorker.test.ts tests/unified-check/productionRuntime.test.ts tests/unified-check/serviceRoleShadowRuntime.test.ts
   git commit -m "feat: reconcile shadow receipts after checkpoints"
   ```
+
+- [x] **Quality follow-up: bound process memory and the real database wait.**
+  Store pending handoff by exact run/task/attempt with only durable precommit
+  hashes, refresh one unreferenced attempt timer, expire after twice the worker
+  lease, and cap the shadow-only fallback at 512 attempt buckets. The first
+  post-durable reconciliation retires the complete matching bucket in `finally`
+  for success, cancellation, missing/unapplied/duplicate/unproved authority and
+  database failure; Task 7 recovers any durable precommit that no longer has a
+  local token. Before every reconciliation authority query, set transaction-
+  local lock and statement timeouts to 500 ms. Unit regression covers expiry,
+  ceiling, newest-attempt retention and every terminal outcome; a real
+  PostgreSQL `ACCESS EXCLUSIVE` lock proves timeout, rollback, pool reuse and no
+  later receipt from the retired token inside the 1,000 ms outer deadline.
+  Current gates: `95/95` relevant unit tests, `8/8` shadow-runtime PostgreSQL
+  and `18/18` ordered-commit PostgreSQL, all without skips; typecheck passes.
 
 ### Task 7: Build one deterministic terminal run summary
 

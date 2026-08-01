@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
+import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
+import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import {
   createUnifiedPoolTransactionHost
 } from "../../src/unifiedCheck/repository.js";
@@ -10,6 +12,15 @@ import {
   buildServiceRoleShadowInputFenceV1,
   createServiceRoleShadowRuntimeV1
 } from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
+import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
+  type ServiceRoleShadowEventRoleMapV1,
+  type ServiceRoleShadowEventRoleMapV2
+} from "../../src/unifiedCheck/serviceRoleShadow.js";
+import type {
+  ServiceRoleEventEvidenceBundleV1
+} from "../../src/unifiedCheck/serviceRoleMapMaterialization.js";
+import type { TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const releaseGate = process.env.UNIFIED_RELEASE_GATE_MODE === "1";
@@ -146,7 +157,7 @@ async function waitForRuntimeLockWait(input: {
   harness: Harness;
   pid: number;
   queryFragment: string;
-  lockKind: "advisory" | "run_row";
+  lockKind: "advisory" | "run_row" | "relation";
   afterQueryStartedAt?: string;
 }): Promise<{
   observedAt: number;
@@ -164,7 +175,8 @@ async function waitForRuntimeLockWait(input: {
               coalesce(bool_or(
                 not held.granted and (
                   ($2 = 'advisory' and held.locktype = 'advisory') or
-                  ($2 = 'run_row' and held.locktype in ('transactionid','tuple'))
+                  ($2 = 'run_row' and held.locktype in ('transactionid','tuple')) or
+                  ($2 = 'relation' and held.locktype = 'relation')
                 )
               ),false) as waiting_on_expected_lock
          from pg_stat_activity activity
@@ -226,6 +238,224 @@ async function insertCorruptWrapperKey(
     [sha256, runId, JSON.stringify({ malformed: "non-hash-key" })]
   );
   return sha256;
+}
+
+function acceptedHistoryFixture(input: {
+  readonly runId: string;
+  readonly snapshotHash: string;
+}) {
+  const address = "TG2B2Jb7PXbyKzhJ61yGpyFxqbGBL2cZUH";
+  const anchorMs = Date.parse("2026-07-01T00:00:00.000Z");
+  const makeEvent = (
+    index: number,
+    timestampMs: number
+  ): IndexedTronUsdtTransfer => ({
+    txHash: (index + 1).toString(16).padStart(64, "0"),
+    blockNumber: 10_000 - index,
+    blockTimestamp: new Date(timestampMs),
+    eventIndex: 0,
+    fromAddress: address,
+    toAddress: SUBJECT,
+    amountRaw: String(1_000_000 + index),
+    method: "transfer",
+    callerAddress: null,
+    contractRet: "SUCCESS",
+    confirmed: true
+  });
+  const recent = Array.from({ length: 100 }, (_, index) =>
+    makeEvent(index, anchorMs - index * 60_000));
+  const historical = Array.from({ length: 100 }, (_, index) =>
+    makeEvent(index + 100, anchorMs - 8 * 24 * 60 * 60_000 - index * 60_000));
+  const events = [...recent, ...historical];
+  const anchorId = canonicalTronUsdtEventKey(recent[0]!);
+  const states: TraversalStateV1[] = Array.from({ length: 7 }, (_, index) => ({
+    address,
+    direction: "backward",
+    anchorTimestamp: "2026-07-01T00:00:00.000Z",
+    fundingEpisodeId: `episode-${index}`,
+    allocatedAmountRaw: String(index + 1),
+    sourceEventIds: [anchorId]
+  }));
+  const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+    state: states[0]!,
+    acceptedHistoryEvents: events
+  });
+  const ids = [
+    ...binding.sampledCanonicalEventIds.recent,
+    ...binding.sampledCanonicalEventIds.historical
+  ];
+  const manifestSha256 = "d".repeat(64);
+  const bundle: ServiceRoleEventEvidenceBundleV1 = {
+    schemaVersion: "service-role-event-evidence-bundle-v1",
+    policyVersion: "existing-hash-bound-economic-role-v1",
+    runId: input.runId,
+    snapshotHash: input.snapshotHash,
+    addressHistoryManifestSha256: manifestSha256,
+    entries: ids.map((canonicalEventId, index) => ({
+      canonicalEventId,
+      transactionInfoEvidenceId: `accepted-evidence-${index}`,
+      transactionInfoPayloadSha256: fingerprintCanonicalArtifact(["payload", index]),
+      transactionInfoFinalityWitnessSha256: fingerprintCanonicalArtifact(["finality", index]),
+      poisoningDispositionSha256: fingerprintCanonicalArtifact(["poisoning", index]),
+      providerRiskDispositionSha256: fingerprintCanonicalArtifact(["risk", index]),
+      role: "ordinary"
+    }))
+  };
+  const bundleSha256 = fingerprintCanonicalArtifact(bundle);
+  const sourceMap: ServiceRoleShadowEventRoleMapV1 = {
+    schemaVersion: "service-role-shadow-event-role-map-v1",
+    runId: input.runId,
+    snapshotHash: input.snapshotHash,
+    addressHistoryManifestSha256: manifestSha256,
+    entries: ids.map((canonicalEventId) => ({
+      canonicalEventId,
+      role: "ordinary",
+      authority: "existing_hash_bound_economic_role_v1",
+      evidenceSha256: bundleSha256
+    }))
+  };
+  const sourceMapSha256 = fingerprintCanonicalArtifact(sourceMap);
+  const wrapper: ServiceRoleShadowEventRoleMapV2 = {
+    schemaVersion: "service-role-shadow-event-role-map-v2",
+    policyVersion: "service-role-shadow-100-plus-100-v1",
+    runId: input.runId,
+    snapshotHash: input.snapshotHash,
+    addressHistoryManifestSha256: manifestSha256,
+    sourceEventRoleMapV1Sha256: sourceMapSha256,
+    evidenceBundleSha256: bundleSha256,
+    binding,
+    exactCoverage: { recent: 100, historical: 100, total: 200 },
+    productionEffect: false
+  };
+  return {
+    events,
+    states,
+    manifestSha256,
+    artifacts: [{
+      sha256: bundleSha256,
+      kind: "service_role_event_evidence_bundle",
+      schemaVersion: "1",
+      artifact: bundle
+    }, {
+      sha256: sourceMapSha256,
+      kind: "service_role_event_role_map",
+      schemaVersion: "1",
+      artifact: sourceMap
+    }, {
+      sha256: fingerprintCanonicalArtifact(wrapper),
+      kind: "service_role_event_role_map",
+      schemaVersion: "2",
+      artifact: wrapper
+    }]
+  };
+}
+
+async function insertArtifact(input: {
+  readonly harness: Harness;
+  readonly runId: string;
+  readonly sha256: string;
+  readonly kind: string;
+  readonly schemaVersion: string;
+  readonly artifact: unknown;
+}): Promise<void> {
+  await input.harness.admin.query(
+    `insert into unified_check_artifacts
+       (sha256,created_by_run_id,kind,schema_version,artifact_json)
+     values ($1,$2,$3,$4,$5::jsonb)`,
+    [
+      input.sha256,
+      input.runId,
+      input.kind,
+      input.schemaVersion,
+      JSON.stringify(input.artifact)
+    ]
+  );
+}
+
+async function preparedCheckpointReconciliation(harness: Harness) {
+  const seeded = await seedRun(harness);
+  const accepted = acceptedHistoryFixture(seeded);
+  for (const artifact of accepted.artifacts) {
+    await insertArtifact({ harness, runId: seeded.runId, ...artifact });
+  }
+  const shadow = runtime(harness.poolA);
+  const candidate = {
+    version: "unified-traversal-delta-v1",
+    previousDeltaHash: null
+  };
+  const candidateSha256 = fingerprintCanonicalArtifact(candidate);
+  const committed = {
+    version: "unified-traversal-delta-v1",
+    previousDeltaHash: candidateSha256
+  };
+  const committedSha256 = fingerprintCanonicalArtifact(committed);
+  await shadow.observeAcceptedAddressHistoryGroup({
+    taskId: "task-traversal",
+    attempt: 2,
+    runId: seeded.runId,
+    snapshotHash: seeded.snapshotHash,
+    subjectAddress: SUBJECT,
+    manifestKey: "accepted-history-key",
+    manifestSha256: accepted.manifestSha256,
+    acceptedPageArtifactHashes: ["e".repeat(64)],
+    events: accepted.events,
+    states: accepted.states,
+    candidateCheckpoint: { deltaHeadSha256: candidateSha256 } as never,
+    candidateDeltaSha256: candidateSha256,
+    signal: new AbortController().signal
+  });
+  await insertArtifact({
+    harness,
+    runId: seeded.runId,
+    sha256: candidateSha256,
+    kind: "traversal_delta",
+    schemaVersion: "1",
+    artifact: candidate
+  });
+  await insertArtifact({
+    harness,
+    runId: seeded.runId,
+    sha256: committedSha256,
+    kind: "traversal_delta",
+    schemaVersion: "1",
+    artifact: committed
+  });
+  const checkpoint = {
+    version: "unified-production-traversal-checkpoint-v2",
+    deltaHeadSha256: committedSha256
+  };
+  return {
+    shadow,
+    seeded,
+    lifecycle: {
+      task: {
+        id: "task-traversal",
+        runId: seeded.runId,
+        kind: "traversal",
+        attempt: 2,
+        checkpoint: {},
+        cancellationRequestedAt: null
+      },
+      result: { kind: "checkpoint" as const, checkpoint },
+      checkpointCommit: {
+        checkpointed: true,
+        providerWorkAvailable: false,
+        committedTaskStatus: "QUEUED" as const,
+        committedCheckpoint: checkpoint,
+        orderedCommit: {
+          applied: true,
+          runId: seeded.runId,
+          committedEntries: [{
+            canonicalSequence: 1,
+            taskId: "history-matched",
+            acceptedAttemptId: "attempt-matched",
+            artifactSha256: accepted.manifestSha256
+          }]
+        }
+      },
+      signal: new AbortController().signal
+    }
+  };
 }
 
 postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
@@ -547,5 +777,60 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       await fencePromise.catch(() => undefined);
       await holder.end();
     }
+  }, 30_000);
+
+  it("bounds a blocked reconciliation transaction below the worker deadline and releases the pool connection", async () => {
+    const prepared = await preparedCheckpointReconciliation(harness);
+    const runtimePid = await backendPid(harness.poolA);
+    const holder = new pg.Client({
+      connectionString,
+      options: `-c search_path=${harness.schema}`
+    });
+    await holder.connect();
+    await holder.query("begin");
+    await holder.query(
+      "lock table unified_check_artifacts in access exclusive mode"
+    );
+    const startedAt = performance.now();
+    const reconciliation = prepared.shadow.reconcileCheckpoint(
+      prepared.lifecycle
+    );
+    try {
+      await waitForRuntimeLockWait({
+        harness,
+        pid: runtimePid,
+        queryFragment: "from unified_check_artifacts",
+        lockKind: "relation"
+      });
+      await expect(reconciliation).rejects.toSatisfy((error: unknown) => {
+        const code = (error as { code?: unknown }).code;
+        return code === "55P03" || code === "57014";
+      });
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+
+      expect((await harness.admin.query(
+        `select state,xact_start is null as transaction_released
+           from pg_stat_activity where pid=$1`,
+        [runtimePid]
+      )).rows[0]).toMatchObject({
+        state: "idle",
+        transaction_released: true
+      });
+      expect((await harness.poolA.query("select 1::int value")).rows)
+        .toEqual([{ value: 1 }]);
+    } finally {
+      await holder.query("rollback").catch(() => undefined);
+      await reconciliation.catch(() => undefined);
+      await holder.end();
+    }
+
+    await prepared.shadow.reconcileCheckpoint(prepared.lifecycle);
+    expect(Number((await harness.admin.query(
+      `select count(*)::int count
+         from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind='service_role_shadow_runtime_receipt'`,
+      [prepared.seeded.runId]
+    )).rows[0].count)).toBe(0);
   }, 30_000);
 });

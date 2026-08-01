@@ -1566,14 +1566,18 @@ describe("service role shadow checkpoint reconciliation", () => {
   }
 
   async function preparedReconciliation(
-    candidatePrevious: "valid" | "numeric" | "missing" = "valid"
+    candidatePrevious: "valid" | "numeric" | "missing" = "valid",
+    pendingGroupRetentionMs?: number
   ) {
     const db = new MemoryDatabase();
     const accepted = acceptedHistoryGroup();
     seedRoleArtifacts(db, accepted);
     const runtime = createServiceRoleShadowRuntimeV1({
       db,
-      runtimeCommit: RUNTIME_COMMIT
+      runtimeCommit: RUNTIME_COMMIT,
+      ...(pendingGroupRetentionMs === undefined ? {} : {
+        pendingGroupRetentionMs
+      })
     });
     const validCandidate = delta(null, "candidate");
     const candidate = candidatePrevious === "numeric"
@@ -1628,12 +1632,39 @@ describe("service role shadow checkpoint reconciliation", () => {
       cancellationRequestedAt: null
     };
     return {
+      accepted,
       db,
       runtime,
       candidateSha256,
       committedSha256,
       checkpoint,
       task
+    };
+  }
+
+  function validReconciliation(
+    prepared: Awaited<ReturnType<typeof preparedReconciliation>>
+  ) {
+    return {
+      task: prepared.task,
+      result: { kind: "checkpoint" as const, checkpoint: prepared.checkpoint },
+      checkpointCommit: {
+        checkpointed: true,
+        providerWorkAvailable: false,
+        committedTaskStatus: "QUEUED" as const,
+        committedCheckpoint: prepared.checkpoint,
+        orderedCommit: {
+          applied: true,
+          runId: RUN_ID,
+          committedEntries: [{
+            canonicalSequence: 1,
+            taskId: "history-matched",
+            acceptedAttemptId: "attempt-matched",
+            artifactSha256: "d".repeat(64)
+          }]
+        }
+      },
+      signal: new AbortController().signal
     };
   }
 
@@ -1846,4 +1877,173 @@ describe("service role shadow checkpoint reconciliation", () => {
         row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
     }
   );
+
+  it.each([
+    ["missing checkpoint", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        committedCheckpoint: null
+      }
+    })],
+    ["cancelled checkpoint", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        committedTaskStatus: "CANCELLED" as const,
+        orderedCommit: {
+          applied: false,
+          runId: RUN_ID,
+          committedEntries: []
+        }
+      }
+    })],
+    ["unapplied ordered commit", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        orderedCommit: {
+          ...valid.checkpointCommit.orderedCommit,
+          applied: false
+        }
+      }
+    })],
+    ["zero manifest matches", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        orderedCommit: {
+          ...valid.checkpointCommit.orderedCommit,
+          committedEntries: [{
+            ...valid.checkpointCommit.orderedCommit.committedEntries[0]!,
+            artifactSha256: "c".repeat(64)
+          }]
+        }
+      }
+    })],
+    ["duplicate manifest matches", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        orderedCommit: {
+          ...valid.checkpointCommit.orderedCommit,
+          committedEntries: [
+            valid.checkpointCommit.orderedCommit.committedEntries[0]!,
+            {
+              ...valid.checkpointCommit.orderedCommit.committedEntries[0]!,
+              canonicalSequence: 2,
+              taskId: "history-duplicate",
+              acceptedAttemptId: "attempt-duplicate"
+            }
+          ]
+        }
+      }
+    })],
+    ["unproved delta ancestry", (valid: ReturnType<typeof validReconciliation>) => ({
+      ...valid,
+      checkpointCommit: {
+        ...valid.checkpointCommit,
+        committedCheckpoint: {
+          ...valid.checkpointCommit.committedCheckpoint,
+          deltaHeadSha256: "9".repeat(64)
+        }
+      }
+    })]
+  ] as const)("retires an attempt after a post-durable %s outcome", async (
+    _name,
+    firstOutcome
+  ) => {
+    const prepared = await preparedReconciliation();
+    const valid = validReconciliation(prepared);
+
+    await prepared.runtime.reconcileCheckpoint(firstOutcome(valid) as never);
+    await prepared.runtime.reconcileCheckpoint(valid);
+
+    expect(prepared.db.rows().filter((row) =>
+      row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
+  });
+
+  it("retires the whole attempt when its reconciliation transaction fails", async () => {
+    const prepared = await preparedReconciliation();
+    const valid = validReconciliation(prepared);
+    prepared.db.artifactLoadErrorOnce = new Error("reconciliation_db_failed");
+
+    await expect(prepared.runtime.reconcileCheckpoint(valid))
+      .rejects.toThrow("reconciliation_db_failed");
+    await prepared.runtime.reconcileCheckpoint(valid);
+
+    expect(prepared.db.rows().filter((row) =>
+      row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
+  });
+
+  it("expires a pre-durable attempt bucket after its bounded lease window", async () => {
+    vi.useFakeTimers();
+    try {
+      const prepared = await preparedReconciliation("valid", 2_000);
+      vi.advanceTimersByTime(2_001);
+
+      await prepared.runtime.reconcileCheckpoint(validReconciliation(prepared));
+
+      expect(prepared.db.rows().filter((row) =>
+        row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps failed pre-durable attempt buckets without dropping the newest attempt", async () => {
+    const prepared = await preparedReconciliation();
+    const observation = {
+      taskId: prepared.task.id,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: prepared.accepted.events,
+      states: prepared.accepted.states,
+      candidateCheckpoint: {
+        deltaHeadSha256: prepared.candidateSha256
+      } as never,
+      candidateDeltaSha256: prepared.candidateSha256,
+      signal: new AbortController().signal
+    };
+    for (let attempt = 3; attempt <= 514; attempt += 1) {
+      await prepared.runtime.observeAcceptedAddressHistoryGroup({
+        ...observation,
+        attempt
+      });
+    }
+
+    await prepared.runtime.reconcileCheckpoint(validReconciliation(prepared));
+    const newest = validReconciliation(prepared);
+    await prepared.runtime.reconcileCheckpoint({
+      ...newest,
+      task: { ...newest.task, attempt: 514 }
+    });
+
+    const receipts = prepared.db.rows().filter((row) =>
+      row.kind === "service_role_shadow_runtime_receipt");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.artifact_json).toMatchObject({ traversalAttempt: 514 });
+  });
+
+  it("sets reconciliation transaction deadlines before authority reads", async () => {
+    const prepared = await preparedReconciliation();
+
+    await prepared.runtime.reconcileCheckpoint(validReconciliation(prepared));
+
+    const receiptInsert = prepared.db.calls.find((call) =>
+      call.sql.includes("insert into unified_check_artifacts") &&
+      call.values[2] === "service_role_shadow_runtime_receipt");
+    expect(receiptInsert).toBeDefined();
+    const transactionCalls = prepared.db.calls.filter((call) =>
+      call.transaction === receiptInsert!.transaction);
+    expect(transactionCalls.slice(0, 2).map((call) => call.sql)).toEqual([
+      "SET LOCAL lock_timeout = '500ms'",
+      "SET LOCAL statement_timeout = '500ms'"
+    ]);
+    expect(transactionCalls[2]!.sql).toContain("sha256 = any");
+  });
 });

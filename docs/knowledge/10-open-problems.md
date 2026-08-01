@@ -145,7 +145,12 @@ signal with tests.
   post-checkpoint reconciliation. Its transaction result binds the whole
   committed prefix, while each group requires exactly one manifest-hash match;
   unrelated prefix entries are allowed, but zero/duplicate matches and an
-  unproved candidate-delta ancestry remain unreconciled. C1 Tasks 7-10 still
+  unproved candidate-delta ancestry remain unreconciled. Process-local tokens
+  are now bounded to 512 attempt buckets for twice the configured lease,
+  retired on every post-durable outcome, and backed by 500 ms transaction-local
+  lock/statement deadlines. Expired, overflowed and crash-window durable
+  precommits deliberately remain unreconciled until Task 7's bounded startup
+  sweep. C1 Tasks 7-10 still
   must add bounded startup recovery, terminal summary, non-interference proof
   and the acceptance producer.
 - Current account metadata does not prove EOA status at a historical anchor.

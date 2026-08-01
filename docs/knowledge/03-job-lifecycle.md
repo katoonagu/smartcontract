@@ -85,6 +85,19 @@ receipt. Completion summary and crash-window recovery remain Task 7 work;
 completion is intentionally a no-op at the shadow runtime in Task 6. This path
 remains score/report/finalizer/delivery neutral.
 
+The process-local handoff is bounded by task-attempt lifecycle. It retains only
+the exact run/task/attempt identity and durable precommit hash, groups dense
+observations from the same attempt under one refreshed unreferenced expiry,
+expires them after twice the configured worker lease, and retains at most 512
+attempt buckets. The first post-durable checkpoint reconciliation consumes the
+whole matching attempt in `finally`, including cancellation, missing/unapplied
+authority, zero/duplicate manifest match, invalid ancestry, timeout or database
+failure. Expired, overflowed and crash-window durable precommits are not lost
+authority: they remain Task 7 startup-recovery inputs. Every reconciliation
+transaction sets local lock and statement timeouts to 500 ms before its first
+authority read, leaving rollback and pool-release headroom inside the worker's
+1,000 ms outer observer deadline.
+
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the
 worker aborts selective enrichment, starts no later candidate, and cannot

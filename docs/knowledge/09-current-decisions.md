@@ -525,10 +525,17 @@ It authorizes no production routing, scoring, Stage D or rollout.
   hash-valid run-owned delta path from committed head to candidate. A legitimate
   multi-entry prefix may include unrelated entries; the receipt binds the whole
   sorted transaction-validated set. Zero/duplicate matches and missing or
-  unreachable authority write no receipt. Completion passes `null` checkpoint
+  unreachable authority write no receipt. Process-local pending state retains
+  only exact run/task/attempt plus precommit hashes in at most 512 lease-bound
+  attempt buckets; each bucket expires after twice the worker lease and is
+  consumed in `finally` by its first post-durable reconciliation outcome. Each
+  reconciliation transaction sets 500 ms local lock and statement timeouts
+  before authority reads. Durable precommits left by expiry, overflow or process
+  loss remain Task 7 recovery authority. Completion passes `null` checkpoint
   authority but intentionally creates no summary until Task 7 owns that
-  implementation. Focused Task 6 unit tests pass `81/81`; ordered-commit
-  PostgreSQL tests pass `18/18` with zero skips.
+  implementation. The current relevant unit set passes `95/95`; the shadow
+  runtime PostgreSQL file passes `8/8` and ordered-commit PostgreSQL passes
+  `18/18`, both with zero skips.
 - C1 Tasks 7-10 have not started. There is no startup recovery, terminal
   summary, non-interference proof, or C1 acceptance evidence. Stage C is
   incomplete, Stage D remains design-only, and production stays on matrix-v4,
