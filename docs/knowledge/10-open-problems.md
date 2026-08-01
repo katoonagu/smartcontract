@@ -149,8 +149,11 @@ signal with tests.
   are now bounded to 512 attempt buckets for twice the configured lease,
   retired on every post-durable outcome, and backed by 500 ms transaction-local
   lock/statement deadlines. Task 7 closes the expired/overflow/crash-window gap
-  with one enabled-runtime startup sweep bounded at 1,000 ms and strict durable
-  precommit plus current commit revalidation. It also publishes the deterministic
+  with one enabled-runtime startup sweep bounded below 1,000 ms by an earlier
+  absolute budget, shorter database deadlines, and awaited transaction cleanup.
+  Durable precommit plus current commit revalidation remains mandatory for a
+  runtime receipt, while every non-cancelled completed traversal is summarized
+  even if no precommit exists. It also publishes the deterministic
   terminal summary and allows a later complete summary to follow an immutable
   earlier incomplete snapshot after recovery. C1 Tasks 8-10 still must prove
   authoritative-byte non-interference and produce/admit the C1 acceptance

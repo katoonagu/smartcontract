@@ -98,13 +98,16 @@ authority read, leaving rollback and pool-release headroom inside the worker's
 1,000 ms outer observer deadline.
 
 C1 Task 7 adds one enabled-runtime startup sweep, called once from process
-startup and never from the finalizer or a poller. Its own abort deadline is
-1,000 ms and each recovery/summary transaction retains the 500 ms local database
-deadlines. It considers only non-cancelled `QUEUED | COMPLETED` traversal work,
+startup and never from the finalizer or a poller. The public ceiling remains
+1,000 ms; an internal 700 ms absolute monotonic budget, explicit loop/query
+checks, and 150 ms local statement/lock deadlines leave time for rollback and
+connection release. It considers only non-cancelled `QUEUED | COMPLETED` traversal work,
 reconstructs no process token, and writes a runtime receipt only from a durable
 strict precommit plus current committed planner/checkpoint/delta authority.
-`CANCELLED`, profile-only partial state, or a missing precommit is never
-recovered. Only `COMPLETED` traversal work is summarized.
+`CANCELLED`, profile-only partial state, or a missing precommit never creates a
+runtime receipt. Every non-cancelled `COMPLETED` traversal is independently a
+summary candidate, including a ready eligible group with no precommit; that
+case is terminal `complete:false` with one unreconciled group.
 
 `service-role-shadow-run-summary-v1` replays the accepted completed traversal,
 hash-valid accepted manifests/pages, immutable fence/maps, profiles,
@@ -113,7 +116,11 @@ precommits, runtime receipts, and current committed closure. Its counts are
 `reconciledGroup`, `reconciledProfile`, `unreconciledGroup`, `profileOrphan`,
 and `precommitOrphan`. Accepted-input/fence/map/history defects alone populate
 the first three; post-input loss stays `unreconciled`, and only valid artifacts
-outside the rederived inventory are orphans. `complete` requires a ready fence,
+outside the rederived inventory are orphans. A profile is valid for orphan
+counting only after exact nested profile/vector/predicate and status/classifier
+validation. Each eligible group requires exactly one matching valid precommit;
+multiple matches force `unreconciled` and every deterministic extra counts as
+`precommitOrphan`. `complete` requires a ready fence,
 at least one reconciled group, and zero missing, conflict, malformed,
 unreconciled, or orphan counts. Publication recomputes current durable closure:
 unchanged evidence reuses the same content hash, while later recovery appends a

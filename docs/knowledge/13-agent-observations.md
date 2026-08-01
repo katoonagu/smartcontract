@@ -546,3 +546,19 @@ Correct rule: derive the test set from every production-reachable scoring
 outcome, including neutral defaults. Each decisive code has explicit RU and EN
 copy and must reach the real finalizer in a PostgreSQL regression; fail-closed
 handling for unknown codes is not a substitute for mapping reachable ones.
+
+## 2026-08-01: Terminal Inventory And Hard Budgets Need Independent Authority
+
+Agent mistake: a startup recovery query discovered completed runs only through
+durable precommit rows, treated an abort timer as a hard cumulative database
+deadline, accepted duplicate matching precommits, and counted top-level profile
+lookalikes as valid orphans.
+
+Correct rule: union terminal lifecycle authority independently from optional
+recovery evidence. A missing precommit forbids a runtime receipt but not a
+completed-run summary. Hard public deadlines need an earlier absolute monotonic
+budget, checks inside loops and around every query, shorter database timeouts,
+and awaited rollback/connection release; `Promise.race` or a signal alone is
+not cleanup. One eligible group accepts exactly one matching valid precommit,
+and orphan counting uses the full exact owning artifact contract rather than a
+few root fields.

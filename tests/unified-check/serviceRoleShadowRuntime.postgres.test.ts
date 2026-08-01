@@ -11,7 +11,8 @@ import {
   buildAddressHistoryManifest
 } from "../../src/unifiedCheck/addressHistory.js";
 import {
-  createUnifiedPoolTransactionHost
+  createUnifiedPoolTransactionHost,
+  type UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository.js";
 import {
   buildServiceRoleShadowInputFenceV1,
@@ -555,6 +556,9 @@ async function seedTerminalShadowInventory(input: {
   }
 
   const shadow = runtime(input.harness.poolA);
+  if (input.observeGroup === false) {
+    await shadow.loadInputFence(seeded);
+  }
   const candidate = {
     version: "unified-traversal-delta-v1",
     runId: seeded.runId,
@@ -1470,6 +1474,22 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       schemaVersion: "1",
       artifact: orphanProfile
     });
+    const extraNestedProfile = {
+      ...sourceProfile,
+      anchor: { ...sourceProfile.anchor, unexpected: true }
+    };
+    const missingNestedProfile = structuredClone(sourceProfile);
+    delete missingNestedProfile.result.classifier.recentPredicates.C;
+    for (const invalidProfile of [extraNestedProfile, missingNestedProfile]) {
+      await insertArtifact({
+        harness,
+        runId: prepared.seeded.runId,
+        sha256: fingerprintCanonicalArtifact(invalidProfile),
+        kind: "service_role_shadow_profile",
+        schemaVersion: "1",
+        artifact: invalidProfile
+      });
+    }
     const orphanPrecommit = buildServiceRoleShadowPrecommitReceiptV1({
       runId: source.runId,
       snapshotHash: source.snapshotHash,
@@ -1499,6 +1519,54 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       eligibleGroup: 1,
       reconciledGroup: 1,
       profileOrphan: 1,
+      precommitOrphan: 1
+    });
+    expect(summary?.artifact.complete).toBe(false);
+  }, 30_000);
+
+  it("makes duplicate valid matching precommits unreconciled and counts the extra as orphan", async () => {
+    const prepared = await seedTerminalShadowInventory({
+      harness,
+      reconcileBeforeCompletion: true
+    });
+    const source = (await harness.admin.query(
+      `select artifact_json from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind='service_role_shadow_precommit_receipt'`,
+      [prepared.seeded.runId]
+    )).rows[0].artifact_json;
+    const duplicate = buildServiceRoleShadowPrecommitReceiptV1({
+      runId: source.runId,
+      snapshotHash: source.snapshotHash,
+      inputFenceSha256: source.inputFenceSha256,
+      inputSetSha256: source.inputSetSha256,
+      manifestKey: source.manifestKey,
+      manifestSha256: source.manifestSha256,
+      acceptedPageArtifactHashes: source.acceptedPageArtifactHashes,
+      candidateCheckpointSha256: "f".repeat(64),
+      candidateDeltaSha256: source.candidateDeltaSha256,
+      compoundBindingKey: source.compoundBindingKey,
+      profiles: source.profiles
+    });
+    await insertArtifact({
+      harness,
+      runId: prepared.seeded.runId,
+      sha256: duplicate.sha256,
+      kind: "service_role_shadow_precommit_receipt",
+      schemaVersion: "1",
+      artifact: duplicate.artifact
+    });
+
+    const summary = await prepared.shadow.summarizeRun({
+      runId: prepared.seeded.runId,
+      signal: new AbortController().signal
+    });
+    expect(summary?.artifact.counts).toMatchObject({
+      malformed: 0,
+      eligibleGroup: 1,
+      reconciledGroup: 0,
+      reconciledProfile: 0,
+      unreconciledGroup: 1,
       precommitOrphan: 1
     });
     expect(summary?.artifact.complete).toBe(false);
@@ -1580,17 +1648,127 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     await runtime(harness.poolB).reconcileCommittedServiceRoleShadowRunsV1({
       signal: new AbortController().signal
     });
-    const counts = (await harness.admin.query(
-      `select created_by_run_id,count(*)::int count
+    const rows = (await harness.admin.query(
+      `select created_by_run_id,kind,artifact_json
          from unified_check_artifacts
         where created_by_run_id=any($1::text[])
           and kind in (
             'service_role_shadow_runtime_receipt',
             'service_role_shadow_run_summary'
-          ) group by created_by_run_id`,
+          ) order by created_by_run_id,kind`,
       [[cancelled.seeded.runId, missing.seeded.runId]]
     )).rows;
-    expect(counts).toEqual([]);
+    expect(rows).toEqual([{
+      created_by_run_id: missing.seeded.runId,
+      kind: "service_role_shadow_run_summary",
+      artifact_json: expect.objectContaining({
+        complete: false,
+        counts: expect.objectContaining({
+          malformed: 0,
+          eligibleGroup: 1,
+          reconciledGroup: 0,
+          unreconciledGroup: 1,
+          precommitOrphan: 0
+        })
+      })
+    }]);
+  }, 30_000);
+
+  it("publishes an incomplete terminal summary after completion crashes without a precommit", async () => {
+    const prepared = await seedTerminalShadowInventory({
+      harness,
+      reconcileBeforeCompletion: false,
+      observeGroup: false
+    });
+    await runtime(harness.poolB).reconcileCommittedServiceRoleShadowRunsV1({
+      signal: new AbortController().signal
+    });
+    expect(Number((await harness.admin.query(
+      `select count(*)::int count from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind in (
+            'service_role_shadow_precommit_receipt',
+            'service_role_shadow_runtime_receipt'
+          )`,
+      [prepared.seeded.runId]
+    )).rows[0].count)).toBe(0);
+    const summary = (await harness.admin.query(
+      `select artifact_json from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind='service_role_shadow_run_summary'`,
+      [prepared.seeded.runId]
+    )).rows[0].artifact_json;
+    expect(summary).toMatchObject({
+      counts: {
+        missing: 0,
+        conflict: 0,
+        malformed: 0,
+        eligibleGroup: 1,
+        eligibleProfile: 7,
+        reconciledGroup: 0,
+        reconciledProfile: 0,
+        unreconciledGroup: 1,
+        profileOrphan: 0,
+        precommitOrphan: 0
+      },
+      complete: false
+    });
+  }, 30_000);
+
+  it("bounds cumulative startup work and drains its real PostgreSQL transaction", async () => {
+    const prepared: Array<Awaited<
+      ReturnType<typeof seedTerminalShadowInventory>
+    >> = [];
+    for (let index = 0; index < 3; index += 1) {
+      prepared.push(await seedTerminalShadowInventory({
+        harness,
+        reconcileBeforeCompletion: false
+      }));
+    }
+    const runtimePid = await backendPid(harness.poolB);
+    const base = createUnifiedPoolTransactionHost(harness.poolB);
+    const delayedDb: UnifiedTransactionalQueryable = {
+      query: base.query,
+      transaction: (work) =>
+        base.transaction((client) => work({
+          async query(sql, values) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return client.query(sql, values);
+          }
+        }))
+    };
+    const delayedRuntime = createServiceRoleShadowRuntimeV1({
+      db: delayedDb,
+      runtimeCommit: RUNTIME_COMMIT
+    });
+    const startedAt = performance.now();
+    await delayedRuntime.reconcileCommittedServiceRoleShadowRunsV1({
+      signal: new AbortController().signal
+    }).catch(() => undefined);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect((await harness.admin.query(
+      `select state,xact_start is null as transaction_released
+         from pg_stat_activity where pid=$1`,
+      [runtimePid]
+    )).rows[0]).toMatchObject({
+      state: "idle",
+      transaction_released: true
+    });
+    await expectNoRuntimeAdvisoryLocks(harness, [runtimePid]);
+    expect((await harness.poolB.query("select 1::int value")).rows)
+      .toEqual([{ value: 1 }]);
+    const countArtifacts = async () => Number((await harness.admin.query(
+      `select count(*)::int count from unified_check_artifacts
+        where created_by_run_id=any($1::text[])
+          and kind in (
+            'service_role_shadow_runtime_receipt',
+            'service_role_shadow_run_summary'
+          )`,
+      [prepared.map(({ seeded }) => seeded.runId)]
+    )).rows[0].count);
+    const atReturn = await countArtifacts();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await countArtifacts()).toBe(atReturn);
   }, 30_000);
 
   it("rolls a hanging startup sweep back inside its one-second boundary", async () => {

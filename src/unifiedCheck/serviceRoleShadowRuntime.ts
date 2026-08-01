@@ -1639,6 +1639,36 @@ const PUBLICATION_ATTEMPTS = 2;
 const DEFAULT_PENDING_GROUP_RETENTION_MS = 120_000;
 const MAX_PENDING_ATTEMPTS = 512;
 const RECONCILIATION_STATEMENT_DEADLINE_MS = 500;
+// ponytail: PostgreSQL 16 has no transaction_timeout; the earlier monotonic
+// budget plus one short in-flight statement leaves rollback/release headroom
+// under the public second. Use transaction_timeout after a PostgreSQL 17 gate.
+const RECOVERY_SWEEP_BUDGET_MS = 700;
+const RECOVERY_STATEMENT_DEADLINE_MS = 150;
+
+type RecoverySweepBudget = {
+  readonly deadlineAtMs: number;
+  readonly signal: AbortSignal;
+};
+
+function assertRecoverySweepBudget(budget: RecoverySweepBudget): void {
+  if (budget.signal.aborted || performance.now() >= budget.deadlineAtMs) {
+    throw new Error("service_role_shadow_recovery_budget_exhausted");
+  }
+}
+
+function recoveryBudgetedClient(
+  client: UnifiedQueryable,
+  budget: RecoverySweepBudget
+): UnifiedQueryable {
+  return {
+    async query(sql, values) {
+      assertRecoverySweepBudget(budget);
+      const result = await client.query(sql, values);
+      assertRecoverySweepBudget(budget);
+      return result;
+    }
+  };
+}
 
 function pendingAttemptKey(input: {
   readonly runId: string;
@@ -1649,13 +1679,14 @@ function pendingAttemptKey(input: {
 }
 
 async function setReconciliationDeadlines(
-  client: UnifiedQueryable
+  client: UnifiedQueryable,
+  deadlineMs = RECONCILIATION_STATEMENT_DEADLINE_MS
 ): Promise<void> {
   await client.query(
-    `SET LOCAL lock_timeout = '${RECONCILIATION_STATEMENT_DEADLINE_MS}ms'`
+    `SET LOCAL lock_timeout = '${deadlineMs}ms'`
   );
   await client.query(
-    `SET LOCAL statement_timeout = '${RECONCILIATION_STATEMENT_DEADLINE_MS}ms'`
+    `SET LOCAL statement_timeout = '${deadlineMs}ms'`
   );
 }
 
@@ -1684,7 +1715,8 @@ function validateCommittedEntries(
 
 async function loadCommittedPlannerInventoryV1(
   client: UnifiedQueryable,
-  runId: string
+  runId: string,
+  assertActive?: () => void
 ): Promise<{
   readonly rows: readonly Record<string, unknown>[];
   readonly entries: readonly CommittedPlannerEntryV1[];
@@ -1710,12 +1742,16 @@ async function loadCommittedPlannerInventoryV1(
       order by planner.canonical_sequence`,
     [runId]
   )).rows;
-  const entries = validateCommittedEntries(rows.map((row) => ({
-    canonicalSequence: Number(row.canonical_sequence),
-    taskId: String(row.task_id),
-    acceptedAttemptId: String(row.accepted_attempt_id),
-    artifactSha256: String(row.artifact_sha256)
-  })));
+  const entries = validateCommittedEntries(rows.map((row) => {
+    assertActive?.();
+    return {
+      canonicalSequence: Number(row.canonical_sequence),
+      taskId: String(row.task_id),
+      acceptedAttemptId: String(row.accepted_attempt_id),
+      artifactSha256: String(row.artifact_sha256)
+    };
+  }));
+  assertActive?.();
   return entries === null ? null : { rows, entries };
 }
 
@@ -1906,7 +1942,9 @@ type AcceptedTraversalInventoryV1 = {
 function parseAcceptedTraversalInventoryV1(input: {
   readonly row: Record<string, unknown>;
   readonly runId: string;
+  readonly assertActive?: () => void;
 }): AcceptedTraversalInventoryV1 {
+  input.assertActive?.();
   if (
     !validRootText(input.row.task_id) ||
     !validRootText(input.row.accepted_attempt_id) ||
@@ -1951,6 +1989,7 @@ function parseAcceptedTraversalInventoryV1(input: {
       input.row.artifact_sha256
   ) throw new TypeError("service_role_shadow_traversal_artifact_invalid");
   const states = exactDenseArray(artifact.visitedStates).map((value) => {
+    input.assertActive?.();
     const state = exactRecord(value, [
       "address",
       "direction",
@@ -1968,6 +2007,7 @@ function parseAcceptedTraversalInventoryV1(input: {
       !/^(0|[1-9][0-9]*)$/u.test(state.allocatedAmountRaw)
     ) throw new TypeError("service_role_shadow_traversal_state_invalid");
     const sourceEventIds = exactDenseArray(state.sourceEventIds).map((id) => {
+      input.assertActive?.();
       if (!validRootText(id)) {
         throw new TypeError("service_role_shadow_traversal_state_invalid");
       }
@@ -2010,12 +2050,254 @@ type AcceptedHistoryInventoryV1 = {
   readonly events: readonly IndexedTronUsdtTransfer[];
 };
 
+const SERVICE_PROFILE_INSUFFICIENT_REASONS = new Set([
+  "checked_subject_excluded",
+  "anchor_unproven",
+  "recent_window_incomplete",
+  "historical_window_incomplete",
+  "order_unproven",
+  "role_map_missing",
+  "role_authority_missing",
+  "role_authority_conflict",
+  "source_binding_invalid"
+]);
+
+const COMPLETE_VECTOR_NUMBER_KEYS = [
+  "physicalRowCount",
+  "canonicalEventCount",
+  "featureEligibleEventCount",
+  "invalidPhysicalRowCount",
+  "collisionPhysicalRowCount",
+  "duplicatePhysicalRowCount",
+  "poisoningOnlyEventCount",
+  "gasFreeFeeEventCount",
+  "gasFreePrincipalEventCount",
+  "incomingCount",
+  "outgoingCount",
+  "uniqueSenders",
+  "uniqueRecipients",
+  "uniqueCounterparties",
+  "largestCounterpartyCount",
+  "largestCounterpartyShareDenominator",
+  "dominantDirectionCount",
+  "uniqueDominantCounterparties",
+  "dominantShareDenominator",
+  "maxDominantDirectionEventsPerHour",
+  "activeUtcHourOfDayCount",
+  "dominantExactAmountCount",
+  "dominantExactAmountShareDenominator",
+  "observedWindowDurationSeconds"
+] as const;
+
+function strictProfileStrings(input: unknown, options?: {
+  readonly hash?: boolean;
+  readonly sorted?: boolean;
+  readonly nonEmpty?: boolean;
+}): readonly string[] {
+  const values = exactDenseArray(input).map((value) => {
+    if (!validRootText(value) || (options?.hash === true && !HASH.test(value))) {
+      throw new TypeError("invalid_profile_array");
+    }
+    return value;
+  });
+  if (options?.nonEmpty === true && values.length === 0) {
+    throw new TypeError("invalid_profile_array");
+  }
+  if (new Set(values).size !== values.length) {
+    throw new TypeError("invalid_profile_array");
+  }
+  if (options?.sorted === true && values.some((value, index) =>
+    index > 0 && values[index - 1]! >= value
+  )) throw new TypeError("invalid_profile_array");
+  return values;
+}
+
+function validateProfilePredicates(value: unknown): void {
+  const predicates = exactRecord(value, ["C", "B", "G", "H", "R", "X"]);
+  if (Object.values(predicates).some((predicate) => typeof predicate !== "boolean")) {
+    throw new TypeError("invalid_profile_predicates");
+  }
+}
+
+function validateProfileVector(value: unknown): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("invalid_profile_vector");
+  }
+  const kind = (value as { kind?: unknown }).kind;
+  if (kind === "incomplete") {
+    const vector = exactRecord(value, [
+      "kind",
+      "physicalRowCount",
+      "canonicalEventCount",
+      "orderAuthoritative",
+      "observedStartSeconds",
+      "observedEndSeconds"
+    ]);
+    if (
+      !Number.isSafeInteger(vector.physicalRowCount) ||
+      (vector.physicalRowCount as number) < 0 ||
+      !Number.isSafeInteger(vector.canonicalEventCount) ||
+      (vector.canonicalEventCount as number) < 0 ||
+      typeof vector.orderAuthoritative !== "boolean" ||
+      ![vector.observedStartSeconds, vector.observedEndSeconds].every((item) =>
+        item === null || Number.isSafeInteger(item)
+      )
+    ) throw new TypeError("invalid_profile_vector");
+    return;
+  }
+  const vector = exactRecord(value, [
+    "kind",
+    ...COMPLETE_VECTOR_NUMBER_KEYS,
+    "dominantDirection",
+    "medianDominantDirectionGapSeconds",
+    "dominantExactAmountRaw",
+    "observedStartSeconds",
+    "observedEndSeconds",
+    "orderAuthoritative"
+  ]);
+  if (
+    vector.kind !== "complete" ||
+    COMPLETE_VECTOR_NUMBER_KEYS.some((key) =>
+      !Number.isSafeInteger(vector[key]) || (vector[key] as number) < 0
+    ) ||
+    !["incoming", "outgoing", null].includes(
+      vector.dominantDirection as "incoming" | "outgoing" | null
+    ) ||
+    (vector.dominantExactAmountRaw !== null &&
+      (typeof vector.dominantExactAmountRaw !== "string" ||
+        !/^(0|[1-9][0-9]*)$/u.test(vector.dominantExactAmountRaw))) ||
+    ![vector.observedStartSeconds, vector.observedEndSeconds].every((item) =>
+      item === null || Number.isSafeInteger(item)
+    ) ||
+    typeof vector.orderAuthoritative !== "boolean"
+  ) throw new TypeError("invalid_profile_vector");
+  if (vector.medianDominantDirectionGapSeconds !== null) {
+    const median = exactRecord(vector.medianDominantDirectionGapSeconds, [
+      "numerator", "denominator"
+    ]);
+    if (!Number.isSafeInteger(median.numerator) ||
+      (median.numerator as number) < 0 ||
+      (median.denominator !== 1 && median.denominator !== 2)) {
+      throw new TypeError("invalid_profile_vector");
+    }
+  }
+}
+
+function isStrictServiceRoleShadowProfileV1(input: {
+  readonly row: StoredArtifactRow;
+  readonly runId: string;
+  readonly snapshotHash: string;
+}): boolean {
+  try {
+    if (
+      input.row.kind !== "service_role_shadow_profile" ||
+      input.row.schemaVersion !== "1" ||
+      fingerprintCanonicalArtifact(input.row.artifact) !== input.row.sha256
+    ) return false;
+    const root = exactRecord(input.row.artifact, [
+      "schemaVersion",
+      "policyVersion",
+      "runId",
+      "snapshotHash",
+      "subjectAddress",
+      "profiledAddress",
+      "traversalStateId",
+      "anchor",
+      "source",
+      "sampledCanonicalEventIds",
+      "result",
+      "productionEffect"
+    ]);
+    if (
+      root.schemaVersion !== "service-role-shadow-profile-v1" ||
+      root.policyVersion !== POLICY_VERSION ||
+      root.runId !== input.runId ||
+      root.snapshotHash !== input.snapshotHash ||
+      !validRootText(root.subjectAddress) ||
+      !validRootText(root.profiledAddress) ||
+      typeof root.traversalStateId !== "string" ||
+      !HASH.test(root.traversalStateId) ||
+      root.productionEffect !== false
+    ) return false;
+    const anchor = exactRecord(root.anchor, ["timestamp", "sourceEventIds"]);
+    const anchorTime = typeof anchor.timestamp === "string"
+      ? new Date(anchor.timestamp)
+      : null;
+    if (anchorTime === null || Number.isNaN(anchorTime.getTime()) ||
+      anchorTime.toISOString() !== anchor.timestamp) return false;
+    strictProfileStrings(anchor.sourceEventIds, { sorted: true });
+    const source = exactRecord(root.source, [
+      "evidenceClass",
+      "manifestKey",
+      "manifestSha256",
+      "acceptedPageArtifactHashes",
+      "eventRoleMapSha256",
+      "physicalPageRequestHashes",
+      "boundaryPageAuthority"
+    ]);
+    if (
+      source.evidenceClass !== "accepted_history_reconstruction" ||
+      !validRootText(source.manifestKey) ||
+      typeof source.manifestSha256 !== "string" ||
+      !HASH.test(source.manifestSha256) ||
+      (source.eventRoleMapSha256 !== null &&
+        (typeof source.eventRoleMapSha256 !== "string" ||
+          !HASH.test(source.eventRoleMapSha256))) ||
+      exactDenseArray(source.physicalPageRequestHashes).length !== 0 ||
+      source.boundaryPageAuthority !== false
+    ) return false;
+    strictProfileStrings(source.acceptedPageArtifactHashes, {
+      hash: true,
+      nonEmpty: true
+    });
+    const sampled = exactRecord(root.sampledCanonicalEventIds, [
+      "recent", "historical"
+    ]);
+    strictProfileStrings(sampled.recent);
+    strictProfileStrings(sampled.historical);
+    const result = exactRecord(root.result, [
+      "status", "insufficientReason", "classifier"
+    ]);
+    if (result.classifier === null) {
+      return result.status === "insufficient_data" &&
+        typeof result.insufficientReason === "string" &&
+        SERVICE_PROFILE_INSUFFICIENT_REASONS.has(result.insufficientReason);
+    }
+    const classifier = exactRecord(result.classifier, [
+      "status",
+      "recentVector",
+      "historicalVector",
+      "recentPredicates",
+      "historicalPredicates"
+    ]);
+    if (
+      result.insufficientReason !== null ||
+      result.status !== classifier.status ||
+      ![
+        "high_inferred_service",
+        "non_service_profile",
+        "insufficient_data",
+        "role_conflict"
+      ].includes(classifier.status as string)
+    ) return false;
+    validateProfileVector(classifier.recentVector);
+    validateProfileVector(classifier.historicalVector);
+    validateProfilePredicates(classifier.recentPredicates);
+    validateProfilePredicates(classifier.historicalPredicates);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function loadAcceptedHistoryInventoryV1(input: {
   readonly client: UnifiedQueryable;
   readonly runId: string;
   readonly snapshotHash: string;
   readonly row: Record<string, unknown>;
+  readonly assertActive?: () => void;
 }): Promise<AcceptedHistoryInventoryV1> {
+  input.assertActive?.();
   const entry: CommittedPlannerEntryV1 = {
     canonicalSequence: Number(input.row.canonical_sequence),
     taskId: String(input.row.task_id),
@@ -2066,6 +2348,7 @@ async function loadAcceptedHistoryInventoryV1(input: {
   const byEventId = new Map<string, IndexedTronUsdtTransfer>();
   let rawRowCount = 0;
   for (const pageSha256 of pageHashes) {
+    input.assertActive?.();
     const row = pagesByHash.get(pageSha256);
     if (
       !row ||
@@ -2087,6 +2370,7 @@ async function loadAcceptedHistoryInventoryV1(input: {
     ) throw new TypeError("service_role_shadow_history_page_invalid");
     rawRowCount += page.rawRowCount as number;
     for (const serialized of page.events) {
+      input.assertActive?.();
       const blockTimestamp = new Date(serialized.blockTimestamp);
       if (Number.isNaN(blockTimestamp.getTime()) ||
         blockTimestamp.toISOString() !== serialized.blockTimestamp) {
@@ -2481,17 +2765,33 @@ export function createServiceRoleShadowRuntimeV1(input: {
     });
   };
 
-  const summarizeRun = async (summaryInput: {
+  const summarizeRunWithBudget = async (summaryInput: {
     readonly runId: string;
     readonly signal: AbortSignal;
+    readonly recoveryBudget?: RecoverySweepBudget;
   }): Promise<BoundArtifact<ServiceRoleShadowRunSummaryV1> | null> => {
     if (!validRootText(summaryInput.runId)) {
       throw new TypeError("service_role_shadow_summary_run_id_invalid");
     }
     if (summaryInput.signal.aborted) return null;
-    return input.db.transaction(async (client) => {
-      await setReconciliationDeadlines(client);
-      if (summaryInput.signal.aborted) return null;
+    const assertActive = () => {
+      if (summaryInput.recoveryBudget !== undefined) {
+        assertRecoverySweepBudget(summaryInput.recoveryBudget);
+      } else if (summaryInput.signal.aborted) {
+        throw new Error("service_role_shadow_summary_aborted");
+      }
+    };
+    return input.db.transaction(async (rawClient) => {
+      const client = summaryInput.recoveryBudget === undefined
+        ? rawClient
+        : recoveryBudgetedClient(rawClient, summaryInput.recoveryBudget);
+      await setReconciliationDeadlines(
+        client,
+        summaryInput.recoveryBudget === undefined
+          ? RECONCILIATION_STATEMENT_DEADLINE_MS
+          : RECOVERY_STATEMENT_DEADLINE_MS
+      );
+      assertActive();
       const traversalRows = (await client.query(
         `select task.id as task_id,
                 task.attempt as traversal_attempt,
@@ -2521,7 +2821,8 @@ export function createServiceRoleShadowRuntimeV1(input: {
       if (traversalRows.length !== 1) return null;
       const traversal = parseAcceptedTraversalInventoryV1({
         row: traversalRows[0]!,
-        runId: summaryInput.runId
+        runId: summaryInput.runId,
+        assertActive
       });
       await validateRunSnapshot(client, {
         runId: summaryInput.runId,
@@ -2550,7 +2851,8 @@ export function createServiceRoleShadowRuntimeV1(input: {
       )).rows.map(storedArtifactRow);
       const planner = await loadCommittedPlannerInventoryV1(
         client,
-        summaryInput.runId
+        summaryInput.runId,
+        assertActive
       );
       if (planner === null) return null;
       const { rows: plannerRows, entries: committedEntries } = planner;
@@ -2564,19 +2866,21 @@ export function createServiceRoleShadowRuntimeV1(input: {
         readonly profiles: ServiceRoleShadowPrecommitReceiptV1["profiles"];
       };
       const eligibleGroups: EligibleGroup[] = [];
-      const historyRows = plannerRows.filter((row) =>
-        row.task_kind === "address_history"
-      );
+      const historyRows = plannerRows.filter((row) => {
+        assertActive();
+        return row.task_kind === "address_history";
+      });
       const historiesByAddress = new Map<string, AcceptedHistoryInventoryV1[]>();
       const malformedHistoryAddresses = new Set<string>();
       for (const historyRow of historyRows) {
-        if (summaryInput.signal.aborted) return null;
+        assertActive();
         try {
           const history = await loadAcceptedHistoryInventoryV1({
             client,
             runId: summaryInput.runId,
             snapshotHash: traversal.snapshotHash,
-            row: historyRow
+            row: historyRow,
+            assertActive
           });
           const current = historiesByAddress.get(history.address) ?? [];
           current.push(history);
@@ -2600,6 +2904,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
         typeof traversal.states[number][]
       >();
       for (const state of traversal.states) {
+        assertActive();
         if (state.address === traversal.subjectAddress) continue;
         const key = JSON.stringify([state.address, state.direction]);
         const states = statesByAddressDirection.get(key) ?? [];
@@ -2608,6 +2913,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
       }
       for (const [, states] of [...statesByAddressDirection]
         .sort(([left], [right]) => compareCodeUnits(left, right))) {
+        assertActive();
         const address = states[0]!.address;
         if (malformedHistoryAddresses.has(address)) {
           malformed += 1;
@@ -2626,6 +2932,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
         const derived = new Map<string, typeof states>();
         let groupMalformed = false;
         for (const state of states) {
+          assertActive();
           try {
             const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
               state,
@@ -2645,6 +2952,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
         }
         if (groupMalformed) malformed += 1;
         for (const [compoundBindingKey, groupStates] of derived) {
+          assertActive();
           if (fence.artifact.outcome.kind === "unavailable") {
             if (fence.artifact.outcome.reason === "preload_timeout") missing += 1;
             else if (fence.artifact.outcome.reason === "conflict") conflict += 1;
@@ -2669,6 +2977,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
           for (const state of [...groupStates].sort((left, right) =>
             compareCodeUnits(traversalStateId(left), traversalStateId(right))
           )) {
+            assertActive();
             const built = maybeBuildServiceRoleShadowArtifactV1({
               mode: POLICY_VERSION,
               runId: summaryInput.runId,
@@ -2709,15 +3018,17 @@ export function createServiceRoleShadowRuntimeV1(input: {
         compareCodeUnits(left.compoundBindingKey, right.compoundBindingKey)
       );
 
-      const precommitRows = shadowRows.filter((row) =>
-        row.kind === "service_role_shadow_precommit_receipt" &&
-        row.schemaVersion === "1"
-      );
+      const precommitRows = shadowRows.filter((row) => {
+        assertActive();
+        return row.kind === "service_role_shadow_precommit_receipt" &&
+          row.schemaVersion === "1";
+      });
       const precommits: Array<{
         readonly sha256: string;
         readonly artifact: ServiceRoleShadowPrecommitReceiptV1;
       }> = [];
       for (const row of precommitRows) {
+        assertActive();
         try {
           const artifact = parseServiceRoleShadowPrecommitReceiptV1({
             artifact: row.artifact,
@@ -2732,15 +3043,17 @@ export function createServiceRoleShadowRuntimeV1(input: {
           // unreconciled unless another strict closure succeeds.
         }
       }
-      const receiptRows = shadowRows.filter((row) =>
-        row.kind === "service_role_shadow_runtime_receipt" &&
-        row.schemaVersion === "1"
-      );
+      const receiptRows = shadowRows.filter((row) => {
+        assertActive();
+        return row.kind === "service_role_shadow_runtime_receipt" &&
+          row.schemaVersion === "1";
+      });
       const validatedReceipts: Array<{
         readonly sha256: string;
         readonly artifact: ServiceRoleShadowRuntimeReceiptV1;
       }> = [];
       for (const row of receiptRows) {
+        assertActive();
         const artifact = await validateRuntimeReceiptClosureV1({
           client,
           runtimeCommit: input.runtimeCommit,
@@ -2756,35 +3069,29 @@ export function createServiceRoleShadowRuntimeV1(input: {
           validatedReceipts.push({ sha256: row.sha256, artifact });
         }
       }
-      const expectedProfiles = new Set(eligibleGroups.flatMap((group) =>
-        group.profiles.map((profile) => profile.profileSha256)
-      ));
-      const profileOrphan = shadowRows.filter((row) =>
-        row.kind === "service_role_shadow_profile" &&
-        row.schemaVersion === "1" &&
-        HASH.test(row.sha256) &&
-        fingerprintCanonicalArtifact(row.artifact) === row.sha256 &&
-        row.artifact !== null &&
-        typeof row.artifact === "object" &&
-        !Array.isArray(row.artifact) &&
-        (row.artifact as { schemaVersion?: unknown }).schemaVersion ===
-          "service-role-shadow-profile-v1" &&
-        (row.artifact as { policyVersion?: unknown }).policyVersion ===
-          POLICY_VERSION &&
-        (row.artifact as { runId?: unknown }).runId === summaryInput.runId &&
-        (row.artifact as { snapshotHash?: unknown }).snapshotHash ===
-          traversal.snapshotHash &&
-        (row.artifact as { productionEffect?: unknown }).productionEffect === false &&
-        !expectedProfiles.has(row.sha256)
-      ).length;
+      const expectedProfiles = new Set(eligibleGroups.flatMap((group) => {
+        assertActive();
+        return group.profiles.map((profile) => profile.profileSha256);
+      }));
+      const profileOrphan = shadowRows.filter((row) => {
+        assertActive();
+        return isStrictServiceRoleShadowProfileV1({
+          row,
+          runId: summaryInput.runId,
+          snapshotHash: traversal.snapshotHash
+        }) &&
+          !expectedProfiles.has(row.sha256);
+      }).length;
       const referencedPrecommits = new Set<string>();
       const groupReceiptSha256s: string[] = [];
       let reconciledGroup = 0;
       let reconciledProfile = 0;
       let unreconciledGroup = 0;
       for (const group of eligibleGroups) {
-        const matchingPrecommits = precommits.filter(({ artifact }) =>
-          artifact.snapshotHash === traversal.snapshotHash &&
+        assertActive();
+        const matchingPrecommits = precommits.filter(({ artifact }) => {
+          assertActive();
+          return artifact.snapshotHash === traversal.snapshotHash &&
           artifact.inputFenceSha256 === fence.sha256 &&
           fence.artifact.outcome.kind === "ready" &&
           artifact.inputSetSha256 === fence.artifact.outcome.inputSetSha256 &&
@@ -2794,13 +3101,19 @@ export function createServiceRoleShadowRuntimeV1(input: {
           canonicalizeArtifactJson(artifact.acceptedPageArtifactHashes) ===
             canonicalizeArtifactJson(group.history.pageArtifactHashes) &&
           canonicalizeArtifactJson(artifact.profiles) ===
-            canonicalizeArtifactJson(group.profiles)
-        );
-        for (const precommit of matchingPrecommits) {
-          referencedPrecommits.add(precommit.sha256);
+            canonicalizeArtifactJson(group.profiles);
+        });
+        if (matchingPrecommits.length !== 1) {
+          if (matchingPrecommits.length > 1) {
+            referencedPrecommits.add(matchingPrecommits[0]!.sha256);
+          }
+          unreconciledGroup += 1;
+          continue;
         }
-        const validReceipts = validatedReceipts.filter(({ artifact }) =>
-          artifact.compoundBindingKey === group.compoundBindingKey &&
+        referencedPrecommits.add(matchingPrecommits[0]!.sha256);
+        const validReceipts = validatedReceipts.filter(({ artifact }) => {
+          assertActive();
+          return artifact.compoundBindingKey === group.compoundBindingKey &&
             matchingPrecommits.some((candidate) =>
               candidate.sha256 === artifact.precommitSha256
             ) &&
@@ -2808,8 +3121,8 @@ export function createServiceRoleShadowRuntimeV1(input: {
               canonicalizeArtifactJson(group.profiles) &&
             artifact.committedEntries.filter((entry) =>
               entry.artifactSha256 === group.history.manifestSha256
-            ).length === 1
-        );
+            ).length === 1;
+        });
         if (validReceipts.length === 1) {
           reconciledGroup += 1;
           reconciledProfile += group.profiles.length;
@@ -2818,9 +3131,10 @@ export function createServiceRoleShadowRuntimeV1(input: {
           unreconciledGroup += 1;
         }
       }
-      const precommitOrphan = precommits.filter(({ sha256 }) =>
-        !referencedPrecommits.has(sha256)
-      ).length;
+      const precommitOrphan = precommits.filter(({ sha256 }) => {
+        assertActive();
+        return !referencedPrecommits.has(sha256);
+      }).length;
       const counts = {
         missing,
         conflict,
@@ -2863,12 +3177,15 @@ export function createServiceRoleShadowRuntimeV1(input: {
         schemaVersion: "1",
         artifact: summary.artifact
       });
-      if (summaryInput.signal.aborted) {
-        throw new Error("service_role_shadow_summary_aborted");
-      }
+      assertActive();
       return summary;
     });
   };
+
+  const summarizeRun = (summaryInput: {
+    readonly runId: string;
+    readonly signal: AbortSignal;
+  }) => summarizeRunWithBudget(summaryInput);
 
   const reconcileCheckpoint = async (reconciliation: {
     readonly task: UnifiedWorkerTask;
@@ -2938,13 +3255,18 @@ export function createServiceRoleShadowRuntimeV1(input: {
     const controller = new AbortController();
     const relayAbort = () => controller.abort();
     recoveryInput.signal.addEventListener("abort", relayAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), 1_000);
+    const budget: RecoverySweepBudget = {
+      deadlineAtMs: performance.now() + RECOVERY_SWEEP_BUDGET_MS,
+      signal: controller.signal
+    };
+    const timeout = setTimeout(() => controller.abort(), RECOVERY_SWEEP_BUDGET_MS);
     timeout.unref?.();
     const completedRunIds = new Set<string>();
     try {
-      await input.db.transaction(async (client) => {
-        await setReconciliationDeadlines(client);
-        if (controller.signal.aborted) return;
+      await input.db.transaction(async (rawClient) => {
+        const client = recoveryBudgetedClient(rawClient, budget);
+        await setReconciliationDeadlines(client, RECOVERY_STATEMENT_DEADLINE_MS);
+        assertRecoverySweepBudget(budget);
         // One run-level query selects possible durable crash-window work. The
         // artifact table has no kind index; Task 7 deliberately does not add a
         // migration for a bounded once-at-startup shadow sweep.
@@ -2960,19 +3282,35 @@ export function createServiceRoleShadowRuntimeV1(input: {
                on precommit.created_by_run_id = task.run_id
               and precommit.kind = 'service_role_shadow_precommit_receipt'
               and precommit.schema_version = '1'
-            where task.kind = 'traversal'
-              and task.status in ('QUEUED','COMPLETED')
-              and task.cancellation_requested_at is null
-            order by task.run_id,precommit.sha256`,
+             where task.kind = 'traversal'
+               and task.status in ('QUEUED','COMPLETED')
+               and task.cancellation_requested_at is null
+            union all
+            select task.id as task_id,
+                   task.run_id,
+                   task.status,
+                   task.attempt,
+                   task.checkpoint_json,
+                   null::text as precommit_sha256
+              from unified_check_tasks task
+             where task.kind = 'traversal'
+               and task.status = 'COMPLETED'
+               and task.cancellation_requested_at is null
+             order by run_id,precommit_sha256 nulls last`,
           []
         )).rows;
         for (const candidate of candidates) {
-          if (controller.signal.aborted) return;
+          assertRecoverySweepBudget(budget);
           const runId = String(candidate.run_id);
           if (candidate.status === "COMPLETED") {
             completedRunIds.add(runId);
           }
-          const planner = await loadCommittedPlannerInventoryV1(client, runId);
+          if (candidate.precommit_sha256 === null) continue;
+          const planner = await loadCommittedPlannerInventoryV1(
+            client,
+            runId,
+            () => assertRecoverySweepBudget(budget)
+          );
           if (planner === null) continue;
           const committedEntries = planner.entries;
           const receiptRows = (await client.query(
@@ -2986,6 +3324,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
           )).rows.map(storedArtifactRow);
           let alreadyReconciled = false;
           for (const receiptRow of receiptRows) {
+            assertRecoverySweepBudget(budget);
             const valid = await validateRuntimeReceiptClosureV1({
               client,
               runtimeCommit: input.runtimeCommit,
@@ -2998,6 +3337,7 @@ export function createServiceRoleShadowRuntimeV1(input: {
               precommitSha256: String(candidate.precommit_sha256),
               signal: controller.signal
             });
+            assertRecoverySweepBudget(budget);
             if (valid !== null) {
               alreadyReconciled = true;
               break;
@@ -3019,11 +3359,16 @@ export function createServiceRoleShadowRuntimeV1(input: {
           } catch (error) {
             if (!(error instanceof TypeError)) throw error;
           }
+          assertRecoverySweepBudget(budget);
         }
       });
       for (const runId of [...completedRunIds].sort(compareCodeUnits)) {
-        if (controller.signal.aborted) return;
-        await summarizeRun({ runId, signal: controller.signal });
+        assertRecoverySweepBudget(budget);
+        await summarizeRunWithBudget({
+          runId,
+          signal: controller.signal,
+          recoveryBudget: budget
+        });
       }
     } finally {
       clearTimeout(timeout);

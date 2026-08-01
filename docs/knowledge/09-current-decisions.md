@@ -545,17 +545,24 @@ It authorizes no production routing, scoring, Stage D or rollout.
   malformed, unreconciled, profile-orphan, or precommit-orphan count. Invalid
   post-input artifacts do not inflate accepted-input `malformed` or valid-orphan
   counts; they leave the eligible group unreconciled unless another strict
-  closure succeeds. Summary publication recomputes current evidence, so
+  closure succeeds. Profile orphan status requires the exact full nested
+  profile contract and status/classifier relation, not top-level lookalikes.
+  Exactly one valid precommit may match an eligible group; duplicate matches
+  force it unreconciled and count deterministic extras as precommit orphans.
+  Summary publication recomputes current evidence, so
   unchanged restart is hash-idempotent while later recovery may append a new
   complete immutable summary after an earlier incomplete one.
 - The exact enabled runtime exposes one once-at-startup, 1,000 ms bounded
-  recovery sweep outside the finalizer. It reads non-cancelled
-  `QUEUED | COMPLETED` traversal candidates with durable precommits, revalidates
-  current planner/checkpoint/delta authority, and creates only missing strict
-  runtime receipts; only `COMPLETED` candidates are summarized. It does not
-  poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
+  recovery sweep outside the finalizer. Its internal 700 ms absolute budget,
+  explicit loop/query checks, 150 ms local database deadlines and awaited
+  transaction rollback/release form the hard wall-clock boundary. It reads
+  non-cancelled `QUEUED | COMPLETED` candidates with durable precommits for
+  receipt recovery and unions every non-cancelled `COMPLETED` traversal for
+  terminal summary, even with no precommit. It revalidates current planner/
+  checkpoint/delta authority and creates only missing strict runtime receipts.
+  It does not poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
   Task 5-7 unit set passes `96/96`; shadow-runtime plus ordered-commit
-  PostgreSQL pass `18/18 + 18/18` with zero skips, and typecheck passes.
+  PostgreSQL pass `21/21 + 18/18` with zero skips, and typecheck passes.
 - C1 Tasks 8-10 have not started. There is no non-interference proof or C1
   acceptance evidence. Stage C is
   incomplete, Stage D remains design-only, and production stays on matrix-v4,
