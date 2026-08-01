@@ -567,3 +567,16 @@ changing the authoritative pool. `Promise.race` or a signal alone is not
 cleanup. One eligible group accepts exactly one matching valid precommit,
 and orphan counting uses the full exact owning artifact contract rather than a
 few root fields.
+
+## 2026-08-01: A Matching Bounded-History Entry Is Not Whole-History Authority
+
+Agent mistake: historical shadow reconciliation validated one matching
+checkpoint attempt but accepted malformed surrounding `recentAttempts`, such
+as future entries, arbitrary order, over-bound arrays, impossible terminal
+outcomes, or a missing current completion record.
+
+Correct rule: mirror the repository writer's complete bounded shape. Validate
+the strict contiguous ascending suffix of `min(currentAttempt, 8)` records and
+the current terminal record before using one earlier `CHECKPOINTED` entry as
+historical authority. Keep exact same-attempt checkpoint-SHA authority as its
+separate path.

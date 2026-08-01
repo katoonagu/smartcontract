@@ -350,7 +350,7 @@ Execution checkpoint after C1 Task 5 implementation:
   terminal summary does not require a fabricated precommit. Completion publishes a strict
   `service-role-shadow-run-summary-v1`; unchanged closure is hash-idempotent,
   while later recovery may append a complete summary after an earlier incomplete
-  snapshot. Current Task 5-7 unit regressions pass `97/97`; shadow runtime plus
+  snapshot. Current Task 5-7 unit regressions pass `98/98`; shadow runtime plus
   ordered commit PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck
   passes. A saturated-pool regression proves there is no queued waiter, late
   transaction, or late write after acquisition timeout. C1 Tasks 8-10 remain:

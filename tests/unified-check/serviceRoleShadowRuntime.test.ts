@@ -2269,6 +2269,12 @@ describe("service role shadow checkpoint reconciliation", () => {
       ...attemptTwoCheckpoint,
       timingSummary: { attemptCount: 3 },
       recentAttempts: [{
+        attempt: 1,
+        startedAt: "2026-07-31T11:59:57.000Z",
+        completedAt: "2026-07-31T11:59:58.000Z",
+        durationMs: 1_000,
+        outcome: "CHECKPOINTED"
+      }, {
         attempt: 2,
         startedAt: "2026-07-31T11:59:58.000Z",
         completedAt: "2026-07-31T11:59:59.000Z",
@@ -2312,7 +2318,9 @@ describe("service role shadow checkpoint reconciliation", () => {
       accepted_attempt_id: "attempt-traversal-3",
       checkpoint_json: {
         ...currentCheckpoint,
-        recentAttempts: currentCheckpoint.recentAttempts.slice(1)
+        recentAttempts: currentCheckpoint.recentAttempts.filter(({ attempt }) =>
+          attempt !== 2
+        )
       },
       artifact_sha256: traversalSha256,
       analysis_manifest_sha256: fingerprintCanonicalArtifact(analysis),
@@ -2356,6 +2364,91 @@ describe("service role shadow checkpoint reconciliation", () => {
       ...traversalRow,
       task_id: "task-other",
       checkpoint_json: currentCheckpoint
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      checkpoint_json: {
+        ...currentCheckpoint,
+        recentAttempts: [
+          currentCheckpoint.recentAttempts[0],
+          currentCheckpoint.recentAttempts[1],
+          {
+            ...currentCheckpoint.recentAttempts[0],
+            attempt: 99
+          },
+          currentCheckpoint.recentAttempts[2]
+        ]
+      }
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      checkpoint_json: {
+        ...currentCheckpoint,
+        recentAttempts: [
+          currentCheckpoint.recentAttempts[1],
+          currentCheckpoint.recentAttempts[0],
+          currentCheckpoint.recentAttempts[2]
+        ]
+      }
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      traversal_attempt: 9,
+      accepted_attempt_id: "attempt-traversal-9",
+      checkpoint_json: {
+        ...currentCheckpoint,
+        timingSummary: { attemptCount: 9 },
+        recentAttempts: Array.from({ length: 9 }, (_, index) => ({
+          attempt: index + 1,
+          startedAt: new Date(Date.UTC(2026, 6, 31, 11, 59, 50 + index))
+            .toISOString(),
+          completedAt: new Date(Date.UTC(2026, 6, 31, 11, 59, 51 + index))
+            .toISOString(),
+          durationMs: 1_000,
+          outcome: index === 1
+            ? "CHECKPOINTED"
+            : index === 8 ? "COMPLETED" : "WAITING_RETRY"
+        }))
+      }
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      checkpoint_json: {
+        ...currentCheckpoint,
+        recentAttempts: [
+          {
+            ...currentCheckpoint.recentAttempts[0],
+            outcome: "CANCELLED"
+          },
+          currentCheckpoint.recentAttempts[1],
+          currentCheckpoint.recentAttempts[2]
+        ]
+      }
+    });
+    await expectUnreconciled({
+      ...traversalRow,
+      checkpoint_json: {
+        ...currentCheckpoint,
+        recentAttempts: currentCheckpoint.recentAttempts.slice(0, 2)
+      }
+    });
+
+    db.summaryTraversalRows = [{
+      ...traversalRow,
+      traversal_attempt: 2,
+      accepted_attempt_id: "attempt-traversal-2",
+      checkpoint_json: attemptTwoCheckpoint
+    }];
+    const sameAttemptSummary = await runtime.summarizeRun({
+      runId: RUN_ID,
+      signal: new AbortController().signal
+    });
+    expect(sameAttemptSummary?.artifact).toMatchObject({
+      complete: true,
+      counts: {
+        reconciledGroup: 1,
+        unreconciledGroup: 0
+      }
     });
 
     db.summaryTraversalRows = [{

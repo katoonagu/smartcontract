@@ -565,9 +565,13 @@ It authorizes no production routing, scoring, Stage D or rollout.
   checkpoint/delta authority and creates only missing strict runtime receipts.
   A terminal summary may reuse a runtime receipt from an earlier checkpoint
   attempt only when the same task's DB-authored bounded `recentAttempts`
-  contains exactly one matching `CHECKPOINTED` record; current/future,
-  nonexistent, other-task and other-run identities still fail closed, and the
-  current committed checkpoint head plus both delta ancestries remain required.
+  is the exact contiguous ascending suffix of `min(currentAttempt, 8)` strict
+  records, ends at the current accepted attempt as `COMPLETED`, contains only resumable
+  outcomes before it, and retains the receipt attempt exactly once as
+  `CHECKPOINTED`. A same-attempt receipt remains valid only when its full
+  checkpoint SHA equals the current checkpoint; missing/future historical
+  attempts and other-task or other-run identities fail closed. The current
+  committed checkpoint head plus both delta ancestries remain required.
   It does not poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
   Task 5-7 unit set passes `98/98`; shadow-runtime plus ordered-commit
   PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck passes. The

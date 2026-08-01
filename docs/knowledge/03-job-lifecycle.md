@@ -123,12 +123,17 @@ outside the rederived inventory are orphans. A profile is valid for orphan
 counting only after exact nested profile/vector/predicate and status/classifier
 validation. A runtime receipt from an earlier traversal checkpoint attempt is
 historical committed evidence only when the current task's DB-authored
-`recentAttempts` retains exactly one matching `CHECKPOINTED` record. The
-current accepted task attempt, planner entries, checkpoint head and both delta
-ancestry links are still revalidated; future, missing-history, other-task and
-other-run receipts remain unreconciled. The lifecycle retains only its last
-eight attempt records, so an older receipt intentionally remains unreconciled
-until lifecycle owns immutable checkpoint-attempt history. Each eligible group
+`recentAttempts` is the exact dense writer suffix of
+`min(currentAttempt, 8)` strict records in contiguous ascending attempt order,
+ending with the current accepted
+attempt as `COMPLETED`, with only lifecycle-resumable outcomes before it, and
+retaining the receipt attempt exactly once as `CHECKPOINTED`. An exact
+same-attempt receipt instead requires the full current checkpoint SHA. Planner
+entries, checkpoint head and both delta ancestry links are still revalidated;
+future, missing-history, other-task and other-run receipts remain
+unreconciled. The lifecycle retains only its last eight attempt records, so an
+older receipt intentionally remains unreconciled until lifecycle owns
+immutable checkpoint-attempt history. Each eligible group
 requires exactly one matching valid precommit;
 multiple matches force `unreconciled` and every deterministic extra counts as
 `precommitOrphan`. `complete` requires a ready fence,

@@ -2430,16 +2430,18 @@ function hasHistoricalCheckpointAttemptAuthorityV1(input: {
     input.receiptAttempt >= input.currentAttempt
   ) return false;
   try {
-    const seen = new Set<number>();
+    const attempts = exactDenseArray(input.checkpoint.recentAttempts);
+    const retainedAttemptCount = Math.min(input.currentAttempt, 8);
+    if (attempts.length !== retainedAttemptCount) return false;
     let matchingCheckpointedAttempt = 0;
-    for (const value of exactDenseArray(input.checkpoint.recentAttempts)) {
+    for (const [index, value] of attempts.entries()) {
       const attempt = exactRecord(value, [
         "attempt", "startedAt", "completedAt", "durationMs", "outcome"
       ]);
+      const expectedAttempt = input.currentAttempt - attempts.length + index + 1;
+      const terminal = expectedAttempt === input.currentAttempt;
       if (
-        !Number.isSafeInteger(attempt.attempt) ||
-        (attempt.attempt as number) < 1 ||
-        seen.has(attempt.attempt as number) ||
+        attempt.attempt !== expectedAttempt ||
         typeof attempt.startedAt !== "string" ||
         !Number.isFinite(Date.parse(attempt.startedAt)) ||
         typeof attempt.completedAt !== "string" ||
@@ -2448,19 +2450,18 @@ function hasHistoricalCheckpointAttemptAuthorityV1(input: {
         typeof attempt.durationMs !== "number" ||
         !Number.isFinite(attempt.durationMs) ||
         attempt.durationMs < 0 ||
-        ![
-          "QUEUED",
-          "CHECKPOINTED",
-          "WAITING_FOR_PROVIDER",
-          "WAITING_RETRY",
-          "COMPLETED",
-          "FAILED_TECHNICAL",
-          "CANCELLED",
-          "BLOCKED_ADMIN",
-          "LEASE_EXPIRED"
-        ].includes(attempt.outcome as string)
+        (
+          terminal
+            ? attempt.outcome !== "COMPLETED"
+            : ![
+                "CHECKPOINTED",
+                "WAITING_RETRY",
+                "BLOCKED_ADMIN",
+                "FAILED_TECHNICAL",
+                "LEASE_EXPIRED"
+              ].includes(attempt.outcome as string)
+        )
       ) return false;
-      seen.add(attempt.attempt as number);
       if (
         attempt.attempt === input.receiptAttempt &&
         attempt.outcome === "CHECKPOINTED"
