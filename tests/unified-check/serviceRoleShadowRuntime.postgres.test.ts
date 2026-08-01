@@ -15,6 +15,7 @@ const releaseGate = process.env.UNIFIED_RELEASE_GATE_MODE === "1";
 const postgresDescribe = connectionString && releaseGate ? describe : describe.skip;
 const SUBJECT = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const RUNTIME_COMMIT = "task-4-postgres-runtime";
+const LOCK_STATE_BARRIER_DEADLINE_MS = 10_000;
 
 type Harness = {
   admin: pg.Client;
@@ -146,9 +147,8 @@ async function waitForRuntimeLockWait(input: {
   queryFragment: string;
   lockKind: "advisory" | "run_row";
   afterQueryStartedAt?: string;
-  deadlineMs?: number;
 }): Promise<{ observedAt: number; queryStartedAt: string }> {
-  const deadline = performance.now() + (input.deadlineMs ?? 750);
+  const deadline = performance.now() + LOCK_STATE_BARRIER_DEADLINE_MS;
   while (performance.now() < deadline) {
     const row = (await input.harness.admin.query(
       `select activity.state,
@@ -201,6 +201,20 @@ async function insertMalformedWrapper(
        (sha256,created_by_run_id,kind,schema_version,artifact_json)
      values ($1,$2,'service_role_event_role_map','2',$3::jsonb)`,
     [sha256, runId, JSON.stringify(artifact)]
+  );
+  return sha256;
+}
+
+async function insertCorruptWrapperKey(
+  harness: Harness,
+  runId: string
+): Promise<string> {
+  const sha256 = `corrupt-wrapper-key:${runId}`;
+  await harness.admin.query(
+    `insert into unified_check_artifacts
+       (sha256,created_by_run_id,kind,schema_version,artifact_json)
+     values ($1,$2,'service_role_event_role_map','2',$3::jsonb)`,
+    [sha256, runId, JSON.stringify({ malformed: "non-hash-key" })]
   );
   return sha256;
 }
@@ -258,6 +272,37 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       kind: "ready",
       roleMapV2Sha256s: []
     });
+  }, 30_000);
+
+  it("publishes durable malformed for a non-hash wrapper key without weakening fence hashes", async () => {
+    const seeded = await seedRun(harness);
+    const validMalformedSha256 = await insertMalformedWrapper(
+      harness,
+      seeded.runId,
+      "valid-hash-neighbor"
+    );
+    const corruptKey = await insertCorruptWrapperKey(harness, seeded.runId);
+    const first = await runtime(harness.poolA).loadInputFence(seeded);
+    expect(first.artifact.outcome).toEqual({
+      kind: "unavailable",
+      reason: "malformed",
+      observedRoleMapV2Sha256s: [validMalformedSha256]
+    });
+    expect((await harness.admin.query(
+      `select kind,count(*)::int count
+         from unified_check_artifacts
+        where created_by_run_id=$1
+          and kind in ('service_role_shadow_input_set','service_role_shadow_input_fence')
+        group by kind order by kind`,
+      [seeded.runId]
+    )).rows).toEqual([
+      { kind: "service_role_shadow_input_fence", count: 1 }
+    ]);
+    expect(Number((await harness.admin.query(
+      "select count(*)::int count from unified_check_artifacts where sha256=$1",
+      [corruptKey]
+    )).rows[0].count)).toBe(1);
+    expect(await runtime(harness.poolB).loadInputFence(seeded)).toEqual(first);
   }, 30_000);
 
   it("rolls back a held run-row timeout, publishes unavailable, releases C1 lock, and permits an authoritative write", async () => {
@@ -347,8 +392,7 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
         pid: runtimePid,
         queryFragment: "pg_advisory_xact_lock",
         lockKind: "advisory",
-        afterQueryStartedAt: wait.queryStartedAt,
-        deadlineMs: 1_500
+        afterQueryStartedAt: wait.queryStartedAt
       });
       await delay(75);
       await holder.query(
@@ -401,16 +445,14 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
         pid: runtimePid,
         queryFragment: "pg_advisory_xact_lock",
         lockKind: "advisory",
-        afterQueryStartedAt: normalWait.queryStartedAt,
-        deadlineMs: 1_500
+        afterQueryStartedAt: normalWait.queryStartedAt
       });
       const fallbackWait = await waitForRuntimeLockWait({
         harness,
         pid: runtimePid,
         queryFragment: "pg_advisory_xact_lock",
         lockKind: "advisory",
-        afterQueryStartedAt: firstPublicationWait.queryStartedAt,
-        deadlineMs: 1_500
+        afterQueryStartedAt: firstPublicationWait.queryStartedAt
       });
       await delay(75);
       await holder.query(

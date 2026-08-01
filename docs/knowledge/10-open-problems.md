@@ -129,10 +129,16 @@ signal with tests.
   `18/18` with zero skips, including a deterministic two-connection race that
   converges on one atomic unreferenced bundle/V1-map/V2-wrapper trio. C1 Task 4
   is also closed: one immutable run-wide input set/fence now reuses only strict
-  run-owned wrapper/V1-map/bundle closure and its real database file passes
-  `4/4` with zero skips. C1 Tasks 5-10, including coordinator/config wiring,
-  post-checkpoint reconciliation, non-interference and the evidence producer,
-  have not started. The enabled config literal therefore remains unwired.
+  run-owned wrapper/V1-map/bundle closure, treats corrupt non-hash wrapper keys
+  as malformed without placing them in strict observed hashes, and passes
+  `22/22` unit plus `6/6` real PostgreSQL tests with zero skips. Together Tasks
+  3+4 pass `24/24` PostgreSQL tests. The preload ceiling is one normal plus at
+  most two publication attempts with separate 1,000 ms deadlines, or about
+  3,000 ms plus jitter under an indefinitely held external lock. Exhaustion
+  evicts the rejected cache entry; a later caller can retry and rescan only
+  while no durable fence exists. C1 Tasks 5-10, including coordinator/config
+  wiring, post-checkpoint reconciliation, non-interference and the evidence
+  producer, have not started. The enabled config literal remains unwired.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

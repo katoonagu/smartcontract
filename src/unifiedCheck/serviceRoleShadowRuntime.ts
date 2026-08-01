@@ -929,8 +929,12 @@ async function scanAndPublish(
     [input.runId]
   )).rows;
   const observedRoleMapV2Sha256s = [...new Set(rawRows.flatMap((row) =>
-    typeof row.sha256 === "string" ? [row.sha256] : []
+    typeof row.sha256 === "string" && HASH.test(row.sha256) ? [row.sha256] : []
   ))].sort();
+  if (rawRows.some((row) =>
+    typeof row.sha256 !== "string" || !HASH.test(row.sha256))) {
+    throw new FencePublicationRequest("malformed", observedRoleMapV2Sha256s);
+  }
   let maps: ValidatedRoleMap[];
   try {
     const wrapperRows = rawRows.map(storedArtifactRow);

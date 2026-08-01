@@ -514,6 +514,40 @@ describe("service role shadow runtime fence", () => {
     ).map((call) => call.transaction)).toEqual([2]);
   });
 
+  it("publishes and reuses malformed when a wrapper row has a non-hash key", async () => {
+    const db = new MemoryDatabase();
+    const valid = roleArtifacts();
+    seedRoleArtifacts(db, valid);
+    db.put(artifactRow(
+      RUN_ID,
+      "service_role_event_role_map",
+      "2",
+      { schemaVersion: "service-role-shadow-event-role-map-v2", malformed: true },
+      "corrupt-wrapper-key"
+    ));
+    const first = await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(first.artifact.outcome).toEqual({
+      kind: "unavailable",
+      reason: "malformed",
+      observedRoleMapV2Sha256s: [valid.wrapperSha256]
+    });
+    expect(db.transactions).toEqual(["rollback", "commit"]);
+    expect(db.rows().some((row) =>
+      row.created_by_run_id === RUN_ID &&
+      row.kind === "service_role_shadow_input_set"
+    )).toBe(false);
+
+    const restarted = await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).loadInputFence({ runId: RUN_ID, snapshotHash: SNAPSHOT_HASH });
+    expect(restarted).toEqual(first);
+    expect(db.wrapperScans).toBe(1);
+  });
+
   it("returns compound missing, found, and conflict only from the frozen validated set", async () => {
     const db = new MemoryDatabase();
     const first = roleArtifacts(RUN_ID, "first");
