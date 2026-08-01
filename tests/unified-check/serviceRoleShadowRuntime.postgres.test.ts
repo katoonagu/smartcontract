@@ -5,6 +5,9 @@ import pg from "pg";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser.js";
+import {
+  createServiceRoleShadowRecoveryDb
+} from "../../src/storage/db.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import {
   addressHistoryManifestKey,
@@ -14,6 +17,9 @@ import {
   createUnifiedPoolTransactionHost,
   type UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository.js";
+import {
+  createUnifiedProductionRuntime
+} from "../../src/unifiedCheck/productionRuntime.js";
 import {
   buildServiceRoleShadowInputFenceV1,
   buildServiceRoleShadowPrecommitReceiptV1,
@@ -1809,5 +1815,80 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
           )`,
       [prepared.seeded.runId]
     )).rows[0].count)).toBe(0);
+  }, 30_000);
+
+  it("times out saturated isolated startup acquisition without a late waiter", async () => {
+    const isolated = await createHarness();
+    const recoveryPool = createServiceRoleShadowRecoveryDb(connectionString!);
+    const holder = await recoveryPool.connect();
+    await holder.query(`set search_path to "${isolated.schema}"`);
+    const holderPid = Number((await holder.query(
+      "select pg_backend_pid()::int pid, 'saturated-holder-marker'::text marker"
+    )).rows[0].pid);
+    let holderReleased = false;
+    try {
+      const productionRuntime = createUnifiedProductionRuntime({
+        db: createUnifiedPoolTransactionHost(isolated.poolA),
+        serviceRoleShadowRecoveryDb:
+          createUnifiedPoolTransactionHost(recoveryPool),
+        runtimeCommit: RUNTIME_COMMIT,
+        providerConfigurationSha256: "a".repeat(64),
+        serviceRoleShadowPolicy: "service-role-shadow-100-plus-100-v1",
+        loadProviderPage: async () => {
+          throw new Error("unused");
+        },
+        loadCounterpartyLabels: async () => new Map(),
+        loadFrozenLabelDataset: async () => {
+          throw new Error("unused");
+        },
+        loadHardEvidence: async () => ({})
+      });
+      const startedAt = performance.now();
+      const recovery = productionRuntime
+        .reconcileCommittedServiceRoleShadowRunsV1!(
+          new AbortController().signal
+        );
+      await expect(recovery).rejects.toSatisfy((error: unknown) =>
+        error instanceof Error && error.message.includes("timeout")
+      );
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+      expect(recoveryPool.waitingCount).toBe(0);
+      expect((await isolated.poolA.query("select 1::int value")).rows)
+        .toEqual([{ value: 1 }]);
+
+      const artifactCountAtReturn = Number((await isolated.admin.query(
+        `select count(*)::int count from unified_check_artifacts
+          where kind in (
+            'service_role_shadow_runtime_receipt',
+            'service_role_shadow_run_summary'
+          )`
+      )).rows[0].count);
+      holder.release();
+      holderReleased = true;
+      await delay(300);
+      expect(recoveryPool.waitingCount).toBe(0);
+      expect(Number((await isolated.admin.query(
+        `select count(*)::int count from unified_check_artifacts
+          where kind in (
+            'service_role_shadow_runtime_receipt',
+            'service_role_shadow_run_summary'
+          )`
+      )).rows[0].count)).toBe(artifactCountAtReturn);
+      expect((await isolated.admin.query(
+        `select state,xact_start is null as transaction_released,query
+           from pg_stat_activity where pid=$1`,
+        [holderPid]
+      )).rows[0]).toMatchObject({
+        state: "idle",
+        transaction_released: true,
+        query: expect.stringContaining("saturated-holder-marker")
+      });
+      expect((await recoveryPool.query("select 1::int value")).rows)
+        .toEqual([{ value: 1 }]);
+    } finally {
+      if (!holderReleased) holder.release();
+      await recoveryPool.end();
+      await dispose(isolated);
+    }
   }, 30_000);
 });

@@ -44,13 +44,20 @@ describe("Unified production runtime configuration", () => {
       });
       expect(create).not.toHaveBeenCalled();
 
+      const recoveryDb = {} as never;
       createUnifiedProductionRuntime({
-        ...runtimeInput(),
+        ...enabledInput,
+        serviceRoleShadowRecoveryDb: recoveryDb,
         serviceRoleShadowPolicy: "service-role-shadow-100-plus-100-v1"
       });
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(create).toHaveBeenCalledWith({
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenNthCalledWith(1, {
         db: enabledInput.db,
+        runtimeCommit: "candidate",
+        pendingGroupRetentionMs: 120_000
+      });
+      expect(create).toHaveBeenNthCalledWith(2, {
+        db: recoveryDb,
         runtimeCommit: "candidate",
         pendingGroupRetentionMs: 120_000
       });
@@ -66,20 +73,36 @@ describe("Unified production runtime configuration", () => {
     })).toThrow("unified_production_service_role_shadow_policy_invalid");
   });
 
+  it("requires an isolated recovery database when shadow mode is enabled", () => {
+    expect(() => createUnifiedProductionRuntime({
+      ...runtimeInput(),
+      serviceRoleShadowPolicy: "service-role-shadow-100-plus-100-v1"
+    })).toThrow("unified_production_service_role_shadow_recovery_db_required");
+  });
+
   it("exposes enabled startup recovery and summarizes only completed traversal", async () => {
     const reconcileCheckpoint = vi.fn();
     const summarizeRun = vi.fn();
-    const recover = vi.fn();
+    const lifecycleRecover = vi.fn();
+    const recoveryRecover = vi.fn();
+    const recoverySummarizeRun = vi.fn();
     const create = vi.spyOn(
       shadowRuntimeModule,
       "createServiceRoleShadowRuntimeV1"
-    ).mockReturnValue({
+    ).mockReturnValueOnce({
       loadInputFence: vi.fn(),
       lookupMap: vi.fn(),
       observeAcceptedAddressHistoryGroup: vi.fn(),
       reconcileCheckpoint,
       summarizeRun,
-      reconcileCommittedServiceRoleShadowRunsV1: recover
+      reconcileCommittedServiceRoleShadowRunsV1: lifecycleRecover
+    }).mockReturnValueOnce({
+      loadInputFence: vi.fn(),
+      lookupMap: vi.fn(),
+      observeAcceptedAddressHistoryGroup: vi.fn(),
+      reconcileCheckpoint: vi.fn(),
+      summarizeRun: recoverySummarizeRun,
+      reconcileCommittedServiceRoleShadowRunsV1: recoveryRecover
     });
     const runCycle = vi.spyOn(workerModule, "runUnifiedTaskCycle")
       .mockImplementation(async (cycle) => {
@@ -108,16 +131,19 @@ describe("Unified production runtime configuration", () => {
 
       const enabled = createUnifiedProductionRuntime({
         ...runtimeInput(),
+        serviceRoleShadowRecoveryDb: {} as never,
         serviceRoleShadowPolicy: "service-role-shadow-100-plus-100-v1"
       });
       const startupSignal = new AbortController().signal;
       await enabled.reconcileCommittedServiceRoleShadowRunsV1!(startupSignal);
-      expect(recover).toHaveBeenCalledWith({ signal: startupSignal });
+      expect(recoveryRecover).toHaveBeenCalledWith({ signal: startupSignal });
+      expect(lifecycleRecover).not.toHaveBeenCalled();
       await enabled.runAnalysisCycle();
       expect(summarizeRun).toHaveBeenCalledWith({
         runId: "run-1",
         signal: expect.any(AbortSignal)
       });
+      expect(recoverySummarizeRun).not.toHaveBeenCalled();
       expect(reconcileCheckpoint).not.toHaveBeenCalled();
     } finally {
       runCycle.mockRestore();

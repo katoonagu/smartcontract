@@ -292,6 +292,7 @@ async function loadDirectHardEvidence(
 
 export function createUnifiedProductionRuntime(input: {
   db: UnifiedTransactionalQueryable;
+  serviceRoleShadowRecoveryDb?: UnifiedTransactionalQueryable;
   runtimeCommit: string;
   providerConfigurationSha256: string;
   runPurpose?: UnifiedRunPurpose;
@@ -354,11 +355,24 @@ export function createUnifiedProductionRuntime(input: {
       "unified_production_service_role_shadow_policy_invalid"
     );
   }
+  if (serviceRoleShadowPolicy !== "disabled" &&
+    input.serviceRoleShadowRecoveryDb === undefined) {
+    throw new TypeError(
+      "unified_production_service_role_shadow_recovery_db_required"
+    );
+  }
   const leaseMs = input.leaseMs ?? 60_000;
   const serviceRoleShadowRuntime = serviceRoleShadowPolicy === "disabled"
     ? null
     : createServiceRoleShadowRuntimeV1({
         db: input.db,
+        runtimeCommit: input.runtimeCommit,
+        pendingGroupRetentionMs: leaseMs * 2
+      });
+  const serviceRoleShadowRecoveryRuntime = serviceRoleShadowPolicy === "disabled"
+    ? null
+    : createServiceRoleShadowRuntimeV1({
+        db: input.serviceRoleShadowRecoveryDb!,
         runtimeCommit: input.runtimeCommit,
         pendingGroupRetentionMs: leaseMs * 2
       });
@@ -733,10 +747,11 @@ export function createUnifiedProductionRuntime(input: {
   });
   return {
     reconcileCommittedServiceRoleShadowRunsV1:
-      serviceRoleShadowRuntime === null
+      serviceRoleShadowRecoveryRuntime === null
         ? null
         : (signal: AbortSignal) =>
-            serviceRoleShadowRuntime.reconcileCommittedServiceRoleShadowRunsV1({
+            serviceRoleShadowRecoveryRuntime
+              .reconcileCommittedServiceRoleShadowRunsV1({
               signal
             }),
     runProviderCycle(

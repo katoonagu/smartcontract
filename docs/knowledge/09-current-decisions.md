@@ -553,16 +553,21 @@ It authorizes no production routing, scoring, Stage D or rollout.
   unchanged restart is hash-idempotent while later recovery may append a new
   complete immutable summary after an earlier incomplete one.
 - The exact enabled runtime exposes one once-at-startup, 1,000 ms bounded
-  recovery sweep outside the finalizer. Its internal 700 ms absolute budget,
-  explicit loop/query checks, 150 ms local database deadlines and awaited
-  transaction rollback/release form the hard wall-clock boundary. It reads
+  recovery sweep outside the finalizer. Startup alone owns a separate
+  single-connection PostgreSQL pool with a native 400 ms acquisition timeout;
+  it never queues on or changes the authoritative main pool, and startup closes
+  it in `finally`. Its internal 700 ms absolute budget, explicit loop/query
+  checks, 150 ms local database deadlines and awaited transaction
+  rollback/release form the remaining hard wall-clock boundary. It reads
   non-cancelled `QUEUED | COMPLETED` candidates with durable precommits for
   receipt recovery and unions every non-cancelled `COMPLETED` traversal for
   terminal summary, even with no precommit. It revalidates current planner/
   checkpoint/delta authority and creates only missing strict runtime receipts.
   It does not poll, fabricate precommits, retain a task lock, or mutate lifecycle. The fresh
-  Task 5-7 unit set passes `96/96`; shadow-runtime plus ordered-commit
-  PostgreSQL pass `21/21 + 18/18` with zero skips, and typecheck passes.
+  Task 5-7 unit set passes `97/97`; shadow-runtime plus ordered-commit
+  PostgreSQL pass `22/22 + 18/18` with zero skips, and typecheck passes. The
+  saturated-pool regression proves acquisition rejects below one second with
+  no queued waiter or late transaction/write after the held client is released.
 - C1 Tasks 8-10 have not started. There is no non-interference proof or C1
   acceptance evidence. Stage C is
   incomplete, Stage D remains design-only, and production stays on matrix-v4,

@@ -72,7 +72,12 @@ import {
   type StartupWorkScheduleController,
   type UnifiedResourceWorkLabel
 } from "./runtime/startupSchedule";
-import { closeDb, createDb, type Db } from "./storage/db";
+import {
+  closeDb,
+  createDb,
+  createServiceRoleShadowRecoveryDb,
+  type Db
+} from "./storage/db";
 import {
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
@@ -651,8 +656,17 @@ const loadUnifiedFrozenLabelDataset = createFrozenLabelDatasetLoader({
     )
   ).rows[0]?.dataset_json
 });
+const serviceRoleShadowRecoveryPool =
+  config.unifiedServiceRoleShadowPolicy ===
+    "service-role-shadow-100-plus-100-v1"
+    ? createServiceRoleShadowRecoveryDb(config.databaseUrl)
+    : null;
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
+  ...(serviceRoleShadowRecoveryPool === null ? {} : {
+    serviceRoleShadowRecoveryDb:
+      createUnifiedPoolTransactionHost(serviceRoleShadowRecoveryPool)
+  }),
   runtimeCommit: runtimeVersion.gitCommitSha,
   providerConfigurationSha256: unifiedProviderConfiguration.sha256,
   runPurpose: config.unifiedIsolatedWorkerOnly ? "release_canary" : undefined,
@@ -980,6 +994,14 @@ if (unifiedProductionRuntime.reconcileCommittedServiceRoleShadowRunsV1 !== null)
     .catch((error) => {
       logger.warn("service_role_shadow_startup_recovery_failed", {
         error: error instanceof Error ? error.message : String(error)
+      });
+    })
+    .finally(async () => {
+      if (serviceRoleShadowRecoveryPool === null) return;
+      await closeDb(serviceRoleShadowRecoveryPool).catch((error) => {
+        logger.warn("service_role_shadow_startup_recovery_pool_close_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
       });
     });
 }

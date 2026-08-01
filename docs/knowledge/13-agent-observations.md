@@ -558,7 +558,12 @@ Correct rule: union terminal lifecycle authority independently from optional
 recovery evidence. A missing precommit forbids a runtime receipt but not a
 completed-run summary. Hard public deadlines need an earlier absolute monotonic
 budget, checks inside loops and around every query, shorter database timeouts,
-and awaited rollback/connection release; `Promise.race` or a signal alone is
-not cleanup. One eligible group accepts exactly one matching valid precommit,
+and awaited rollback/connection release; that budget also includes pool
+acquisition. A shared pool with no native acquisition timeout can wait before
+any transaction deadline starts. For a one-shot optional startup sweep, use an
+isolated pool with a native connection timeout inside the public ceiling, prove
+its waiter is removed before return, and close it after the sweep without
+changing the authoritative pool. `Promise.race` or a signal alone is not
+cleanup. One eligible group accepts exactly one matching valid precommit,
 and orphan counting uses the full exact owning artifact contract rather than a
 few root fields.

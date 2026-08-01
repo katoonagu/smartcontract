@@ -99,9 +99,12 @@ authority read, leaving rollback and pool-release headroom inside the worker's
 
 C1 Task 7 adds one enabled-runtime startup sweep, called once from process
 startup and never from the finalizer or a poller. The public ceiling remains
-1,000 ms; an internal 700 ms absolute monotonic budget, explicit loop/query
-checks, and 150 ms local statement/lock deadlines leave time for rollback and
-connection release. It considers only non-cancelled `QUEUED | COMPLETED` traversal work,
+1,000 ms. A startup-owned single-connection pool applies a native 400 ms
+acquisition timeout and is closed after the sweep; it neither queues on nor
+changes the authoritative main pool. After acquisition, an internal 700 ms
+absolute monotonic budget, explicit loop/query checks, and 150 ms local
+statement/lock deadlines leave time for rollback and connection release. It
+considers only non-cancelled `QUEUED | COMPLETED` traversal work,
 reconstructs no process token, and writes a runtime receipt only from a durable
 strict precommit plus current committed planner/checkpoint/delta authority.
 `CANCELLED`, profile-only partial state, or a missing precommit never creates a
