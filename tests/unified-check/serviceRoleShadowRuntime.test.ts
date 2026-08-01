@@ -287,6 +287,11 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
   failReadyFenceInsertOnce = false;
   failInputSetInsertOnce = false;
   failArtifactKindOnce: string | null = null;
+  delayArtifactInsertOnce: {
+    readonly kind: string;
+    readonly onStarted: () => void;
+    readonly release: Promise<void>;
+  } | null = null;
   unavailableFenceTimeoutsRemaining = 0;
   inputSetInsertErrorOnce: Error | null = null;
   artifactLoadErrorOnce: Error | null = null;
@@ -377,6 +382,12 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
       }
       if (normalized.startsWith("insert into unified_check_artifacts")) {
         const [sha256, runId, kind, schemaVersion, json] = values.map(String);
+        if (this.delayArtifactInsertOnce?.kind === kind) {
+          const delayed = this.delayArtifactInsertOnce;
+          this.delayArtifactInsertOnce = null;
+          delayed.onStarted();
+          await delayed.release;
+        }
         if (this.failArtifactKindOnce === kind) {
           this.failArtifactKindOnce = null;
           throw new Error(`failed_${kind}`);
@@ -1405,6 +1416,35 @@ describe("service role shadow accepted-history observer", () => {
     expect(noObservations(invalidBindingDb)).toEqual([]);
   });
 
+  it("does not persist a found-map diagnostic profile when source pages are invalid", async () => {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+
+    await createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: [],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: new AbortController().signal
+    });
+
+    expect(db.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
+  });
+
   it("rolls back partial profile persistence and never publishes a precommit", async () => {
     const db = new MemoryDatabase();
     const accepted = acceptedHistoryGroup();
@@ -1453,6 +1493,55 @@ describe("service role shadow accepted-history observer", () => {
       signal: new AbortController().signal
     })).rejects.toThrow("failed_service_role_shadow_precommit_receipt");
     expect(precommitDb.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
+  });
+
+  it("rolls back when abort is observed as the final precommit insert settles", async () => {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseInsert!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseInsert = resolve;
+    });
+    db.delayArtifactInsertOnce = {
+      kind: "service_role_shadow_precommit_receipt",
+      onStarted: markStarted,
+      release
+    };
+    const controller = new AbortController();
+    const observation = createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: controller.signal
+    });
+
+    await started;
+    controller.abort();
+    releaseInsert();
+    await expect(observation).rejects.toThrow(
+      "service_role_shadow_observer_aborted"
+    );
+    expect(db.transactions.at(-1)).toBe("rollback");
+    expect(db.rows().filter((row) =>
       row.kind === "service_role_shadow_profile" ||
       row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
   });

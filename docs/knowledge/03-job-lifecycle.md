@@ -56,8 +56,14 @@ non-authoritative callback after 1,000 ms. Observer timeout, rejection, or late
 mutation cannot change the returned checkpoint/delta or claim authority;
 heartbeat failure still aborts the worker path. Complete exact-map subgroups
 persist only standalone per-state profiles and one idempotent unconfirmed
-precommit receipt. No checkpoint lifecycle, finalizer, score, report, delivery,
-or production runtime wiring changes in this task.
+precommit receipt; a found map whose builder result remains diagnostic/
+insufficient is not qualifying and persists neither. Abort observed before the
+final receipt insert settles and before the transaction callback returns rolls
+back the whole subgroup. If all checks passed and PostgreSQL already ordered
+COMMIT before a later timer abort, that receipt is complete but has no local
+token and is eligible only for Task 7's crash-window recovery. No checkpoint
+lifecycle, finalizer, score, report, delivery, or production runtime wiring
+changes in this task.
 
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the

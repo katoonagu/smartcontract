@@ -1443,7 +1443,9 @@ export function createServiceRoleShadowRuntimeV1(input: {
             artifact: lookup.sourceMap
           }
         });
-        if (built === null) continue;
+        if (built === null || built.artifact.result.insufficientReason !== null) {
+          continue;
+        }
         const candidate: ProfileCandidate = {
           traversalStateId: traversalStateId(state),
           shadowStateId: built.artifact.traversalStateId,
@@ -1504,6 +1506,9 @@ export function createServiceRoleShadowRuntimeV1(input: {
             schemaVersion: "1",
             artifact: precommit.artifact
           });
+          if (group.signal.aborted) {
+            throw new Error("service_role_shadow_observer_aborted");
+          }
         });
         if (group.signal.aborted) return;
         pendingGroups.set(precommit.sha256, {

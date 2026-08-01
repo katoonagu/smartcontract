@@ -38,7 +38,7 @@
   persistence, and is bounded by one 1,000 ms signal between authoritative
   heartbeats. Exact found-map subgroups persist per-state profiles and one
   strict idempotent precommit; the focused coordinator/runtime files pass
-  `26/26` and `29/29`.
+  `26/26` and `31/31`.
 - Tasks 6-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
   `AppConfig`, but the enabled literal is not wired into runtime. There is no
   post-checkpoint reconciliation, traversal/finalizer/report/score effect or
@@ -70,6 +70,13 @@ Baseline already passed before this plan: `npm run typecheck`; full `npm test` w
 - Accepted-history anchor binding V1 is exactly `canonicalEventId + blockNumber + timestamp + eventIndex + orderAuthority: "unique_block"`. It is reconstruction authority, not physical chain-order authority.
 - The run-wide preload, each independent group observer, the post-commit lifecycle callback, and the one startup recovery sweep each have their own hard `1_000 ms` deadline and `AbortSignal`; no per-state timer is allowed.
 - Timeout, callback rejection, persistence failure, process loss, and missing process-local pending state collapse into deterministic terminal `unreconciled`; no row is written for an individual skip/failure.
+- A found map is not qualifying when the frozen V1 profile builder still
+  returns a diagnostic `insufficientReason`. Abort observed before the final
+  precommit insert settles and before the transaction callback returns rolls
+  back every subgroup row. If every check passed and COMMIT was already ordered
+  before a later timer abort, the durable precommit is complete, has no local
+  pending token, and is eligible only for Task 7's bounded crash-window
+  recovery.
 - A run's first valid `service-role-shadow-input-fence-v1` outcome is immutable. `ready` binds the complete sorted V2 input set; `unavailable` binds `preload_timeout | malformed | conflict`. Restart reuses that outcome and never rescans a later role-map population.
 - A returned checkpoint row is not sufficient authority: `CANCELLED`, claim-loss, an absent/mismatched ordered-entry commit, or a candidate delta not reachable from the committed head produces no runtime receipt.
 - Acceptance generation is forbidden from a dirty tree. Producer, owning serializer/parser, and tests must already exist in a clean `testedSourceCommit`; replay input, identity, and receipt all bind that exact commit.
@@ -312,8 +319,8 @@ Modify:
   ```
 
 - [x] **Step 4: Invoke the hook after successful application and delta persistence, before handler return.** Heartbeats remain authoritative and may throw claim loss; catch only observer/timeout errors. Abort at 1,000 ms, stop new per-state operations when `signal.aborted`, and attach a rejection handler to late work. Callback checkpoint/events/states are owned deep copies, including `Date`, so synchronous or late mutation cannot reach authoritative state.
-- [x] **Step 5: Persist only complete found-map compound groups.** Insert the existing profile once per qualifying state. After every profile insert for one compound binding settles before abort, insert exactly one `service-role-shadow-precommit-receipt-v1` whose body binds fence/input-set hashes, accepted manifest and page hashes, candidate checkpoint/delta hashes, the compound binding key, and a lexically sorted exact array of `{ traversalStateId, shadowStateId, profileSha256, wrapperSha256 }`; set `commitStatus:"unconfirmed"` and `productionEffect:false`. Register one pending token for that group only after all profile and group-receipt inserts settle. Partial profiles never create a precommit receipt and can never be reconciled.
-- [x] **Step 6: Run tests.** Expected: PASS; missing/conflict/malformed/failure paths add no per-skip artifact. The coordinator/runtime files pass `26/26` and `29/29`; typecheck and diff check pass.
+- [x] **Step 5: Persist only complete found-map compound groups.** Insert the existing profile once per qualifying state; a diagnostic profile with non-null `insufficientReason` is not qualifying. After every profile insert for one compound binding settles before abort, insert exactly one `service-role-shadow-precommit-receipt-v1` whose body binds fence/input-set hashes, accepted manifest and page hashes, candidate checkpoint/delta hashes, the compound binding key, and a lexically sorted exact array of `{ traversalStateId, shadowStateId, profileSha256, wrapperSha256 }`; set `commitStatus:"unconfirmed"` and `productionEffect:false`. Recheck abort immediately after the final insert and before returning to the transaction host. Register one pending token for that group only after all profile and group-receipt inserts and COMMIT settle. Partial profiles never create a precommit receipt and can never be reconciled; a commit already ordered after all checks is a complete crash-window precommit even if the callback's timer aborts before the commit reply.
+- [x] **Step 6: Run tests.** Expected: PASS; missing/conflict/malformed/insufficient/failure paths add no per-skip artifact. The coordinator/runtime files pass `26/26` and `31/31`; typecheck and diff check pass.
 - [x] **Step 7: Commit.**
 
   ```powershell

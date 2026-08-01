@@ -503,10 +503,16 @@ It authorizes no production routing, scoring, Stage D or rollout.
   exact bindings, excludes the checked subject, uses only the frozen compound
   lookup, writes one existing profile per qualifying state, and atomically
   writes one strict idempotent unconfirmed precommit per complete compound
-  subgroup. Missing, conflict, malformed, abort, and write failure create no
-  per-skip row or partial precommit. A new task attempt over identical inputs
-  reuses the same precommit hash; task/attempt remain only in the process-local
-  pending token. Coordinator/runtime unit files pass `26/26` and `29/29`.
+  subgroup. A found map with a diagnostic/insufficient builder result is not
+  qualifying. Missing, conflict, malformed, insufficient, and write failure
+  create no per-skip row or partial precommit. Abort observed before the final
+  receipt insert settles/transaction callback returns rolls back all subgroup
+  rows. A COMMIT already ordered after all checks is a complete durable
+  precommit even if a later timer aborts before its reply; without a local token
+  it is only Task 7 crash-window recovery input. A new task attempt over
+  identical inputs reuses the same precommit hash; task/attempt remain only in
+  the process-local pending token. Coordinator/runtime unit files pass `26/26`
+  and `31/31`.
 - C1 Tasks 6-10 have not started. There is no runtime/config wiring,
   post-checkpoint reconciliation, finalizer/report/score effect, or C1
   acceptance evidence. The enabled literal remains unwired. Stage C is
