@@ -1,5 +1,6 @@
 import {
   canonicalizeArtifactJson,
+  canonicalizeLargeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../forensics/canonicalJson";
 import { canonicalTronUsdtEventKey } from "../forensics/tronAddressAllTimeIndex";
@@ -1075,6 +1076,10 @@ function deepFreezeJson<T>(value: T): T {
 
 function ownedJson<T>(value: T): T {
   return deepFreezeJson(JSON.parse(canonicalizeArtifactJson(value)) as T);
+}
+
+function ownedLargeJson<T>(value: T): T {
+  return deepFreezeJson(JSON.parse(canonicalizeLargeArtifactJson(value)) as T);
 }
 
 function exactTimestamp(value: unknown): value is string {
@@ -3158,7 +3163,7 @@ export function parseServiceRoleShadowC1AcceptanceV1(
       exactDenseArray(provider.cacheDecisions).length !== 0
     ) throw new TypeError("invalid_provider_projection");
 
-    return ownedJson({
+    return ownedLargeJson({
       schemaVersion: "service-role-shadow-c1-acceptance-v1" as const,
       testedSourceCommit: root.testedSourceCommit,
       replayInput,
@@ -3184,7 +3189,7 @@ export function parseServiceRoleShadowC1AcceptanceV1(
 }
 
 export function serializeServiceRoleShadowC1AcceptanceV1(value: unknown): string {
-  return canonicalizeArtifactJson(parseServiceRoleShadowC1AcceptanceV1(value));
+  return canonicalizeLargeArtifactJson(parseServiceRoleShadowC1AcceptanceV1(value));
 }
 
 type StoredArtifactRow = {

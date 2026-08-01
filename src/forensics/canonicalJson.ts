@@ -6,6 +6,7 @@ const MAX_CANONICAL_JSON_DEPTH = 64;
 const MAX_CANONICAL_JSON_NODES = 10_000;
 const MAX_ARTIFACT_STRING_LENGTH = 16 * 1024 * 1024;
 const MAX_ARTIFACT_JSON_NODES = 2_000_000;
+const MAX_LARGE_ARTIFACT_JSON_NODES = 8_000_000;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -126,6 +127,13 @@ export function canonicalizeArtifactJson(value: unknown): string {
   return canonicalizeWithLimits(value, {
     maxStringLength: MAX_ARTIFACT_STRING_LENGTH,
     maxNodes: MAX_ARTIFACT_JSON_NODES
+  });
+}
+
+export function canonicalizeLargeArtifactJson(value: unknown): string {
+  return canonicalizeWithLimits(value, {
+    maxStringLength: MAX_ARTIFACT_STRING_LENGTH,
+    maxNodes: MAX_LARGE_ARTIFACT_JSON_NODES
   });
 }
 

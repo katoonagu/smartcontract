@@ -375,7 +375,9 @@ Execution checkpoint after C1 Task 9 implementation:
   consequent group; capacity-one admits/reserves only the first of 889 planned
   rows. Enabled writes `7/1/1` profile/precommit/runtime evidence, both variants
   make zero provider calls, and the traversal remains queued with zero terminal
-  summaries. The acceptance root is self-contained and resolves
+  summaries. The self-contained root alone uses the dedicated 8,000,000-node
+  canonical budget; nested artifacts keep the ordinary 2,000,000-node limit.
+  The acceptance root resolves
   planner, task, attempt, artifact, checkpoint and delta authority from their
   real storage boundaries. Task 10 remains required to generate and admit the
   real-history input, identity and root from the clean tested commit.

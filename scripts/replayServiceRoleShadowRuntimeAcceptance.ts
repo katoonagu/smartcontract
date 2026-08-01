@@ -378,7 +378,7 @@ export async function runServiceRoleShadowRuntimeAcceptanceCli(
       testedSourceCommit: acceptance.testedSourceCommit,
       replayInputSha256: acceptance.replayInputSha256,
       replayIdentitySha256: acceptance.replayIdentitySha256,
-      acceptanceSha256: fingerprintCanonicalArtifact(acceptance)
+      acceptanceSha256: createHash("sha256").update(bytes).digest("hex")
     })}\n`);
     return;
   }

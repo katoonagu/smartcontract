@@ -160,7 +160,9 @@ signal with tests.
   self-contained parser. Its real-data correction preserves the exact 1,498-
   delta predecessor prefix: 888 inherited unresolved history groups plus the
   target's one consequent group remain planned, capacity-one admits only the
-  first, and no provider worker runs. Task 10 still must generate the three exact
+  first, and no provider worker runs. Its transitive root alone has a dedicated
+  8,000,000-node canonical budget while nested artifacts retain 2,000,000.
+  Task 10 still must generate the three exact
   real-history files from the clean tested commit and admit their acceptance
   root; code/tests or Task 7-9 artifacts alone are not admission.
 - Current account metadata does not prove EOA status at a historical anchor.

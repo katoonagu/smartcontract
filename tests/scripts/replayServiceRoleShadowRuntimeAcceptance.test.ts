@@ -17,6 +17,7 @@ import {
 } from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 import {
   canonicalizeArtifactJson,
+  canonicalizeLargeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
@@ -855,6 +856,18 @@ function acceptanceFixture() {
 }
 
 describe("Stage C1 runtime acceptance contracts", () => {
+  it("reserves the larger canonical node budget for the self-contained root", () => {
+    const values = Array<null>(2_000_000).fill(null);
+    expect(() => canonicalizeArtifactJson({ values })).toThrow(
+      "Canonical JSON exceeds node limit"
+    );
+    const canonical = canonicalizeLargeArtifactJson({ values });
+    expect(canonical.length).toBe(
+      canonicalizeLargeArtifactJson({ values: [] }).length +
+        values.length * 4 + values.length - 1
+    );
+  });
+
   it("exposes the owning acceptance parser and canonical serializer", () => {
     expect(parseServiceRoleShadowC1AcceptanceV1).toBeTypeOf("function");
     expect(serializeServiceRoleShadowC1AcceptanceV1).toBeTypeOf("function");

@@ -597,7 +597,9 @@ It authorizes no production routing, scoring, Stage D or rollout.
   both projections retain the same 889 planned rows, with only the first
   admitted/reserved by the capacity-one barrier. Enabled writes seven profiles
   plus one precommit and one runtime receipt, makes zero provider calls, and
-  creates zero run summaries. Task 7-8 separately
+  creates zero run summaries. Only the transitive C1 root uses an 8,000,000-
+  node canonical budget; nested artifacts retain the ordinary 2,000,000-node
+  limit and the CLI file ceiling remains 512 MiB. Task 7-8 separately
   prove summary behavior for genuinely completed runs. No real-history input,
   identity, or acceptance file is generated or admitted until Task 10.
 - Stage C is incomplete, Stage D remains design-only, and production stays on
