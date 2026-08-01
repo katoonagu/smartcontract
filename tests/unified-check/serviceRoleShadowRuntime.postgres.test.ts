@@ -203,6 +203,24 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function settleBeforeTestDeadline<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  code: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(code)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function waitForRuntimeLockWait(input: {
   harness: Harness;
   pid: number;
@@ -872,7 +890,11 @@ type NoninterferenceTapeResult = {
   readonly providerCalls: readonly {
     readonly address: string;
     readonly cursor: string | null;
-    readonly source: "network";
+  }[];
+  readonly cacheDecisions: readonly {
+    readonly address: string;
+    readonly cursor: string | null;
+    readonly source: "network" | "cache" | "inflight";
   }[];
   readonly shadowCounts: Readonly<Record<string, number>>;
   readonly shadowHashes: readonly string[];
@@ -881,6 +903,7 @@ type NoninterferenceTapeResult = {
     readonly artifact: unknown;
   }[];
   readonly acceptedCheckpointElapsedMs: number;
+  readonly blockerHeldAtSettlement: boolean;
 };
 
 function deterministicIds() {
@@ -929,12 +952,13 @@ function traversalCheckpointFor(
 function postCommitHangingHost(pool: pg.Pool): {
   readonly db: UnifiedTransactionalQueryable;
   arm(): void;
-  waitForRelease(): Promise<void>;
+  isHeld(): boolean;
+  release(): void;
 } {
   const base = createUnifiedPoolTransactionHost(pool);
   let armed = false;
   let triggered = false;
-  let released = Promise.resolve();
+  let blocker: pg.PoolClient | null = null;
   return {
     db: {
       query: base.query,
@@ -947,13 +971,7 @@ function postCommitHangingHost(pool: pg.Pool): {
           : undefined;
         if (armed && !triggered && orderedCommit?.applied === true) {
           triggered = true;
-          const blocker = await pool.connect();
-          released = new Promise<void>((resolve) => {
-            setTimeout(() => {
-              blocker.release();
-              resolve();
-            }, 1_250);
-          });
+          blocker = await pool.connect();
         }
         return result;
       }
@@ -961,7 +979,11 @@ function postCommitHangingHost(pool: pg.Pool): {
     arm() {
       armed = true;
     },
-    waitForRelease: () => released
+    isHeld: () => blocker !== null,
+    release() {
+      blocker?.release();
+      blocker = null;
+    }
   };
 }
 
@@ -979,6 +1001,7 @@ async function authoritativeProjection(input: {
   readonly harness: Harness;
   readonly runId: string;
   readonly providerCalls: NoninterferenceTapeResult["providerCalls"];
+  readonly cacheDecisions: NoninterferenceTapeResult["cacheDecisions"];
 }): Promise<string> {
   const requests = await projectionRows(
     input.harness,
@@ -1092,11 +1115,7 @@ async function authoritativeProjection(input: {
     provider: {
       callCount: input.providerCalls.length,
       calls: input.providerCalls,
-      cacheDecisions: input.providerCalls.map(({ address, cursor, source }) => ({
-        address,
-        cursor,
-        source
-      }))
+      cacheDecisions: input.cacheDecisions
     },
     requests,
     runs,
@@ -1144,12 +1163,18 @@ async function runAuthoritativeNoninterferenceTape(input: {
   const providerCalls: Array<{
     address: string;
     cursor: string | null;
-    source: "network";
+  }> = [];
+  const cacheDecisions: Array<{
+    address: string;
+    cursor: string | null;
+    source: "network" | "cache" | "inflight";
   }> = [];
   const hangingHost = postCommitHangingHost(harness.poolA);
   const db = hangingHost.db;
   let preloadHolder: pg.Client | null = null;
-  let preloadRelease: Promise<void> = Promise.resolve();
+  let preloadHolderPid: number | null = null;
+  let preloadHeld = false;
+  let inFlightAcceptedCycle: Promise<unknown> | null = null;
   try {
     const intake = await intakeUnifiedCheck({
       store: createPostgresUnifiedRequestStore(db),
@@ -1245,8 +1270,14 @@ async function runAuthoritativeNoninterferenceTape(input: {
       now: () => new Date(FROZEN_CLOCK_ISO),
       createId: ids,
       async loadProviderPage({ address, cursor, onDiagnostic }) {
-        onDiagnostic?.({ source: "network" });
-        providerCalls.push({ address: address ?? SUBJECT, cursor, source: "network" });
+        providerCalls.push({ address: address ?? SUBJECT, cursor });
+        const diagnostic = { source: "network" as const };
+        onDiagnostic?.(diagnostic);
+        cacheDecisions.push({
+          address: address ?? SUBJECT,
+          cursor,
+          source: diagnostic.source
+        });
         if (address === accepted.states[0]!.address) {
           const content = {
             kind: "page" as const,
@@ -1321,42 +1352,74 @@ async function runAuthoritativeNoninterferenceTape(input: {
       await insertArtifact({ harness, runId, ...artifact });
     }
 
+    await expect(runtime.runAnalysisCycle()).resolves.toMatchObject({
+      outcome: "completed",
+      taskId: "task-90-fast"
+    });
+
     if (input.variant === "preload_lock" && input.policy !== "disabled") {
       preloadHolder = new pg.Client({
         connectionString,
         options: `-c search_path=${harness.schema},pg_catalog`
       });
       await preloadHolder.connect();
+      preloadHolderPid = Number((await preloadHolder.query(
+        "select pg_backend_pid()::int pid"
+      )).rows[0].pid);
       await preloadHolder.query(
         "select pg_advisory_lock(hashtextextended($1::text,0))",
         [`service-role-shadow-input-fence-v1:${runId}`]
       );
-      preloadRelease = new Promise<void>((resolve) => {
-        setTimeout(() => {
-          void preloadHolder!.query(
-            "select pg_advisory_unlock(hashtextextended($1::text,0))",
-            [`service-role-shadow-input-fence-v1:${runId}`]
-          ).finally(resolve);
-        }, 1_250);
-      });
+      preloadHeld = true;
     }
     if (input.variant === "post_commit_hang" && input.policy !== "disabled") {
       hangingHost.arm();
     }
-    let acceptedCheckpointElapsedMs = -1;
-    for (let cycle = 0; cycle < 4; cycle += 1) {
+    let acceptedCheckpointElapsedMs: number;
+    let blockerHeldAtSettlement = false;
+    try {
       const checkpointStartedAt = Date.now();
-      const result = await runtime.runAnalysisCycle();
-      if (
-        result.taskId === "task-02-traversal" &&
-        result.outcome === "checkpointed"
+      const acceptedCycle = runtime.runAnalysisCycle();
+      inFlightAcceptedCycle = acceptedCycle;
+      const result = await settleBeforeTestDeadline(
+        acceptedCycle,
+        2_200,
+        `service_role_shadow_${input.variant}_deadline_missing`
+      );
+      acceptedCheckpointElapsedMs = Date.now() - checkpointStartedAt;
+      expect(result).toMatchObject({
+        taskId: "task-02-traversal",
+        outcome: "checkpointed"
+      });
+      if (input.variant === "preload_lock" && input.policy !== "disabled") {
+        blockerHeldAtSettlement = preloadHeld && preloadHolderPid !== null &&
+          (await harness.admin.query(
+            `select exists(
+               select 1 from pg_locks
+                where pid=$1 and locktype='advisory' and granted
+             ) held`,
+            [preloadHolderPid]
+          )).rows[0].held === true;
+      } else if (
+        input.variant === "post_commit_hang" && input.policy !== "disabled"
       ) {
-        acceptedCheckpointElapsedMs = Date.now() - checkpointStartedAt;
-        break;
+        blockerHeldAtSettlement = hangingHost.isHeld() &&
+          harness.poolA.idleCount === 0 && harness.poolA.waitingCount >= 1;
       }
+      if (input.variant !== "normal" && input.policy !== "disabled") {
+        expect(blockerHeldAtSettlement).toBe(true);
+      }
+    } finally {
+      if (preloadHeld && preloadHolder) {
+        await preloadHolder.query(
+          "select pg_advisory_unlock(hashtextextended($1::text,0))",
+          [`service-role-shadow-input-fence-v1:${runId}`]
+        ).catch(() => undefined);
+        preloadHeld = false;
+      }
+      hangingHost.release();
     }
-    expect(acceptedCheckpointElapsedMs).toBeGreaterThanOrEqual(0);
-    await Promise.all([preloadRelease, hangingHost.waitForRelease()]);
+    inFlightAcceptedCycle = null;
     await harness.poolA.query("select 1");
 
     for (let cycle = 0; cycle < 40; cycle += 1) {
@@ -1407,7 +1470,8 @@ async function runAuthoritativeNoninterferenceTape(input: {
     const projectionBytes = await authoritativeProjection({
       harness,
       runId,
-      providerCalls
+      providerCalls,
+      cacheDecisions
     });
     const shadowHashes = shadowRows.map((row) => String(row.sha256));
     const attemptedShadowReferences = Number((await harness.admin.query(
@@ -1423,21 +1487,32 @@ async function runAuthoritativeNoninterferenceTape(input: {
     return {
       projectionBytes,
       providerCalls,
+      cacheDecisions,
       shadowCounts,
       shadowHashes,
       shadowArtifacts: shadowRows.map((row) => ({
         kind: String(row.kind),
         artifact: row.artifact_json
       })),
-      acceptedCheckpointElapsedMs
+      acceptedCheckpointElapsedMs,
+      blockerHeldAtSettlement
     };
   } finally {
-    performanceNow.mockRestore();
+    hangingHost.release();
     if (preloadHolder) {
       await preloadHolder.query("select pg_advisory_unlock_all()")
         .catch(() => undefined);
+      preloadHeld = false;
       await preloadHolder.end().catch(() => undefined);
     }
+    if (inFlightAcceptedCycle !== null) {
+      await settleBeforeTestDeadline(
+        inFlightAcceptedCycle.catch(() => undefined),
+        5_000,
+        "service_role_shadow_deadline_cleanup_timeout"
+      ).catch(() => undefined);
+    }
+    performanceNow.mockRestore();
     await dispose(harness);
   }
 }
@@ -1465,6 +1540,12 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
     expect(enabled.projectionBytes).toBe(disabled.projectionBytes);
     expect(enabled.providerCalls).toEqual(disabled.providerCalls);
     expect(enabled.providerCalls).toHaveLength(2);
+    expect(enabled.cacheDecisions).toEqual(disabled.cacheDecisions);
+    expect(enabled.cacheDecisions).toHaveLength(2);
+    expect(enabled.cacheDecisions.map(({ source }) => source)).toEqual([
+      "network",
+      "network"
+    ]);
     expect(disabled.shadowHashes).toEqual([]);
     expect(enabled.shadowCounts).toEqual({
       service_role_shadow_input_set: 1,
@@ -1522,6 +1603,10 @@ postgresDescribe("service role shadow runtime PostgreSQL fence", () => {
       expect(enabledDeadline.providerCalls).toEqual(
         disabledDeadline.providerCalls
       );
+      expect(enabledDeadline.cacheDecisions).toEqual(
+        disabledDeadline.cacheDecisions
+      );
+      expect(enabledDeadline.blockerHeldAtSettlement).toBe(true);
       expect(enabledDeadline.acceptedCheckpointElapsedMs)
         .toBeGreaterThanOrEqual(900);
       expect(enabledDeadline.acceptedCheckpointElapsedMs).toBeLessThan(2_500);
