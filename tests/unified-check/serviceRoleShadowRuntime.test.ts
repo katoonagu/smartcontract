@@ -1565,7 +1565,9 @@ describe("service role shadow checkpoint reconciliation", () => {
     };
   }
 
-  async function preparedReconciliation() {
+  async function preparedReconciliation(
+    candidatePrevious: "valid" | "numeric" | "missing" = "valid"
+  ) {
     const db = new MemoryDatabase();
     const accepted = acceptedHistoryGroup();
     seedRoleArtifacts(db, accepted);
@@ -1573,7 +1575,14 @@ describe("service role shadow checkpoint reconciliation", () => {
       db,
       runtimeCommit: RUNTIME_COMMIT
     });
-    const candidate = delta(null, "candidate");
+    const validCandidate = delta(null, "candidate");
+    const candidate = candidatePrevious === "numeric"
+      ? { ...validCandidate, previousDeltaHash: 7 }
+      : candidatePrevious === "missing"
+        ? Object.fromEntries(Object.entries(validCandidate).filter(([key]) =>
+            key !== "previousDeltaHash"
+          ))
+        : validCandidate;
     const candidateSha256 = fingerprintCanonicalArtifact(candidate);
     const committed = delta(candidateSha256, "committed");
     const committedSha256 = fingerprintCanonicalArtifact(committed);
@@ -1806,4 +1815,35 @@ describe("service role shadow checkpoint reconciliation", () => {
     expect(prepared.db.rows().filter((row) =>
       row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
   });
+
+  it.each(["numeric", "missing"] as const)(
+    "rejects a candidate delta with %s previousDeltaHash before declaring it reachable",
+    async (candidatePrevious) => {
+      const prepared = await preparedReconciliation(candidatePrevious);
+      await prepared.runtime.reconcileCheckpoint({
+        task: prepared.task,
+        result: { kind: "checkpoint", checkpoint: prepared.checkpoint },
+        checkpointCommit: {
+          checkpointed: true,
+          providerWorkAvailable: false,
+          committedTaskStatus: "QUEUED",
+          committedCheckpoint: prepared.checkpoint,
+          orderedCommit: {
+            applied: true,
+            runId: RUN_ID,
+            committedEntries: [{
+              canonicalSequence: 1,
+              taskId: "history-matched",
+              acceptedAttemptId: "attempt-matched",
+              artifactSha256: "d".repeat(64)
+            }]
+          }
+        },
+        signal: new AbortController().signal
+      });
+
+      expect(prepared.db.rows().filter((row) =>
+        row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
+    }
+  );
 });

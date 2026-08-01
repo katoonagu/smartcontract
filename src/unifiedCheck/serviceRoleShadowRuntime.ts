@@ -1742,13 +1742,13 @@ export function createServiceRoleShadowRuntimeV1(input: {
             const previous = (
               deltaRow.artifact as { previousDeltaHash?: unknown }
             ).previousDeltaHash;
-            if (cursor === pending.precommit.candidateDeltaSha256) {
-              candidateReachable = true;
-              break;
-            }
             if (previous !== null &&
               (typeof previous !== "string" || !HASH.test(previous))) {
               return false;
+            }
+            if (cursor === pending.precommit.candidateDeltaSha256) {
+              candidateReachable = true;
+              break;
             }
             cursor = previous as string | null;
           }
