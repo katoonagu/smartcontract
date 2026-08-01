@@ -18,7 +18,7 @@ C6 starts only after all of these exist and independently verify:
 
 - C0a physical-population feasibility receipt;
 - C0b cashflow-authority feasibility receipt with at least one complete and one distinct typed-unavailable accepted-real-history current-balance control;
-- C1 runtime shadow receipt and one terminal run summary;
+- C1 real-history one-group runtime shadow receipt with zero provider calls and a deliberately non-terminal queued continuation; completed-run terminal-summary behavior remains an independently executed C1 Task 7-8 gate rather than a fabricated property of the one-group evidence root;
 - C2 physical-profile and EOA-at-anchor receipt;
 - C3 adverse aggregate receipt;
 - C4 legacy `24/24 + 6/6` receipt and disjoint blind `24 + 6` receipt;
@@ -257,7 +257,7 @@ Use valid hashes with deliberately wrong semantics to prove a hash-only manifest
 
 - C0a quota below `15 + 3 + 3 + 3`, missing an adverse authority class, a fully rehashed embedded source manifest that differs from the fixed Git blob, a non-ancestor source-authority commit, or a source-authority first-add commit with an unexpected changed path;
 - C0b with no real complete current-balance control, no distinct accepted-real-history typed-unavailable current-balance control, or one control counted in both states;
-- C1 without one frozen map load, exact committed reconciliation, terminal summary, or non-interference; or whose acceptance-root last-change evidence commit is absent/ambiguous, not a direct child of its embedded tested-source commit, outside the global tested-source ancestry, has a non-exact allowlist diff, or has any root/replay-alias byte drift by the global commit;
+- C1 without one frozen map load, exact committed reconciliation, the exact source target candidate delta, the expected queued continuation/zero-summary boundary, or non-interference; or whose acceptance-root last-change evidence commit is absent/ambiguous, not a direct child of its embedded tested-source commit, outside the global tested-source ancestry, has a non-exact allowlist diff, or has any root/replay-alias byte drift by the global commit;
 - C2 with short windows, top-up/expansion, current-only EOA, contract/unknown promoted to EOA, incomplete role coverage, a missing/hash-only/wrong-owner C0/request/raw-page/order/role/historical/control/adverse authority leaf, a valid graph embedding a different C0a root, external population bytes that differ from the embedded graph, or an embedded legacy profile that is not its exact canonical accepted profile;
 - C3 missing mandatory rows or typed authority leaves, wrong-family/noncanonical/detached authority leaf, hash-only evidence substituted for a leaf, unknown registry pair, wrong reducer precedence, lost terminal/continuation, incomplete receipt called clear, any of the five single-row `all_of` evidence-class bindings changed, `exact_bound_nonterminal` not satisfied by one/both of its exact two `any_of` IDs, or a detached but otherwise valid external C2 acceptance/population root;
 - C4 not exactly legacy `24/24 + 6/6`, blind not exactly `24 + 6`, any overlap, missing reviewer B or any one of the 60 reviews, missing/changed adjudication, false stop, lost red/continuation, evaluator/comparison/package/acceptance hash detachment, altered/incorrectly ordered phase commits, result/acceptance commit-cycle, later C6 byte drift, or failed utility gate;
@@ -389,7 +389,7 @@ Seed all Stage C standalone artifact kinds and authoritative runtime rows. Asser
 - exact schema version/migration head;
 - every Stage C standalone artifact hash and count;
 - zero accepted-attempt, accepted-artifact, finalizer, evidence bundle, score anchor, report, and delivery references;
-- exactly one C1 run summary for the accepted run;
+- zero C1 run summaries in the real-history one-group acceptance replay, with the traversal and consequent provider task still queued exactly as embedded in its verified root; separately execute the completed-run summary gate from the tested C1 source;
 - deterministic C1/C5 enabled/disabled authoritative projection equality;
 - exact Git-derived C1/C5 runtime evidence commits, with no caller-provided commit value and an earlier unchanged C5 foundation accepted outside the runtime evidence diff;
 - no Stage C artifact in the Admin task DAG;
