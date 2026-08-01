@@ -39,10 +39,16 @@
   heartbeats. Exact found-map subgroups persist per-state profiles and one
   strict idempotent precommit; the focused coordinator/runtime files pass
   `26/26` and `31/31`.
-- Tasks 6-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
-  `AppConfig`, but the enabled literal is not wired into runtime. There is no
-  post-checkpoint reconciliation, traversal/finalizer/report/score effect or
-  C1 acceptance evidence.
+- Task 6 is complete in code. The exact enabled config wires Task 5 observation
+  and the 1,000 ms post-durable checkpoint reconciler. The repository returns
+  only transaction-validated committed identities; one group requires exactly
+  one manifest-hash match while unrelated entries in the same valid prefix are
+  retained in the receipt. Candidate delta ancestry is independently proven
+  from the committed head. Focused unit tests pass `81/81`; ordered-commit
+  PostgreSQL passes `18/18` with zero skips.
+- Tasks 7-10 have not started. Completion carries `checkpointCommit:null` but
+  intentionally has no summary stub; Task 7 owns terminal summary and bounded
+  recovery. There is no finalizer/report/score effect or C1 acceptance evidence.
 - Guard: strict invalid-config rejection is the only product-facing contract
   change. Do not call C1 or Stage C complete; production remains matrix-v4,
   ScoreAnchorV3 and report-only checked-subject role with no suppression or
@@ -53,12 +59,12 @@
 Plan target: `master` at design commit `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca` in the dedicated `stage-c-roadmap-design` worktree.
 
 - `src/unifiedCheck/productionTraversalCoordinator.ts` hash-validates accepted address-history entries, revives pages, applies one address/direction group, persists a traversal delta, and optionally observes owned copies before returning the unchanged checkpoint.
-- `src/unifiedCheck/worker.ts::runUnifiedTaskCycle` calls `onLifecyclePersisted` only after repository checkpoint/completion succeeds, but currently treats the callback as synchronous and does not expose the committed `checkpoint_json`.
-- `src/unifiedCheck/productionWorker.ts::createPostgresUnifiedTaskCycleRepository` receives the full row from `checkpointUnifiedTask` and currently reduces it to two booleans.
+- `src/unifiedCheck/worker.ts::runUnifiedTaskCycle` calls `onLifecyclePersisted` only after repository checkpoint/completion succeeds, owns its inputs, and bounds the awaited callback at 1,000 ms.
+- `src/unifiedCheck/productionWorker.ts::createPostgresUnifiedTaskCycleRepository` normalizes the durable row into checkpoint status/JSON plus exact ordered transaction evidence.
 - `src/unifiedCheck/productionRuntime.ts::createUnifiedProductionRuntime` owns traversal assembly, generic artifact persistence, analysis worker cycles, and the PostgreSQL transaction host.
 - `src/unifiedCheck/serviceRoleShadow.ts::maybeBuildServiceRoleShadowArtifactV1` is the existing pure accepted-history `100 + 100` builder. Its profile bytes and V1 map remain immutable.
 - `src/unifiedCheck/serviceRoleMapMaterialization.ts` and `scripts/materializeServiceRoleEventMap.ts` atomically persist the unreferenced V1 evidence bundle, V1 role map and additive V2 wrapper; the real PostgreSQL gate and two-connection convergence race pass.
-- `src/config.ts` strictly parses `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`, but the enabled literal remains unwired into runtime.
+- `src/config.ts` strictly parses `UNIFIED_SERVICE_ROLE_SHADOW_POLICY`; Task 6 passes the exact value into runtime, and absence remains disabled.
 - `insertUnifiedArtifact` already provides content-addressed, immutable, run-owned storage. C1 needs no table, column, index, or migration.
 - The frozen source run `5417cbf6-7cef-4b91-8367-d266eaf3857e` is `FAILED_TECHNICAL`; its traversal task is `CANCELLED`, has no accepted traversal attempt, and belongs to an older runtime commit. Its graph has 888 planned entries and 100 ready entries. It is valid accepted-history provenance but is not a runnable current-worker lifecycle and must never be cloned wholesale, resumed, or relabelled as a successful production run.
 - The frozen accepted address/direction group contains seven qualifying traversal states. C1 therefore expects seven per-state profiles but exactly one compound-group precommit receipt and one reconciled runtime receipt for admission.
@@ -332,9 +338,9 @@ Modify:
 
 **Files:** Modify `src/unifiedCheck/repository.ts`, `worker.ts`, `productionWorker.ts`, `productionRuntime.ts`, `serviceRoleShadowRuntime.ts`, `src/index.ts`; test corresponding files including `tests/unified-check/orderedCommit.test.ts` and `orderedCommit.postgres.test.ts`.
 
-- [ ] **Step 1: Write failing tests** proving hook order, exact committed checkpoint forwarding, ordered-entry identities returned only after their atomic `ready -> committed` transition, and candidate-delta reachability through the committed delta chain. Cover claim loss, prefix mismatch, rollback, and the existing cancellation branch: a durable `CANCELLED` checkpoint row has `orderedCommit.applied:false` and produces no runtime receipt. Add a never-settling lifecycle hook test that observes abort at 1,000 ms while durable checkpoint success and provider wake remain intact; also cover callback throw and late rejection.
-- [ ] **Step 2: Run the red tests.** Expected: FAIL because committed checkpoint bytes are discarded.
-- [ ] **Step 3: Extend the existing seam minimally.**
+- [x] **Step 1: Write failing tests** proving hook order, exact committed checkpoint forwarding, ordered-entry identities returned only after their atomic `ready -> committed` transition, and candidate-delta reachability through the committed delta chain. Cover claim loss, prefix mismatch, rollback, and the existing cancellation branch: a durable `CANCELLED` checkpoint row has `orderedCommit.applied:false` and produces no runtime receipt. Add a never-settling lifecycle hook test that observes abort at 1,000 ms while durable checkpoint success and provider wake remain intact; also cover callback throw and late rejection.
+- [x] **Step 2: Run the red tests.** Worker RED was `13` tests with `2` failures because signal/commit authority were absent and late rejection was unhandled. Ordered unit RED was `3` tests with `1` failure because the adapter discarded committed status/checkpoint/entry identities. Runtime RED was `33` tests with `2` failures because `reconcileCheckpoint` did not exist. Production-runtime RED was `3` tests with `2` failures because enabled wiring/validation did not exist.
+- [x] **Step 3: Extend the existing seam minimally.**
 
   ```ts
   export type UnifiedCheckpointCommitResult = {
@@ -365,11 +371,11 @@ Modify:
   ```
 
   Inside the existing ordered transaction, return `orderedCommit.applied:true` only when the task row committed as `QUEUED` and every expected planner entry was updated to `committed`; return the exact validated entry identities from that transaction. The current `CANCELLED` early return explicitly reports `applied:false` and an empty committed-entry array. This is an internal return shape only—no schema/migration. `productionWorker` forwards the row's `status` and `checkpoint_json` plus this ordered evidence instead of reducing it to booleans.
-- [ ] **Step 4: Bound and contain the post-commit callback.** `runUnifiedTaskCycle` invokes it only after the repository operation is durable, supplies a fresh `AbortSignal`, aborts at 1,000 ms, attaches a rejection handler to late work, and swallows observer timeout/rejection. Neither the returned lifecycle result nor `onProviderWorkAvailable` can be lost because of this observer. A completion lifecycle passes `checkpointCommit:null`; a checkpoint lifecycle passes the exact normalized commit result.
-- [ ] **Step 5: Wire analysis lifecycle in `createUnifiedProductionRuntime`.** Add optional input `serviceRoleShadowPolicy?: ServiceRoleShadowMode`, normalize absence to `disabled`, and pass the explicit config value from `src/index.ts`. Disabled policy passes no coordinator hook and performs no shadow query. Enabled traversal checkpoints call `reconcileCheckpoint` only when `committedTaskStatus === "QUEUED"`, `orderedCommit.applied === true`, the returned committed-entry set exactly matches the precommit group's accepted-history entries, and the candidate delta is on the committed head chain. `CANCELLED`, missing/extra entry, and unproven-delta cases remain unreconciled. Completed traversal calls `summarizeRun`. Do not add the policy to provider configuration or any authoritative identity.
-- [ ] **Step 6: Implement one `service-role-shadow-runtime-receipt-v1` per compound group.** Require pending task/attempt and group-key match, the one group precommit hash, the exact sorted seven-profile array when processing the frozen admission group, canonical committed checkpoint hash, candidate delta reachable from committed `deltaHeadSha256`, exact committed planner-entry identities, manifest/fence/input-set/runtime commit, `commitStatus:"reconciled"`, and `productionEffect:false`. A caller-supplied boolean is never authority.
-- [ ] **Step 7: Run focused tests.** Expected: PASS, including ordered cancellation/rollback cases and the existing “throwing checkpoint observer does not change durable success” case.
-- [ ] **Step 8: Commit.**
+- [x] **Step 4: Bound and contain the post-commit callback.** `runUnifiedTaskCycle` invokes it only after the repository operation is durable, supplies a fresh `AbortSignal`, aborts at 1,000 ms, attaches a rejection handler to late work, and swallows observer timeout/rejection. Neither the returned lifecycle result nor `onProviderWorkAvailable` can be lost because of this observer. A completion lifecycle passes `checkpointCommit:null`; a checkpoint lifecycle passes the exact normalized commit result.
+- [x] **Step 5: Wire analysis lifecycle in `createUnifiedProductionRuntime`.** Add optional input `serviceRoleShadowPolicy?: ServiceRoleShadowMode`, normalize absence to `disabled`, and pass the explicit config value from `src/index.ts`. Disabled policy passes no coordinator hook and performs no shadow query. Enabled traversal checkpoints reconcile only from `QUEUED` plus applied ordered evidence and proved candidate-delta ancestry. Each precommit requires exactly one committed manifest-hash match; unrelated entries in the same valid atomic prefix are allowed and bound in full, while zero/duplicate matches fail closed. Completion passes `checkpointCommit:null` through the worker seam but deliberately does not call a stub: Task 7 owns the real `summarizeRun` implementation and wiring. The policy is not part of provider configuration or authoritative identity.
+- [x] **Step 6: Implement one `service-role-shadow-runtime-receipt-v1` per compound group.** Require pending task/attempt and group-key match, the one group precommit hash, the exact sorted seven-profile array when processing the frozen admission group, canonical committed checkpoint hash, candidate delta reachable from committed `deltaHeadSha256`, exact committed planner-entry identities, manifest/fence/input-set/runtime commit, `commitStatus:"reconciled"`, and `productionEffect:false`. A caller-supplied boolean is never authority.
+- [x] **Step 7: Run focused tests.** PASS: six focused unit files execute `81/81`; `orderedCommit.postgres.test.ts` executes `18/18` with zero skips; typecheck passes.
+- [x] **Step 8: Commit.**
 
   ```powershell
   git add src/unifiedCheck/repository.ts src/unifiedCheck/worker.ts src/unifiedCheck/productionWorker.ts src/unifiedCheck/productionRuntime.ts src/unifiedCheck/serviceRoleShadowRuntime.ts src/index.ts tests/unified-check/orderedCommit.test.ts tests/unified-check/orderedCommit.postgres.test.ts tests/unified-check/worker.test.ts tests/unified-check/productionWorker.test.ts tests/unified-check/productionRuntime.test.ts tests/unified-check/serviceRoleShadowRuntime.test.ts

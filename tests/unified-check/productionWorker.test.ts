@@ -108,6 +108,7 @@ describe("Unified production worker adapter", () => {
           rows: [{
             id: "task-1",
             status: "QUEUED",
+            checkpoint_json: { cursor: "50" },
             next_head_newly_admitted: false
           }]
         };
@@ -138,7 +139,10 @@ describe("Unified production worker adapter", () => {
       checkpoint: { cursor: "50" }
     })).resolves.toEqual({
       checkpointed: true,
-      providerWorkAvailable: false
+      providerWorkAvailable: false,
+      committedTaskStatus: "QUEUED",
+      committedCheckpoint: { cursor: "50" },
+      orderedCommit: null
     });
   });
 });

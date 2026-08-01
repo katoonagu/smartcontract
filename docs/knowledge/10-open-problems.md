@@ -141,10 +141,13 @@ signal with tests.
   evicts the rejected cache entry; a later caller can retry and rescan only
   while no durable fence exists. C1 Task 5 now supplies the optional bounded
   coordinator group observer and strict complete-subgroup precommit path, but
-  it remains unwired. C1 Tasks 6-10 still must add authoritative
-  post-checkpoint reconciliation, startup recovery, terminal summary,
-  non-interference proof, runtime config wiring and the acceptance producer.
-  Until then the enabled config literal cannot activate the observer.
+  Task 6 now wires the exact enabled config and adds authoritative
+  post-checkpoint reconciliation. Its transaction result binds the whole
+  committed prefix, while each group requires exactly one manifest-hash match;
+  unrelated prefix entries are allowed, but zero/duplicate matches and an
+  unproved candidate-delta ancestry remain unreconciled. C1 Tasks 7-10 still
+  must add bounded startup recovery, terminal summary, non-interference proof
+  and the acceptance producer.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred
@@ -159,9 +162,9 @@ signal with tests.
   role-map binding. Runtime shadow must treat missing maps as expected
   coverage, avoid one database row per skip and avoid presenting the historical
   map as authority for a different runtime commit or anchor.
-- The current role-map V1 has no route-anchor or sampled-event-set binding, and
-  no post-checkpoint reconciliation proves that a precommit shadow observation
-  corresponds to committed traversal state. The artifact table also has no
+- The current role-map V1 has no route-anchor or sampled-event-set binding; C1
+  supplies its additive V2 binding and Task 6 now proves runtime precommit
+  correspondence to committed traversal state. The artifact table still has no
   run/kind lookup index, so C1 must use an additive anchor-bound wrapper and one
   frozen run-wide input-set load rather than per-state scans.
 - The existing 21-address manual research workbook must receive an immutable

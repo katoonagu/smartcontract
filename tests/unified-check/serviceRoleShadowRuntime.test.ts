@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as shadowRuntimeModule from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
 import type { IndexedTronUsdtTransfer } from "../../src/types.js";
@@ -1544,5 +1545,265 @@ describe("service role shadow accepted-history observer", () => {
     expect(db.rows().filter((row) =>
       row.kind === "service_role_shadow_profile" ||
       row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
+  });
+});
+
+describe("service role shadow checkpoint reconciliation", () => {
+  function delta(previousDeltaHash: string | null, seed: string) {
+    return {
+      version: "unified-traversal-delta-v1",
+      previousDeltaHash,
+      addedFrontier: [],
+      removedFrontierStateIds: [],
+      addedVisited: [],
+      addedTerminals: [],
+      addedSupersededStateIds: [],
+      addedExpandedStateIds: [],
+      addedEligibleEventIds: [seed],
+      addedExpandedStateKeys: [],
+      counterDeltas: { expanded: 0, terminal: 0, superseded: 0 }
+    };
+  }
+
+  async function preparedReconciliation() {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+    const runtime = createServiceRoleShadowRuntimeV1({
+      db,
+      runtimeCommit: RUNTIME_COMMIT
+    });
+    const candidate = delta(null, "candidate");
+    const candidateSha256 = fingerprintCanonicalArtifact(candidate);
+    const committed = delta(candidateSha256, "committed");
+    const committedSha256 = fingerprintCanonicalArtifact(committed);
+    await runtime.observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 2,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: candidateSha256 } as never,
+      candidateDeltaSha256: candidateSha256,
+      signal: new AbortController().signal
+    });
+    db.put(artifactRow(
+      RUN_ID,
+      "traversal_delta",
+      "1",
+      candidate,
+      candidateSha256
+    ));
+    db.put(artifactRow(
+      RUN_ID,
+      "traversal_delta",
+      "1",
+      committed,
+      committedSha256
+    ));
+    const checkpoint = {
+      version: "unified-production-traversal-checkpoint-v2",
+      deltaHeadSha256: committedSha256
+    };
+    const task = {
+      id: "task-traversal",
+      runId: RUN_ID,
+      kind: "traversal",
+      attempt: 2,
+      checkpoint: {},
+      cancellationRequestedAt: null
+    };
+    return {
+      db,
+      runtime,
+      candidateSha256,
+      committedSha256,
+      checkpoint,
+      task
+    };
+  }
+
+  it("reconciles one group from a multi-entry atomic prefix and owns strict receipt bytes", async () => {
+    const prepared = await preparedReconciliation();
+    const reconcile = (prepared.runtime as unknown as {
+      reconcileCheckpoint(input: unknown): Promise<void>;
+    }).reconcileCheckpoint;
+    const committedEntries = [{
+      canonicalSequence: 4,
+      taskId: "history-unrelated",
+      acceptedAttemptId: "attempt-unrelated",
+      artifactSha256: "c".repeat(64)
+    }, {
+      canonicalSequence: 5,
+      taskId: "history-matched",
+      acceptedAttemptId: "attempt-matched",
+      artifactSha256: "d".repeat(64)
+    }];
+    const lifecycle = {
+      task: prepared.task,
+      result: { kind: "checkpoint", checkpoint: prepared.checkpoint },
+      checkpointCommit: {
+        checkpointed: true,
+        providerWorkAvailable: false,
+        committedTaskStatus: "QUEUED",
+        committedCheckpoint: prepared.checkpoint,
+        orderedCommit: {
+          applied: true,
+          runId: RUN_ID,
+          committedEntries
+        }
+      },
+      signal: new AbortController().signal
+    };
+
+    await reconcile.call(prepared.runtime, lifecycle);
+    await reconcile.call(prepared.runtime, lifecycle);
+
+    const receipts = prepared.db.rows().filter((row) =>
+      row.kind === "service_role_shadow_runtime_receipt");
+    expect(receipts).toHaveLength(1);
+    const parse = (shadowRuntimeModule as unknown as {
+      parseServiceRoleShadowRuntimeReceiptV1(input: {
+        artifact: unknown;
+        expectedSha256: string;
+      }): unknown;
+    }).parseServiceRoleShadowRuntimeReceiptV1;
+    const parsed = parse({
+      artifact: receipts[0]!.artifact_json,
+      expectedSha256: receipts[0]!.sha256
+    }) as {
+      committedEntries: unknown[];
+      profiles: unknown[];
+      candidateDeltaSha256: string;
+      committedDeltaHeadSha256: string;
+      commitStatus: string;
+      productionEffect: boolean;
+    };
+    expect(parsed).toMatchObject({
+      candidateDeltaSha256: prepared.candidateSha256,
+      committedDeltaHeadSha256: prepared.committedSha256,
+      commitStatus: "reconciled",
+      productionEffect: false
+    });
+    expect(parsed.committedEntries).toEqual(committedEntries);
+    expect(parsed.profiles).toHaveLength(7);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed.committedEntries)).toBe(true);
+    expect(() => {
+      (parsed.committedEntries[0] as { taskId: string }).taskId = "mutated";
+    }).toThrow();
+    expect(() => parse({
+      artifact: { ...(parsed as object), extra: true },
+      expectedSha256: receipts[0]!.sha256
+    })).toThrow("service_role_shadow_runtime_receipt_v1_invalid");
+    expect(() => parse({
+      artifact: parsed,
+      expectedSha256: "0".repeat(64)
+    })).toThrow("service_role_shadow_runtime_receipt_v1_invalid");
+    for (const artifact of [{
+      ...parsed,
+      committedEntries: [...parsed.committedEntries].reverse()
+    }, {
+      ...parsed,
+      profiles: [...parsed.profiles].reverse()
+    }]) {
+      expect(() => parse({
+        artifact,
+        expectedSha256: fingerprintCanonicalArtifact(artifact)
+      })).toThrow("service_role_shadow_runtime_receipt_v1_invalid");
+    }
+    const build = (shadowRuntimeModule as unknown as {
+      buildServiceRoleShadowRuntimeReceiptV1(input: unknown): {
+        sha256: string;
+      };
+    }).buildServiceRoleShadowRuntimeReceiptV1;
+    const {
+      schemaVersion: _schemaVersion,
+      policyVersion: _policyVersion,
+      commitStatus: _commitStatus,
+      productionEffect: _productionEffect,
+      ...builderInput
+    } = parsed as typeof parsed & {
+      schemaVersion: string;
+      policyVersion: string;
+      commitStatus: string;
+      productionEffect: boolean;
+    };
+    expect(build({
+      ...builderInput,
+      committedEntries: [...parsed.committedEntries].reverse(),
+      profiles: [...parsed.profiles].reverse()
+    }).sha256).toBe(receipts[0]!.sha256);
+  });
+
+  it("leaves zero-match, duplicate-match, and unreachable-delta groups unreconciled", async () => {
+    const prepared = await preparedReconciliation();
+    const reconcile = (prepared.runtime as unknown as {
+      reconcileCheckpoint(input: unknown): Promise<void>;
+    }).reconcileCheckpoint.bind(prepared.runtime);
+    const lifecycle = (
+      committedEntries: readonly unknown[],
+      committedCheckpoint: unknown = prepared.checkpoint
+    ) => ({
+      task: prepared.task,
+      result: { kind: "checkpoint", checkpoint: committedCheckpoint },
+      checkpointCommit: {
+        checkpointed: true,
+        providerWorkAvailable: false,
+        committedTaskStatus: "QUEUED",
+        committedCheckpoint,
+        orderedCommit: { applied: true, runId: RUN_ID, committedEntries }
+      },
+      signal: new AbortController().signal
+    });
+    const entry = (canonicalSequence: number, artifactSha256: string) => ({
+      canonicalSequence,
+      taskId: `history-${canonicalSequence}`,
+      acceptedAttemptId: `attempt-${canonicalSequence}`,
+      artifactSha256
+    });
+
+    await reconcile(lifecycle([entry(1, "c".repeat(64))]));
+    await reconcile({
+      ...lifecycle([entry(1, "d".repeat(64))]),
+      task: { ...prepared.task, attempt: 3 }
+    });
+    await reconcile({
+      ...lifecycle([entry(1, "d".repeat(64))]),
+      checkpointCommit: {
+        ...lifecycle([entry(1, "d".repeat(64))]).checkpointCommit,
+        committedTaskStatus: "CANCELLED",
+        orderedCommit: {
+          applied: false,
+          runId: RUN_ID,
+          committedEntries: []
+        }
+      }
+    });
+    await reconcile(lifecycle([
+      entry(1, "d".repeat(64)),
+      entry(2, "d".repeat(64))
+    ]));
+    const unreachable = delta(null, "unreachable");
+    const unreachableSha256 = fingerprintCanonicalArtifact(unreachable);
+    prepared.db.put(artifactRow(
+      RUN_ID,
+      "traversal_delta",
+      "1",
+      unreachable,
+      unreachableSha256
+    ));
+    await reconcile(lifecycle(
+      [entry(1, "d".repeat(64))],
+      { ...prepared.checkpoint, deltaHeadSha256: unreachableSha256 }
+    ));
+
+    expect(prepared.db.rows().filter((row) =>
+      row.kind === "service_role_shadow_runtime_receipt")).toEqual([]);
   });
 });

@@ -674,6 +674,7 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   onAdaptiveEvent: emitUnifiedAdaptiveEvent,
   providerRefillDiagnostics: unifiedProviderRefillDiagnostics,
   requireProviderClaimPermit: true,
+  serviceRoleShadowPolicy: config.unifiedServiceRoleShadowPolicy,
   async loadProviderPage({
     run,
     address = run.subjectAddress,

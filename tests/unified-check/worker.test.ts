@@ -64,9 +64,18 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
   }): Promise<{
     checkpointed: boolean;
     providerWorkAvailable: boolean;
+    committedTaskStatus: "QUEUED" | "CANCELLED" | null;
+    committedCheckpoint: unknown | null;
+    orderedCommit: null;
   }> {
     if (!this.matches(input)) {
-      return { checkpointed: false, providerWorkAvailable: false };
+      return {
+        checkpointed: false,
+        providerWorkAvailable: false,
+        committedTaskStatus: null,
+        committedCheckpoint: null,
+        orderedCommit: null
+      };
     }
     this.task.checkpoint = input.checkpoint;
     this.lastOrderedCommit = input.orderedCommit ?? null;
@@ -74,7 +83,10 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     this.task.leaseToken = null;
     return {
       checkpointed: true,
-      providerWorkAvailable: this.providerWorkAvailable
+      providerWorkAvailable: this.providerWorkAvailable,
+      committedTaskStatus: "QUEUED",
+      committedCheckpoint: structuredClone(input.checkpoint),
+      orderedCommit: null
     };
   }
 
@@ -180,7 +192,9 @@ describe("Unified resumable worker", () => {
       createId: () => "lease-1",
       onTaskClaimed: () => events.push("task_claimed"),
       onHandlerFinished: () => events.push("handler_finished"),
-      onLifecyclePersisted: () => events.push("lifecycle_persisted")
+      onLifecyclePersisted: () => {
+        events.push("lifecycle_persisted");
+      }
     });
 
     expect(events).toEqual([
@@ -217,6 +231,98 @@ describe("Unified resumable worker", () => {
       onHandlerFinished: throwing,
       onLifecyclePersisted: throwing
     })).resolves.toMatchObject({ outcome: "completed" });
+  });
+
+  it("awaits a bounded post-durable checkpoint observer and forwards exact commit evidence", async () => {
+    vi.useFakeTimers();
+    try {
+      const repository = new MemoryWorkerRepository();
+      repository.providerWorkAvailable = true;
+      const wake = vi.fn();
+      let observed: Record<string, unknown> | null = null;
+      let aborted = false;
+      const cyclePromise = runUnifiedTaskCycle({
+        workerId: "worker-1",
+        now: () => repository.now,
+        leaseMs: 60_000,
+        repository,
+        handlers: {
+          direct_history: async () => ({
+            kind: "checkpoint",
+            checkpoint: { cursor: "page-2" }
+          })
+        },
+        createId: () => "lease-1",
+        onProviderWorkAvailable: wake,
+        onLifecyclePersisted: async (value) => {
+          observed = value as unknown as Record<string, unknown>;
+          await new Promise<void>((resolve) => {
+            value.signal.addEventListener("abort", () => {
+              aborted = true;
+              resolve();
+            }, { once: true });
+          });
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(cyclePromise).resolves.toMatchObject({
+        outcome: "checkpointed"
+      });
+      expect(aborted).toBe(true);
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(observed).toMatchObject({
+        checkpointCommit: {
+          checkpointed: true,
+          providerWorkAvailable: true,
+          committedTaskStatus: "QUEUED",
+          committedCheckpoint: { cursor: "page-2" },
+          orderedCommit: null
+        }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes null checkpoint authority after durable completion and contains late rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      const repository = new MemoryWorkerRepository();
+      let rejectLate!: (error: Error) => void;
+      const late = new Promise<void>((_resolve, reject) => {
+        rejectLate = reject;
+      });
+      let checkpointCommit: unknown = "unset";
+      const cyclePromise = runUnifiedTaskCycle({
+        workerId: "worker-1",
+        now: () => repository.now,
+        leaseMs: 60_000,
+        repository,
+        handlers: {
+          direct_history: async () => ({
+            kind: "completed",
+            artifactSha256: "a".repeat(64)
+          })
+        },
+        createId: (() => {
+          const ids = ["lease-1", "attempt-1"];
+          return () => ids.shift()!;
+        })(),
+        onLifecyclePersisted: async (value) => {
+          checkpointCommit = value.checkpointCommit;
+          await late;
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(cyclePromise).resolves.toMatchObject({ outcome: "completed" });
+      expect(checkpointCommit).toBeNull();
+      rejectLate(new Error("late observer rejection"));
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses one shared predicate for every provider chunk limit", () => {

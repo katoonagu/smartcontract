@@ -99,13 +99,24 @@ describe("Unified ordered checkpoint commit", () => {
           };
         }
         if (normalized.startsWith("update unified_check_tasks")) {
-          return { rows: [{ id: "task-traversal", status: "QUEUED" }] };
+          return {
+            rows: [{
+              id: "task-traversal",
+              status: "QUEUED",
+              checkpoint_json: {
+                version: "unified-production-traversal-checkpoint-v2",
+                deltaHeadSha256: nextHead
+              }
+            }]
+          };
         }
         if (
           normalized.startsWith("update unified_check_planner_entries") &&
           normalized.includes("set planner_state = 'committed'")
         ) {
-          return { rows: [{ task_id: "history-1" }] };
+          return {
+            rows: [{ canonical_sequence: 7, task_id: "history-1" }]
+          };
         }
         if (normalized.includes("select max(canonical_sequence)")) {
           return { rows: [{ max_sequence: 7 }] };
@@ -212,7 +223,22 @@ describe("Unified ordered checkpoint commit", () => {
       }
     })).resolves.toEqual({
       checkpointed: true,
-      providerWorkAvailable: true
+      providerWorkAvailable: true,
+      committedTaskStatus: "QUEUED",
+      committedCheckpoint: {
+        version: "unified-production-traversal-checkpoint-v2",
+        deltaHeadSha256: nextHead
+      },
+      orderedCommit: {
+        applied: true,
+        runId: "run-1",
+        committedEntries: [{
+          canonicalSequence: 7,
+          taskId: "history-1",
+          acceptedAttemptId: "attempt-history-1",
+          artifactSha256
+        }]
+      }
     });
 
     expect(transactions).toBe(1);

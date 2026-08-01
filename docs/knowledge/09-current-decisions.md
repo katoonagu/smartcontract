@@ -513,9 +513,24 @@ It authorizes no production routing, scoring, Stage D or rollout.
   identical inputs reuses the same precommit hash; task/attempt remain only in
   the process-local pending token. Coordinator/runtime unit files pass `26/26`
   and `31/31`.
-- C1 Tasks 6-10 have not started. There is no runtime/config wiring,
-  post-checkpoint reconciliation, finalizer/report/score effect, or C1
-  acceptance evidence. The enabled literal remains unwired. Stage C is
+- C1 Task 6 is complete in code. The exact enabled config now wires the Task 5
+  group observer and post-durable checkpoint reconciliation; absence and exact
+  `disabled` construct neither hook nor shadow runtime. The worker forwards an
+  owned normalized checkpoint result under a fresh 1,000 ms signal without
+  allowing timeout/rejection to change lifecycle success or provider wake.
+  Ordered commit evidence is produced only by the transaction that changes the
+  traversal task to `QUEUED` and every validated ready entry to `committed`;
+  cancellation explicitly reports not applied. Each pending group requires the
+  same task/attempt/run, exactly one committed manifest-hash match, and a
+  hash-valid run-owned delta path from committed head to candidate. A legitimate
+  multi-entry prefix may include unrelated entries; the receipt binds the whole
+  sorted transaction-validated set. Zero/duplicate matches and missing or
+  unreachable authority write no receipt. Completion passes `null` checkpoint
+  authority but intentionally creates no summary until Task 7 owns that
+  implementation. Focused Task 6 unit tests pass `81/81`; ordered-commit
+  PostgreSQL tests pass `18/18` with zero skips.
+- C1 Tasks 7-10 have not started. There is no startup recovery, terminal
+  summary, non-interference proof, or C1 acceptance evidence. Stage C is
   incomplete, Stage D remains design-only, and production stays on matrix-v4,
   `ScoreAnchorV3`, and report-only checked-subject role with no suppression or
   score effect.

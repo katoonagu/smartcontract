@@ -354,6 +354,9 @@ class SeededProviderReplay implements UnifiedTaskCycleRepository {
   }): Promise<{
     readonly checkpointed: boolean;
     readonly providerWorkAvailable: boolean;
+    readonly committedTaskStatus: "QUEUED" | null;
+    readonly committedCheckpoint: unknown | null;
+    readonly orderedCommit: null;
   }> {
     const task = this.task(input.taskId);
     if (
@@ -362,13 +365,25 @@ class SeededProviderReplay implements UnifiedTaskCycleRepository {
       task.leaseToken !== input.leaseToken ||
       task.attempt !== input.attempt
     ) {
-      return { checkpointed: false, providerWorkAvailable: false };
+      return {
+        checkpointed: false,
+        providerWorkAvailable: false,
+        committedTaskStatus: null,
+        committedCheckpoint: null,
+        orderedCommit: null
+      };
     }
     task.leased = false;
     task.leaseToken = null;
     task.readyRound = this.round + 1;
     this.snapshot.slowHeadCheckpointed = true;
-    return { checkpointed: true, providerWorkAvailable: true };
+    return {
+      checkpointed: true,
+      providerWorkAvailable: true,
+      committedTaskStatus: "QUEUED",
+      committedCheckpoint: { canonicalSequence: task.sequence },
+      orderedCommit: null
+    };
   }
 
   async complete(input: {

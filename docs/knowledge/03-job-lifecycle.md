@@ -48,7 +48,7 @@ attempts. The accepted real `200/200` map therefore changes no legacy or
 Unified lifecycle state, claim, retry, finalization, score, report, or
 delivery rule.
 
-C1 Task 5 adds an optional, still-unwired observer seam after one accepted
+C1 Task 5 adds an optional observer seam after one accepted
 address/direction history group has been applied and its candidate traversal
 delta has been persisted. When a caller is supplied, the coordinator gives it
 owned deep copies, heartbeats immediately before and after, and aborts the
@@ -64,6 +64,26 @@ COMMIT before a later timer abort, that receipt is complete but has no local
 token and is eligible only for Task 7's crash-window recovery. No checkpoint
 lifecycle, finalizer, score, report, delivery, or production runtime wiring
 changes in this task.
+
+C1 Task 6 wires that observer only for the exact enabled shadow policy. The
+worker invokes one separately bounded post-persist lifecycle callback only
+after checkpoint or completion durability; it supplies owned task/result
+copies, the exact normalized checkpoint commit result (or `null` for
+completion), and a fresh 1,000 ms abort signal. Timeout, throw, late rejection,
+and callback mutation cannot change durable lifecycle success or suppress the
+existing provider wake.
+
+An ordered checkpoint reports `applied:true` only after the traversal task
+returned to `QUEUED` and every transaction-validated ready planner entry became
+committed. `CANCELLED` reports `applied:false` with no committed entry. One
+shadow precommit matches exactly one committed entry by accepted manifest hash;
+unrelated entries in the same valid atomic prefix are retained in the runtime
+receipt, while zero or duplicate matches fail closed. The runtime independently
+walks hash-valid run-owned traversal deltas backward from the exact committed
+checkpoint head to the candidate delta before writing one idempotent standalone
+receipt. Completion summary and crash-window recovery remain Task 7 work;
+completion is intentionally a no-op at the shadow runtime in Task 6. This path
+remains score/report/finalizer/delivery neutral.
 
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the

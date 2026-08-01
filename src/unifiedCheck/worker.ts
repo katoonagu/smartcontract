@@ -99,6 +99,23 @@ export type UnifiedOrderedCommitExpectation = {
   }[];
 };
 
+export type UnifiedCheckpointCommitResult = {
+  readonly checkpointed: boolean;
+  readonly providerWorkAvailable: boolean;
+  readonly committedTaskStatus: "QUEUED" | "CANCELLED" | null;
+  readonly committedCheckpoint: unknown | null;
+  readonly orderedCommit: {
+    readonly applied: boolean;
+    readonly runId: string;
+    readonly committedEntries: readonly {
+      readonly canonicalSequence: number;
+      readonly taskId: string;
+      readonly acceptedAttemptId: string;
+      readonly artifactSha256: string;
+    }[];
+  } | null;
+};
+
 export type UnifiedChunkOutcome =
   | {
       kind: "checkpoint";
@@ -135,10 +152,7 @@ export type UnifiedTaskCycleRepository = {
     attempt: number;
     checkpoint: unknown;
     orderedCommit?: UnifiedOrderedCommitExpectation;
-  }): Promise<{
-    readonly checkpointed: boolean;
-    readonly providerWorkAvailable: boolean;
-  }>;
+  }): Promise<UnifiedCheckpointCommitResult>;
   complete(input: {
     taskId: string;
     leaseToken: string;
@@ -182,6 +196,52 @@ function timestamp(value: string): string {
   return value;
 }
 
+async function observePersistedLifecycle(input: {
+  readonly callback: NonNullable<Parameters<
+    typeof runUnifiedTaskCycle
+  >[0]["onLifecyclePersisted"]> | undefined;
+  readonly task: UnifiedWorkerTask;
+  readonly result: UnifiedCompletedChunkOutcome | Extract<
+    UnifiedChunkOutcome,
+    { kind: "checkpoint" }
+  >;
+  readonly checkpointCommit: UnifiedCheckpointCommitResult | null;
+}): Promise<void> {
+  if (input.callback === undefined) return;
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let observed: Promise<void>;
+  try {
+    const owned = structuredClone({
+      task: input.task,
+      result: input.result,
+      checkpointCommit: input.checkpointCommit
+    });
+    observed = Promise.resolve().then(() => input.callback!({
+      ...owned,
+      signal: controller.signal
+    }));
+  } catch {
+    return;
+  }
+  void observed.catch(() => undefined);
+  const deadline = new Promise<void>((resolve) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      resolve();
+    }, 1_000);
+    timeout.unref?.();
+  });
+  try {
+    await Promise.race([observed, deadline]);
+  } catch {
+    // ponytail: lifecycle observers are bounded, score-neutral diagnostics;
+    // durable task state remains authority and a startup sweep is the upgrade.
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 export async function runUnifiedTaskCycle(input: {
   workerId: string;
   now(): Date;
@@ -202,7 +262,9 @@ export async function runUnifiedTaskCycle(input: {
       UnifiedChunkOutcome,
       { kind: "checkpoint" }
     >;
-  }): void;
+    readonly checkpointCommit: UnifiedCheckpointCommitResult | null;
+    readonly signal: AbortSignal;
+  }): void | Promise<void>;
 }): Promise<
   | {
       claimed: false;
@@ -293,11 +355,12 @@ export async function runUnifiedTaskCycle(input: {
       if (!checkpointed.checkpointed) {
         throw new Error("unified_worker_lease_lost");
       }
-      try {
-        input.onLifecyclePersisted?.({ task, result });
-      } catch {
-        // ponytail: refill timing is best-effort and never owns task lifecycle.
-      }
+      await observePersistedLifecycle({
+        callback: input.onLifecyclePersisted,
+        task,
+        result,
+        checkpointCommit: checkpointed
+      });
       if (checkpointed.providerWorkAvailable) {
         await input.onProviderWorkAvailable?.();
       }
@@ -312,11 +375,12 @@ export async function runUnifiedTaskCycle(input: {
         artifactSha256: result.artifactSha256,
         acceptedArtifact: result.acceptedArtifact
       })) throw new Error("unified_worker_lease_lost");
-      try {
-        input.onLifecyclePersisted?.({ task, result });
-      } catch {
-        // ponytail: refill timing is best-effort and never owns task lifecycle.
-      }
+      await observePersistedLifecycle({
+        callback: input.onLifecyclePersisted,
+        task,
+        result,
+        checkpointCommit: null
+      });
       return cycleResult("completed");
     }
     if (result.kind === "provider_wait") {

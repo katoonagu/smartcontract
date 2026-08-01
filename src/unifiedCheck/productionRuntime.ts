@@ -80,6 +80,10 @@ import type {
   UnifiedProviderRefillDiagnostics
 } from "./providerRefillDiagnostics";
 import type { FrozenLabelDatasetV1 } from "./frozenLabels";
+import type { ServiceRoleShadowMode } from "./serviceRoleShadow";
+import {
+  createServiceRoleShadowRuntimeV1
+} from "./serviceRoleShadowRuntime";
 
 type LoadedRun = {
   readonly id: string;
@@ -304,6 +308,7 @@ export function createUnifiedProductionRuntime(input: {
   onAdaptiveEvent?(event: UnifiedAdaptiveEvent): void;
   providerRefillDiagnostics?: UnifiedProviderRefillDiagnostics;
   requireProviderClaimPermit?: boolean;
+  serviceRoleShadowPolicy?: ServiceRoleShadowMode;
   loadProviderPage(input: {
     run: LoadedRun;
     address?: string;
@@ -342,6 +347,19 @@ export function createUnifiedProductionRuntime(input: {
       "unified_production_provider_configuration_invalid"
     );
   }
+  const serviceRoleShadowPolicy = input.serviceRoleShadowPolicy ?? "disabled";
+  if (serviceRoleShadowPolicy !== "disabled" &&
+    serviceRoleShadowPolicy !== "service-role-shadow-100-plus-100-v1") {
+    throw new TypeError(
+      "unified_production_service_role_shadow_policy_invalid"
+    );
+  }
+  const serviceRoleShadowRuntime = serviceRoleShadowPolicy === "disabled"
+    ? null
+    : createServiceRoleShadowRuntimeV1({
+        db: input.db,
+        runtimeCommit: input.runtimeCommit
+      });
   const now = input.now ?? (() => new Date());
   const createId = input.createId ?? randomUUID;
   const leaseMs = input.leaseMs ?? 60_000;
@@ -586,7 +604,11 @@ export function createUnifiedProductionRuntime(input: {
         sha256,
         "traversal_delta"
       ),
-    persistArtifact
+    persistArtifact,
+    ...(serviceRoleShadowRuntime === null ? {} : {
+      onAcceptedAddressHistoryShadowGroup:
+        serviceRoleShadowRuntime.observeAcceptedAddressHistoryGroup
+    })
   });
   const directEvidence = createUnifiedDirectEvidenceHandler({
     async loadContext(runId) {
@@ -802,7 +824,23 @@ export function createUnifiedProductionRuntime(input: {
       ),
       handlers: { traversal, ...branches },
       createId,
-      onProviderWorkAvailable: input.onProviderWorkAvailable
+      onProviderWorkAvailable: input.onProviderWorkAvailable,
+      ...(serviceRoleShadowRuntime === null ? {} : {
+        async onLifecyclePersisted(lifecycle) {
+          if (
+            lifecycle.task.kind !== "traversal" ||
+            lifecycle.result.kind !== "checkpoint" ||
+            lifecycle.checkpointCommit === null
+          ) return;
+          await serviceRoleShadowRuntime.reconcileCheckpoint({
+            task: lifecycle.task,
+            result: lifecycle.result,
+            checkpointCommit: lifecycle.checkpointCommit,
+            signal: lifecycle.signal
+          });
+          // Terminal traversal summary is owned and wired by Task 7.
+        }
+      })
     }),
     runFinalizationCycle: async () => {
       const finalized = await runUnifiedProductionFinalizationCycle({

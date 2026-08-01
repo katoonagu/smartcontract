@@ -225,7 +225,8 @@ async function insertAcceptedHistory(
     resultBytes,
     taskKind: "address_history",
     artifactKind: "address_history_manifest",
-    artifactSchemaVersion: "1"
+    artifactSchemaVersion: "1",
+    artifactSha256
   };
 }
 
@@ -420,7 +421,19 @@ postgresDescribe("Unified ordered commit", () => {
     await withScenario(async ({ db, host }) => {
       const entry = await setupCommit(db);
       await expect(checkpointUnifiedTask(host, commitInput(entry)))
-        .resolves.toMatchObject({ status: "QUEUED" });
+        .resolves.toMatchObject({
+          status: "QUEUED",
+          orderedCommit: {
+            applied: true,
+            runId: "run-1",
+            committedEntries: [{
+              canonicalSequence: 0,
+              taskId: "history-1",
+              acceptedAttemptId: "attempt-history-1",
+              artifactSha256: entry.artifactSha256
+            }]
+          }
+        });
       expect((await db.query(
         "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
       )).rows[0]).toMatchObject({
@@ -446,6 +459,28 @@ postgresDescribe("Unified ordered commit", () => {
           reserved_bytes: "1048576"
         }
       ]);
+    });
+  });
+
+  it("reports cancelled checkpoint authority without claiming an ordered commit", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await db.query(
+        "update unified_check_tasks set cancellation_requested_at = statement_timestamp() where id = 'traversal-1'"
+      );
+
+      await expect(checkpointUnifiedTask(host, commitInput(entry)))
+        .resolves.toMatchObject({
+          status: "CANCELLED",
+          orderedCommit: {
+            applied: false,
+            runId: "run-1",
+            committedEntries: []
+          }
+        });
+      expect((await db.query(
+        "select planner_state from unified_check_planner_entries where canonical_sequence = 0"
+      )).rows[0]?.planner_state).toBe("ready");
     });
   });
 

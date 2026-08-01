@@ -11,6 +11,7 @@ import type {
   UnifiedRunPurpose
 } from "./contracts";
 import type {
+  UnifiedCheckpointCommitResult,
   UnifiedTaskCycleRepository,
   UnifiedWorkerTask
 } from "./worker";
@@ -36,6 +37,84 @@ function canonicalSequence(value: unknown): number | null {
     throw new Error("unified_worker_canonical_sequence_invalid");
   }
   return parsed;
+}
+
+function checkpointCommitResult(
+  row: (Record<string, unknown> & { orderedCommit?: unknown }) | null
+): UnifiedCheckpointCommitResult {
+  if (row === null) {
+    return {
+      checkpointed: false,
+      providerWorkAvailable: false,
+      committedTaskStatus: null,
+      committedCheckpoint: null,
+      orderedCommit: null
+    };
+  }
+  const status = row.status;
+  if (status !== "QUEUED" && status !== "CANCELLED") {
+    throw new Error("unified_worker_checkpoint_status_invalid");
+  }
+  let orderedCommit: UnifiedCheckpointCommitResult["orderedCommit"] = null;
+  if (row.orderedCommit !== undefined && row.orderedCommit !== null) {
+    const value = row.orderedCommit as Partial<NonNullable<
+      UnifiedCheckpointCommitResult["orderedCommit"]
+    >>;
+    if (
+      typeof value.applied !== "boolean" ||
+      typeof value.runId !== "string" ||
+      value.runId.length === 0 ||
+      !Array.isArray(value.committedEntries)
+    ) {
+      throw new Error("unified_worker_ordered_commit_result_invalid");
+    }
+    const entries = value.committedEntries.map((entry) => {
+      if (
+        entry === null ||
+        typeof entry !== "object" ||
+        !Number.isSafeInteger(entry.canonicalSequence) ||
+        entry.canonicalSequence < 0 ||
+        typeof entry.taskId !== "string" ||
+        entry.taskId.length === 0 ||
+        typeof entry.acceptedAttemptId !== "string" ||
+        entry.acceptedAttemptId.length === 0 ||
+        typeof entry.artifactSha256 !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(entry.artifactSha256)
+      ) {
+        throw new Error("unified_worker_ordered_commit_result_invalid");
+      }
+      return {
+        canonicalSequence: entry.canonicalSequence,
+        taskId: entry.taskId,
+        acceptedAttemptId: entry.acceptedAttemptId,
+        artifactSha256: entry.artifactSha256
+      };
+    });
+    for (let index = 1; index < entries.length; index += 1) {
+      if (entries[index - 1]!.canonicalSequence >=
+        entries[index]!.canonicalSequence) {
+        throw new Error("unified_worker_ordered_commit_result_invalid");
+      }
+    }
+    if (
+      (status === "CANCELLED" && (value.applied || entries.length > 0)) ||
+      (status === "QUEUED" && !value.applied)
+    ) {
+      throw new Error("unified_worker_ordered_commit_result_invalid");
+    }
+    orderedCommit = {
+      applied: value.applied,
+      runId: value.runId,
+      committedEntries: entries
+    };
+  }
+  return {
+    checkpointed: true,
+    providerWorkAvailable: row.next_head_newly_admitted === true,
+    committedTaskStatus: status,
+    committedCheckpoint: structuredClone(row.checkpoint_json ?? null),
+    orderedCommit
+  };
 }
 
 function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
@@ -126,11 +205,7 @@ export function createPostgresUnifiedTaskCycleRepository(
           // Observability never participates in checkpoint correctness.
         }
       }
-      return {
-        checkpointed: Boolean(checkpointed),
-        providerWorkAvailable:
-          checkpointed?.next_head_newly_admitted === true
-      };
+      return checkpointCommitResult(checkpointed);
     },
     async complete(input) {
       return Boolean(await completeUnifiedTaskAttempt(db, {
