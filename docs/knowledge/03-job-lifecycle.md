@@ -48,6 +48,17 @@ attempts. The accepted real `200/200` map therefore changes no legacy or
 Unified lifecycle state, claim, retry, finalization, score, report, or
 delivery rule.
 
+C1 Task 5 adds an optional, still-unwired observer seam after one accepted
+address/direction history group has been applied and its candidate traversal
+delta has been persisted. When a caller is supplied, the coordinator gives it
+owned deep copies, heartbeats immediately before and after, and aborts the
+non-authoritative callback after 1,000 ms. Observer timeout, rejection, or late
+mutation cannot change the returned checkpoint/delta or claim authority;
+heartbeat failure still aborts the worker path. Complete exact-map subgroups
+persist only standalone per-state profiles and one idempotent unconfirmed
+precommit receipt. No checkpoint lifecycle, finalizer, score, report, delivery,
+or production runtime wiring changes in this task.
+
 Stage B legacy Where, Incoming, and Deep workers bind one `AbortController` to each
 claimed job. A false progress/heartbeat compare-and-set is claim loss: the
 worker aborts selective enrichment, starts no later candidate, and cannot

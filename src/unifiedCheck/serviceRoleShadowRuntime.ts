@@ -9,11 +9,16 @@ import {
   type ServiceRoleEventEvidenceBundleV1
 } from "./serviceRoleMapMaterialization";
 import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
+  maybeBuildServiceRoleShadowArtifactV1,
   parseServiceRoleShadowEventRoleMapV2,
   serviceRoleShadowCompoundBindingKeyV1,
+  type ServiceRoleShadowArtifactV1,
   type ServiceRoleShadowEventRoleMapV1,
   type ServiceRoleShadowEventRoleMapV2
 } from "./serviceRoleShadow";
+import type { AcceptedAddressHistoryShadowGroupInput } from "./productionTraversalCoordinator";
+import { traversalStateId } from "./traversal";
 import {
   insertUnifiedArtifact,
   type UnifiedQueryable,
@@ -62,6 +67,29 @@ export type ServiceRoleShadowMapLookupV1 =
       sourceMap: ServiceRoleShadowEventRoleMapV1;
     }
   | { kind: "conflict"; wrapperSha256s: readonly string[] };
+
+export type ServiceRoleShadowPrecommitReceiptV1 = {
+  readonly schemaVersion: "service-role-shadow-precommit-receipt-v1";
+  readonly policyVersion: "service-role-shadow-100-plus-100-v1";
+  readonly runId: string;
+  readonly snapshotHash: string;
+  readonly inputFenceSha256: string;
+  readonly inputSetSha256: string;
+  readonly manifestKey: string;
+  readonly manifestSha256: string;
+  readonly acceptedPageArtifactHashes: readonly string[];
+  readonly candidateCheckpointSha256: string;
+  readonly candidateDeltaSha256: string;
+  readonly compoundBindingKey: string;
+  readonly profiles: readonly {
+    readonly traversalStateId: string;
+    readonly shadowStateId: string;
+    readonly profileSha256: string;
+    readonly wrapperSha256: string;
+  }[];
+  readonly commitStatus: "unconfirmed";
+  readonly productionEffect: false;
+};
 
 type BoundArtifact<T> = {
   readonly artifact: T;
@@ -162,6 +190,10 @@ function ownedSortedStrings(value: unknown, hashesOnly: boolean): readonly strin
 
 function validRootText(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function parseInputSetUnchecked(input: {
@@ -365,6 +397,140 @@ export function buildServiceRoleShadowInputFenceV1(input: {
     productionEffect: false as const
   };
   const parsed = parseServiceRoleShadowInputFenceV1({
+    artifact: candidate,
+    expectedSha256: fingerprintCanonicalArtifact(candidate)
+  });
+  return boundArtifact(parsed);
+}
+
+function parsePrecommitUnchecked(input: {
+  readonly artifact: unknown;
+  readonly expectedSha256: string;
+}): ServiceRoleShadowPrecommitReceiptV1 {
+  if (!HASH.test(input.expectedSha256)) throw new TypeError("invalid_hash");
+  const root = exactRecord(input.artifact, [
+    "schemaVersion",
+    "policyVersion",
+    "runId",
+    "snapshotHash",
+    "inputFenceSha256",
+    "inputSetSha256",
+    "manifestKey",
+    "manifestSha256",
+    "acceptedPageArtifactHashes",
+    "candidateCheckpointSha256",
+    "candidateDeltaSha256",
+    "compoundBindingKey",
+    "profiles",
+    "commitStatus",
+    "productionEffect"
+  ]);
+  if (
+    root.schemaVersion !== "service-role-shadow-precommit-receipt-v1" ||
+    root.policyVersion !== POLICY_VERSION ||
+    !validRootText(root.runId) ||
+    !validRootText(root.manifestKey) ||
+    root.commitStatus !== "unconfirmed" ||
+    root.productionEffect !== false ||
+    [
+      root.snapshotHash,
+      root.inputFenceSha256,
+      root.inputSetSha256,
+      root.manifestSha256,
+      root.candidateCheckpointSha256,
+      root.candidateDeltaSha256,
+      root.compoundBindingKey
+    ].some((value) => typeof value !== "string" || !HASH.test(value))
+  ) {
+    throw new TypeError("invalid_root");
+  }
+  const pageHashes = exactDenseArray(root.acceptedPageArtifactHashes).map((value) => {
+    if (typeof value !== "string" || !HASH.test(value)) {
+      throw new TypeError("invalid_page_hash");
+    }
+    return value;
+  });
+  if (new Set(pageHashes).size !== pageHashes.length) {
+    throw new TypeError("invalid_page_hash");
+  }
+  const profiles = exactDenseArray(root.profiles).map((value) => {
+    const profile = exactRecord(value, [
+      "traversalStateId",
+      "shadowStateId",
+      "profileSha256",
+      "wrapperSha256"
+    ]);
+    if ([
+      profile.traversalStateId,
+      profile.shadowStateId,
+      profile.profileSha256,
+      profile.wrapperSha256
+    ].some((field) => typeof field !== "string" || !HASH.test(field))) {
+      throw new TypeError("invalid_profile");
+    }
+    return Object.freeze({
+      traversalStateId: profile.traversalStateId as string,
+      shadowStateId: profile.shadowStateId as string,
+      profileSha256: profile.profileSha256 as string,
+      wrapperSha256: profile.wrapperSha256 as string
+    });
+  });
+  if (profiles.length === 0) throw new TypeError("invalid_profile");
+  for (let index = 1; index < profiles.length; index += 1) {
+    if (profiles[index - 1]!.traversalStateId >= profiles[index]!.traversalStateId) {
+      throw new TypeError("invalid_profile_order");
+    }
+  }
+  const artifact = Object.freeze({
+    schemaVersion: "service-role-shadow-precommit-receipt-v1" as const,
+    policyVersion: POLICY_VERSION,
+    runId: root.runId,
+    snapshotHash: root.snapshotHash as string,
+    inputFenceSha256: root.inputFenceSha256 as string,
+    inputSetSha256: root.inputSetSha256 as string,
+    manifestKey: root.manifestKey,
+    manifestSha256: root.manifestSha256 as string,
+    acceptedPageArtifactHashes: Object.freeze([...pageHashes]),
+    candidateCheckpointSha256: root.candidateCheckpointSha256 as string,
+    candidateDeltaSha256: root.candidateDeltaSha256 as string,
+    compoundBindingKey: root.compoundBindingKey as string,
+    profiles: Object.freeze(profiles),
+    commitStatus: "unconfirmed" as const,
+    productionEffect: false as const
+  });
+  if (fingerprintCanonicalArtifact(artifact) !== input.expectedSha256) {
+    throw new TypeError("invalid_hash");
+  }
+  return artifact;
+}
+
+export function parseServiceRoleShadowPrecommitReceiptV1(input: {
+  readonly artifact: unknown;
+  readonly expectedSha256: string;
+}): ServiceRoleShadowPrecommitReceiptV1 {
+  try {
+    return parsePrecommitUnchecked(input);
+  } catch {
+    throw new TypeError("service_role_shadow_precommit_receipt_v1_invalid");
+  }
+}
+
+export function buildServiceRoleShadowPrecommitReceiptV1(input: Omit<
+  ServiceRoleShadowPrecommitReceiptV1,
+  "schemaVersion" | "policyVersion" | "commitStatus" | "productionEffect"
+>): BoundArtifact<ServiceRoleShadowPrecommitReceiptV1> {
+  const candidate = {
+    schemaVersion: "service-role-shadow-precommit-receipt-v1" as const,
+    policyVersion: POLICY_VERSION,
+    ...input,
+    acceptedPageArtifactHashes: [...input.acceptedPageArtifactHashes],
+    profiles: [...input.profiles].sort((left, right) =>
+      compareCodeUnits(left.traversalStateId, right.traversalStateId)
+    ),
+    commitStatus: "unconfirmed" as const,
+    productionEffect: false as const
+  };
+  const parsed = parseServiceRoleShadowPrecommitReceiptV1({
     artifact: candidate,
     expectedSha256: fingerprintCanonicalArtifact(candidate)
   });
@@ -1111,6 +1277,9 @@ export function createServiceRoleShadowRuntimeV1(input: {
     readonly snapshotHash: string;
     readonly compoundBindingKey: string;
   }): Promise<ServiceRoleShadowMapLookupV1>;
+  observeAcceptedAddressHistoryGroup(
+    group: AcceptedAddressHistoryShadowGroupInput
+  ): Promise<void>;
 } {
   if (!validRootText(input.runtimeCommit)) {
     throw new TypeError("service_role_shadow_runtime_commit_invalid");
@@ -1122,6 +1291,14 @@ export function createServiceRoleShadowRuntimeV1(input: {
       readonly sha256: string;
       readonly artifact: ServiceRoleShadowInputFenceV1;
     }>;
+  }>();
+  // ponytail: same-process handoff stays in memory; Task 7's bounded startup
+  // sweep is the planned recovery path for durable precommits after a crash.
+  const pendingGroups = new Map<string, {
+    readonly taskId: string;
+    readonly attempt: number;
+    readonly precommitSha256: string;
+    readonly precommit: ServiceRoleShadowPrecommitReceiptV1;
   }>();
 
   const cacheEntry = (run: {
@@ -1153,6 +1330,33 @@ export function createServiceRoleShadowRuntimeV1(input: {
     return created;
   };
 
+  const lookupMap = async (lookup: {
+    readonly runId: string;
+    readonly snapshotHash: string;
+    readonly compoundBindingKey: string;
+  }): Promise<ServiceRoleShadowMapLookupV1> => {
+    if (!HASH.test(lookup.compoundBindingKey)) {
+      throw new TypeError("service_role_shadow_compound_binding_key_invalid");
+    }
+    const state = await cacheEntry(lookup).statePromise;
+    const maps = state.mapsByCompoundBindingKey.get(lookup.compoundBindingKey) ?? [];
+    if (maps.length === 0) return Object.freeze({ kind: "missing" as const });
+    if (maps.length > 1) {
+      return Object.freeze({
+        kind: "conflict" as const,
+        wrapperSha256s: Object.freeze(maps.map(({ wrapperSha256 }) => wrapperSha256))
+      });
+    }
+    const map = maps[0]!;
+    return Object.freeze({
+      kind: "found" as const,
+      wrapperSha256: map.wrapperSha256,
+      wrapper: map.wrapper,
+      sourceMapSha256: map.sourceMapSha256,
+      sourceMap: map.sourceMap
+    });
+  };
+
   return {
     loadInputFence(run) {
       try {
@@ -1161,27 +1365,154 @@ export function createServiceRoleShadowRuntimeV1(input: {
         return Promise.reject(error);
       }
     },
-    async lookupMap(lookup) {
-      if (!HASH.test(lookup.compoundBindingKey)) {
-        throw new TypeError("service_role_shadow_compound_binding_key_invalid");
+    lookupMap,
+    async observeAcceptedAddressHistoryGroup(group) {
+      if (
+        !validRootText(group.taskId) ||
+        !Number.isSafeInteger(group.attempt) ||
+        group.attempt < 1 ||
+        !validRootText(group.runId) ||
+        !HASH.test(group.snapshotHash) ||
+        !validRootText(group.subjectAddress) ||
+        !validRootText(group.manifestKey) ||
+        !HASH.test(group.manifestSha256) ||
+        !HASH.test(group.candidateDeltaSha256) ||
+        group.acceptedPageArtifactHashes.some((hash) => !HASH.test(hash)) ||
+        new Set(group.acceptedPageArtifactHashes).size !==
+          group.acceptedPageArtifactHashes.length ||
+        group.candidateCheckpoint.deltaHeadSha256 !==
+          group.candidateDeltaSha256
+      ) {
+        throw new TypeError("service_role_shadow_observer_input_invalid");
       }
-      const state = await cacheEntry(lookup).statePromise;
-      const maps = state.mapsByCompoundBindingKey.get(lookup.compoundBindingKey) ?? [];
-      if (maps.length === 0) return Object.freeze({ kind: "missing" as const });
-      if (maps.length > 1) {
-        return Object.freeze({
-          kind: "conflict" as const,
-          wrapperSha256s: Object.freeze(maps.map(({ wrapperSha256 }) => wrapperSha256))
+      if (group.signal.aborted) return;
+      const fence = await cacheEntry(group).fencePromise;
+      if (group.signal.aborted || fence.artifact.outcome.kind !== "ready") return;
+
+      type ProfileCandidate = {
+        readonly traversalStateId: string;
+        readonly shadowStateId: string;
+        readonly wrapperSha256: string;
+        readonly profile: BoundArtifact<ServiceRoleShadowArtifactV1>;
+      };
+      const candidatesByCompoundKey = new Map<string, ProfileCandidate[]>();
+      const sortedStates = [...group.states].sort((left, right) =>
+        compareCodeUnits(traversalStateId(left), traversalStateId(right))
+      );
+      for (const state of sortedStates) {
+        if (group.signal.aborted) return;
+        if (state.address === group.subjectAddress) continue;
+        let binding: ReturnType<
+          typeof deriveServiceRoleShadowAcceptedHistoryBindingV1
+        >;
+        try {
+          binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+            state,
+            acceptedHistoryEvents: group.events
+          });
+        } catch {
+          continue;
+        }
+        const compoundBindingKey = serviceRoleShadowCompoundBindingKeyV1({
+          runId: group.runId,
+          snapshotHash: group.snapshotHash,
+          addressHistoryManifestSha256: group.manifestSha256,
+          binding
+        });
+        const lookup = await lookupMap({
+          runId: group.runId,
+          snapshotHash: group.snapshotHash,
+          compoundBindingKey
+        });
+        if (group.signal.aborted) return;
+        if (lookup.kind !== "found") continue;
+        const built = maybeBuildServiceRoleShadowArtifactV1({
+          mode: POLICY_VERSION,
+          runId: group.runId,
+          snapshotHash: group.snapshotHash,
+          subjectAddress: group.subjectAddress,
+          state,
+          acceptedHistory: {
+            manifestKey: group.manifestKey,
+            manifestSha256: group.manifestSha256,
+            pageArtifactHashes: group.acceptedPageArtifactHashes,
+            events: group.events
+          },
+          eventRoleMap: {
+            sha256: lookup.sourceMapSha256,
+            artifact: lookup.sourceMap
+          }
+        });
+        if (built === null) continue;
+        const candidate: ProfileCandidate = {
+          traversalStateId: traversalStateId(state),
+          shadowStateId: built.artifact.traversalStateId,
+          wrapperSha256: lookup.wrapperSha256,
+          profile: boundArtifact(built.artifact)
+        };
+        const values = candidatesByCompoundKey.get(compoundBindingKey) ?? [];
+        values.push(candidate);
+        candidatesByCompoundKey.set(compoundBindingKey, values);
+      }
+
+      for (const [compoundBindingKey, candidates] of [...candidatesByCompoundKey]
+        .sort(([left], [right]) => compareCodeUnits(left, right))) {
+        if (group.signal.aborted) return;
+        const ordered = [...candidates].sort((left, right) =>
+          compareCodeUnits(left.traversalStateId, right.traversalStateId)
+        );
+        const precommit = buildServiceRoleShadowPrecommitReceiptV1({
+          runId: group.runId,
+          snapshotHash: group.snapshotHash,
+          inputFenceSha256: fence.sha256,
+          inputSetSha256: fence.artifact.outcome.inputSetSha256,
+          manifestKey: group.manifestKey,
+          manifestSha256: group.manifestSha256,
+          acceptedPageArtifactHashes: group.acceptedPageArtifactHashes,
+          candidateCheckpointSha256: fingerprintCanonicalArtifact(
+            group.candidateCheckpoint
+          ),
+          candidateDeltaSha256: group.candidateDeltaSha256,
+          compoundBindingKey,
+          profiles: ordered.map((candidate) => ({
+            traversalStateId: candidate.traversalStateId,
+            shadowStateId: candidate.shadowStateId,
+            profileSha256: candidate.profile.sha256,
+            wrapperSha256: candidate.wrapperSha256
+          }))
+        });
+        await input.db.transaction(async (client) => {
+          for (const candidate of ordered) {
+            if (group.signal.aborted) {
+              throw new Error("service_role_shadow_observer_aborted");
+            }
+            await insertServiceRoleArtifact(client, {
+              sha256: candidate.profile.sha256,
+              createdByRunId: group.runId,
+              kind: "service_role_shadow_profile",
+              schemaVersion: "1",
+              artifact: candidate.profile.artifact
+            });
+          }
+          if (group.signal.aborted) {
+            throw new Error("service_role_shadow_observer_aborted");
+          }
+          await insertServiceRoleArtifact(client, {
+            sha256: precommit.sha256,
+            createdByRunId: group.runId,
+            kind: "service_role_shadow_precommit_receipt",
+            schemaVersion: "1",
+            artifact: precommit.artifact
+          });
+        });
+        if (group.signal.aborted) return;
+        pendingGroups.set(precommit.sha256, {
+          taskId: group.taskId,
+          attempt: group.attempt,
+          precommitSha256: precommit.sha256,
+          precommit: precommit.artifact
         });
       }
-      const map = maps[0]!;
-      return Object.freeze({
-        kind: "found" as const,
-        wrapperSha256: map.wrapperSha256,
-        wrapper: map.wrapper,
-        sourceMapSha256: map.sourceMapSha256,
-        sourceMap: map.sourceMap
-      });
     }
   };
 }

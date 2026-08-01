@@ -40,14 +40,15 @@ implementation plans do not override the status recorded here.
 2. Preserve the implemented provider-cap correctness patch. Keep the new
    adverse-path disposition pure/offline and unwired.
 3. Preserve the admitted real Stage C evidence and Task 2 proof: one frozen
-   `200/200` role map exists and the prerequisite audit passes, with no runtime
-   hook.
+   `200/200` role map exists and the prerequisite audit passes. The Task 5
+   observer seam exists but remains unwired and has no production caller.
 4. Continue the approved C0-C6 implementation plan suite. Do not advance C0a
-   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-4 are
+   or C2-C4 past the blocked physical-population Task 3. C1 Tasks 3-5 are
    complete after their zero-skip PostgreSQL gates; Task 4 freezes one run-wide
-   input set/fence and exact compound lookup but remains unwired. Continue with
-   still-unstarted C1 Tasks 5-10: coordinator, wiring, reconciliation,
-   non-interference and acceptance work. Unavailable cashflow authority does
+   input set/fence and exact compound lookup; Task 5 adds the bounded optional
+   group observer and strict precommit path. Both remain unwired. Continue with
+   C1 Tasks 6-10: wiring, reconciliation, recovery, non-interference and
+   acceptance work. Unavailable cashflow authority does
    not block that later C1 slice.
 5. In parallel, prove the missing authority sources, then build physical
    100 + 100 evidence, EOAAtAnchor and a complete adverse
@@ -98,7 +99,7 @@ paths from owning automatic output for the same chat/address pair.
 | Bounded subject-service mode | Design-only; current production still expands every direct subject event and every non-terminal frontier address; SUBJECT_EVENT_CAP is unapproved. The approved Stage C roadmap keeps checked-subject role report-only | Freeze a separate subject selection/cap and blind policy before allowing suppression; manual or inferred role cannot reduce score |
 | Cashflow Query Selector | No shared production selector; legacy `<1000` recent-flow, exact Incoming deposit, and the offline ledger executor remain separate paths | Freeze a first `current_balance`-only selector with typed unavailable semantics; keep completed exact episode, triggered relevance and amount-only expansion outside V1 |
 | Forensic query/provenance model | The accepted cashflow ledger slice executes exactly 7/7 and remains offline-only. Real PacGy remains non-authoritative and unresolved; its synthetic calibration is separate. Accepted address history still lacks authoritative transaction order, opening balance and an independent pinned USDT balance witness | Prove a production-owned canonical-tape-or-unavailable producer, then freeze the first `current_balance` selector before any runtime shadow plan |
-| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-4 are implemented/reviewed. C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips plus `19/19` unit tests; Task 4 passes `7/7` real PostgreSQL tests with zero skips plus `24/24` unit tests, and the combined Task 3+4 PostgreSQL gate passes `25/25`. Task 4 freezes only the run-wide input fence/lookup. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b and C1 Tasks 5-10 have not started. The enabled literal remains unwired; there is still no coordinator/runtime hook, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Amend and review C0 source schemas/real producers before C0a/C2-C4; continue C1 Tasks 5-10 with coordinator/wiring/reconciliation and no score effect |
+| Stage C | Incomplete. C0 Tasks 1-2 and C1 Tasks 1-5 are implemented. C1 Task 3 passes `18/18` real PostgreSQL tests with zero skips plus `19/19` unit tests; Task 4 passes `7/7` real PostgreSQL tests with zero skips plus `24/24` unit tests, and the combined Task 3+4 PostgreSQL gate passes `25/25`. Task 5 coordinator/runtime files pass `26/26` and `29/29`; its optional bounded observer and strict subgroup precommit remain unwired. C0 Task 3 is stopped before implementation because its plan-only query/kind literals have no exact owning schemas/codecs/fixtures/producers. C0b and C1 Tasks 6-10 have not started. The enabled literal remains unwired; there is still no post-checkpoint reconciliation, physical-page/EOA/order/balance authority, new blind set or cashflow shadow | Amend and review C0 source schemas/real producers before C0a/C2-C4; continue C1 Tasks 6-10 with wiring/reconciliation and no score effect |
 | Stage D | Exact-evidence scoring architecture is approved design-only and remains a non-executable future outline. Current production remains snapshot-closure-v1/v2, matrix-v4 and ScoreAnchorV3 | Start only after Stage C acceptance and separate human approval; adjudicate numeric v5 rows separately, then connect v3/v5/V1 parity and occurrence reconciliation/EvidenceBundleV2/CanonicalFactV2/ScoreAnchorV4/report-v2 atomically and canary without delivery |
 | Knowledge conformance cleanup | Focused provider-cap, adverse-disposition and recorded-evidence corrections are documented; repository-wide conformance remains incomplete | Compare every current knowledge claim with code and accepted artifacts after the new model stages, then remove stale/historical duplication |
 | Unified TQr latency | Live V1/barrier/capacity-1 expansion observed | Separate V2/rolling/boundary measurements without treating TQr as terminal |
@@ -257,11 +258,12 @@ traversal, finalization, scoring, report and delivery behavior remains
 unchanged; strict invalid-config rejection is the only product-facing config
 contract change. Real evidence admission and the preserved prerequisite are
 complete. Execution has started only on additive foundations: C0 Tasks 1-2
-and C1 Tasks 1-4 are implemented/reviewed. Task 3's real PostgreSQL file passes
+and C1 Tasks 1-5 are implemented. Task 3's real PostgreSQL file passes
 `18/18` with zero skips, including independent two-connection convergence on
 one atomic unreferenced trio. Task 4's file passes `7/7` with zero skips and
-freezes the run-wide input set/fence behind an explicit unwired factory. The
-Stage C observer/coordinator runtime hook remains absent/disabled.
+freezes the run-wide input set/fence behind an explicit unwired factory. Task 5
+adds the optional bounded coordinator observer and complete-subgroup precommit
+path; the enabled policy is still not wired into production.
 
 ## Stage C C0-C6 Execution Plan — 2026-07-31
 
@@ -281,7 +283,7 @@ plan for each C0-C6 slice. Planning completion changes no runtime or score:
   later Stage D decision and may transport only separately accepted exact facts
   through the future v5/V2/V4 chain.
 
-Execution checkpoint after C1 Task 4 acceptance:
+Execution checkpoint after C1 Task 5 implementation:
 
 - C0 Tasks 1-2 landed in `009c5c60`, `65b6dc59`, `3ae832ba` and
   `472b59f9`; frozen V1 plus the additive V2 builder/cache/provenance pass the
@@ -310,9 +312,15 @@ Execution checkpoint after C1 Task 4 acceptance:
   retry and rescan. The unit file passes `24/24`; the real schema-037 PostgreSQL
   file passes `7/7` with zero skips, the combined Task 3+4 file set passes
   `25/25`, and typecheck passes.
-- C1 Tasks 5-10 are not started. The enabled config literal is unwired and
-  production still has no coordinator observer, traversal/finalizer/report/
-  score effect. Stage C remains incomplete; Stage D status is unchanged.
+- C1 Task 5 is implemented. The coordinator supplies owned deep copies after
+  accepted-group delta persistence, bounds the optional observer at 1,000 ms,
+  and keeps heartbeat errors authoritative. Frozen exact-map subgroups produce
+  per-state profiles and one idempotent strict unconfirmed precommit; skips and
+  partial failures produce no per-skip/precommit row. The coordinator/runtime
+  files pass `26/26` and `29/29`.
+- C1 Tasks 6-10 are not started. The enabled config literal is unwired and
+  production still has no post-checkpoint reconciliation, traversal finalizer,
+  report, or score effect. Stage C remains incomplete; Stage D is unchanged.
 
 ## Correctness Gate
 

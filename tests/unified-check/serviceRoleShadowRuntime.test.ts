@@ -1,18 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson.js";
+import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex.js";
+import type { IndexedTronUsdtTransfer } from "../../src/types.js";
 import {
+  buildServiceRoleShadowPrecommitReceiptV1,
   buildServiceRoleShadowInputFenceV1,
   buildServiceRoleShadowInputSetV1,
   createServiceRoleShadowRuntimeV1,
   parseServiceRoleShadowInputFenceV1,
   parseServiceRoleShadowInputSetV1,
+  parseServiceRoleShadowPrecommitReceiptV1,
   type ServiceRoleShadowInputFenceV1
 } from "../../src/unifiedCheck/serviceRoleShadowRuntime.js";
 import {
+  deriveServiceRoleShadowAcceptedHistoryBindingV1,
   serviceRoleShadowCompoundBindingKeyV1,
   type ServiceRoleShadowEventRoleMapV1,
   type ServiceRoleShadowEventRoleMapV2
 } from "../../src/unifiedCheck/serviceRoleShadow.js";
+import { traversalStateId, type TraversalStateV1 } from "../../src/unifiedCheck/traversal.js";
 import type { ServiceRoleEventEvidenceBundleV1 } from "../../src/unifiedCheck/serviceRoleMapMaterialization.js";
 import type {
   UnifiedQueryable,
@@ -156,12 +162,131 @@ function roleArtifacts(runId = RUN_ID, seed = "one") {
   };
 }
 
+function acceptedHistoryGroup() {
+  const address = "TG2B2Jb7PXbyKzhJ61yGpyFxqbGBL2cZUH";
+  const anchorMs = Date.parse("2026-07-01T00:00:00.000Z");
+  const makeEvent = (index: number, timestampMs: number): IndexedTronUsdtTransfer => ({
+    txHash: (index + 1).toString(16).padStart(64, "0"),
+    blockNumber: 10_000 - index,
+    blockTimestamp: new Date(timestampMs),
+    eventIndex: 0,
+    fromAddress: address,
+    toAddress: SUBJECT,
+    amountRaw: String(1_000_000 + index),
+    method: "transfer",
+    callerAddress: null,
+    contractRet: "SUCCESS",
+    confirmed: true
+  });
+  const recent = Array.from({ length: 100 }, (_, index) =>
+    makeEvent(index, anchorMs - index * 60_000));
+  const historical = Array.from({ length: 100 }, (_, index) =>
+    makeEvent(index + 100, anchorMs - 8 * 24 * 60 * 60_000 - index * 60_000));
+  const alternateAnchor = {
+    ...makeEvent(200, anchorMs),
+    blockNumber: 9_800
+  };
+  const events = [...recent, alternateAnchor, ...historical];
+  const anchorId = canonicalTronUsdtEventKey(recent[0]!);
+  const states: TraversalStateV1[] = Array.from({ length: 7 }, (_, index) => ({
+    address,
+    direction: "backward",
+    anchorTimestamp: "2026-07-01T00:00:00.000Z",
+    fundingEpisodeId: `episode-${index}`,
+    allocatedAmountRaw: String(index + 1),
+    sourceEventIds: [anchorId]
+  }));
+  const binding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+    state: states[0]!,
+    acceptedHistoryEvents: events
+  });
+  const alternateStates: TraversalStateV1[] = Array.from(
+    { length: 3 },
+    (_, index) => ({
+      ...states[index]!,
+      fundingEpisodeId: `alternate-episode-${index}`,
+      sourceEventIds: [canonicalTronUsdtEventKey(alternateAnchor)]
+    })
+  );
+  const alternateBinding = deriveServiceRoleShadowAcceptedHistoryBindingV1({
+    state: alternateStates[0]!,
+    acceptedHistoryEvents: events
+  });
+  const ids = [
+    ...binding.sampledCanonicalEventIds.recent,
+    ...binding.sampledCanonicalEventIds.historical
+  ];
+  const bundle: ServiceRoleEventEvidenceBundleV1 = {
+    schemaVersion: "service-role-event-evidence-bundle-v1",
+    policyVersion: "existing-hash-bound-economic-role-v1",
+    runId: RUN_ID,
+    snapshotHash: SNAPSHOT_HASH,
+    addressHistoryManifestSha256: "d".repeat(64),
+    entries: ids.map((canonicalEventId, index) => ({
+      canonicalEventId,
+      transactionInfoEvidenceId: `accepted-evidence-${index}`,
+      transactionInfoPayloadSha256: fingerprintCanonicalArtifact(["payload", index]),
+      transactionInfoFinalityWitnessSha256: fingerprintCanonicalArtifact(["finality", index]),
+      poisoningDispositionSha256: fingerprintCanonicalArtifact(["poisoning", index]),
+      providerRiskDispositionSha256: fingerprintCanonicalArtifact(["risk", index]),
+      role: "ordinary"
+    }))
+  };
+  const bundleSha256 = fingerprintCanonicalArtifact(bundle);
+  const sourceMap: ServiceRoleShadowEventRoleMapV1 = {
+    schemaVersion: "service-role-shadow-event-role-map-v1",
+    runId: RUN_ID,
+    snapshotHash: SNAPSHOT_HASH,
+    addressHistoryManifestSha256: "d".repeat(64),
+    entries: ids.map((canonicalEventId) => ({
+      canonicalEventId,
+      role: "ordinary",
+      authority: "existing_hash_bound_economic_role_v1",
+      evidenceSha256: bundleSha256
+    }))
+  };
+  const sourceMapSha256 = fingerprintCanonicalArtifact(sourceMap);
+  const wrapper: ServiceRoleShadowEventRoleMapV2 = {
+    schemaVersion: "service-role-shadow-event-role-map-v2",
+    policyVersion: "service-role-shadow-100-plus-100-v1",
+    runId: RUN_ID,
+    snapshotHash: SNAPSHOT_HASH,
+    addressHistoryManifestSha256: "d".repeat(64),
+    sourceEventRoleMapV1Sha256: sourceMapSha256,
+    evidenceBundleSha256: bundleSha256,
+    binding,
+    exactCoverage: { recent: 100, historical: 100, total: 200 },
+    productionEffect: false
+  };
+  const alternateWrapper: ServiceRoleShadowEventRoleMapV2 = {
+    ...wrapper,
+    binding: alternateBinding
+  };
+  return {
+    events,
+    states,
+    alternateStates,
+    bundle,
+    bundleSha256,
+    sourceMap,
+    sourceMapSha256,
+    wrapper,
+    wrapperSha256: fingerprintCanonicalArtifact(wrapper),
+    compoundBindingKey: serviceRoleShadowCompoundBindingKeyV1(wrapper),
+    alternateWrapper,
+    alternateWrapperSha256: fingerprintCanonicalArtifact(alternateWrapper),
+    alternateCompoundBindingKey:
+      serviceRoleShadowCompoundBindingKeyV1(alternateWrapper)
+  };
+}
+
 class MemoryDatabase implements UnifiedTransactionalQueryable {
   readonly calls: Array<{ transaction: number; sql: string; values: readonly unknown[] }> = [];
   readonly transactions: Array<"commit" | "rollback"> = [];
   wrapperScans = 0;
   failReadyFenceInsertOnce = false;
   failInputSetInsertOnce = false;
+  failArtifactKindOnce: string | null = null;
   unavailableFenceTimeoutsRemaining = 0;
   inputSetInsertErrorOnce: Error | null = null;
   artifactLoadErrorOnce: Error | null = null;
@@ -252,6 +377,10 @@ class MemoryDatabase implements UnifiedTransactionalQueryable {
       }
       if (normalized.startsWith("insert into unified_check_artifacts")) {
         const [sha256, runId, kind, schemaVersion, json] = values.map(String);
+        if (this.failArtifactKindOnce === kind) {
+          this.failArtifactKindOnce = null;
+          throw new Error(`failed_${kind}`);
+        }
         if (this.inputSetInsertErrorOnce && kind === "service_role_shadow_input_set") {
           const error = this.inputSetInsertErrorOnce;
           this.inputSetInsertErrorOnce = null;
@@ -1006,5 +1135,325 @@ describe("service role shadow runtime fence", () => {
     await expect(first).rejects.toThrow("fatal_wrapper_scan");
     await expect(second).rejects.toThrow("fatal_wrapper_scan");
     expect(db.wrapperScans).toBe(1);
+  });
+});
+
+describe("service role shadow accepted-history observer", () => {
+  it("persists seven qualifying profiles and one sorted compound precommit", async () => {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+    const runtime = createServiceRoleShadowRuntimeV1({ db, runtimeCommit: RUNTIME_COMMIT });
+    const controller = new AbortController();
+
+    const observation = {
+      taskId: "task-traversal",
+      attempt: 2,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: [...accepted.states].reverse(),
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: controller.signal
+    };
+    await runtime.observeAcceptedAddressHistoryGroup(observation);
+    await runtime.observeAcceptedAddressHistoryGroup({
+      ...observation,
+      attempt: 3
+    });
+
+    const profiles = db.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile");
+    const precommits = db.rows().filter((row) =>
+      row.kind === "service_role_shadow_precommit_receipt");
+    expect(profiles).toHaveLength(7);
+    expect(precommits).toHaveLength(1);
+    expect(precommits[0]!.artifact_json).toMatchObject({
+      schemaVersion: "service-role-shadow-precommit-receipt-v1",
+      compoundBindingKey: accepted.compoundBindingKey,
+      commitStatus: "unconfirmed",
+      productionEffect: false
+    });
+    const entries = (precommits[0]!.artifact_json as {
+      profiles: Array<{ traversalStateId: string }>;
+    }).profiles;
+    expect(entries.map((entry) => entry.traversalStateId)).toEqual(
+      accepted.states.map(traversalStateId).sort()
+    );
+    const precommit = precommits[0]!;
+    const parsed = parseServiceRoleShadowPrecommitReceiptV1({
+      artifact: precommit.artifact_json,
+      expectedSha256: precommit.sha256
+    });
+    expect(() => parseServiceRoleShadowPrecommitReceiptV1({
+      artifact: { ...parsed, extra: true },
+      expectedSha256: precommit.sha256
+    })).toThrow("service_role_shadow_precommit_receipt_v1_invalid");
+    const reordered = {
+      ...parsed,
+      profiles: [...parsed.profiles].reverse()
+    };
+    expect(() => parseServiceRoleShadowPrecommitReceiptV1({
+      artifact: reordered,
+      expectedSha256: fingerprintCanonicalArtifact(reordered)
+    })).toThrow("service_role_shadow_precommit_receipt_v1_invalid");
+    expect(() => parseServiceRoleShadowPrecommitReceiptV1({
+      artifact: parsed,
+      expectedSha256: "0".repeat(64)
+    })).toThrow("service_role_shadow_precommit_receipt_v1_invalid");
+    const {
+      schemaVersion: _schemaVersion,
+      policyVersion: _policyVersion,
+      commitStatus: _commitStatus,
+      productionEffect: _productionEffect,
+      ...builderInput
+    } = parsed;
+    const localeCompare = vi.spyOn(String.prototype, "localeCompare")
+      .mockImplementation(() => {
+        throw new Error("locale ordering used");
+      });
+    try {
+      expect(buildServiceRoleShadowPrecommitReceiptV1(builderInput).sha256)
+        .toBe(precommit.sha256);
+    } finally {
+      localeCompare.mockRestore();
+    }
+  });
+
+  it("subgroups exact bindings into two receipts without changing per-state cardinality", async () => {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+    db.put(artifactRow(
+      RUN_ID,
+      "service_role_event_role_map",
+      "2",
+      accepted.alternateWrapper
+    ));
+    const runtime = createServiceRoleShadowRuntimeV1({ db, runtimeCommit: RUNTIME_COMMIT });
+
+    await runtime.observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: [...accepted.states.slice(0, 4), ...accepted.alternateStates],
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: new AbortController().signal
+    });
+
+    expect(db.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile")).toHaveLength(7);
+    const precommits = db.rows().filter((row) =>
+      row.kind === "service_role_shadow_precommit_receipt");
+    expect(precommits).toHaveLength(2);
+    expect(precommits.map((row) =>
+      (row.artifact_json as { compoundBindingKey: string }).compoundBindingKey
+    ).sort()).toEqual([
+      accepted.compoundBindingKey,
+      accepted.alternateCompoundBindingKey
+    ].sort());
+  });
+
+  it("writes no per-skip artifact for missing maps or a pre-aborted group", async () => {
+    const accepted = acceptedHistoryGroup();
+    const missingDb = new MemoryDatabase();
+    const missing = createServiceRoleShadowRuntimeV1({
+      db: missingDb,
+      runtimeCommit: RUNTIME_COMMIT
+    });
+    const base = {
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64)
+    };
+    await missing.observeAcceptedAddressHistoryGroup({
+      ...base,
+      signal: new AbortController().signal
+    });
+    expect(missingDb.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
+
+    const abortedDb = new MemoryDatabase();
+    seedRoleArtifacts(abortedDb, accepted);
+    const controller = new AbortController();
+    controller.abort();
+    await createServiceRoleShadowRuntimeV1({
+      db: abortedDb,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({ ...base, signal: controller.signal });
+    expect(abortedDb.rows().filter((row) =>
+      row.kind.startsWith("service_role_shadow_"))).toEqual([]);
+  });
+
+  it("writes no per-skip artifact for map conflict, checked subject, or binding failure", async () => {
+    const accepted = acceptedHistoryGroup();
+    const base = {
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: new AbortController().signal
+    };
+    const noObservations = (db: MemoryDatabase) => db.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt");
+
+    const conflictDb = new MemoryDatabase();
+    seedRoleArtifacts(conflictDb, accepted);
+    const conflictBundle: ServiceRoleEventEvidenceBundleV1 = {
+      ...accepted.bundle,
+      entries: accepted.bundle.entries.map((entry, index) => index === 0
+        ? {
+            ...entry,
+            transactionInfoEvidenceId: "conflicting-evidence",
+            transactionInfoPayloadSha256:
+              fingerprintCanonicalArtifact(["conflicting-payload"])
+          }
+        : entry)
+    };
+    const conflictBundleSha256 = fingerprintCanonicalArtifact(conflictBundle);
+    const conflictMap: ServiceRoleShadowEventRoleMapV1 = {
+      ...accepted.sourceMap,
+      entries: accepted.sourceMap.entries.map((entry) => ({
+        ...entry,
+        evidenceSha256: conflictBundleSha256
+      }))
+    };
+    const conflictMapSha256 = fingerprintCanonicalArtifact(conflictMap);
+    const conflictWrapper: ServiceRoleShadowEventRoleMapV2 = {
+      ...accepted.wrapper,
+      sourceEventRoleMapV1Sha256: conflictMapSha256,
+      evidenceBundleSha256: conflictBundleSha256
+    };
+    conflictDb.put(artifactRow(
+      RUN_ID,
+      "service_role_event_evidence_bundle",
+      "1",
+      conflictBundle
+    ));
+    conflictDb.put(artifactRow(
+      RUN_ID,
+      "service_role_event_role_map",
+      "1",
+      conflictMap
+    ));
+    conflictDb.put(artifactRow(
+      RUN_ID,
+      "service_role_event_role_map",
+      "2",
+      conflictWrapper
+    ));
+    await createServiceRoleShadowRuntimeV1({
+      db: conflictDb,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup(base);
+    expect(noObservations(conflictDb)).toEqual([]);
+
+    const subjectDb = new MemoryDatabase();
+    seedRoleArtifacts(subjectDb, accepted);
+    await createServiceRoleShadowRuntimeV1({
+      db: subjectDb,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({
+      ...base,
+      subjectAddress: accepted.wrapper.binding.profiledAddress
+    });
+    expect(noObservations(subjectDb)).toEqual([]);
+
+    const invalidBindingDb = new MemoryDatabase();
+    seedRoleArtifacts(invalidBindingDb, accepted);
+    await createServiceRoleShadowRuntimeV1({
+      db: invalidBindingDb,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({
+      ...base,
+      states: accepted.states.map((state) => ({
+        ...state,
+        anchorTimestamp: "2026-07-02T00:00:00.000Z"
+      }))
+    });
+    expect(noObservations(invalidBindingDb)).toEqual([]);
+  });
+
+  it("rolls back partial profile persistence and never publishes a precommit", async () => {
+    const db = new MemoryDatabase();
+    const accepted = acceptedHistoryGroup();
+    seedRoleArtifacts(db, accepted);
+    db.failArtifactKindOnce = "service_role_shadow_profile";
+    const runtime = createServiceRoleShadowRuntimeV1({ db, runtimeCommit: RUNTIME_COMMIT });
+
+    await expect(runtime.observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: new AbortController().signal
+    })).rejects.toThrow("failed_service_role_shadow_profile");
+    expect(db.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
+
+    const precommitDb = new MemoryDatabase();
+    seedRoleArtifacts(precommitDb, accepted);
+    precommitDb.failArtifactKindOnce = "service_role_shadow_precommit_receipt";
+    await expect(createServiceRoleShadowRuntimeV1({
+      db: precommitDb,
+      runtimeCommit: RUNTIME_COMMIT
+    }).observeAcceptedAddressHistoryGroup({
+      taskId: "task-traversal",
+      attempt: 1,
+      runId: RUN_ID,
+      snapshotHash: SNAPSHOT_HASH,
+      subjectAddress: SUBJECT,
+      manifestKey: "accepted-history-key",
+      manifestSha256: "d".repeat(64),
+      acceptedPageArtifactHashes: ["e".repeat(64)],
+      events: accepted.events,
+      states: accepted.states,
+      candidateCheckpoint: { deltaHeadSha256: "f".repeat(64) } as never,
+      candidateDeltaSha256: "f".repeat(64),
+      signal: new AbortController().signal
+    })).rejects.toThrow("failed_service_role_shadow_precommit_receipt");
+    expect(precommitDb.rows().filter((row) =>
+      row.kind === "service_role_shadow_profile" ||
+      row.kind === "service_role_shadow_precommit_receipt")).toEqual([]);
   });
 });

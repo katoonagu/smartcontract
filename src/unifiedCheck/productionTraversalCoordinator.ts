@@ -59,6 +59,10 @@ import type { UnifiedChunkHandler } from "./worker";
 const ADDRESS_HISTORY_PROVIDER_VERSION =
   "tronscan-related-trc20-v1" as const;
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 type CoordinatorState = {
   frontier: TraversalStateV1[];
   visitedStates: TraversalStateV1[];
@@ -89,6 +93,22 @@ export type ProductionBoundaryCandidateV2 = {
   readonly evidence: ProductionBoundaryEvidenceV2;
   readonly evidenceHash: string;
   readonly deltaEntry: ProductionBoundaryDeltaEntryV2;
+};
+
+export type AcceptedAddressHistoryShadowGroupInput = {
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly runId: string;
+  readonly snapshotHash: string;
+  readonly subjectAddress: string;
+  readonly manifestKey: string;
+  readonly manifestSha256: string;
+  readonly acceptedPageArtifactHashes: readonly string[];
+  readonly events: readonly IndexedTronUsdtTransfer[];
+  readonly states: readonly TraversalStateV1[];
+  readonly candidateCheckpoint: TraversalCheckpointV2;
+  readonly candidateDeltaSha256: string;
+  readonly signal: AbortSignal;
 };
 
 export function buildProductionBoundaryCandidateV2(input: {
@@ -422,7 +442,11 @@ function buildTraversalApplication(
 
 async function persistTraversalApplication(
   input: TraversalApplicationInput
-): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+): Promise<{
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  deltaSha256: string;
+}> {
   const built = buildTraversalApplication(input);
   await input.persistArtifact({
     runId: input.runId,
@@ -430,7 +454,11 @@ async function persistTraversalApplication(
     sha256: built.deltaSha256,
     artifact: built.deltaArtifact
   });
-  return { checkpoint: built.checkpoint, state: built.state };
+  return {
+    checkpoint: built.checkpoint,
+    state: built.state,
+    deltaSha256: built.deltaSha256
+  };
 }
 
 async function applyAcceptedAddressHistory(input: {
@@ -452,7 +480,12 @@ async function applyAcceptedAddressHistory(input: {
     sha256: string;
     artifact: unknown;
   }): Promise<void>;
-}): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+}): Promise<{
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  deltaSha256: string;
+  events: readonly IndexedTronUsdtTransfer[];
+}> {
   let addressEvents = input.eventCache.get(input.manifest.key);
   if (addressEvents === undefined) {
     const pages = await Promise.all(
@@ -506,7 +539,7 @@ async function applyAcceptedAddressHistory(input: {
       amountRaw: item.amountRaw
     }));
   }
-  return persistTraversalApplication({
+  const applied = await persistTraversalApplication({
     runId: input.runId,
     context: input.context,
     checkpoint: input.checkpoint,
@@ -522,6 +555,7 @@ async function applyAcceptedAddressHistory(input: {
     addedTerminals,
     persistArtifact: input.persistArtifact
   });
+  return { ...applied, events: addressEvents };
 }
 
 async function applyBoundaryAddressHistory(input: {
@@ -625,6 +659,9 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     sha256: string;
     artifact: unknown;
   }): Promise<void>;
+  onAcceptedAddressHistoryShadowGroup?(
+    input: AcceptedAddressHistoryShadowGroupInput
+  ): Promise<void>;
 }): UnifiedChunkHandler {
   if (
     !Number.isSafeInteger(input.commitMaxEntries) ||
@@ -1077,6 +1114,49 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         });
         v2 = applied.checkpoint;
         state = applied.state;
+        if (input.onAcceptedAddressHistoryShadowGroup === undefined) {
+          await heartbeat();
+          continue;
+        }
+        await heartbeat();
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const observer = Promise.resolve().then(() =>
+          input.onAcceptedAddressHistoryShadowGroup!({
+            taskId: task.id,
+            attempt: task.attempt,
+            runId: task.runId,
+            snapshotHash: context.manifest.snapshotHash,
+            subjectAddress: context.manifest.subjectAddress,
+            manifestKey: addressManifest.key!,
+            manifestSha256: entry.artifactSha256,
+            acceptedPageArtifactHashes: [
+              ...(addressManifest.pageArtifactHashes ?? [])
+            ],
+            events: structuredClone(applied.events),
+            states: structuredClone([...group].sort((left, right) =>
+              compareCodeUnits(traversalStateId(left), traversalStateId(right))
+            )),
+            candidateCheckpoint: structuredClone(applied.checkpoint),
+            candidateDeltaSha256: applied.deltaSha256,
+            signal: controller.signal
+          })
+        );
+        void observer.catch(() => undefined);
+        const deadline = new Promise<void>((resolve) => {
+          timeout = setTimeout(() => {
+            controller.abort();
+            resolve();
+          }, 1_000);
+          timeout.unref?.();
+        });
+        try {
+          await Promise.race([observer, deadline]);
+        } catch {
+          // Shadow observation is deliberately non-authoritative.
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
         await heartbeat();
       }
       const partitioned = await partitionGeneratedV2Boundaries();

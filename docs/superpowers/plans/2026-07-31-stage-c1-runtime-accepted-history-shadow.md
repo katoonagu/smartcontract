@@ -33,10 +33,16 @@
   distinct-connection convergence, corrupt-key fail-closed handling, bounded
   normal/publication lock waits, rollback, no retained C1 lock and a later
   authoritative write.
-- Tasks 5-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
+- Task 5 is complete in code. The optional coordinator hook owns its callback
+  inputs, runs once per accepted address/direction group after candidate-delta
+  persistence, and is bounded by one 1,000 ms signal between authoritative
+  heartbeats. Exact found-map subgroups persist per-state profiles and one
+  strict idempotent precommit; the focused coordinator/runtime files pass
+  `26/26` and `29/29`.
+- Tasks 6-10 have not started. `unifiedServiceRoleShadowPolicy` is required in
   `AppConfig`, but the enabled literal is not wired into runtime. There is no
-  coordinator hook, traversal/finalizer/report/score effect or C1 acceptance
-  evidence.
+  post-checkpoint reconciliation, traversal/finalizer/report/score effect or
+  C1 acceptance evidence.
 - Guard: strict invalid-config rejection is the only product-facing contract
   change. Do not call C1 or Stage C complete; production remains matrix-v4,
   ScoreAnchorV3 and report-only checked-subject role with no suppression or
@@ -46,7 +52,7 @@
 
 Plan target: `master` at design commit `c4fe5d52143002dc19c6a611f9cddb7ee50e60ca` in the dedicated `stage-c-roadmap-design` worktree.
 
-- `src/unifiedCheck/productionTraversalCoordinator.ts` hash-validates accepted address-history entries, revives pages, applies one address/direction group, persists a traversal delta, and returns a checkpoint. It has no observer seam.
+- `src/unifiedCheck/productionTraversalCoordinator.ts` hash-validates accepted address-history entries, revives pages, applies one address/direction group, persists a traversal delta, and optionally observes owned copies before returning the unchanged checkpoint.
 - `src/unifiedCheck/worker.ts::runUnifiedTaskCycle` calls `onLifecyclePersisted` only after repository checkpoint/completion succeeds, but currently treats the callback as synchronous and does not expose the committed `checkpoint_json`.
 - `src/unifiedCheck/productionWorker.ts::createPostgresUnifiedTaskCycleRepository` receives the full row from `checkpointUnifiedTask` and currently reduces it to two booleans.
 - `src/unifiedCheck/productionRuntime.ts::createUnifiedProductionRuntime` owns traversal assembly, generic artifact persistence, analysis worker cycles, and the PostgreSQL transaction host.
@@ -283,9 +289,9 @@ Modify:
 
 **Files:** Modify `src/unifiedCheck/productionTraversalCoordinator.ts`, `src/unifiedCheck/serviceRoleShadowRuntime.ts`; test coordinator/runtime files.
 
-- [ ] **Step 1: Add failing tests** for stable state ordering, subgrouping by compound binding, one callback per accepted address/direction group, one 1,000 ms `AbortSignal` deadline, heartbeat before/after, disabled zero-callback behavior, timeout, callback throw, late rejection, and no change to returned checkpoint/delta. Pin the cardinality rule: profiles are per qualifying state, while each compound subgroup gets exactly one sorted precommit receipt and pending token; the frozen seven-state group therefore yields seven profiles and one precommit receipt.
-- [ ] **Step 2: Run the red tests.** Expected: FAIL because the coordinator has no hook.
-- [ ] **Step 3: Extend `persistTraversalApplication` return value** with `deltaSha256`, then add this optional factory input:
+- [x] **Step 1: Add failing tests** for stable state ordering, subgrouping by compound binding, one callback per accepted address/direction group, one 1,000 ms `AbortSignal` deadline, heartbeat before/after, disabled zero-callback behavior, timeout, callback throw, late rejection, and no change to returned checkpoint/delta. Pin the cardinality rule: profiles are per qualifying state, while each compound subgroup gets exactly one sorted precommit receipt and pending token; the frozen seven-state group therefore yields seven profiles and one precommit receipt.
+- [x] **Step 2: Run the red tests.** Expected: FAIL because the coordinator has no hook. RED was `23` tests with the new observer assertion failing `expected 1, received 0`; the runtime RED was `25` tests with `observeAcceptedAddressHistoryGroup is not a function`.
+- [x] **Step 3: Extend `persistTraversalApplication` return value** with `deltaSha256`, then add this optional factory input:
 
   ```ts
   onAcceptedAddressHistoryShadowGroup?(input: {
@@ -305,10 +311,10 @@ Modify:
   }): Promise<void>;
   ```
 
-- [ ] **Step 4: Invoke the hook after successful application and delta persistence, before handler return.** Heartbeats remain authoritative and may throw claim loss; catch only observer/timeout errors. Abort at 1,000 ms, stop new per-state operations when `signal.aborted`, and attach a rejection handler to late work.
-- [ ] **Step 5: Persist only complete found-map compound groups.** Insert the existing profile once per qualifying state. After every profile insert for one compound binding settles before abort, insert exactly one `service-role-shadow-precommit-receipt-v1` whose body binds fence/input-set hashes, accepted manifest and page hashes, candidate checkpoint/delta hashes, the compound binding key, and a lexically sorted exact array of `{ traversalStateId, shadowStateId, profileSha256, wrapperSha256 }`; set `commitStatus:"unconfirmed"` and `productionEffect:false`. Register one pending token for that group only after all profile and group-receipt inserts settle. Partial profiles never create a precommit receipt and can never be reconciled.
-- [ ] **Step 6: Run tests.** Expected: PASS; missing/conflict/malformed/failure paths add no per-skip artifact.
-- [ ] **Step 7: Commit.**
+- [x] **Step 4: Invoke the hook after successful application and delta persistence, before handler return.** Heartbeats remain authoritative and may throw claim loss; catch only observer/timeout errors. Abort at 1,000 ms, stop new per-state operations when `signal.aborted`, and attach a rejection handler to late work. Callback checkpoint/events/states are owned deep copies, including `Date`, so synchronous or late mutation cannot reach authoritative state.
+- [x] **Step 5: Persist only complete found-map compound groups.** Insert the existing profile once per qualifying state. After every profile insert for one compound binding settles before abort, insert exactly one `service-role-shadow-precommit-receipt-v1` whose body binds fence/input-set hashes, accepted manifest and page hashes, candidate checkpoint/delta hashes, the compound binding key, and a lexically sorted exact array of `{ traversalStateId, shadowStateId, profileSha256, wrapperSha256 }`; set `commitStatus:"unconfirmed"` and `productionEffect:false`. Register one pending token for that group only after all profile and group-receipt inserts settle. Partial profiles never create a precommit receipt and can never be reconciled.
+- [x] **Step 6: Run tests.** Expected: PASS; missing/conflict/malformed/failure paths add no per-skip artifact. The coordinator/runtime files pass `26/26` and `29/29`; typecheck and diff check pass.
+- [x] **Step 7: Commit.**
 
   ```powershell
   git add src/unifiedCheck/productionTraversalCoordinator.ts src/unifiedCheck/serviceRoleShadowRuntime.ts tests/unified-check/productionTraversalCoordinator.test.ts tests/unified-check/serviceRoleShadowRuntime.test.ts

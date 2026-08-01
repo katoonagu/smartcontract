@@ -495,11 +495,22 @@ It authorizes no production routing, scoring, Stage D or rollout.
   and prevents later role-map population from being scanned. The focused unit
   file passes `24/24`; the real schema-037 PostgreSQL file passes `7/7` with
   zero skips, and the combined Task 3+4 PostgreSQL gate passes `25/25`.
-- C1 Tasks 5-10 have not started. There is no coordinator hook, runtime/config
-  wiring, traversal/finalizer/report/score effect or C1 acceptance evidence.
-  Strict invalid-config rejection remains the only product-facing config
-  contract change; the enabled literal remains unwired. Stage C is incomplete,
-  Stage D remains design-only, and production stays on matrix-v4,
+- C1 Task 5 is complete in code. The optional coordinator hook runs once after
+  each applied accepted address/direction group and persisted candidate delta,
+  with owned deep copies, stable code-unit state order, one 1,000 ms group
+  `AbortSignal`, and authoritative heartbeats immediately before and after.
+  Observer timeout/rejection/late mutation is contained. The runtime derives
+  exact bindings, excludes the checked subject, uses only the frozen compound
+  lookup, writes one existing profile per qualifying state, and atomically
+  writes one strict idempotent unconfirmed precommit per complete compound
+  subgroup. Missing, conflict, malformed, abort, and write failure create no
+  per-skip row or partial precommit. A new task attempt over identical inputs
+  reuses the same precommit hash; task/attempt remain only in the process-local
+  pending token. Coordinator/runtime unit files pass `26/26` and `29/29`.
+- C1 Tasks 6-10 have not started. There is no runtime/config wiring,
+  post-checkpoint reconciliation, finalizer/report/score effect, or C1
+  acceptance evidence. The enabled literal remains unwired. Stage C is
+  incomplete, Stage D remains design-only, and production stays on matrix-v4,
   `ScoreAnchorV3`, and report-only checked-subject role with no suppression or
   score effect.
 

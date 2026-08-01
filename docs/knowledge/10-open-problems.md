@@ -139,9 +139,12 @@ signal with tests.
   most two publication attempts with separate 1,000 ms deadlines, or about
   3,000 ms plus jitter under an indefinitely held external lock. Exhaustion
   evicts the rejected cache entry; a later caller can retry and rescan only
-  while no durable fence exists. C1 Tasks 5-10, including coordinator/config
-  wiring, post-checkpoint reconciliation, non-interference and the evidence
-  producer, have not started. The enabled config literal remains unwired.
+  while no durable fence exists. C1 Task 5 now supplies the optional bounded
+  coordinator group observer and strict complete-subgroup precommit path, but
+  it remains unwired. C1 Tasks 6-10 still must add authoritative
+  post-checkpoint reconciliation, startup recovery, terminal summary,
+  non-interference proof, runtime config wiring and the acceptance producer.
+  Until then the enabled config literal cannot activate the observer.
 - Current account metadata does not prove EOA status at a historical anchor.
   Stage C needs either a block-bound historical account-state witness or a
   complete account-role timeline. If no provider can supply one, inferred

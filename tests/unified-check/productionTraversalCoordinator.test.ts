@@ -20,8 +20,10 @@ import { decideTronScanProviderServiceAssertion } from "../../src/unifiedCheck/p
 import { initialUnifiedTraversalCheckpointV1 } from "../../src/unifiedCheck/productionTraversal";
 import {
   buildProductionBoundaryCandidateV2,
-  createUnifiedTraversalCoordinatorHandler
+  createUnifiedTraversalCoordinatorHandler,
+  type AcceptedAddressHistoryShadowGroupInput
 } from "../../src/unifiedCheck/productionTraversalCoordinator";
+import { traversalStateId } from "../../src/unifiedCheck/traversal";
 
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const MID = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
@@ -205,6 +207,9 @@ function twoReadyHistories(input: {
   mutateFirstKey?: string;
   commitMaxBytes?: number;
   manifestMaxBytes?: number;
+  observer?: (
+    input: AcceptedAddressHistoryShadowGroupInput
+  ) => Promise<void>;
 }) {
   const directEvents = [
     event({
@@ -293,7 +298,8 @@ function twoReadyHistories(input: {
       artifacts.get(sha256) as never,
     persistArtifact: async (artifact) => {
       artifacts.set(artifact.sha256, artifact.artifact);
-    }
+    },
+    onAcceptedAddressHistoryShadowGroup: input.observer
   });
   return {
     artifacts,
@@ -802,6 +808,102 @@ describe("Unified address-centric traversal coordinator", () => {
     expect(scenario.heartbeat).toHaveBeenCalledTimes(2);
   });
 
+  it("contains observer rejection without changing checkpoint or ordered delta", async () => {
+    const baseline = twoReadyHistories({ binding: "correct" });
+    const observed = twoReadyHistories({
+      binding: "correct",
+      observer: async (shadow) => {
+        (shadow.candidateCheckpoint as { deltaHeadSha256: string })
+          .deltaHeadSha256 = "0".repeat(64);
+        (shadow.states[0]!.sourceEventIds as string[]).push("mutated");
+        throw new Error("shadow observer failed");
+      }
+    });
+
+    const [expected, actual] = await Promise.all([baseline.run(), observed.run()]);
+    expect(actual).toEqual(expected);
+    expect(observed.heartbeat).toHaveBeenCalledTimes(4);
+  });
+
+  it("aborts one hanging observer at 1000ms and handles its late rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectLate!: (error: Error) => void;
+      const late = new Promise<void>((_resolve, reject) => {
+        rejectLate = reject;
+      });
+      const signals: AbortSignal[] = [];
+      const observedInputs: AcceptedAddressHistoryShadowGroupInput[] = [];
+      let calls = 0;
+      const scenario = twoReadyHistories({
+        binding: "correct",
+        observer: async (shadow) => {
+          observedInputs.push(shadow);
+          signals.push(shadow.signal);
+          calls += 1;
+          if (calls === 1) return late;
+        }
+      });
+
+      const pending = scenario.run();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(signals[0]?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
+      expect(result.kind).toBe("checkpoint");
+      expect(signals).toHaveLength(2);
+      expect(signals[0]!.aborted).toBe(true);
+      expect(signals[1]!.aborted).toBe(false);
+      expect(scenario.heartbeat).toHaveBeenCalledTimes(4);
+      const checkpointBytes = canonicalizeArtifactJson(
+        (result as { checkpoint: unknown }).checkpoint
+      );
+      const artifactBytes = [...scenario.artifacts]
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([sha256, artifact]) => [
+          sha256,
+          canonicalizeArtifactJson(artifact)
+        ]);
+      const firstInput = observedInputs[0]!;
+      (firstInput.candidateCheckpoint as { deltaHeadSha256: string })
+        .deltaHeadSha256 = "0".repeat(64);
+      (firstInput.states[0]!.sourceEventIds as string[]).push("late-mutation");
+      expect(canonicalizeArtifactJson(
+        (result as { checkpoint: unknown }).checkpoint
+      )).toBe(checkpointBytes);
+      expect([...scenario.artifacts]
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([sha256, artifact]) => [
+          sha256,
+          canonicalizeArtifactJson(artifact)
+        ])).toEqual(artifactBytes);
+      rejectLate(new Error("late shadow rejection"));
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps heartbeat claim loss authoritative around the observer", async () => {
+    const observer = vi.fn(async (
+      _input: AcceptedAddressHistoryShadowGroupInput
+    ) => undefined);
+    const scenario = twoReadyHistories({ binding: "correct", observer });
+    scenario.heartbeat.mockRejectedValueOnce(new Error("claim lost"));
+
+    await expect(scenario.run()).rejects.toThrow("claim lost");
+    expect(observer).not.toHaveBeenCalled();
+
+    const afterObserver = twoReadyHistories({ binding: "correct", observer });
+    afterObserver.heartbeat
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("claim lost after observer"));
+    await expect(afterObserver.run()).rejects.toThrow(
+      "claim lost after observer"
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a manifest key that does not match its authoritative identity", async () => {
     const scenario = twoReadyHistories({
       binding: "correct",
@@ -888,6 +990,11 @@ describe("Unified address-centric traversal coordinator", () => {
     const loadHistoryPage = vi.fn(async ({ sha256 }: { sha256: string }) =>
       artifacts.get(sha256) as never
     );
+    const observer = vi.fn(async (
+      input: AcceptedAddressHistoryShadowGroupInput
+    ) => {
+      input.events[0]!.blockTimestamp.setUTCFullYear(2000);
+    });
     const handler = createUnifiedTraversalCoordinatorHandler({
       commitMaxEntries: 1,
       commitMaxBytes: 8_388_608,
@@ -926,7 +1033,8 @@ describe("Unified address-centric traversal coordinator", () => {
         artifacts.get(sha256) as never,
       persistArtifact: async (input) => {
         artifacts.set(input.sha256, input.artifact);
-      }
+      },
+      onAcceptedAddressHistoryShadowGroup: observer
     });
     const baseTask = {
       id: "task-traversal",
@@ -962,10 +1070,11 @@ describe("Unified address-centric traversal coordinator", () => {
 
     planned = true;
     ready = true;
+    const heartbeat = vi.fn(async () => undefined);
     const second = await handler({
       task: { ...baseTask, attempt: 2, checkpoint: first.checkpoint },
       leaseToken: "lease-2",
-      heartbeat: vi.fn(async () => undefined)
+      heartbeat
     });
     expect(second.kind).toBe("checkpoint");
     if (second.kind !== "checkpoint") throw new Error("checkpoint expected");
@@ -984,6 +1093,30 @@ describe("Unified address-centric traversal coordinator", () => {
       }],
       discoveredTasks: []
     });
+    expect(observer).toHaveBeenCalledTimes(1);
+    const observed = observer.mock.calls[0]![0];
+    expect(observed).toMatchObject({
+      taskId: "task-traversal",
+      attempt: 2,
+      runId: "run-1",
+      snapshotHash: manifest.snapshotHash,
+      subjectAddress: SUBJECT,
+      manifestKey: key,
+      manifestSha256: fingerprintCanonicalArtifact(history),
+      acceptedPageArtifactHashes: [pageSha256],
+      candidateCheckpoint: second.checkpoint,
+      candidateDeltaSha256: (
+        second.checkpoint as { deltaHeadSha256: string }
+      ).deltaHeadSha256
+    });
+    expect(observed.states.map(traversalStateId)).toEqual(
+      [...observed.states].map(traversalStateId).sort()
+    );
+    expect(observed.states).toHaveLength(2);
+    expect(artifacts.has(observed.candidateDeltaSha256)).toBe(true);
+    expect(heartbeat).toHaveBeenCalledTimes(2);
+    expect((artifacts.get(pageSha256) as typeof page).events[0]!.blockTimestamp)
+      .toBe(upstream.blockTimestamp.toISOString());
     expect(JSON.stringify(second.checkpoint).length).toBeLessThan(4_096);
     ready = false;
     const finish = () => handler({
